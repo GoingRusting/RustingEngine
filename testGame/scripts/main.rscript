@@ -1,0 +1,9 @@
+let orange = scene.get_object("Orange Cube");
+
+onSceneStart() {
+    orange.x = -5;
+}
+
+onSceneUpdate() {
+    orange.rotation.y += 2 * delta;
+}

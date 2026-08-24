@@ -681,16 +681,22 @@ impl RenderScene {
             .unwrap();
 
         if let Some(shader_type) = override_shader {
-            vec![ComputeDispatchInfo {
-                compute_shader: shader_type,
-                offset: 0,
-                count: self.total_instances,
-            }]
+            if shader_type == ComputeShaderType::Static {
+                Vec::new()
+            } else {
+                vec![ComputeDispatchInfo {
+                    compute_shader: shader_type,
+                    offset: 0,
+                    count: self.total_instances,
+                }]
+            }
         } else {
             let mut dispatches = Vec::new();
             for batch in &self.batches {
                 let count = batch.instances.len() as u32;
-                if count > 0 {
+                if count > 0
+                    && batch.compute_shader != ComputeShaderType::Static
+                {
                     dispatches.push(ComputeDispatchInfo {
                         compute_shader: batch.compute_shader,
                         offset: batch.base_instance_offset,

@@ -8,7 +8,8 @@ use rusting_engine::demo::DemoPlugin;
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
 use rusting_engine::runtime::{
-    load_scene, RenderExtractPlugin, RenderSettings, RenderWorld, SceneLoadMode,
+    load_scene, Name, PhysicsBody, RenderExtractPlugin, RenderSettings,
+    RenderWorld, SceneLoadMode, ScriptPlugin, SimulationClass,
 };
 use rusting_engine::{App, AssetPlugin, AssetServer};
 use vulkano::format::Format;
@@ -36,7 +37,23 @@ impl GameApplication {
         runtime.add_plugin(AssetPlugin)?;
         runtime.add_plugin(RenderExtractPlugin)?;
         runtime.add_plugin(DemoPlugin)?;
+        runtime.add_plugin(ScriptPlugin)?;
         load_scene(runtime.world_mut(), &scene_path, SceneLoadMode::Replace)?;
+        let mut physics_query =
+            runtime.world_mut().query::<(Option<&Name>, &PhysicsBody)>();
+        let unavailable_gpu_bodies = physics_query
+            .iter(runtime.world())
+            .filter(|(_, body)| body.simulation == SimulationClass::GpuDynamic)
+            .map(|(name, _)| {
+                name.map_or("Unnamed entity", |name| name.0.as_str())
+            })
+            .collect::<Vec<_>>();
+        if !unavailable_gpu_bodies.is_empty() {
+            eprintln!(
+                "GPU physics is not connected to the ECS scene renderer; these bodies will not simulate: {}",
+                unavailable_gpu_bodies.join(", ")
+            );
+        }
         Ok(Self {
             vulkan: VulkanoContext::new(VulkanoConfig::default()),
             windows: VulkanoWindows::default(),
@@ -167,7 +184,7 @@ impl ApplicationHandler for GameApplication {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let scene_path = std::env::args_os().nth(1).map_or_else(
-        || PathBuf::from("assets/scenes/main.rscene"),
+        || PathBuf::from("testGame/build/main.rscene.bin"),
         PathBuf::from,
     );
     let event_loop = EventLoop::new()?;

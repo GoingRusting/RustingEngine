@@ -42,13 +42,17 @@ The current editor renders the scene directly into the swapchain. The planned of
 compiled Rust GamePlugin ───────────────┐
                                        ├─ runtime-only game executable
 editor-authored .rscene → scene cooker ┘
+editor-authored .rscript → bytecode ────┘
 ```
 
 - Rust systems remain native compiled code in both editor and game builds.
+- Lightweight `.rscript` gameplay code compiles into serializable instructions during scene cooking.
+- Script object names resolve into cached ECS entities; instructions do not search the scene on every operation.
 - The editor saves component values, hierarchy, transforms, cameras, and asset references as data; it does not generate Rust source.
 - Source `.rscene` files are reviewable JSON. Cooked `.rscene.bin` files use the same versioned schema in a compact startup format.
 - Every saved entity has a persistent `SceneId`; runtime Bevy entity IDs are never stored.
 - Game plugins explicitly register the custom Rust components allowed in scenes.
+- Game project files stay under a project root such as `testGame/`; the editor never writes into engine `src/`.
 - The `game` binary is built with the `window` feature and without the `editor` feature, so egui is absent from release runtime builds.
 
 ## Stable ownership decisions
@@ -76,6 +80,14 @@ editor-authored .rscene → scene cooker ┘
 - Stable ordering uses asset handles plus entity identity.
 - Changes produce dirty ranges; removals or reorderings may intentionally dirty the full affected range.
 - Render passes must not query or mutate gameplay ECS directly.
+
+### Physics choices are semantic scene data
+
+- `SimulationClass` selects disabled, static, CPU-authoritative gameplay, or GPU-dynamic ownership.
+- Static colliders are prepared once and excluded from dynamic compute dispatches.
+- GPU solver profiles map to built-in compute pipelines during physics preparation.
+- Custom shader paths are project source references, never GPU pipeline or descriptor indexes.
+- The editor writes physics components into `.rscene`; backend buffers and dispatch groups remain derived data.
 
 ### Renderer APIs are target-oriented
 

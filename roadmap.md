@@ -17,7 +17,7 @@ The first major release should provide:
 - An in-engine egui editor with a viewport, hierarchy, inspector, asset browser, console, profiler, gizmos, and play controls.
 - A representative vertical-slice game and a repeatable 1080p performance benchmark.
 
-Primary platforms are Windows and Linux desktop. Rust systems are the initial gameplay API. Lua/WASM scripting, deferred rendering, and a stable custom-shader ABI are deferred until after the first vertical slice.
+Primary platforms are Windows and Linux desktop. Rust systems remain the maximum-performance gameplay API. The editor also provides a small cooked gameplay-script format; Lua/WASM, deferred rendering, and a stable custom-shader ABI remain deferred.
 
 ## Architectural direction
 
@@ -329,6 +329,9 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add revision-aware GPU mesh preparation so asset mutation invalidates cached buffers without changing handles.
 - [x] Drive the scene viewport and camera aspect ratio from the DPI-aware central-panel pixel rectangle.
 - [x] Expose camera FOV, clipping planes, priority, and active state in the inspector.
+- [x] Add Scene, Game, and Code workspaces with editor/game camera selection.
+- [x] Add a project-local Rust/GLSL editor with open, validation, and save actions.
+- [x] Add project-local `.rscript` editing, scene attachment, lifecycle execution, and cook-time embedding.
 - [ ] Add a dockable main layout and persistent panel arrangement.
 - [ ] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass.
 - [ ] Route keyboard and mouse focus correctly between viewport navigation and UI.
@@ -342,7 +345,8 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [ ] Asset browser with folders, thumbnails, filtering, and drag/drop assignment.
 - [ ] Console with structured logs, filtering, warnings, and asset/validation errors.
 - [ ] Profiler with CPU spans, GPU pass timings, counters, and memory usage.
-- [ ] Render and physics settings panels.
+- [ ] Add dedicated render settings and physics diagnostics panels.
+- [x] Add a typed physics inspector for simulation ownership, GPU solver profile, rigid body, and collider settings.
 
 ### Scene editing
 
@@ -356,8 +360,8 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 
 ### Play workflow and history
 
-- [ ] Edit, play, pause, single-step, and stop states.
-- [ ] Snapshot the edit scene before play and restore it on stop.
+- [x] Edit, play, pause, single-step, and stop states.
+- [x] Snapshot the edit scene before play and restore it on stop.
 - [ ] Make runtime-spawned entities visually distinct where useful.
 - [ ] Implement command-based undo/redo for scene edits.
 - [ ] Group continuous gizmo/field edits into single undo transactions.

@@ -2,12 +2,14 @@ use std::time::Instant;
 
 use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
-use rusting_engine::editor::{draw_editor_view, EditorState, EditorViewport};
+use rusting_engine::editor::{
+    configure_editor_style, draw_editor_view, EditorState, EditorViewport,
+};
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
 use rusting_engine::runtime::{
     load_scene, Camera, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
-    SceneLoadMode,
+    SceneLoadMode, ScriptPlugin, ScriptSettings, TimeControl,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
@@ -38,8 +40,11 @@ impl EditorApplication {
         runtime.add_plugin(AssetPlugin).unwrap();
         runtime.add_plugin(RenderExtractPlugin).unwrap();
         runtime.add_plugin(DemoPlugin).unwrap();
+        runtime.add_plugin(ScriptPlugin).unwrap();
         runtime.insert_resource(EditorState::default());
         runtime.insert_resource(EditorViewport::default());
+        runtime.world_mut().resource_mut::<TimeControl>().pause();
+        runtime.world_mut().resource_mut::<ScriptSettings>().enabled = false;
 
         let (mesh, blue_material, orange_material) = {
             let mut assets = runtime.world_mut().resource_mut::<AssetServer>();
@@ -81,11 +86,11 @@ impl EditorApplication {
         runtime.set_parent(blue, scene_root).unwrap();
         runtime.set_parent(orange, scene_root).unwrap();
         runtime.spawn((
-            Name("Editor Camera".into()),
+            Name("Game Camera".into()),
             Transform::new([0.0, 3.0, 8.0]),
             Camera {
                 active: true,
-                priority: 100,
+                priority: 10,
                 ..Camera::default()
             },
         ));
@@ -100,6 +105,26 @@ impl EditorApplication {
                 eprintln!("failed to restore editor scene: {error}");
             }
         }
+        let editor_camera = runtime
+            .world_mut()
+            .spawn((
+                Name("Editor Camera".into()),
+                Transform::new([0.0, 3.0, 8.0]),
+                Camera {
+                    active: false,
+                    priority: 0,
+                    ..Camera::default()
+                },
+            ))
+            .id();
+        runtime
+            .world_mut()
+            .resource_mut::<EditorState>()
+            .editor_camera = Some(editor_camera);
+        runtime
+            .world_mut()
+            .resource_mut::<rusting_engine::runtime::RenderCameraOverride>()
+            .entity = Some(editor_camera);
 
         Self {
             vulkan: VulkanoContext::new(VulkanoConfig::default()),
@@ -156,7 +181,7 @@ impl ApplicationHandler for EditorApplication {
             )
             .expect("failed to create editor scene renderer"),
         );
-        self.gui = Some(Gui::new(
+        let gui = Gui::new(
             event_loop,
             renderer.surface(),
             renderer.graphics_queue(),
@@ -165,7 +190,9 @@ impl ApplicationHandler for EditorApplication {
                 is_overlay: true,
                 ..GuiConfig::default()
             },
-        ));
+        );
+        configure_editor_style(&gui.context());
+        self.gui = Some(gui);
     }
 
     fn window_event(

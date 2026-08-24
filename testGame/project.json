@@ -1,0 +1,5 @@
+{
+  "name": "Test Game",
+  "main_scene": "scenes/main.rscene",
+  "cooked_scene": "build/main.rscene.bin"
+}

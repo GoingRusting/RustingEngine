@@ -31,6 +31,14 @@ pub struct ExtractedCamera {
     pub priority: i32,
 }
 
+/// Optional camera selected by a tool such as the editor Scene viewport.
+/// Runtime Game views leave this empty and use the highest-priority active
+/// gameplay camera.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderCameraOverride {
+    pub entity: Option<Entity>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtractedDirectionalLight {
     pub entity: Entity,
@@ -73,6 +81,7 @@ pub struct RenderExtractPlugin;
 impl Plugin for RenderExtractPlugin {
     fn build(&self, app: &mut App) -> Result<(), AppError> {
         app.insert_resource(RenderWorld::default())
+            .insert_resource(RenderCameraOverride::default())
             .add_systems(ScheduleStage::RenderExtract, extract_render_world);
         Ok(())
     }
@@ -179,7 +188,18 @@ fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
 }
 
 fn collect_active_camera(world: &mut World) -> Option<ExtractedCamera> {
+    let override_entity = world.resource::<RenderCameraOverride>().entity;
     let mut query = world.query::<(Entity, &GlobalTransform, &Camera)>();
+    if let Some(entity) = override_entity {
+        if let Ok((entity, transform, camera)) = query.get(world, entity) {
+            return Some(ExtractedCamera {
+                entity,
+                transform: *transform,
+                projection: camera.projection,
+                priority: camera.priority,
+            });
+        }
+    }
     query
         .iter(world)
         .filter(|(_, _, camera)| camera.active)
@@ -322,6 +342,39 @@ mod tests {
                 .active_camera
                 .map(|camera| camera.entity),
             Some(expected)
+        );
+    }
+
+    #[test]
+    fn camera_override_can_select_an_inactive_editor_camera() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        app.spawn((
+            Transform::default(),
+            Camera {
+                active: true,
+                priority: 10,
+                ..Camera::default()
+            },
+        ));
+        let editor_camera = app.spawn((
+            Transform::new([0.0, 3.0, 8.0]),
+            Camera {
+                active: false,
+                ..Camera::default()
+            },
+        ));
+        app.world_mut()
+            .resource_mut::<RenderCameraOverride>()
+            .entity = Some(editor_camera);
+
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(
+            app.world()
+                .resource::<RenderWorld>()
+                .active_camera
+                .map(|camera| camera.entity),
+            Some(editor_camera)
         );
     }
 

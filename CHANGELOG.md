@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.47] - 2026-08-25
+
+### Added
+
+- More settings in gui like: Game/Scene/Code modes
+- Adding working editor with custom script language that has some events like "onSceneStart, onSceneUpdate" and etc.
+
+### Fixed
+
+- Gui design a bit improved
+
 ## [0.1.46] - 2026-08-24
 
 ### Added

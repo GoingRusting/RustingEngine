@@ -8,6 +8,7 @@ mod events;
 mod hierarchy;
 mod render_world;
 mod scene_file;
+mod script;
 #[cfg(test)]
 mod tests;
 mod time;
@@ -17,6 +18,7 @@ pub use events::EventQueue;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use render_world::*;
 pub use scene_file::*;
+pub use script::*;
 pub use time::{FrameTime, TimeControl};
 
 use std::error::Error;
@@ -116,6 +118,7 @@ impl Default for App {
         world.insert_resource(HierarchyDiagnostics::default());
         world.insert_resource(RenderSettings::default());
         world.insert_resource(PhysicsSettings::default());
+        world.insert_resource(PhysicsBackendStatus::default());
         world.insert_resource(SceneComponentRegistry::default());
 
         let mut post_update = Schedule::default();

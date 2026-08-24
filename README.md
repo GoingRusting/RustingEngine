@@ -26,6 +26,7 @@ without shipping the editor or its GUI dependencies.
 - Instanced and indirect rendering for large object counts
 - Optional GPU frustum culling
 - Visual scene editor with save and load support
+- Cooked gameplay scripts with scene lifecycle functions
 - Cooked game runtime without editor code
 
 ## Running
@@ -50,6 +51,41 @@ The editor can also be started directly through Cargo:
 cargo run --bin editor
 ```
 
+The editor has three workspaces. **Scene** uses an editor-only camera for
+authoring, **Game** shows the active game camera, and **Code** opens and saves
+project gameplay scripts, Rust, or GLSL files. Play mode snapshots the authored scene; pressing
+Stop restores it instead of keeping runtime changes.
+
+Select an entity and use the **Physics** inspector to choose `Static`,
+`Gameplay (CPU)`, or `GPU Dynamic`. GPU bodies can use the full, simplified,
+no-collision, or custom compute profile. Static bodies are not included in a
+per-frame compute dispatch. A custom shader can be opened directly in the Code
+workspace and saved inside the game project.
+
+Game files are kept outside the engine source:
+
+```text
+testGame/
+  project.json
+  scenes/main.rscene
+  scripts/main.rscript
+  build/main.rscene.bin
+```
+
+Gameplay scripts can bind scene objects and update their ECS transforms:
+
+```text
+let orange = scene.get_object("Orange Cube");
+
+onSceneUpdate() {
+    orange.x = 5;
+    orange.rotation.y += 1.5 * delta;
+}
+```
+
+The cooker validates scripts and embeds compiled instructions in the cooked
+scene. The release runtime does not need `.rscript` source files or the editor.
+
 ## Building an editor scene
 
 1. Run the editor, change the scene and click **Save Scene**.
@@ -65,5 +101,5 @@ cargo run --bin editor
 ./scripts/run_game.sh
 ```
 
-The source scene is saved to `assets/scenes/main.rscene`. The default cooked
-output is `assets/scenes/main.rscene.bin`.
+The source scene is saved to `testGame/scenes/main.rscene`. The default cooked
+output is `testGame/build/main.rscene.bin`.

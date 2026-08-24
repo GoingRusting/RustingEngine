@@ -9,7 +9,44 @@ use vulkano::pipeline::layout::{
 use vulkano::pipeline::{ComputePipeline, PipelineShaderStageCreateInfo};
 use vulkano::shader::ShaderModule;
 
+use crate::runtime::{PhysicsBody, PhysicsSolver, SimulationClass};
 use crate::shaders::compute::*;
+
+/// Backend route produced from the semantic physics settings authored in the
+/// editor. Static bodies intentionally have no compute shader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PhysicsExecution {
+    Disabled,
+    StaticCollider,
+    GameplayCpu,
+    GpuBuiltIn(ComputeShaderType),
+    GpuCustom(String),
+    InvalidCustomShader,
+}
+
+#[must_use]
+pub fn physics_execution(body: &PhysicsBody) -> PhysicsExecution {
+    match body.simulation {
+        SimulationClass::None => PhysicsExecution::Disabled,
+        SimulationClass::Static => PhysicsExecution::StaticCollider,
+        SimulationClass::Gameplay => PhysicsExecution::GameplayCpu,
+        SimulationClass::GpuDynamic => match body.solver {
+            PhysicsSolver::Full => {
+                PhysicsExecution::GpuBuiltIn(ComputeShaderType::FullPhysics)
+            }
+            PhysicsSolver::Simplified => {
+                PhysicsExecution::GpuBuiltIn(ComputeShaderType::MidPhysic)
+            }
+            PhysicsSolver::NoCollision => {
+                PhysicsExecution::GpuBuiltIn(ComputeShaderType::NoCollision)
+            }
+            PhysicsSolver::Custom => body.custom_shader.clone().map_or(
+                PhysicsExecution::InvalidCustomShader,
+                PhysicsExecution::GpuCustom,
+            ),
+        },
+    }
+}
 
 /// Which descriptor bindings a compute shader needs
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -213,4 +250,46 @@ pub struct CullPushConstants {
     pub batch_offset: u32, // Index of first instance in the physics buffer
     pub batch_count: u32,  // How many instances in this batch
     pub visible_list_offset: u32, // Where to start writing in the VisibleIndices buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_bodies_skip_compute_dispatch() {
+        let body = PhysicsBody {
+            simulation: SimulationClass::Static,
+            ..PhysicsBody::default()
+        };
+        assert_eq!(physics_execution(&body), PhysicsExecution::StaticCollider);
+    }
+
+    #[test]
+    fn gpu_profiles_route_to_the_selected_shader() {
+        let body = PhysicsBody {
+            simulation: SimulationClass::GpuDynamic,
+            solver: PhysicsSolver::Simplified,
+            custom_shader: None,
+        };
+        assert_eq!(
+            physics_execution(&body),
+            PhysicsExecution::GpuBuiltIn(ComputeShaderType::MidPhysic)
+        );
+    }
+
+    #[test]
+    fn custom_gpu_profile_keeps_its_project_shader_path() {
+        let body = PhysicsBody {
+            simulation: SimulationClass::GpuDynamic,
+            solver: PhysicsSolver::Custom,
+            custom_shader: Some("src/shaders/compute/crowd.comp".into()),
+        };
+        assert_eq!(
+            physics_execution(&body),
+            PhysicsExecution::GpuCustom(
+                "src/shaders/compute/crowd.comp".into()
+            )
+        );
+    }
 }

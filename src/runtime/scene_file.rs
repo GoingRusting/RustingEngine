@@ -18,7 +18,9 @@ use crate::assets::{
 use crate::Transform;
 
 use super::{
-    Camera, MeshRenderer, Name, Parent, Projection, SceneId, Visibility,
+    compile_script, Camera, Collider, CollisionLayers, CompiledScript,
+    MeshRenderer, Name, Parent, PhysicsBody, Projection, RigidBody, SceneId,
+    ScriptComponent, Visibility,
 };
 
 pub const SCENE_FORMAT_VERSION: u32 = 1;
@@ -33,6 +35,7 @@ pub enum SceneIoError {
     DuplicateComponent(String),
     UnknownComponent(String),
     Component { name: String, message: String },
+    Script { path: PathBuf, message: String },
     MissingAssetServer,
     MissingAssetPath(PathBuf),
     UnsavedMesh(u64),
@@ -63,6 +66,13 @@ impl Display for SceneIoError {
                 write!(
                     formatter,
                     "failed to process component `{name}`: {message}"
+                )
+            }
+            Self::Script { path, message } => {
+                write!(
+                    formatter,
+                    "failed to compile script `{}`: {message}",
+                    path.display()
                 )
             }
             Self::MissingAssetServer => formatter
@@ -137,7 +147,25 @@ pub struct SceneEntity {
     pub camera: Option<SceneCamera>,
     pub visible: Option<bool>,
     #[serde(default)]
+    pub physics_body: Option<PhysicsBody>,
+    #[serde(default)]
+    pub rigid_body: Option<RigidBody>,
+    #[serde(default)]
+    pub collider: Option<Collider>,
+    #[serde(default)]
+    pub collision_layers: Option<CollisionLayers>,
+    #[serde(default)]
+    pub script: Option<SceneScript>,
+    #[serde(default)]
     pub components: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SceneScript {
+    pub source_path: PathBuf,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled: Option<CompiledScript>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -421,6 +449,11 @@ pub fn scene_document(
         Option<&MeshRenderer>,
         Option<&Camera>,
         Option<&Visibility>,
+        Option<&PhysicsBody>,
+        Option<&RigidBody>,
+        Option<&Collider>,
+        Option<&CollisionLayers>,
+        Option<&ScriptComponent>,
     )>();
     let raw = query
         .iter(world)
@@ -434,6 +467,11 @@ pub fn scene_document(
                 renderer,
                 camera,
                 visibility,
+                physics_body,
+                rigid_body,
+                collider,
+                collision_layers,
+                script,
             )| {
                 (
                     entity,
@@ -444,6 +482,11 @@ pub fn scene_document(
                     renderer.copied(),
                     camera.copied(),
                     visibility.copied(),
+                    physics_body.cloned(),
+                    rigid_body.copied(),
+                    collider.copied(),
+                    collision_layers.copied(),
+                    script.cloned(),
                 )
             },
         )
@@ -456,8 +499,21 @@ pub fn scene_document(
         .get_resource::<AssetServer>()
         .ok_or(SceneIoError::MissingAssetServer)?;
     let mut entities = Vec::with_capacity(raw.len());
-    for (entity, id, parent, name, transform, renderer, camera, visibility) in
-        raw
+    for (
+        entity,
+        id,
+        parent,
+        name,
+        transform,
+        renderer,
+        camera,
+        visibility,
+        physics_body,
+        rigid_body,
+        collider,
+        collision_layers,
+        script,
+    ) in raw
     {
         let parent = parent
             .map(|parent| {
@@ -483,6 +539,15 @@ pub fn scene_document(
             mesh_renderer,
             camera: camera.map(scene_camera),
             visible: visibility.map(|visibility| visibility.visible),
+            physics_body,
+            rigid_body,
+            collider,
+            collision_layers,
+            script: script.map(|script| SceneScript {
+                source_path: PathBuf::from(script.source_path),
+                enabled: script.enabled,
+                compiled: None,
+            }),
             components,
         });
     }
@@ -522,9 +587,38 @@ pub fn cook_scene(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
 ) -> Result<(), SceneIoError> {
-    let document: SceneDocument =
+    let source = source.as_ref();
+    let mut document: SceneDocument =
         serde_json::from_slice(&std::fs::read(source)?)?;
     validate_version(&document)?;
+    let project_root = source
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."));
+    for entity in &mut document.entities {
+        let Some(script) = &mut entity.script else {
+            continue;
+        };
+        let path = if script.source_path.is_absolute()
+            || script.source_path.exists()
+        {
+            script.source_path.clone()
+        } else {
+            project_root.join(&script.source_path)
+        };
+        let source = std::fs::read_to_string(&path).map_err(|error| {
+            SceneIoError::Script {
+                path: path.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        script.compiled = Some(compile_script(&source).map_err(|error| {
+            SceneIoError::Script {
+                path: path.clone(),
+                message: error.to_string(),
+            }
+        })?);
+    }
     let mut bytes = COMPILED_MAGIC.to_vec();
     bytes.extend(bincode::serialize(&document)?);
     let destination = destination.as_ref();
@@ -583,6 +677,25 @@ pub fn load_scene_document(
         }
         if let Some(visible) = scene_entity.visible {
             entity.insert(Visibility { visible });
+        }
+        if let Some(physics_body) = &scene_entity.physics_body {
+            entity.insert(physics_body.clone());
+        }
+        if let Some(rigid_body) = scene_entity.rigid_body {
+            entity.insert(rigid_body);
+        }
+        if let Some(collider) = scene_entity.collider {
+            entity.insert(collider);
+        }
+        if let Some(collision_layers) = scene_entity.collision_layers {
+            entity.insert(collision_layers);
+        }
+        if let Some(script) = &scene_entity.script {
+            entity.insert(ScriptComponent {
+                source_path: script.source_path.display().to_string(),
+                enabled: script.enabled,
+                compiled: script.compiled.clone(),
+            });
         }
         spawned.insert(scene_entity.id, entity.id());
     }
@@ -823,7 +936,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::runtime::{App, RenderExtractPlugin};
+    use crate::runtime::{
+        App, PhysicsSolver, RenderExtractPlugin, ScriptPlugin, SimulationClass,
+    };
     use crate::MaterialAsset;
 
     #[derive(
@@ -871,6 +986,19 @@ mod tests {
                 receive_shadows: false,
             },
             GameplayTag { speed: 2.5 },
+            PhysicsBody {
+                simulation: SimulationClass::GpuDynamic,
+                solver: PhysicsSolver::Simplified,
+                custom_shader: None,
+            },
+            RigidBody {
+                mass: 12.0,
+                ..RigidBody::default()
+            },
+            Collider {
+                restitution: 0.75,
+                ..Collider::default()
+            },
         ));
         app.set_parent(child, parent).unwrap();
         let document = scene_document(app.world_mut(), "Test").unwrap();
@@ -884,14 +1012,23 @@ mod tests {
             &Transform,
             Option<&GameplayTag>,
             Option<&Parent>,
+            Option<&PhysicsBody>,
+            Option<&RigidBody>,
+            Option<&Collider>,
         )>();
         let entities = query.iter(app.world()).collect::<Vec<_>>();
         assert_eq!(entities.len(), 2);
-        let (_, transform, tag, parent) =
+        let (_, transform, tag, parent, physics, rigid_body, collider) =
             entities.iter().find(|(name, ..)| name.0 == "Cube").unwrap();
         assert_eq!(transform.position, [1.0, 2.0, 3.0]);
         assert_eq!(tag.copied(), Some(GameplayTag { speed: 2.5 }));
         assert!(parent.is_some());
+        assert_eq!(
+            physics.map(|physics| physics.simulation),
+            Some(SimulationClass::GpuDynamic)
+        );
+        assert_eq!(rigid_body.map(|body| body.mass), Some(12.0));
+        assert_eq!(collider.map(|collider| collider.restitution), Some(0.75));
     }
 
     #[test]
@@ -939,6 +1076,53 @@ mod tests {
 
         std::fs::remove_file(compiled).unwrap();
         std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir(test_directory).unwrap();
+    }
+
+    #[test]
+    fn cooked_scene_executes_embedded_script_without_source_file() {
+        let test_directory = std::env::temp_dir()
+            .join(format!("rusting-script-cook-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&test_directory).unwrap();
+        let script_path = test_directory.join("main.rscript");
+        let source_scene = test_directory.join("scene.rscene");
+        let compiled_scene = test_directory.join("scene.rscene.bin");
+        std::fs::write(
+            &script_path,
+            "let cube = scene.get_object(\"Scripted Cube\");\n\
+             onSceneStart() { cube.x = 9; }",
+        )
+        .unwrap();
+
+        let mut editor_app = scene_app();
+        editor_app.spawn((Name("Scripted Cube".into()), Transform::default()));
+        editor_app.spawn(ScriptComponent {
+            source_path: script_path.display().to_string(),
+            enabled: true,
+            compiled: None,
+        });
+        save_scene(editor_app.world_mut(), &source_scene, "Scripted").unwrap();
+        cook_scene(&source_scene, &compiled_scene).unwrap();
+        std::fs::remove_file(script_path).unwrap();
+
+        let mut game_app = scene_app();
+        game_app.add_plugin(ScriptPlugin).unwrap();
+        load_scene(
+            game_app.world_mut(),
+            &compiled_scene,
+            SceneLoadMode::Replace,
+        )
+        .unwrap();
+        game_app.update(Duration::from_millis(16)).unwrap();
+        let mut query = game_app.world_mut().query::<(&Name, &Transform)>();
+        let (_, transform) = query
+            .iter(game_app.world())
+            .find(|(name, _)| name.0 == "Scripted Cube")
+            .unwrap();
+        assert_eq!(transform.position[0], 9.0);
+
+        std::fs::remove_file(source_scene).unwrap();
+        std::fs::remove_file(compiled_scene).unwrap();
         std::fs::remove_dir(test_directory).unwrap();
     }
 }

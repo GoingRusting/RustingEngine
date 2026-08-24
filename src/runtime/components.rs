@@ -1,5 +1,6 @@
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::assets::{Handle, MaterialAsset, MeshAsset};
@@ -181,6 +182,17 @@ pub struct PhysicsSettings {
     pub enabled: bool,
 }
 
+/// Reports which physics backends are connected to the ECS scene runner.
+/// The compatibility `Engine` has its own legacy GPU path and does not use
+/// this resource.
+#[derive(
+    bevy_ecs::prelude::Resource, Clone, Copy, Debug, Default, PartialEq, Eq,
+)]
+pub struct PhysicsBackendStatus {
+    pub gameplay_available: bool,
+    pub gpu_dynamic_available: bool,
+}
+
 impl Default for PhysicsSettings {
     fn default() -> Self {
         Self {
@@ -194,7 +206,78 @@ impl Default for PhysicsSettings {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuEffectBody;
 
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Selects which simulation backend owns an entity.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+pub enum SimulationClass {
+    None,
+    Static,
+    #[default]
+    Gameplay,
+    GpuDynamic,
+}
+
+/// Built-in GPU compute profile, or a project-provided compute shader.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+pub enum PhysicsSolver {
+    #[default]
+    Full,
+    Simplified,
+    NoCollision,
+    Custom,
+}
+
+/// Semantic physics configuration authored by the editor.
+///
+/// Static and disabled bodies are deliberately excluded from dynamic compute
+/// dispatches. Custom shader paths are project-relative and validated by the
+/// editor before they are saved.
+#[derive(Component, Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct PhysicsBody {
+    pub simulation: SimulationClass,
+    pub solver: PhysicsSolver,
+    pub custom_shader: Option<String>,
+}
+
+impl Default for PhysicsBody {
+    fn default() -> Self {
+        Self {
+            simulation: SimulationClass::Gameplay,
+            solver: PhysicsSolver::Full,
+            custom_shader: None,
+        }
+    }
+}
+
+impl PhysicsBody {
+    #[must_use]
+    pub fn participates_in_dynamic_simulation(&self) -> bool {
+        matches!(
+            self.simulation,
+            SimulationClass::Gameplay | SimulationClass::GpuDynamic
+        )
+    }
+
+    #[must_use]
+    pub fn uses_gpu(&self) -> bool {
+        self.simulation == SimulationClass::GpuDynamic
+    }
+}
+
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Serialize,
+)]
 pub enum RigidBodyKind {
     Fixed,
     #[default]
@@ -202,9 +285,10 @@ pub enum RigidBodyKind {
     Kinematic,
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RigidBody {
     pub kind: RigidBodyKind,
+    pub mass: f32,
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
     pub gravity_scale: f32,
@@ -214,6 +298,7 @@ impl Default for RigidBody {
     fn default() -> Self {
         Self {
             kind: RigidBodyKind::Dynamic,
+            mass: 1.0,
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
             gravity_scale: 1.0,
@@ -221,14 +306,14 @@ impl Default for RigidBody {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ColliderShape {
     Box { half_extents: [f32; 3] },
     Sphere { radius: f32 },
     Capsule { half_height: f32, radius: f32 },
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Collider {
     pub shape: ColliderShape,
     pub friction: f32,
@@ -249,7 +334,9 @@ impl Default for Collider {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Component, Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize,
+)]
 pub struct CollisionLayers {
     pub memberships: u32,
     pub filters: u32,

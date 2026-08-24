@@ -30,6 +30,10 @@
       "rigid_body": null,
       "collider": null,
       "collision_layers": null,
+      "script": {
+        "source_path": "testGame/scripts/main.rscript",
+        "enabled": true
+      },
       "components": {}
     },
     {
@@ -38,13 +42,13 @@
       "name": "Blue Cube",
       "transform": {
         "position": [
-          5.2,
-          3.8,
+          -1.5,
+          0.0,
           0.0
         ],
         "rotation": [
-          182.85861,
-          96.38307,
+          0.0,
+          0.0,
           0.0
         ],
         "scale": [
@@ -87,9 +91,8 @@
       "rigid_body": null,
       "collider": null,
       "collision_layers": null,
-      "components": {
-        "rusting.demo.spin": "{\"speed\":[1.35,0.7]}"
-      }
+      "script": null,
+      "components": {}
     },
     {
       "id": "30000000-0000-4000-8000-000000000003",
@@ -97,13 +100,13 @@
       "name": "Orange Cube",
       "transform": {
         "position": [
-          2.0,
           1.0,
+          0.0,
           0.0
         ],
         "rotation": [
-          152.48941,
-          363.68054,
+          0.0,
+          3.06,
           0.0
         ],
         "scale": [
@@ -142,47 +145,12 @@
       },
       "camera": null,
       "visible": null,
-      "physics_body": {
-        "simulation": "Gameplay",
-        "solver": "Full",
-        "custom_shader": null
-      },
-      "rigid_body": {
-        "kind": "Dynamic",
-        "mass": 1.0,
-        "linear_velocity": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "angular_velocity": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "gravity_scale": 1.0
-      },
-      "collider": {
-        "shape": {
-          "Box": {
-            "half_extents": [
-              0.5,
-              0.5,
-              0.5
-            ]
-          }
-        },
-        "friction": 0.5,
-        "restitution": 0.0,
-        "sensor": false
-      },
-      "collision_layers": {
-        "memberships": 4294967295,
-        "filters": 4294967295
-      },
-      "components": {
-        "rusting.demo.spin": "{\"speed\":[0.35,1.7]}"
-      }
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "script": null,
+      "components": {}
     },
     {
       "id": "40000000-0000-4000-8000-000000000004",
@@ -222,6 +190,7 @@
       "rigid_body": null,
       "collider": null,
       "collision_layers": null,
+      "script": null,
       "components": {}
     }
   ]

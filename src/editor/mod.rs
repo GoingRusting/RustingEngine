@@ -6,18 +6,35 @@
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Resource, World};
 use egui::{
-    CentralPanel, Context, DragValue, RawInput, SidePanel, TopBottomPanel,
+    CentralPanel, ComboBox, Context, DragValue, RawInput, SidePanel,
+    TopBottomPanel,
 };
 
 use crate::runtime::{
     add_registered_component, load_scene, registered_component_names,
     registered_component_values, remove_registered_component, save_scene,
-    set_registered_component, App, AppError, Camera, FrameTime, MeshRenderer,
-    Name, Parent, Plugin, Projection, RenderSettings, RenderWorld,
-    SceneLoadMode, ScheduleStage, TimeControl,
+    scene_document, set_registered_component, App, AppError, Camera, Collider,
+    ColliderShape, CollisionLayers, FrameTime, MeshRenderer, Name, Parent,
+    PhysicsBackendStatus, PhysicsBody, PhysicsSolver, Plugin, Projection,
+    RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
+    RigidBodyKind, SceneDocument, SceneLoadMode, ScheduleStage,
+    ScriptComponent, ScriptRuntime, ScriptSettings, SimulationClass,
+    TimeControl,
 };
 use crate::AssetServer;
 use crate::Transform;
+
+/// Applies the editor's compact dark workspace theme to an egui context.
+pub fn configure_editor_style(context: &Context) {
+    let mut style = (*context.style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.visuals = egui::Visuals::dark();
+    style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 31);
+    style.visuals.window_fill = egui::Color32::from_rgb(28, 30, 36);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(45, 104, 210);
+    context.set_style(style);
+}
 
 /// Editor interaction mode. Edit state never advances gameplay fixed updates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +43,16 @@ pub enum EditorMode {
     Edit,
     Play,
     Paused,
+}
+
+/// Main editor workspace. Scene and Game share the same renderer but select
+/// different cameras; Code is a real project-file editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditorWorkspace {
+    #[default]
+    Scene,
+    Game,
+    Code,
 }
 
 /// Persistent selection and panel visibility.
@@ -38,8 +65,16 @@ pub struct EditorState {
     pub console_open: bool,
     pub assets_open: bool,
     pub scene_path: String,
+    pub project_root: String,
     pub scene_message: Option<String>,
     pub component_drafts: std::collections::HashMap<(Entity, String), String>,
+    pub workspace: EditorWorkspace,
+    pub editor_camera: Option<Entity>,
+    pub play_snapshot: Option<SceneDocument>,
+    pub code_path: String,
+    pub code_source: String,
+    pub code_message: Option<String>,
+    pub code_dirty: bool,
 }
 
 /// Physical pixel rectangle occupied by the editor's live scene view.
@@ -62,9 +97,17 @@ impl Default for EditorState {
             inspector_open: true,
             console_open: true,
             assets_open: true,
-            scene_path: "assets/scenes/main.rscene".into(),
+            scene_path: "testGame/scenes/main.rscene".into(),
+            project_root: "testGame".into(),
             scene_message: None,
             component_drafts: std::collections::HashMap::new(),
+            workspace: EditorWorkspace::Scene,
+            editor_camera: None,
+            play_snapshot: None,
+            code_path: "testGame/scripts/main.rscript".into(),
+            code_source: String::new(),
+            code_message: None,
+            code_dirty: false,
         }
     }
 }
@@ -499,6 +542,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let entities = collect_entities(world);
     let frame_time = *world.resource::<FrameTime>();
     let mut render_settings = world.resource::<RenderSettings>().clone();
+    let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
             assets.meshes.len(),
@@ -516,6 +560,18 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut edited_camera = state
         .selected
         .and_then(|entity| world.get::<Camera>(entity).copied());
+    let mut edited_physics = state
+        .selected
+        .and_then(|entity| world.get::<PhysicsBody>(entity).cloned());
+    let mut edited_rigid_body = state
+        .selected
+        .and_then(|entity| world.get::<RigidBody>(entity).copied());
+    let mut edited_collider = state
+        .selected
+        .and_then(|entity| world.get::<Collider>(entity).copied());
+    let mut edited_script = state
+        .selected
+        .and_then(|entity| world.get::<ScriptComponent>(entity).cloned());
     let registered_names = registered_component_names(world);
     let custom_values = state
         .selected
@@ -539,10 +595,18 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut save_clicked = false;
     let mut load_clicked = false;
     let mut component_edits = Vec::new();
+    let mut add_physics = false;
+    let mut remove_physics = false;
+    let mut edit_custom_shader = false;
+    let mut load_code = false;
+    let mut save_code = false;
+    let mut validate_code = false;
+    let mut remove_script = false;
+    let mut open_script = false;
 
     TopBottomPanel::top("visible_editor_toolbar").show(context, |ui| {
         ui.horizontal(|ui| {
-            ui.heading("RustingEngine Editor");
+            ui.heading("RustingEngine");
             ui.separator();
             if ui.button("▶ Play").clicked() {
                 requested_mode = Some(EditorMode::Play);
@@ -558,6 +622,22 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 requested_mode = Some(EditorMode::Edit);
             }
             ui.separator();
+            ui.selectable_value(
+                &mut state.workspace,
+                EditorWorkspace::Scene,
+                "Scene",
+            );
+            ui.selectable_value(
+                &mut state.workspace,
+                EditorWorkspace::Game,
+                "Game",
+            );
+            ui.selectable_value(
+                &mut state.workspace,
+                EditorWorkspace::Code,
+                "Code",
+            );
+            ui.separator();
             save_clicked = ui.button("Save Scene").clicked();
             load_clicked = ui.button("Load Scene").clicked();
             ui.separator();
@@ -566,6 +646,12 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 frame_time.frame,
                 frame_time.real_delta.as_secs_f64() * 1_000.0
             ));
+            ui.separator();
+            ui.label(match state.mode {
+                EditorMode::Edit => "EDIT",
+                EditorMode::Play => "PLAYING",
+                EditorMode::Paused => "PAUSED",
+            });
         });
     });
 
@@ -586,6 +672,14 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     state.selected = Some(item.entity);
                     edited_transform = item.transform;
                     edited_camera = world.get::<Camera>(item.entity).copied();
+                    edited_physics =
+                        world.get::<PhysicsBody>(item.entity).cloned();
+                    edited_rigid_body =
+                        world.get::<RigidBody>(item.entity).copied();
+                    edited_collider =
+                        world.get::<Collider>(item.entity).copied();
+                    edited_script =
+                        world.get::<ScriptComponent>(item.entity).cloned();
                 }
             }
         });
@@ -667,6 +761,184 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     }
                 }
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Physics");
+                    if edited_physics.is_some() {
+                        if ui.small_button("Remove").clicked() {
+                            remove_physics = true;
+                        }
+                    } else if ui.small_button("Add Physics").clicked() {
+                        add_physics = true;
+                        edited_physics = Some(PhysicsBody::default());
+                        edited_rigid_body = Some(RigidBody::default());
+                        edited_collider = Some(Collider::default());
+                    }
+                });
+                if let Some(physics) = &mut edited_physics {
+                    ComboBox::from_label("Simulation")
+                        .selected_text(simulation_class_name(
+                            physics.simulation,
+                        ))
+                        .show_ui(ui, |ui| {
+                            for class in [
+                                SimulationClass::None,
+                                SimulationClass::Static,
+                                SimulationClass::Gameplay,
+                                SimulationClass::GpuDynamic,
+                            ] {
+                                ui.selectable_value(
+                                    &mut physics.simulation,
+                                    class,
+                                    simulation_class_name(class),
+                                );
+                            }
+                        });
+                    match physics.simulation {
+                        SimulationClass::None => {
+                            ui.small("Excluded from every physics backend.");
+                        }
+                        SimulationClass::Static => {
+                            ui.small(
+                                "Static collider: uploaded once, never dispatched.",
+                            );
+                            if let Some(body) = &mut edited_rigid_body {
+                                body.kind = RigidBodyKind::Fixed;
+                            }
+                        }
+                        SimulationClass::Gameplay => {
+                            if physics_backends.gameplay_available {
+                                ui.small("CPU-authoritative gameplay physics.");
+                            } else {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_RED,
+                                    "Gameplay physics backend is not connected yet.",
+                                );
+                            }
+                        }
+                        SimulationClass::GpuDynamic => {
+                            if physics_backends.gpu_dynamic_available {
+                                ui.small("High-volume Vulkan compute simulation.");
+                            } else {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_RED,
+                                    "GPU physics is saved, but the ECS renderer cannot execute it yet.",
+                                );
+                            }
+                            ComboBox::from_label("GPU solver")
+                                .selected_text(physics_solver_name(
+                                    physics.solver,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for solver in [
+                                        PhysicsSolver::Full,
+                                        PhysicsSolver::Simplified,
+                                        PhysicsSolver::NoCollision,
+                                        PhysicsSolver::Custom,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut physics.solver,
+                                            solver,
+                                            physics_solver_name(solver),
+                                        );
+                                    }
+                                });
+                            if physics.solver == PhysicsSolver::Custom {
+                                let path = physics
+                                    .custom_shader
+                                    .get_or_insert_with(|| {
+                                        format!(
+                                            "{}/shaders/custom.comp",
+                                            state.project_root
+                                        )
+                                    });
+                                ui.horizontal(|ui| {
+                                    ui.label("Shader");
+                                    ui.text_edit_singleline(path);
+                                });
+                                if ui.button("Open in Code Editor").clicked() {
+                                    edit_custom_shader = true;
+                                }
+                            }
+                        }
+                    }
+                    if physics.simulation != SimulationClass::None {
+                        let body = edited_rigid_body
+                            .get_or_insert_with(RigidBody::default);
+                        if physics.simulation != SimulationClass::Static {
+                            ComboBox::from_label("Body")
+                                .selected_text(rigid_body_kind_name(body.kind))
+                                .show_ui(ui, |ui| {
+                                    for kind in [
+                                        RigidBodyKind::Dynamic,
+                                        RigidBodyKind::Kinematic,
+                                        RigidBodyKind::Fixed,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut body.kind,
+                                            kind,
+                                            rigid_body_kind_name(kind),
+                                        );
+                                    }
+                                });
+                            ui.add(
+                                DragValue::new(&mut body.mass)
+                                    .prefix("Mass ")
+                                    .suffix(" kg")
+                                    .range(0.001..=1_000_000.0)
+                                    .speed(0.1),
+                            );
+                            ui.add(
+                                DragValue::new(&mut body.gravity_scale)
+                                    .prefix("Gravity ")
+                                    .range(-100.0..=100.0)
+                                    .speed(0.05),
+                            );
+                            edit_vector(
+                                ui,
+                                "Velocity",
+                                &mut body.linear_velocity,
+                                0.1,
+                            );
+                        }
+                        let collider = edited_collider
+                            .get_or_insert_with(Collider::default);
+                        edit_collider(ui, collider);
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Gameplay Script");
+                    if edited_script.is_some() {
+                        if ui.small_button("Remove").clicked() {
+                            remove_script = true;
+                        }
+                    } else if ui.small_button("Add Script").clicked() {
+                        edited_script = Some(ScriptComponent {
+                            source_path: format!(
+                                "{}/scripts/main.rscript",
+                                state.project_root
+                            ),
+                            ..ScriptComponent::default()
+                        });
+                    }
+                });
+                if let Some(script) = &mut edited_script {
+                    ui.checkbox(&mut script.enabled, "Enabled");
+                    ui.horizontal(|ui| {
+                        ui.label("Source");
+                        ui.text_edit_singleline(&mut script.source_path);
+                    });
+                    if ui.button("Open Gameplay Script").clicked() {
+                        open_script = true;
+                    }
+                    if let Some(error) = world
+                        .get_resource::<ScriptRuntime>()
+                        .and_then(|runtime| runtime.errors().get(&entity))
+                    {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                }
+                ui.separator();
                 ui.label("Compiled Components");
                 for (name, _) in &custom_values {
                     let key = (entity, name.clone());
@@ -718,6 +990,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         .show(context, |ui| {
             ui.heading("Assets & Render Extract");
             ui.horizontal(|ui| {
+                ui.label("Project");
+                ui.text_edit_singleline(&mut state.project_root);
+                ui.separator();
                 ui.label("Scene");
                 ui.text_edit_singleline(&mut state.scene_path);
             });
@@ -748,19 +1023,68 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         });
 
     CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
-        .show(context, |ui| {
-            ui.heading("Scene Viewport");
-            ui.separator();
-            let rect = ui.available_rect_before_wrap();
-            viewport_rect = Some(rect);
-            ui.painter().text(
-                rect.left_top() + egui::vec2(8.0, 8.0),
-                egui::Align2::LEFT_TOP,
-                "Live Vulkan scene",
-                egui::FontId::proportional(15.0),
-                egui::Color32::from_gray(190),
-            );
+        .frame(match state.workspace {
+            EditorWorkspace::Scene | EditorWorkspace::Game => {
+                egui::Frame::NONE.fill(egui::Color32::TRANSPARENT)
+            }
+            EditorWorkspace::Code => egui::Frame::NONE
+                .inner_margin(egui::Margin::same(10))
+                .fill(egui::Color32::from_rgb(20, 22, 27)),
+        })
+        .show(context, |ui| match state.workspace {
+            EditorWorkspace::Scene | EditorWorkspace::Game => {
+                ui.horizontal(|ui| {
+                    ui.heading(match state.workspace {
+                        EditorWorkspace::Scene => "Scene View",
+                        EditorWorkspace::Game => "Game View",
+                        EditorWorkspace::Code => unreachable!(),
+                    });
+                    ui.separator();
+                    ui.small(match state.workspace {
+                        EditorWorkspace::Scene => {
+                            "Editor camera · selection and authoring"
+                        }
+                        EditorWorkspace::Game => {
+                            "Active game camera · runtime preview"
+                        }
+                        EditorWorkspace::Code => unreachable!(),
+                    });
+                });
+                ui.separator();
+                let rect = ui.available_rect_before_wrap();
+                viewport_rect = Some(rect);
+            }
+            EditorWorkspace::Code => {
+                ui.horizontal(|ui| {
+                    ui.heading("Code Editor");
+                    ui.separator();
+                    load_code = ui.button("Open").clicked();
+                    save_code = ui.button("Save").clicked();
+                    validate_code = ui.button("Validate").clicked();
+                    if state.code_dirty {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "Unsaved changes",
+                        );
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Project file");
+                    ui.text_edit_singleline(&mut state.code_path);
+                });
+                if let Some(message) = &state.code_message {
+                    ui.small(message);
+                }
+                ui.separator();
+                let editor = egui::TextEdit::multiline(&mut state.code_source)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(30)
+                    .lock_focus(true);
+                if ui.add_sized(ui.available_size(), editor).changed() {
+                    state.code_dirty = true;
+                }
+            }
         });
 
     if let Some(rect) = viewport_rect {
@@ -786,16 +1110,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         } else {
             world.insert_resource(viewport);
         }
+    } else if let Some(mut current) = world.get_resource_mut::<EditorViewport>()
+    {
+        current.valid = false;
     }
 
-    if let Some(mode) = requested_mode {
-        state.mode = mode;
-        let mut time = world.resource_mut::<TimeControl>();
-        match mode {
-            EditorMode::Play => time.resume(),
-            EditorMode::Edit | EditorMode::Paused => time.pause(),
-        }
-    }
     if let (Some(entity), Some(transform)) = (state.selected, edited_transform)
     {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
@@ -805,6 +1124,167 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     if let (Some(entity), Some(camera)) = (state.selected, edited_camera) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(camera);
+        }
+    }
+    if let Some(entity) = state.selected {
+        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+            if remove_physics {
+                entity_mut.remove::<(
+                    PhysicsBody,
+                    RigidBody,
+                    Collider,
+                    CollisionLayers,
+                    crate::runtime::GpuEffectBody,
+                )>();
+            } else if let Some(physics) = edited_physics {
+                let uses_gpu = physics.uses_gpu();
+                entity_mut.insert(physics);
+                if let Some(rigid_body) = edited_rigid_body {
+                    entity_mut.insert(rigid_body);
+                }
+                if let Some(collider) = edited_collider {
+                    entity_mut.insert(collider);
+                }
+                if add_physics && !entity_mut.contains::<CollisionLayers>() {
+                    entity_mut.insert(CollisionLayers::default());
+                }
+                if uses_gpu {
+                    entity_mut.insert(crate::runtime::GpuEffectBody);
+                } else {
+                    entity_mut.remove::<crate::runtime::GpuEffectBody>();
+                }
+            }
+        }
+    }
+    if let Some(entity) = state.selected {
+        let existing_path = world
+            .get::<ScriptComponent>(entity)
+            .map(|script| script.source_path.clone());
+        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
+            if remove_script {
+                entity_mut.remove::<ScriptComponent>();
+            } else if let Some(mut script) = edited_script {
+                if existing_path.as_deref() != Some(&script.source_path) {
+                    script.compiled = None;
+                }
+                entity_mut.insert(script);
+            }
+        }
+    }
+    if open_script {
+        if let Some(path) = state
+            .selected
+            .and_then(|entity| world.get::<ScriptComponent>(entity))
+            .map(|script| script.source_path.clone())
+        {
+            state.code_path = path;
+            state.workspace = EditorWorkspace::Code;
+            load_code = true;
+        }
+    }
+    if edit_custom_shader {
+        if let Some(path) = state
+            .selected
+            .and_then(|entity| world.get::<PhysicsBody>(entity))
+            .and_then(|physics| physics.custom_shader.clone())
+        {
+            state.code_path = path;
+            state.workspace = EditorWorkspace::Code;
+            load_code = true;
+        }
+    }
+    if load_code {
+        match load_project_source(&state.project_root, &state.code_path) {
+            Ok(source) => {
+                state.code_source = source;
+                state.code_dirty = false;
+                state.code_message =
+                    Some(format!("Opened {}", state.code_path));
+            }
+            Err(error) => state.code_message = Some(error),
+        }
+    }
+    if validate_code {
+        state.code_message = Some(
+            validate_project_source(
+                &state.project_root,
+                &state.code_path,
+                &state.code_source,
+            )
+            .map_or_else(|error| error, |()| "Validation passed".into()),
+        );
+    }
+    if save_code {
+        state.code_message = Some(
+            match save_project_source(
+                &state.project_root,
+                &state.code_path,
+                &state.code_source,
+            ) {
+                Ok(()) => {
+                    state.code_dirty = false;
+                    if state.code_path.ends_with(".rscript") {
+                        crate::runtime::invalidate_script(
+                            world,
+                            &state.code_path,
+                        );
+                    }
+                    format!("Saved {}", state.code_path)
+                }
+                Err(error) => error,
+            },
+        );
+    }
+    if let Some(mode) = requested_mode {
+        match mode {
+            EditorMode::Play => {
+                if state.mode == EditorMode::Edit {
+                    match scene_document(world, "Play Snapshot") {
+                        Ok(snapshot) => state.play_snapshot = Some(snapshot),
+                        Err(error) => {
+                            state.scene_message =
+                                Some(format!("Play failed: {error}"));
+                            *world.resource_mut::<EditorState>() = state;
+                            return;
+                        }
+                    }
+                }
+                state.mode = EditorMode::Play;
+                state.workspace = EditorWorkspace::Game;
+                world.resource_mut::<ScriptSettings>().enabled = true;
+                world.resource_mut::<TimeControl>().resume();
+            }
+            EditorMode::Paused => {
+                state.mode = EditorMode::Paused;
+                world.resource_mut::<TimeControl>().pause();
+            }
+            EditorMode::Edit => {
+                world.resource_mut::<TimeControl>().pause();
+                world.resource_mut::<ScriptSettings>().enabled = false;
+                world.resource_mut::<ScriptRuntime>().reset();
+                if let Some(snapshot) = state.play_snapshot.take() {
+                    match crate::runtime::load_scene_document(
+                        world,
+                        &snapshot,
+                        SceneLoadMode::Replace,
+                    ) {
+                        Ok(_) => {
+                            state.selected = None;
+                            state.scene_message = Some(
+                                "Stopped play mode and restored the scene"
+                                    .into(),
+                            );
+                        }
+                        Err(error) => {
+                            state.scene_message = Some(format!(
+                                "Could not restore play snapshot: {error}"
+                            ));
+                        }
+                    }
+                }
+                state.mode = EditorMode::Edit;
+                state.workspace = EditorWorkspace::Scene;
+            }
         }
     }
     if save_clicked {
@@ -848,6 +1328,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 Some(format!("Component edit failed: {error}"));
         }
     }
+    world.resource_mut::<RenderCameraOverride>().entity = (state.workspace
+        == EditorWorkspace::Scene)
+        .then_some(state.editor_camera)
+        .flatten();
     render_settings.max_fps = render_settings.max_fps.max(1);
     *world.resource_mut::<RenderSettings>() = render_settings;
     *world.resource_mut::<EditorState>() = state;
@@ -867,6 +1351,214 @@ enum ComponentEdit {
         entity: Entity,
         name: String,
     },
+}
+
+fn simulation_class_name(class: SimulationClass) -> &'static str {
+    match class {
+        SimulationClass::None => "No Physics",
+        SimulationClass::Static => "Static",
+        SimulationClass::Gameplay => "Gameplay (CPU)",
+        SimulationClass::GpuDynamic => "GPU Dynamic",
+    }
+}
+
+fn physics_solver_name(solver: PhysicsSolver) -> &'static str {
+    match solver {
+        PhysicsSolver::Full => "Full Physics",
+        PhysicsSolver::Simplified => "Simplified",
+        PhysicsSolver::NoCollision => "Gravity / No Collision",
+        PhysicsSolver::Custom => "Custom Compute Shader",
+    }
+}
+
+fn rigid_body_kind_name(kind: RigidBodyKind) -> &'static str {
+    match kind {
+        RigidBodyKind::Fixed => "Fixed",
+        RigidBodyKind::Dynamic => "Dynamic",
+        RigidBodyKind::Kinematic => "Kinematic",
+    }
+}
+
+fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
+    let shape_name = match collider.shape {
+        ColliderShape::Box { .. } => "Box",
+        ColliderShape::Sphere { .. } => "Sphere",
+        ColliderShape::Capsule { .. } => "Capsule",
+    };
+    ComboBox::from_label("Collider")
+        .selected_text(shape_name)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(shape_name == "Box", "Box").clicked() {
+                collider.shape = ColliderShape::Box {
+                    half_extents: [0.5; 3],
+                };
+            }
+            if ui
+                .selectable_label(shape_name == "Sphere", "Sphere")
+                .clicked()
+            {
+                collider.shape = ColliderShape::Sphere { radius: 0.5 };
+            }
+            if ui
+                .selectable_label(shape_name == "Capsule", "Capsule")
+                .clicked()
+            {
+                collider.shape = ColliderShape::Capsule {
+                    half_height: 0.5,
+                    radius: 0.5,
+                };
+            }
+        });
+    match &mut collider.shape {
+        ColliderShape::Box { half_extents } => {
+            edit_vector(ui, "Half size", half_extents, 0.05);
+            for extent in half_extents {
+                *extent = extent.max(0.001);
+            }
+        }
+        ColliderShape::Sphere { radius } => {
+            ui.add(
+                DragValue::new(radius)
+                    .prefix("Radius ")
+                    .range(0.001..=1_000_000.0)
+                    .speed(0.05),
+            );
+        }
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } => {
+            ui.add(
+                DragValue::new(half_height)
+                    .prefix("Half height ")
+                    .range(0.001..=1_000_000.0)
+                    .speed(0.05),
+            );
+            ui.add(
+                DragValue::new(radius)
+                    .prefix("Radius ")
+                    .range(0.001..=1_000_000.0)
+                    .speed(0.05),
+            );
+        }
+    }
+    ui.add(
+        egui::Slider::new(&mut collider.friction, 0.0..=1.0).text("Friction"),
+    );
+    ui.add(
+        egui::Slider::new(&mut collider.restitution, 0.0..=1.0)
+            .text("Bounciness"),
+    );
+    ui.checkbox(&mut collider.sensor, "Trigger / sensor");
+}
+
+fn project_source_path<'a>(
+    project_root: &str,
+    path: &'a str,
+) -> Result<&'a std::path::Path, String> {
+    use std::path::Component;
+
+    let root = std::path::Path::new(project_root);
+    if root.as_os_str().is_empty()
+        || root.is_absolute()
+        || root
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        || !root.join("project.json").is_file()
+    {
+        return Err(
+            "Selected project must contain a project.json manifest".into()
+        );
+    }
+    let path = std::path::Path::new(path);
+    if path.is_absolute()
+        || path.components().any(|part| {
+            !matches!(part, Component::Normal(_) | Component::CurDir)
+        })
+        || !path.starts_with(project_root)
+    {
+        return Err(
+            "Code editor paths must stay inside the selected game project"
+                .into(),
+        );
+    }
+    let supported = path.extension().and_then(|extension| extension.to_str());
+    if !matches!(
+        supported,
+        Some("rs" | "rscript" | "glsl" | "comp" | "vert" | "frag")
+    ) {
+        return Err(
+            "Supported source types: .rscript, .rs, .glsl, .comp, .vert, .frag"
+                .into(),
+        );
+    }
+    Ok(path)
+}
+
+fn load_project_source(
+    project_root: &str,
+    path: &str,
+) -> Result<String, String> {
+    let path = project_source_path(project_root, path)?;
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+}
+
+fn validate_project_source(
+    project_root: &str,
+    path: &str,
+    source: &str,
+) -> Result<(), String> {
+    let path = project_source_path(project_root, path)?;
+    if source.trim().is_empty() {
+        return Err("Source file is empty".into());
+    }
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("comp" | "vert" | "frag") => {
+            if !source.contains("#version") {
+                return Err(
+                    "GLSL shader is missing a #version directive".into()
+                );
+            }
+            if !source.contains("void main") {
+                return Err("GLSL shader is missing void main()".into());
+            }
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "comp")
+                && !source.contains("local_size_")
+            {
+                return Err(
+                    "Compute shader is missing a local workgroup size".into()
+                );
+            }
+        }
+        Some("rs") if !source.contains('{') => {
+            return Err("Rust source does not contain a code block".into());
+        }
+        Some("rscript") => {
+            crate::runtime::compile_script(source)
+                .map_err(|error| error.to_string())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn save_project_source(
+    project_root: &str,
+    path: &str,
+    source: &str,
+) -> Result<(), String> {
+    validate_project_source(project_root, path, source)?;
+    let path = project_source_path(project_root, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("Could not create {}: {error}", parent.display())
+        })?;
+    }
+    std::fs::write(path, source)
+        .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 
 fn projection_planes(ui: &mut egui::Ui, near: &mut f32, far: &mut f32) {
@@ -910,5 +1602,37 @@ mod tests {
             .take_output()
             .expect("editor should emit a UI frame");
         assert!(!output.shapes.is_empty());
+    }
+
+    #[test]
+    fn code_editor_rejects_paths_outside_project_sources() {
+        assert!(project_source_path("testGame", "../outside.comp").is_err());
+        assert!(project_source_path("testGame", "/tmp/outside.comp").is_err());
+        assert!(project_source_path(
+            "testGame",
+            "testGame/shaders/custom.comp"
+        )
+        .is_ok());
+        assert!(project_source_path(
+            "testGame",
+            "src/shaders/compute/full.comp"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compute_shader_validation_checks_entry_point_and_workgroup() {
+        assert!(validate_project_source(
+            "testGame",
+            "testGame/shaders/custom.comp",
+            "#version 450\nlayout(local_size_x = 64) in;\nvoid main() {}",
+        )
+        .is_ok());
+        assert!(validate_project_source(
+            "testGame",
+            "testGame/shaders/custom.comp",
+            "#version 450\nvoid main() {}",
+        )
+        .is_err());
     }
 }
