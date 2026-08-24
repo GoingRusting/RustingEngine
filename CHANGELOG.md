@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.46] - 2026-08-24
+
+### Added
+
+- More settings and features in Editor GUI like FPS limit controls
+- Little custom compiler from GUI scene to optimized no GUI game/simulation
+
+### Fixed
+
+- Rewriting architecture a bit to prepare for scaling
+
 ## [0.1.45] - 2026-08-24
 
 ### Added

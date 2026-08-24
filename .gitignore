@@ -8,3 +8,4 @@
 testModels
 /compare
 testModels/
+*.rscene.bin

@@ -203,6 +203,16 @@ impl<T> Assets<T> {
         self.slot(handle).and_then(|slot| slot.path.as_deref())
     }
 
+    /// Resolves an already-loaded asset by its normalized source path.
+    #[must_use]
+    pub fn handle_for_path(&self, path: impl AsRef<Path>) -> Option<Handle<T>> {
+        let path = normalize_path(path.as_ref()).ok()?;
+        self.paths
+            .get(&path)
+            .copied()
+            .filter(|handle| self.contains(*handle))
+    }
+
     #[must_use]
     pub fn revision(&self, handle: Handle<T>) -> Option<u64> {
         self.slot(handle).map(|slot| slot.revision)

@@ -29,11 +29,13 @@ use crate::rendering::camera::create_projection_matrix;
 use crate::rendering::compute_registry::{
     ComputeShaderRegistry, ComputeShaderType,
 };
+use crate::rendering::frame_pacer::select_present_mode;
 use crate::rendering::init_vulkan;
 use crate::rendering::render::create_builder;
 use crate::rendering::shader_registry::{ShaderRegistry, ShaderType};
 use crate::rendering::swapchain::{create_framebuffers, create_render_pass};
 use crate::rendering::VulkanBase;
+use crate::runtime::RenderSettings;
 use crate::scene::object::Instance;
 use crate::scene::{
     begin_render_pass_only, record_compute_physics_multi, RenderScene,
@@ -42,7 +44,7 @@ use nalgebra::Matrix4;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use vulkano::sync::GpuFuture;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -60,7 +62,7 @@ use vulkano::image::ImageUsage;
 use vulkano::pipeline::Pipeline;
 use vulkano::pipeline::PipelineBindPoint;
 use vulkano::swapchain::{
-    PresentMode, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
+    Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
 };
 use vulkano::sync;
 
@@ -191,6 +193,8 @@ impl PerspectiveCamera {
 /// Handles Vulkan context, swapchain, render pass, rendering pipeline, inputs,
 /// and the physics simulation loop.
 pub struct Engine {
+    /// Rendering and frame-rate options used by the legacy engine facade.
+    pub render_settings: RenderSettings,
     /// The camera - controls view matrix and receives input
     pub camera: Arc<Mutex<PerspectiveCamera>>,
     /// The render scene - holds all objects, batches, and GPU resources
@@ -243,6 +247,14 @@ impl Engine {
     /// let engine = rusting_engine::Engine::new("My Game");
     /// ```
     pub fn new(title: &str) -> Self {
+        Self::with_render_settings(title, RenderSettings::default())
+    }
+
+    /// Creates an engine with explicit rendering and frame-rate settings.
+    pub fn with_render_settings(
+        title: &str,
+        render_settings: RenderSettings,
+    ) -> Self {
         let event_loop = EventLoop::new().expect("Failed to create event loop");
         let base = init_vulkan(&event_loop, title);
         let dims = base.window.inner_size();
@@ -267,17 +279,11 @@ impl Engine {
                     .surface_formats(&base.surface, Default::default())
                     .expect("Failed to query surface formats")[0]
             });
-        let present_modes = physical
-            .surface_present_modes(&base.surface, Default::default())
-            .expect("Failed to query present modes");
-        let present_mode = [
-            PresentMode::Mailbox,
-            PresentMode::Immediate,
-            PresentMode::Fifo,
-        ]
-        .into_iter()
-        .find(|mode| present_modes.contains(mode))
-        .expect("Vulkan surfaces must support FIFO presentation");
+        let present_mode = select_present_mode(
+            &base.queue,
+            &base.surface,
+            render_settings.vsync,
+        );
         let mut min_image_count =
             capabilities.min_image_count.saturating_add(1);
         if let Some(max_image_count) = capabilities.max_image_count {
@@ -333,6 +339,7 @@ impl Engine {
         let compute_registry = ComputeShaderRegistry::new(&base.device);
 
         Self {
+            render_settings,
             event_loop: Some(event_loop),
             base,
             swapchain,
@@ -622,6 +629,23 @@ impl Engine {
     /// Press C to toggle frustum culling.
     /// Hold Shift to sprint.
     pub fn run(mut self) {
+        let requested_present_mode = select_present_mode(
+            &self.base.queue,
+            &self.base.surface,
+            self.render_settings.vsync,
+        );
+        if self.swapchain.create_info().present_mode != requested_present_mode {
+            let (swapchain, images) = self
+                .swapchain
+                .recreate(SwapchainCreateInfo {
+                    present_mode: requested_present_mode,
+                    ..self.swapchain.create_info()
+                })
+                .expect("Failed to apply the configured presentation mode");
+            self.swapchain = swapchain;
+            self.images = images;
+        }
+
         eprintln!("[DBG] run() start");
         eprintln!("[DBG] starting upload");
         let (
@@ -797,6 +821,7 @@ impl Engine {
         let mut frame_index = 0;
         let mut fps_timer = Instant::now();
         let mut frame_count = 0;
+        let mut next_frame = Instant::now();
 
         let event_loop = self.event_loop.take().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -860,6 +885,29 @@ impl Engine {
                     }
 
                     EngineEvent::AboutToWait => {
+                        if self.render_settings.limit_fps {
+                            let interval = Duration::from_secs_f64(
+                                1.0 / f64::from(
+                                    self.render_settings.max_fps.max(1),
+                                ),
+                            );
+                            let now = Instant::now();
+                            if now < next_frame {
+                                active_event_loop.set_control_flow(
+                                    ControlFlow::WaitUntil(next_frame),
+                                );
+                                return;
+                            }
+                            next_frame = now + interval;
+                            active_event_loop.set_control_flow(
+                                ControlFlow::WaitUntil(next_frame),
+                            );
+                        } else {
+                            next_frame = Instant::now();
+                            active_event_loop
+                                .set_control_flow(ControlFlow::Poll);
+                        }
+
                         frame_index = (frame_index + 1) % 3;
 
                         frame_count += 1;

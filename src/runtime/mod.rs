@@ -7,6 +7,7 @@ mod components;
 mod events;
 mod hierarchy;
 mod render_world;
+mod scene_file;
 #[cfg(test)]
 mod tests;
 mod time;
@@ -15,6 +16,7 @@ pub use components::*;
 pub use events::EventQueue;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use render_world::*;
+pub use scene_file::*;
 pub use time::{FrameTime, TimeControl};
 
 use std::error::Error;
@@ -48,8 +50,15 @@ pub struct FrameReport {
 pub enum AppError {
     InvalidFixedDelta,
     DuplicatePlugin(&'static str),
-    HierarchyCycle { child: Entity, parent: Entity },
+    HierarchyCycle {
+        child: Entity,
+        parent: Entity,
+    },
     MissingEntity(Entity),
+    PluginSetup {
+        plugin: &'static str,
+        message: String,
+    },
 }
 
 impl Display for AppError {
@@ -62,6 +71,9 @@ impl Display for AppError {
                 "parenting {child:?} beneath {parent:?} would create a hierarchy cycle"
             ),
             Self::MissingEntity(entity) => write!(formatter, "entity {entity:?} does not exist"),
+            Self::PluginSetup { plugin, message } => {
+                write!(formatter, "plugin `{plugin}` setup failed: {message}")
+            }
         }
     }
 }
@@ -104,6 +116,7 @@ impl Default for App {
         world.insert_resource(HierarchyDiagnostics::default());
         world.insert_resource(RenderSettings::default());
         world.insert_resource(PhysicsSettings::default());
+        world.insert_resource(SceneComponentRegistry::default());
 
         let mut post_update = Schedule::default();
         post_update.add_systems(propagate_transforms);
@@ -143,7 +156,30 @@ impl App {
     }
 
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
-        self.world.spawn(bundle).id()
+        let mut entity = self.world.spawn(bundle);
+        if !entity.contains::<SceneId>() {
+            entity.insert(SceneId::new());
+        }
+        entity.id()
+    }
+
+    /// Allows a game plugin to persist one of its compiled Rust components in
+    /// scene files. Registration does not add scripting or dynamic dispatch to
+    /// normal ECS queries.
+    pub fn register_scene_component<T>(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<&mut Self, SceneIoError>
+    where
+        T: bevy_ecs::component::Component
+            + serde::Serialize
+            + serde::de::DeserializeOwned
+            + Default,
+    {
+        self.world
+            .resource_mut::<SceneComponentRegistry>()
+            .register::<T>(name)?;
+        Ok(self)
     }
 
     pub fn despawn(&mut self, entity: Entity) -> Result<(), AppError> {

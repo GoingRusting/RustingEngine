@@ -1,7 +1,26 @@
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
+use uuid::Uuid;
 
 use crate::assets::{Handle, MaterialAsset, MeshAsset};
+
+/// Persistent scene identity. Unlike a Bevy [`Entity`], this survives saving,
+/// loading, and a new process.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SceneId(pub Uuid);
+
+impl SceneId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for SceneId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// World-space transform derived from [`crate::Transform`] and hierarchy.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -139,6 +158,8 @@ pub enum QualityProfile {
 pub struct RenderSettings {
     pub quality: QualityProfile,
     pub vsync: bool,
+    pub limit_fps: bool,
+    pub max_fps: u32,
     pub render_scale: f32,
 }
 
@@ -146,7 +167,9 @@ impl Default for RenderSettings {
     fn default() -> Self {
         Self {
             quality: QualityProfile::Auto,
-            vsync: true,
+            vsync: false,
+            limit_fps: false,
+            max_fps: 120,
             render_scale: 1.0,
         }
     }

@@ -160,12 +160,13 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
 
 ### Scene serialization
 
-- [ ] Define versioned `.rscene` files using Serde and RON.
-- [ ] Assign stable UUIDs to serialized scene objects.
-- [ ] Store asset paths/UUIDs rather than runtime handles or ECS entity IDs.
-- [ ] Add an allowlisted component serialization registry.
+- [x] Define versioned, human-readable `.rscene` files with Serde plus a compact cooked binary form.
+- [x] Assign stable UUIDs to serialized scene objects.
+- [x] Store asset paths/UUIDs rather than runtime handles or ECS entity IDs.
+- [x] Add an allowlisted component serialization registry.
 - [ ] Serialize hierarchy, transforms, renderers, lights, physics, and editor metadata.
-- [ ] Add schema migration hooks and clear errors for unsupported versions.
+- [x] Reject unsupported scene versions with a clear structured error.
+- [ ] Add schema migration hooks when format version 2 is introduced.
 - [ ] Add scene save, load, additive load, and unload operations.
 
 ### Hot reload
@@ -349,7 +350,7 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [ ] Translate, rotate, and scale gizmos with local/global modes and snapping.
 - [ ] Camera orbit, pan, fly, focus-selection, and framing controls.
 - [ ] Create, duplicate, rename, delete, and reparent entities.
-- [ ] Add/remove/edit supported components.
+- [x] Add/remove/edit registered compiled components through the generic JSON inspector.
 - [ ] Assign meshes, materials, textures, and physics shapes by typed handle.
 - [ ] Scene new/open/save/save-as operations.
 

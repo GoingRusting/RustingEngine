@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod compute_registry;
+pub mod frame_pacer;
 pub mod pipeline;
 pub mod render;
 pub mod scene_renderer;

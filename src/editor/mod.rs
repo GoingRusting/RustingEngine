@@ -10,8 +10,11 @@ use egui::{
 };
 
 use crate::runtime::{
-    App, AppError, Camera, FrameTime, MeshRenderer, Name, Parent, Plugin,
-    Projection, RenderWorld, ScheduleStage, TimeControl,
+    add_registered_component, load_scene, registered_component_names,
+    registered_component_values, remove_registered_component, save_scene,
+    set_registered_component, App, AppError, Camera, FrameTime, MeshRenderer,
+    Name, Parent, Plugin, Projection, RenderSettings, RenderWorld,
+    SceneLoadMode, ScheduleStage, TimeControl,
 };
 use crate::AssetServer;
 use crate::Transform;
@@ -34,6 +37,9 @@ pub struct EditorState {
     pub inspector_open: bool,
     pub console_open: bool,
     pub assets_open: bool,
+    pub scene_path: String,
+    pub scene_message: Option<String>,
+    pub component_drafts: std::collections::HashMap<(Entity, String), String>,
 }
 
 /// Physical pixel rectangle occupied by the editor's live scene view.
@@ -56,6 +62,9 @@ impl Default for EditorState {
             inspector_open: true,
             console_open: true,
             assets_open: true,
+            scene_path: "assets/scenes/main.rscene".into(),
+            scene_message: None,
+            component_drafts: std::collections::HashMap::new(),
         }
     }
 }
@@ -489,6 +498,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut state = world.resource::<EditorState>().clone();
     let entities = collect_entities(world);
     let frame_time = *world.resource::<FrameTime>();
+    let mut render_settings = world.resource::<RenderSettings>().clone();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
             assets.meshes.len(),
@@ -506,8 +516,29 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut edited_camera = state
         .selected
         .and_then(|entity| world.get::<Camera>(entity).copied());
+    let registered_names = registered_component_names(world);
+    let custom_values = state
+        .selected
+        .map(|entity| registered_component_values(world, entity))
+        .transpose()
+        .unwrap_or_else(|error| {
+            state.scene_message = Some(format!("Inspector failed: {error}"));
+            None
+        })
+        .unwrap_or_default();
+    if let Some(entity) = state.selected {
+        for (name, value) in &custom_values {
+            state
+                .component_drafts
+                .entry((entity, name.clone()))
+                .or_insert_with(|| value.clone());
+        }
+    }
     let mut requested_mode = None;
     let mut viewport_rect = None;
+    let mut save_clicked = false;
+    let mut load_clicked = false;
+    let mut component_edits = Vec::new();
 
     TopBottomPanel::top("visible_editor_toolbar").show(context, |ui| {
         ui.horizontal(|ui| {
@@ -526,6 +557,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             if ui.button("⏹ Stop").clicked() {
                 requested_mode = Some(EditorMode::Edit);
             }
+            ui.separator();
+            save_clicked = ui.button("Save Scene").clicked();
+            load_clicked = ui.button("Load Scene").clicked();
             ui.separator();
             ui.label(format!(
                 "Frame {} · {:.2} ms",
@@ -632,6 +666,48 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         }
                     }
                 }
+                ui.separator();
+                ui.label("Compiled Components");
+                for (name, _) in &custom_values {
+                    let key = (entity, name.clone());
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.monospace(name);
+                            if ui.button("Apply").clicked() {
+                                if let Some(value) =
+                                    state.component_drafts.get(&key)
+                                {
+                                    component_edits.push(ComponentEdit::Set {
+                                        entity,
+                                        name: name.clone(),
+                                        value: value.clone(),
+                                    });
+                                }
+                            }
+                            if ui.button("Remove").clicked() {
+                                component_edits.push(ComponentEdit::Remove {
+                                    entity,
+                                    name: name.clone(),
+                                });
+                            }
+                        });
+                        if let Some(value) =
+                            state.component_drafts.get_mut(&key)
+                        {
+                            ui.text_edit_multiline(value);
+                        }
+                    });
+                }
+                for name in registered_names.iter().filter(|name| {
+                    !custom_values.iter().any(|(present, _)| present == *name)
+                }) {
+                    if ui.button(format!("+ {name}")).clicked() {
+                        component_edits.push(ComponentEdit::Add {
+                            entity,
+                            name: name.clone(),
+                        });
+                    }
+                }
             } else {
                 ui.label("Select an entity in the hierarchy.");
             }
@@ -641,6 +717,23 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         .default_height(110.0)
         .show(context, |ui| {
             ui.heading("Assets & Render Extract");
+            ui.horizontal(|ui| {
+                ui.label("Scene");
+                ui.text_edit_singleline(&mut state.scene_path);
+            });
+            if let Some(message) = &state.scene_message {
+                ui.label(message);
+            }
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut render_settings.vsync, "VSync");
+                ui.checkbox(&mut render_settings.limit_fps, "Limit FPS");
+                ui.add_enabled(
+                    render_settings.limit_fps,
+                    DragValue::new(&mut render_settings.max_fps)
+                        .prefix("Maximum ")
+                        .range(1..=1_000),
+                );
+            });
             if let Some((meshes, materials, textures, scenes)) = asset_counts {
                 ui.label(format!(
                     "Meshes {meshes} · Materials {materials} · Textures {textures} · Scenes {scenes}"
@@ -714,7 +807,66 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             entity.insert(camera);
         }
     }
+    if save_clicked {
+        state.scene_message =
+            Some(match save_scene(world, &state.scene_path, "Main Scene") {
+                Ok(()) => format!("Saved {}", state.scene_path),
+                Err(error) => format!("Save failed: {error}"),
+            });
+    }
+    if load_clicked {
+        state.scene_message = Some(
+            match load_scene(world, &state.scene_path, SceneLoadMode::Replace) {
+                Ok(entity_count) => {
+                    state.selected = None;
+                    format!(
+                        "Loaded {entity_count} entities from {}",
+                        state.scene_path
+                    )
+                }
+                Err(error) => format!("Load failed: {error}"),
+            },
+        );
+    }
+    for edit in component_edits {
+        let result = match edit {
+            ComponentEdit::Set {
+                entity,
+                name,
+                value,
+            } => set_registered_component(world, entity, &name, &value),
+            ComponentEdit::Add { entity, name } => {
+                add_registered_component(world, entity, &name)
+            }
+            ComponentEdit::Remove { entity, name } => {
+                state.component_drafts.remove(&(entity, name.clone()));
+                remove_registered_component(world, entity, &name)
+            }
+        };
+        if let Err(error) = result {
+            state.scene_message =
+                Some(format!("Component edit failed: {error}"));
+        }
+    }
+    render_settings.max_fps = render_settings.max_fps.max(1);
+    *world.resource_mut::<RenderSettings>() = render_settings;
     *world.resource_mut::<EditorState>() = state;
+}
+
+enum ComponentEdit {
+    Set {
+        entity: Entity,
+        name: String,
+        value: String,
+    },
+    Add {
+        entity: Entity,
+        name: String,
+    },
+    Remove {
+        entity: Entity,
+        name: String,
+    },
 }
 
 fn projection_planes(ui: &mut egui::Ui, near: &mut f32, far: &mut f32) {

@@ -48,7 +48,7 @@ pub fn main() {
                         .mass(1.0)
                         .bounciness(1.0)
                         .collision_type(CollisionType::Box)
-                        .gravity_scale(0.0),
+                        .gravity_scale(1.0),
                 );
             }
         }
@@ -80,23 +80,23 @@ pub fn main() {
     //         }
     //     }
     // }
-    engine.add_sphere(
-        Transform {
-            position: [0.0, 3000.0, 0.0],
-            scale: [10.0, 10.0, 10.0],
-            ..Default::default()
-        },
-        &Material::standard()
-            .color([0.1, 1.0, 0.1])
-            .shader(ShaderType::Pbr)
-            .build(),
-        &Physics::default()
-            .compute_shader(ComputeShaderType::Test)
-            .mass(10000.0)
-            .gravity_scale(10.0)
-            .collision_type(CollisionType::Sphere),
-        2,
-    );
+    // engine.add_sphere(
+    //     Transform {
+    //         position: [0.0, 3000.0, 0.0],
+    //         scale: [10.0, 10.0, 10.0],
+    //         ..Default::default()
+    //     },
+    //     &Material::standard()
+    //         .color([0.1, 1.0, 0.1])
+    //         .shader(ShaderType::Pbr)
+    //         .build(),
+    //     &Physics::default()
+    //         .compute_shader(ComputeShaderType::Test)
+    //         .mass(10000.0)
+    //         .gravity_scale(10.0)
+    //         .collision_type(CollisionType::Sphere),
+    //     2,
+    // );
 
     engine.set_scene_shader(ShaderType::Pbr);
     engine.set_scene_physic(ComputeShaderType::Test);

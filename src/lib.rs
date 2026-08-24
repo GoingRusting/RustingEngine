@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod core;
+pub mod demo;
 // pub mod effects;
 #[cfg(feature = "editor")]
 pub mod editor;
@@ -24,4 +25,4 @@ pub use editor::EditorPlugin;
 pub use engine::{Engine, PerspectiveCamera};
 pub use geometry::Mesh;
 pub use rendering::compute_registry::ComputeShaderType;
-pub use runtime::{App, EngineBuilder, Plugin};
+pub use runtime::{App, EngineBuilder, Plugin, RenderSettings};

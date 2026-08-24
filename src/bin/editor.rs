@@ -1,12 +1,13 @@
 use std::time::Instant;
 
-use bevy_ecs::prelude::{Component, Query, Res, With};
 use egui_winit_vulkano::{Gui, GuiConfig};
+use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{draw_editor_view, EditorState, EditorViewport};
+use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
 use rusting_engine::runtime::{
-    Camera, FrameTime, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
-    ScheduleStage,
+    load_scene, Camera, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
+    SceneLoadMode,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
@@ -27,20 +28,8 @@ struct EditorApplication {
     scene_renderer: Option<SceneRenderer>,
     runtime: RuntimeApp,
     previous_frame: Instant,
-}
-
-#[derive(Component)]
-struct Spin;
-
-fn spin_demo(
-    time: Res<FrameTime>,
-    mut transforms: Query<&mut Transform, With<Spin>>,
-) {
-    let delta = time.delta.as_secs_f32();
-    for mut transform in &mut transforms {
-        transform.rotation[0] += delta * 0.35;
-        transform.rotation[1] += delta * 0.7;
-    }
+    frame_pacer: FramePacer,
+    applied_vsync: Option<bool>,
 }
 
 impl EditorApplication {
@@ -48,7 +37,7 @@ impl EditorApplication {
         let mut runtime = RuntimeApp::new();
         runtime.add_plugin(AssetPlugin).unwrap();
         runtime.add_plugin(RenderExtractPlugin).unwrap();
-        runtime.add_system(ScheduleStage::Update, spin_demo);
+        runtime.add_plugin(DemoPlugin).unwrap();
         runtime.insert_resource(EditorState::default());
         runtime.insert_resource(EditorViewport::default());
 
@@ -87,7 +76,7 @@ impl EditorApplication {
             Name("Orange Cube".into()),
             Transform::new([2.0, 1.0, 0.0]),
             orange_renderer,
-            Spin,
+            Spin::default(),
         ));
         runtime.set_parent(blue, scene_root).unwrap();
         runtime.set_parent(orange, scene_root).unwrap();
@@ -100,6 +89,17 @@ impl EditorApplication {
                 ..Camera::default()
             },
         ));
+        let scene_path =
+            runtime.world().resource::<EditorState>().scene_path.clone();
+        if std::path::Path::new(&scene_path).is_file() {
+            if let Err(error) = load_scene(
+                runtime.world_mut(),
+                &scene_path,
+                SceneLoadMode::Replace,
+            ) {
+                eprintln!("failed to restore editor scene: {error}");
+            }
+        }
 
         Self {
             vulkan: VulkanoContext::new(VulkanoConfig::default()),
@@ -108,6 +108,8 @@ impl EditorApplication {
             scene_renderer: None,
             runtime,
             previous_frame: Instant::now(),
+            frame_pacer: FramePacer::default(),
+            applied_vsync: None,
         }
     }
 }
@@ -135,6 +137,16 @@ impl ApplicationHandler for EditorApplication {
         );
 
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
+        let settings = self
+            .runtime
+            .world()
+            .resource::<rusting_engine::runtime::RenderSettings>();
+        renderer.set_present_mode(select_present_mode(
+            &renderer.graphics_queue(),
+            &renderer.surface(),
+            settings.vsync,
+        ));
+        self.applied_vsync = Some(settings.vsync);
         self.scene_renderer = Some(
             SceneRenderer::new(
                 renderer.graphics_queue(),
@@ -187,6 +199,19 @@ impl ApplicationHandler for EditorApplication {
                 gui.immediate_ui(|gui| {
                     draw_editor_view(self.runtime.world_mut(), &gui.context());
                 });
+                let vsync = self
+                    .runtime
+                    .world()
+                    .resource::<rusting_engine::runtime::RenderSettings>()
+                    .vsync;
+                if self.applied_vsync != Some(vsync) {
+                    renderer.set_present_mode(select_present_mode(
+                        &renderer.graphics_queue(),
+                        &renderer.surface(),
+                        vsync,
+                    ));
+                    self.applied_vsync = Some(vsync);
+                }
                 match renderer.acquire(None, |_| {}) {
                     Ok(future) => {
                         let target_extent = renderer.swapchain_image_size();
@@ -237,9 +262,15 @@ impl ApplicationHandler for EditorApplication {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(renderer) = self.windows.get_primary_renderer_mut() {
-            renderer.window().request_redraw();
+            self.frame_pacer.request_next_frame(
+                event_loop,
+                renderer.window(),
+                self.runtime
+                    .world()
+                    .resource::<rusting_engine::runtime::RenderSettings>(),
+            );
         }
     }
 }

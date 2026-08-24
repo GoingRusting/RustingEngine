@@ -36,6 +36,21 @@ acquire → 3D scene pass → egui overlay → present
 
 The current editor renders the scene directly into the swapchain. The planned offscreen viewport changes only the render target passed to `SceneRenderer`; it must not change ECS, assets, extraction, or GPU preparation.
 
+## Authoring and release build flow
+
+```text
+compiled Rust GamePlugin ───────────────┐
+                                       ├─ runtime-only game executable
+editor-authored .rscene → scene cooker ┘
+```
+
+- Rust systems remain native compiled code in both editor and game builds.
+- The editor saves component values, hierarchy, transforms, cameras, and asset references as data; it does not generate Rust source.
+- Source `.rscene` files are reviewable JSON. Cooked `.rscene.bin` files use the same versioned schema in a compact startup format.
+- Every saved entity has a persistent `SceneId`; runtime Bevy entity IDs are never stored.
+- Game plugins explicitly register the custom Rust components allowed in scenes.
+- The `game` binary is built with the `window` feature and without the `editor` feature, so egui is absent from release runtime builds.
+
 ## Stable ownership decisions
 
 ### ECS is canonical
@@ -92,5 +107,5 @@ The current editor renders the scene directly into the swapchain. The planned of
 2. Add explicit two/three-frame contexts and per-frame transient resources.
 3. Move scene rendering to an offscreen viewport image registered with egui.
 4. Upload only extraction dirty ranges into growable instance buffers.
-5. Add scene serialization over allowlisted ECS components and typed asset paths.
+5. Add typed editor widgets and animation assets over the scene component registry.
 6. Integrate Rapier as the authoritative fixed-update physics plugin.

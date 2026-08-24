@@ -1,0 +1,178 @@
+{
+  "format_version": 1,
+  "name": "Main Scene",
+  "entities": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "parent": null,
+      "name": "Demo Scene",
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "components": {}
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "parent": "10000000-0000-4000-8000-000000000001",
+      "name": "Blue Cube",
+      "transform": {
+        "position": [
+          5.2,
+          3.8,
+          0.0
+        ],
+        "rotation": [
+          13.552598,
+          8.595233,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": "BuiltinCube",
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "base_color": [
+              0.08,
+              0.35,
+              0.95,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "components": {
+        "rusting.demo.spin": "{\"speed\":[1.35,0.7]}"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "parent": "10000000-0000-4000-8000-000000000001",
+      "name": "Orange Cube",
+      "transform": {
+        "position": [
+          2.0,
+          1.0,
+          0.0
+        ],
+        "rotation": [
+          108.59494,
+          150.48627,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": "BuiltinCube",
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "base_color": [
+              1.0,
+              0.28,
+              0.04,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "components": {
+        "rusting.demo.spin": "{\"speed\":[0.35,1.7]}"
+      }
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000004",
+      "parent": null,
+      "name": "Editor Camera",
+      "transform": {
+        "position": [
+          0.0,
+          3.0,
+          8.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": {
+        "projection": {
+          "Perspective": {
+            "vertical_fov_radians": 1.0471976,
+            "near": 0.1,
+            "far": 1000.0
+          }
+        },
+        "active": true,
+        "priority": 100
+      },
+      "visible": null,
+      "components": {}
+    }
+  ]
+}

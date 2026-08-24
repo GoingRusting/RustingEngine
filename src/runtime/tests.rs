@@ -167,3 +167,11 @@ fn plugins_configure_apps_and_cannot_be_added_twice() {
     app.update(Duration::ZERO).unwrap();
     assert_eq!(app.world().resource::<Counts>().startup, 1);
 }
+
+#[test]
+fn rendering_is_uncapped_by_default() {
+    let settings = RenderSettings::default();
+    assert!(!settings.vsync);
+    assert!(!settings.limit_fps);
+    assert!(settings.max_fps > 0);
+}
