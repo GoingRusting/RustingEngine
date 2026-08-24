@@ -116,6 +116,8 @@ pub struct RenderScene {
     pub total_instances: u32,
     /// Maximum radius of small objects - used to calculate grid cell size
     pub max_object_radius: f32,
+    /// Monotonically increasing source for stable instance handles.
+    next_instance_id: u64,
 }
 
 /// Per-frame data storage.
@@ -127,12 +129,10 @@ pub struct FrameData {
 
 /// Handle to a specific instance in the scene.
 /// Used to remove or modify instances after they've been added.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InstanceHandle {
-    /// Index of the batch containing this instance
-    pub batch_index: usize,
-    /// Index of this instance within its batch
-    pub instance_index: usize,
+    /// Stable identity that remains valid when batches are sorted or compacted.
+    id: u64,
 }
 
 impl RenderScene {
@@ -155,11 +155,17 @@ impl RenderScene {
         instance: Instance,
         allocator: &Arc<StandardMemoryAllocator>,
     ) -> InstanceHandle {
+        let id = self.next_instance_id;
+        self.next_instance_id = self
+            .next_instance_id
+            .checked_add(1)
+            .expect("instance handle ID space exhausted");
+
         let shader = instance.shader;
         let compute_shader = instance.physics.compute_shader;
         let base_color_texture = instance.base_color_texture;
         let metallic_roughness_texture = instance.metallic_roughness_texture;
-        for (batch_index, batch) in self.batches.iter_mut().enumerate() {
+        for batch in &mut self.batches {
             if batch.mesh.vertices.buffer() == mesh.vertices.buffer()
                 && batch.shader == shader
                 && batch.compute_shader == compute_shader
@@ -167,16 +173,15 @@ impl RenderScene {
                 && batch.metallic_roughness_texture == metallic_roughness_texture
             {
                 batch.instances.push(instance);
+                batch.instance_ids.push(id);
 
-                return InstanceHandle {
-                    batch_index,
-                    instance_index: batch.instances.len() - 1,
-                };
+                return InstanceHandle { id };
             }
         }
 
         self.batches.push(RenderBatch {
             mesh,
+            instance_ids: vec![id],
             base_color_texture,
             metallic_roughness_texture,
             shader,
@@ -200,10 +205,7 @@ impl RenderScene {
             .unwrap(),
         });
 
-        InstanceHandle {
-            batch_index: self.batches.len() - 1,
-            instance_index: 0,
-        }
+        InstanceHandle { id }
     }
 
     /// Removes an instance from the scene using its handle.
@@ -214,14 +216,26 @@ impl RenderScene {
     /// # Arguments
     /// * `handle` - The handle returned by `add_instance`
     pub fn remove_instance(&mut self, handle: InstanceHandle) {
-        if let Some(batch) = self.batches.get_mut(handle.batch_index) {
-            if handle.instance_index < batch.instances.len() {
-                batch.instances.swap_remove(handle.instance_index);
-            }
+        let Some(batch_index) = self
+            .batches
+            .iter()
+            .position(|batch| batch.instance_ids.contains(&handle.id))
+        else {
+            return;
+        };
 
-            if batch.instances.is_empty() {
-                self.batches.swap_remove(handle.batch_index);
-            }
+        let instance_index = self.batches[batch_index]
+            .instance_ids
+            .iter()
+            .position(|id| *id == handle.id)
+            .expect("located batch must contain the instance ID");
+
+        let batch = &mut self.batches[batch_index];
+        batch.instances.swap_remove(instance_index);
+        batch.instance_ids.swap_remove(instance_index);
+
+        if batch.instances.is_empty() {
+            self.batches.swap_remove(batch_index);
         }
     }
 
@@ -389,12 +403,13 @@ impl RenderScene {
             total_instances: 0,
             physics_read,
             physics_write,
-            big_objects_indices: big_objects_indices,
-            num_big_objects: 1024,
+            big_objects_indices,
+            num_big_objects: 0,
             grid_counts,
             grid_objects,
             visible_indices,
             max_object_radius: 0.0,
+            next_instance_id: 0,
         }
     }
 
@@ -460,7 +475,16 @@ impl RenderScene {
                     (m[2][0].powi(2) + m[2][1].powi(2) + m[2][2].powi(2)).sqrt(),
                 );
 
-                let radius = scale * 0.5;
+                // Subdivided sphere primitives have unit radius, while box extents
+                // are half their model scale. Keep the broad phase consistent with
+                // the collision shaders' convention.
+                let radius = if inst.physics.collision_type
+                    == crate::core::collisions::CollisionType::Sphere
+                {
+                    scale
+                } else {
+                    scale * 0.5
+                };
 
                 if radius > threshold {
                     big_indices.push(current_idx as u32);
@@ -1013,7 +1037,7 @@ pub fn record_compute_physics(
     total_objects: u32,
     num_big_objects: u32,
 ) {
-    let workgroups_x = (max_instances as u32 + 255) / 256;
+    let workgroups_x = max_instances.div_ceil(256);
     if workgroups_x == 0 {
         return;
     }
@@ -1032,8 +1056,8 @@ pub fn record_compute_physics(
                 dt,
                 total_objects,
                 offset: 0,
-                count: max_instances as u32,
-                num_big_objects: num_big_objects,
+                count: max_instances,
+                num_big_objects,
                 _pad: [0, 0, 0],
                 global_gravity: [0.0, -9.81, 0.0, 2.0],
             },
@@ -1042,6 +1066,7 @@ pub fn record_compute_physics(
         .unwrap();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_compute_physics_multi(
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     registry: &crate::rendering::compute_registry::ComputeShaderRegistry,
@@ -1081,12 +1106,12 @@ pub fn record_compute_physics_multi(
                 total_objects,
                 offset: 0,
                 count: total_objects,
-                num_big_objects: num_big_objects,
+                num_big_objects,
                 _pad: [0, 0, 0],
                 global_gravity: [0.0, -9.81, 0.0, cell_size], // w = CELL_SIZE (must be >= 2 * max_object_radius)
             },
         )
-        .dispatch([(total_objects + 255) / 256, 1, 1])
+        .dispatch([total_objects.div_ceil(256), 1, 1])
         .unwrap();
 
     let mut last_bound = None;
@@ -1110,7 +1135,7 @@ pub fn record_compute_physics_multi(
                 );
                 last_bound = Some(shader_to_use);
             }
-            let workgroups_x = (dispatch.count + 255) / 256;
+            let workgroups_x = dispatch.count.div_ceil(256);
             if workgroups_x > 0 {
                 builder
                     .push_constants(
@@ -1121,7 +1146,7 @@ pub fn record_compute_physics_multi(
                             total_objects,
                             offset: dispatch.offset,
                             count: dispatch.count,
-                            num_big_objects: num_big_objects,
+                            num_big_objects,
                             _pad: [0, 0, 0],
                             global_gravity: [0.0, -9.81, 0.0, cell_size],
                         },
@@ -1162,6 +1187,7 @@ pub fn begin_render_pass_only(
         .bind_pipeline_graphics(pipeline.clone());
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn record_compute_physics_spatial(
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     registry: &ComputeShaderRegistry,
@@ -1207,12 +1233,12 @@ pub fn record_compute_physics_spatial(
                     total_objects,
                     offset: 0,
                     count: total_objects,
-                    num_big_objects: num_big_objects,
+                    num_big_objects,
                     _pad: [0, 0, 0],
                     global_gravity: [0.0, -9.81, 0.0, cell_size],
                 },
             )
-            .dispatch([(total_objects + 255) / 256, 1, 1])
+            .dispatch([total_objects.div_ceil(256), 1, 1])
             .unwrap();
 
         let compute_pipeline = registry.get_pipeline(dispatch.compute_shader);
@@ -1235,12 +1261,12 @@ pub fn record_compute_physics_spatial(
                     total_objects,
                     offset: dispatch.offset,
                     count: dispatch.count,
-                    num_big_objects: num_big_objects,
+                    num_big_objects,
                     _pad: [0, 0, 0],
                     global_gravity: [0.0, -9.81, 0.0, 2.0],
                 },
             )
-            .dispatch([(dispatch.count + 255) / 256, 1, 1])
+            .dispatch([dispatch.count.div_ceil(256), 1, 1])
             .unwrap();
 
         read_index ^= 1;

@@ -15,8 +15,8 @@ struct InstanceData {
     vec4 color;              // Color and emissive
     vec4 mat_props;         // Material properties
     vec4 velocity;         // Physics velocity
-    vec4 physic_props;     // Physics properties
     vec4 angular_velocity;  // Angular velocity
+    vec4 physic_props;     // Physics properties
 };
 
 // INPUT BUFFER - Instance data (read from)

@@ -131,23 +131,23 @@ impl PerspectiveCamera {
         if mouse_captured {
             let speed = 50.0 * sprint * dt;
             if keys.contains(&VirtualKeyCode::W) {
-                for i in 0..3 {
-                    self.position[i] += forward[i] * speed;
+                for (position, direction) in self.position.iter_mut().zip(forward) {
+                    *position += direction * speed;
                 }
             }
             if keys.contains(&VirtualKeyCode::S) {
-                for i in 0..3 {
-                    self.position[i] -= forward[i] * speed;
+                for (position, direction) in self.position.iter_mut().zip(forward) {
+                    *position -= direction * speed;
                 }
             }
             if keys.contains(&VirtualKeyCode::A) {
-                for i in 0..3 {
-                    self.position[i] -= right[i] * speed;
+                for (position, direction) in self.position.iter_mut().zip(right) {
+                    *position -= direction * speed;
                 }
             }
             if keys.contains(&VirtualKeyCode::D) {
-                for i in 0..3 {
-                    self.position[i] += right[i] * speed;
+                for (position, direction) in self.position.iter_mut().zip(right) {
+                    *position += direction * speed;
                 }
             }
             if keys.contains(&VirtualKeyCode::Space) {
@@ -199,8 +199,8 @@ pub struct Engine {
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     /// Cached cube mesh - reused for all cube instances
     cached_cube_mesh: Option<crate::geometry::Mesh>,
-    /// Cached sphere mesh - reused for all sphere instances
-    cached_sphere_mesh: Option<crate::geometry::Mesh>,
+    /// Cached sphere meshes, keyed by subdivision level
+    cached_sphere_meshes: HashMap<u32, crate::geometry::Mesh>,
     /// Global loaded textures map: Path/Name -> Texture ID
     pub textures_cache: HashMap<String, usize>,
     /// Global GLTF Cache: Path -> parsed models and relative transforms
@@ -286,7 +286,7 @@ impl Engine {
                 1000.0,
             ))),
             cached_cube_mesh: None,
-            cached_sphere_mesh: None,
+            cached_sphere_meshes: HashMap::new(),
             textures_cache: HashMap::new(),
             gltf_cache: HashMap::new(),
         }
@@ -323,13 +323,12 @@ impl Engine {
             m
         };
 
-        let inst = Instance {
+        let mut inst = Instance {
             model_matrix: transform.to_matrix(),
-            color: mat.color,
             physics: *phys,
-            shader: mat.shader,
             ..Default::default()
         };
+        inst.apply_material(mat);
         self.scene
             .lock()
             .unwrap()
@@ -353,24 +352,21 @@ impl Engine {
         phys: &Physics,
         subdiv: u32,
     ) {
-        // Cache mesh on first use, then reuse
-        let mesh = if let Some(cached) = &self.cached_sphere_mesh {
+        // Each subdivision level has different geometry and needs its own cache entry.
+        let mesh = if let Some(cached) = self.cached_sphere_meshes.get(&subdiv) {
             cached.clone()
         } else {
             let m = create_sphere_subdivided(&self.memory_allocator, subdiv);
-            self.cached_sphere_mesh = Some(m.clone());
+            self.cached_sphere_meshes.insert(subdiv, m.clone());
             m
         };
 
-        let inst = Instance {
+        let mut inst = Instance {
             model_matrix: transform.to_matrix(),
-            color: mat.color,
             physics: *phys,
-            shader: mat.shader,
-            base_color_texture: mat.base_color_texture,
-            metallic_roughness_texture: mat.metallic_roughness_texture,
             ..Default::default()
         };
+        inst.apply_material(mat);
         self.scene
             .lock()
             .unwrap()
@@ -409,13 +405,14 @@ impl Engine {
         let pipeline = self.registry.default_pipeline();
 
         self.scene.lock().unwrap().set_textures(
-            &pipeline,
+            pipeline,
             &[tex],
             &self.base.queue,
             &self.memory_allocator,
         );
 
-        self.textures_cache.insert(path.to_string(), base_texture_count);
+        self.textures_cache
+            .insert(path.to_string(), base_texture_count);
         base_texture_count
     }
 
@@ -434,17 +431,17 @@ impl Engine {
             let (mut objects, textures) = load_gltf_scene(&self.memory_allocator, path);
             let base_texture_count = self.scene.lock().unwrap().texture_views.len();
             let pipeline = self.registry.default_pipeline();
-            
+
             if !textures.is_empty() {
                 self.scene.lock().unwrap().set_textures(
-                    &pipeline,
+                    pipeline,
                     &textures,
                     &self.base.queue,
                     &self.memory_allocator,
                 );
             }
 
-            for (mesh, instance) in &mut objects {
+            for (_mesh, instance) in &mut objects {
                 if let Some(tex_idx) = instance.base_color_texture {
                     instance.base_color_texture = Some(tex_idx + base_texture_count);
                 }
@@ -456,7 +453,7 @@ impl Engine {
         }
 
         let objects = self.gltf_cache.get(path).unwrap().clone();
-        
+
         for (mesh, mut instance) in objects {
             // Apply new transform onto the base model transform
             let transform_matrix = Matrix4::from(transform.to_matrix());
@@ -465,7 +462,7 @@ impl Engine {
             instance.model_matrix = combined_matrix.into();
             instance.physics = *phys;
             instance.shader = mat.shader;
-            
+
             // Allow override of material properties and textures
             instance.color = mat.color;
             instance.roughness = mat.roughness;
@@ -690,49 +687,45 @@ impl Engine {
                 Event::DeviceEvent {
                     event: winit::event::DeviceEvent::MouseMotion { delta },
                     ..
-                } => {
-                    if inputs.mouse_captured {
-                        let mut cam = self.camera.lock().unwrap();
-                        cam.yaw -= delta.0 as f32 * 0.001;
-                        cam.pitch += delta.1 as f32 * 0.001;
-                        cam.pitch = cam.pitch.clamp(-1.5, 1.5);
-                    }
+                } if inputs.mouse_captured => {
+                    let mut cam = self.camera.lock().unwrap();
+                    cam.yaw -= delta.0 as f32 * 0.001;
+                    cam.pitch += delta.1 as f32 * 0.001;
+                    cam.pitch = cam.pitch.clamp(-1.5, 1.5);
                 }
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        if let Some(code) = input.virtual_keycode {
-                            if input.state == winit::event::ElementState::Pressed {
-                                if code == VirtualKeyCode::Escape {
-                                    inputs.mouse_captured = !inputs.mouse_captured;
-                                    let _ = self.base.window.set_cursor_grab(
-                                        if inputs.mouse_captured {
-                                            CursorGrabMode::Locked
-                                        } else {
-                                            CursorGrabMode::None
-                                        },
-                                    );
-                                    let _ =
-                                        self.base.window.set_cursor_visible(!inputs.mouse_captured);
-                                }
-                                if code == VirtualKeyCode::C {
-                                    inputs.cull_enabled = !inputs.cull_enabled;
-                                    eprintln!(
-                                        "[DBG] Culling {}",
-                                        if inputs.cull_enabled {
-                                            "ENABLED"
-                                        } else {
-                                            "DISABLED"
-                                        }
-                                    );
-                                }
-                                inputs.keys.insert(code);
-                            } else {
-                                inputs.keys.remove(&code);
+                Event::WindowEvent {
+                    event: WindowEvent::KeyboardInput { input, .. },
+                    ..
+                } => {
+                    if let Some(code) = input.virtual_keycode {
+                        if input.state == winit::event::ElementState::Pressed {
+                            if code == VirtualKeyCode::Escape {
+                                inputs.mouse_captured = !inputs.mouse_captured;
+                                let _ =
+                                    self.base.window.set_cursor_grab(if inputs.mouse_captured {
+                                        CursorGrabMode::Locked
+                                    } else {
+                                        CursorGrabMode::None
+                                    });
+                                self.base.window.set_cursor_visible(!inputs.mouse_captured);
                             }
+                            if code == VirtualKeyCode::C {
+                                inputs.cull_enabled = !inputs.cull_enabled;
+                                eprintln!(
+                                    "[DBG] Culling {}",
+                                    if inputs.cull_enabled {
+                                        "ENABLED"
+                                    } else {
+                                        "DISABLED"
+                                    }
+                                );
+                            }
+                            inputs.keys.insert(code);
+                        } else {
+                            inputs.keys.remove(&code);
                         }
                     }
-                    _ => {}
-                },
+                }
 
                 Event::MainEventsCleared => {
                     frame_index = (frame_index + 1) % 3;
@@ -915,7 +908,7 @@ impl Engine {
                                         visible_list_offset: batch.base_instance_offset,
                                     },
                                 )
-                                .dispatch([(count + 255) / 256, 1, 1])
+                                .dispatch([count.div_ceil(256), 1, 1])
                                 .unwrap();
 
                             current_physics_offset += count;

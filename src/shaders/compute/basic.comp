@@ -24,7 +24,8 @@ layout(push_constant) uniform PushConstants {
     uint  total_objects;
     uint  offset;
     uint  count;
-    uint  num_big_objects; 
+    uint  num_big_objects;
+    uint  _pad[3];
     vec4  global_gravity; 
 } pc;
 

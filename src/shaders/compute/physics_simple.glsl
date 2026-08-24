@@ -6,8 +6,8 @@ struct InstanceData {
     vec4 color;
     vec4 mat_props;
     vec4 velocity;
-    vec4 physic;
-    vec4 rotation;
+    vec4 angular_velocity;
+    vec4 physic_props;
 };
 
 layout(set = 0, binding = 0) buffer ReadBuf  { InstanceData data[]; } read_buf;
@@ -19,6 +19,7 @@ layout(push_constant) uniform PushConstants {
     uint  offset;
     uint  count;
     uint  num_big_objects;
+    uint  _pad[3];
     vec4  global_gravity;
 } pc;
 
@@ -35,16 +36,16 @@ void main() {
     write_buf.data[i].model[3].y += 0.0;
     InstanceData me = read_buf.data[i];
 
-    if (me.physic.y <= 0.0) {
+    if (me.physic_props.y <= 0.0) {
         write_buf.data[i] = me;
         return;
     }
 
     vec3 pos = me.model[3].xyz;
     vec3 vel = me.velocity.xyz;
-    vec3 ang_vel = me.rotation.xyz;
-    float type = me.physic.x;
-    float mass = me.physic.y;
+    vec3 ang_vel = me.angular_velocity.xyz;
+    float type = me.physic_props.x;
+    float mass = me.physic_props.y;
 
     vec3 scale = vec3(length(me.model[0].xyz), length(me.model[1].xyz), length(me.model[2].xyz));
     mat3 rotA = mat3(me.model[0].xyz / scale.x, me.model[1].xyz / scale.y, me.model[2].xyz / scale.z);
@@ -68,11 +69,11 @@ void main() {
         vec3 o_pos = other.model[3].xyz;
         vec3 d = o_pos - pos;
         vec3 o_scale = vec3(length(other.model[0].xyz), length(other.model[1].xyz), length(other.model[2].xyz));
-        float bound_o = (other.physic.x > 0.5) ? o_scale.x : length(o_scale) * 0.5;
+        float bound_o = (other.physic_props.x > 0.5) ? o_scale.x : length(o_scale) * 0.5;
         float sum_r = bound_me + bound_o;
         if (dot(d, d) >= sum_r * sum_r) continue;
 
-        float mass_o = (other.physic.y <= 0.0) ? 1.0e9 : other.physic.y;
+        float mass_o = (other.physic_props.y <= 0.0) ? 1.0e9 : other.physic_props.y;
         float ratio_me = mass_o / (mass + mass_o);
 
         float dist = length(d);
@@ -98,7 +99,7 @@ void main() {
         else vel.y = 0.0;
     }
 
-    vel.y -= 9.81 * me.physic.z * pc.dt;
+    vel += pc.global_gravity.xyz * me.physic_props.z * pc.dt;
     pos += vel * pc.dt;
     vel *= pow(0.993, pc.dt * 60.0);
 
@@ -107,6 +108,6 @@ void main() {
 
     me.model[3].xyz = pos;
     me.velocity.xyz = vel;
-    me.rotation.xyz = ang_vel;
+    me.angular_velocity.xyz = ang_vel;
     write_buf.data[i] = me;
 }

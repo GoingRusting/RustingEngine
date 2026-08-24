@@ -34,8 +34,8 @@ use crate::Transform;
 
 fn process_node(
     allocator: &Arc<StandardMemoryAllocator>,
-    buffers: &Vec<gltf::buffer::Data>,
-    images: &Vec<gltf::image::Data>,
+    buffers: &[gltf::buffer::Data],
+    images: &[gltf::image::Data],
     textures: &mut Vec<Texture>,
     result: &mut Vec<(Mesh, Instance)>,
     node: &gltf::Node,
@@ -49,7 +49,7 @@ fn process_node(
         for primitive in mesh.primitives() {
             let (vertices, indices) = extract_primitive(&primitive, buffers);
 
-            let mut mesh = if let Some(ref idx) = indices {
+            let mesh = if let Some(ref idx) = indices {
                 Mesh::new_indexed(allocator, &vertices, idx)
             } else {
                 Mesh::new(allocator, &vertices, None)
@@ -127,7 +127,7 @@ use crate::geometry::VertexPosColorUv;
 
 fn extract_primitive(
     primitive: &gltf::Primitive,
-    buffers: &Vec<gltf::buffer::Data>,
+    buffers: &[gltf::buffer::Data],
 ) -> (Vec<VertexPosColorUv>, Option<Vec<u32>>) {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 

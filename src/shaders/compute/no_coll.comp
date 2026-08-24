@@ -6,8 +6,8 @@ struct InstanceData {
 	vec4 color;
 	vec4 mat_props;
 	vec4 velocity;
-	vec4 physic; 
-	vec4 rotation;
+	vec4 angular_velocity;
+	vec4 physic_props;
 };
 
 layout(set = 0, binding = 0) buffer ReadBuf {
@@ -23,6 +23,9 @@ layout(push_constant) uniform PushConstants {
 	uint total_objects;
 	uint offset;
 	uint count;
+	uint num_big_objects;
+	uint _pad[3];
+	vec4 global_gravity;
 } pc;
 
 mat3 skew(vec3 v) {
@@ -38,31 +41,19 @@ void main() {
 	InstanceData me = read_buf.data[i];
 	vec3 pos = me.model[3].xyz;
 	vec3 vel = me.velocity.xyz;
-	vec3 ang_vel = me.rotation.xyz;
-	
-	float radius = me.velocity.w;
-	float type = me.physic.x;
-	float mass = me.physic.y;
-	float bounce = me.physic.z;
-	float grav = me.physic.w;
+	vec3 ang_vel = me.angular_velocity.xyz;
+	float type = me.physic_props.x;
+	float mass = me.physic_props.y;
+	float gravity_scale = me.physic_props.z;
 
 	if (mass <= 0.0) return;
 
-	vel += vec3(0.0, -9.81 * grav * pc.dt, 0.0);
-
-	// Floor collision
-	float ground_level = 0.5 + radius;
-	if (pos.y < ground_level) {
-		pos.y = ground_level;
-		vel.y = -vel.y * bounce;
-		vel.x *= 0.98;
-		vel.z *= 0.98;
-		ang_vel *= 0.95;
-	}
-
+	vel += pc.global_gravity.xyz * gravity_scale * pc.dt;
 	pos += vel * pc.dt;
 
-	mat3 rot = mat3(me.model[0].xyz, me.model[1].xyz, me.model[2].xyz);
+	vec3 scale = vec3(length(me.model[0].xyz), length(me.model[1].xyz), length(me.model[2].xyz));
+	vec3 half_extents = scale * 0.5;
+	mat3 rot = mat3(me.model[0].xyz / scale.x, me.model[1].xyz / scale.y, me.model[2].xyz / scale.z);
 	if (length(ang_vel) > 0.001) {
 		rot += skew(ang_vel) * rot * pc.dt;
 		vec3 c0 = normalize(rot[0]);
@@ -71,13 +62,26 @@ void main() {
 		rot = mat3(c0, c1, c2);
 	}
 
-	me.model[0].xyz = rot[0];
-	me.model[1].xyz = rot[1];
-	me.model[2].xyz = rot[2];
+	float lowest_y = (type > 0.5)
+		? scale.x
+		: (half_extents.x * abs(rot[0].y) + half_extents.y * abs(rot[1].y) + half_extents.z * abs(rot[2].y));
+	if (pos.y < lowest_y) {
+		pos.y = lowest_y;
+		if (vel.y < 0.0) {
+			vel.y *= -me.velocity.w;
+			float damping = clamp(1.0 - me.angular_velocity.w, 0.0, 1.0);
+			vel.xz *= damping;
+			ang_vel *= damping;
+		}
+	}
+
+	me.model[0] = vec4(rot[0] * scale.x, 0.0);
+	me.model[1] = vec4(rot[1] * scale.y, 0.0);
+	me.model[2] = vec4(rot[2] * scale.z, 0.0);
 	me.model[3].xyz = pos;
 
 	me.velocity.xyz = vel;
-	me.rotation.xyz = ang_vel;
+	me.angular_velocity.xyz = ang_vel;
 
 	write_buf.data[i] = me;
 }

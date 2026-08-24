@@ -11,6 +11,7 @@ use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::render_pass::Framebuffer;
 
+#[allow(clippy::too_many_arguments)]
 pub fn process_render(
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     framebuffers: &[Arc<Framebuffer>],
@@ -24,7 +25,7 @@ pub fn process_render(
     num_big_objects: u32,
 ) {
     if total_objects > 0 {
-        let workgroups_x = (total_objects + 255) / 256;
+        let workgroups_x = total_objects.div_ceil(256);
 
         builder
             .bind_pipeline_compute(compute_pipeline.clone())
@@ -42,7 +43,7 @@ pub fn process_render(
                     total_objects,
                     offset: 0,
                     count: total_objects,
-                    num_big_objects: num_big_objects,
+                    num_big_objects,
                     _pad: [0, 0, 0],
                     global_gravity: [0.0, -9.81, 0.0, 2.0],
                 },

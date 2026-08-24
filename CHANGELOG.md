@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.43] - 2026-08-24
+
+### Added
+
+- A lot of tests
+
+### Fixed
+
+- A lot of different fixes to improve stability before big implementation
+
 ## [0.1.43] - 2026-04-11
 
 ### Added

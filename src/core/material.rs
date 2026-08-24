@@ -101,7 +101,6 @@ impl Material {
 ///     .metalness(0.0)
 ///     .build();
 /// ```
-#[derive(Default)]
 pub struct MaterialBuilder {
     color: [f32; 3],
     emissive: f32,
@@ -110,6 +109,21 @@ pub struct MaterialBuilder {
     shader: ShaderType,
     base_color_texture: Option<usize>,
     metallic_roughness_texture: Option<usize>,
+}
+
+impl Default for MaterialBuilder {
+    fn default() -> Self {
+        let material = Material::default();
+        Self {
+            color: material.color,
+            emissive: material.emissive,
+            roughness: material.roughness,
+            metalness: material.metalness,
+            shader: material.shader,
+            base_color_texture: material.base_color_texture,
+            metallic_roughness_texture: material.metallic_roughness_texture,
+        }
+    }
 }
 
 impl MaterialBuilder {

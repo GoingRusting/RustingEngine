@@ -1,7 +1,7 @@
 use crate::rendering::compute_registry::ComputeShaderType;
 use crate::rendering::shader_registry::ShaderType;
 use crate::scene::animation::AnimationType;
-use crate::{geometry::Mesh, Physics};
+use crate::{geometry::Mesh, Material, Physics};
 use nalgebra::{Matrix4, Rotation3, Vector3};
 use vulkano::buffer::Subbuffer;
 use vulkano::command_buffer::DrawIndexedIndirectCommand;
@@ -64,6 +64,40 @@ impl Default for Instance {
         }
     }
 }
+
+impl Instance {
+    /// Copies every render-facing property from a material.
+    pub fn apply_material(&mut self, material: &Material) {
+        self.color = material.color;
+        self.emissive = material.emissive;
+        self.roughness = material.roughness;
+        self.metalness = material.metalness;
+        self.shader = material.shader;
+        self.base_color_texture = material.base_color_texture;
+        self.metallic_roughness_texture = material.metallic_roughness_texture;
+    }
+}
+
+const _: () = {
+    use std::mem::{align_of, offset_of, size_of};
+
+    assert!(size_of::<InstanceData>() == 144);
+    assert!(align_of::<InstanceData>() == 4);
+    assert!(offset_of!(InstanceData, model) == 0);
+    assert!(offset_of!(InstanceData, color) == 64);
+    assert!(offset_of!(InstanceData, mat_props) == 80);
+    assert!(offset_of!(InstanceData, velocity) == 96);
+    assert!(offset_of!(InstanceData, angular_velocity) == 112);
+    assert!(offset_of!(InstanceData, physic_props) == 128);
+
+    assert!(size_of::<PhysicsPushConstants>() == 48);
+    assert!(offset_of!(PhysicsPushConstants, dt) == 0);
+    assert!(offset_of!(PhysicsPushConstants, total_objects) == 4);
+    assert!(offset_of!(PhysicsPushConstants, offset) == 8);
+    assert!(offset_of!(PhysicsPushConstants, count) == 12);
+    assert!(offset_of!(PhysicsPushConstants, num_big_objects) == 16);
+    assert!(offset_of!(PhysicsPushConstants, global_gravity) == 32);
+};
 
 pub struct Texture {
     pub pixels: Vec<u8>,
@@ -176,6 +210,8 @@ impl std::ops::Mul for Transform {
 
 pub struct RenderBatch {
     pub mesh: Mesh,
+    /// Stable IDs corresponding one-to-one with `instances`.
+    pub instance_ids: Vec<u64>,
     pub base_color_texture: Option<usize>,
     pub metallic_roughness_texture: Option<usize>,
     pub instances: Vec<Instance>,

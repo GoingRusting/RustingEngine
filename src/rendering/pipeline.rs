@@ -109,12 +109,7 @@ pub fn create_pipeline(
         .build(device.clone())
         .unwrap();
 
-    let set_layouts: Vec<Arc<DescriptorSetLayout>> = temp_pipeline
-        .layout()
-        .set_layouts()
-        .iter()
-        .cloned()
-        .collect();
+    let set_layouts: Vec<Arc<DescriptorSetLayout>> = temp_pipeline.layout().set_layouts().to_vec();
 
     let pipeline_layout = PipelineLayout::new(
         device.clone(),

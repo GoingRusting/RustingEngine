@@ -1,15 +1,16 @@
 use crate::scene::object::Transform;
 use std::sync::Arc;
 
+type AnimationFn =
+    dyn Fn(&mut Transform, &mut [f32; 3], &mut [f32; 3], &mut [f32; 3], f32) + Send + Sync;
+
 // ? I dont want to describe it, maybe I will delete it, bc I dont like it.
 #[derive(Clone)]
 pub enum AnimationType {
     Rotate,
     Pulse,
     Static,
-    Custom(
-        Arc<dyn Fn(&mut Transform, &mut [f32; 3], &mut [f32; 3], &mut [f32; 3], f32) + Send + Sync>,
-    ),
+    Custom(Arc<AnimationFn>),
 }
 
 impl std::fmt::Debug for AnimationType {

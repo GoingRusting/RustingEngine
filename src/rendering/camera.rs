@@ -69,32 +69,32 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
             .keys_pressed
             .contains(&winit::event::VirtualKeyCode::W)
         {
-            for i in 0..3 {
-                camera.position[i] += forward[i] * speed_mult;
+            for (position, direction) in camera.position.iter_mut().zip(forward) {
+                *position += direction * speed_mult;
             }
         }
         if inputs
             .keys_pressed
             .contains(&winit::event::VirtualKeyCode::S)
         {
-            for i in 0..3 {
-                camera.position[i] -= forward[i] * speed_mult;
+            for (position, direction) in camera.position.iter_mut().zip(forward) {
+                *position -= direction * speed_mult;
             }
         }
         if inputs
             .keys_pressed
             .contains(&winit::event::VirtualKeyCode::A)
         {
-            for i in 0..3 {
-                camera.position[i] -= right[i] * speed_mult;
+            for (position, direction) in camera.position.iter_mut().zip(right) {
+                *position -= direction * speed_mult;
             }
         }
         if inputs
             .keys_pressed
             .contains(&winit::event::VirtualKeyCode::D)
         {
-            for i in 0..3 {
-                camera.position[i] += right[i] * speed_mult;
+            for (position, direction) in camera.position.iter_mut().zip(right) {
+                *position += direction * speed_mult;
             }
         }
         if inputs

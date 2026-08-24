@@ -17,8 +17,7 @@ pub fn main() {
         .color([0.2, 1.0, 0.2])
         .shader(ShaderType::Pbr)
         .build();
-    let grid_size = 20; 
-
+    let grid_size = 20;
 
     for x in 0..grid_size {
         for y in 0..grid_size {

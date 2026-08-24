@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "0.1.43"
+version = "0.1.44"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "A high-performance Vulkano-based 3D engine with GPU physics."
@@ -9,6 +9,7 @@ repository = "https://github.com/Vasyl-Trefilov/RustingEngine"
 readme = "README.md"
 keywords = ["vulkan", "engine", "graphics", "physics", "gamedev"]
 categories = ["rendering", "game-engines"]
+exclude = ["testModels/*", "AGENTS.md", "plan.md", "benchmark/"]
 
 [[bin]]
 name = "user_main"
@@ -36,8 +37,6 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
-
-exclude = ["testModels/*", "AGENTS.md", "plan.md", "benchmark/"]
 
 [[example]]
 name = "gltf_test"
