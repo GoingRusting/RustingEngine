@@ -2,39 +2,69 @@ use std::sync::Arc;
 use vulkano::device::Device;
 use vulkano::format::Format;
 use vulkano::image::view::ImageView;
-use vulkano::image::ImageAccess;
-use vulkano::image::{AttachmentImage, ImageUsage, SwapchainImage};
-use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage};
+use vulkano::memory::allocator::{
+    AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+};
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass};
-use vulkano::swapchain::{PresentMode, Surface, Swapchain, SwapchainCreateInfo};
+use vulkano::swapchain::{
+    PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+};
 use winit::window::Window;
 
 pub fn create_swapchain_and_images(
     device: &Arc<Device>,
     surface: &Arc<Surface>,
     window: &Window,
-) -> (Arc<Swapchain>, Vec<Arc<SwapchainImage>>) {
+) -> (Arc<Swapchain>, Vec<Arc<Image>>) {
     let caps = device
         .physical_device()
         .surface_capabilities(surface, Default::default())
         .unwrap();
-    let format = device
+    let formats = device
         .physical_device()
         .surface_formats(surface, Default::default())
-        .unwrap()[0]
-        .0;
+        .unwrap();
+    let (format, color_space) = formats
+        .iter()
+        .copied()
+        .find(|(format, _)| {
+            matches!(format, Format::B8G8R8A8_SRGB | Format::R8G8B8A8_SRGB)
+        })
+        .unwrap_or(formats[0]);
+    let present_modes = device
+        .physical_device()
+        .surface_present_modes(surface, Default::default())
+        .unwrap();
+    let present_mode = [
+        PresentMode::Mailbox,
+        PresentMode::Immediate,
+        PresentMode::Fifo,
+    ]
+    .into_iter()
+    .find(|mode| present_modes.contains(mode))
+    .expect("Vulkan surfaces must support FIFO presentation");
+    let min_image_count = caps
+        .max_image_count
+        .map_or(caps.min_image_count + 1, |max| {
+            (caps.min_image_count + 1).min(max)
+        });
 
     let (sw, img) = Swapchain::new(
         device.clone(),
         surface.clone(),
         SwapchainCreateInfo {
-            min_image_count: caps.min_image_count, // Minimum buffers for smooth rendering
-            image_format: Some(format),
+            min_image_count,
+            image_format: format,
+            image_color_space: color_space,
             image_extent: window.inner_size().into(),
             image_usage: ImageUsage::COLOR_ATTACHMENT, // We'll draw to these images
-            composite_alpha: caps.supported_composite_alpha.into_iter().next().unwrap(),
-            present_mode: PresentMode::Immediate, // Show frames immediately (no vsync), can be used for benchmarking or just for fun
-            // present_mode: PresentMode::Fifo, // So, only Fifo is guaranteed to be supported on every device. And I think its better for some kind of prod, if I ever will get to this point, but for now, I want to see the maximum fps, so I will use Immediate, but if you want to use Fifo, its your choise
+            composite_alpha: caps
+                .supported_composite_alpha
+                .into_iter()
+                .next()
+                .unwrap(),
+            present_mode,
             ..Default::default()
         },
     )
@@ -50,16 +80,16 @@ pub fn create_render_pass(
         device.clone(),
         attachments: {
             color: {
-                load: Clear,
-                store: Store,
                 format: swapchain.image_format(),
                 samples: 1,
+                load_op: Clear,
+                store_op: Store,
             },
             depth: {
-                load: Clear,
-                store: DontCare,
                 format: vulkano::format::Format::D16_UNORM,
                 samples: 1,
+                load_op: Clear,
+                store_op: DontCare,
             }
         },
         passes: [ {
@@ -72,15 +102,29 @@ pub fn create_render_pass(
 }
 
 pub fn create_framebuffers(
-    images: &[Arc<SwapchainImage>],
+    images: &[Arc<Image>],
     render_pass: &Arc<RenderPass>,
-    memory_allocator: &StandardMemoryAllocator,
+    memory_allocator: &Arc<StandardMemoryAllocator>,
 ) -> Vec<Arc<Framebuffer>> {
-    let dims = images[0].dimensions().width_height();
+    let extent = images[0].extent();
+    let dims = [extent[0], extent[1]];
 
     // Depth buffer is required for 3D sorting
-    let depth_image =
-        AttachmentImage::transient(memory_allocator, dims, Format::D16_UNORM).unwrap();
+    let depth_image = Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            format: Format::D16_UNORM,
+            extent: [dims[0], dims[1], 1],
+            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT
+                | ImageUsage::TRANSIENT_ATTACHMENT,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let depth_view = ImageView::new_default(depth_image).unwrap();
 
     images

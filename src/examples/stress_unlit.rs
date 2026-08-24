@@ -1,12 +1,14 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 /// # Stress Test: 10,000 Unlit Cubes
 /// This example spawns 10,000 objects completely bypassing PBR shading and utilizing Unlit.
 /// It emphasizes the GPU performance gains achievable when disabling
 /// complex lighting logic for massive amounts of background objects / particles.
 pub fn main() {
-    let mut engine = Engine::new("RustingEngine - Stress Test Unlit (10k Objects)");
+    let mut engine =
+        Engine::new("RustingEngine - Stress Test Unlit (10k Objects)");
     engine.set_light([30.0, 50.0, 30.0], [1.0, 1.0, 1.0], 500.0);
     let red_unlit = Material::standard()
         .color([1.0, 0.2, 0.2])

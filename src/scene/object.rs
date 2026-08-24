@@ -12,7 +12,7 @@ pub struct InstanceData {
     pub model: [[f32; 4]; 4], // 64b. [3].xyz = position, [0..2] = rotate/scale
     pub color: [f32; 4],      // 16b. rgb + emissive
     pub mat_props: [f32; 4],  // 16b. x=roughness, y=metalness, z,w=custom
-    pub velocity: [f32; 4],   // 16b. xyz = linear speed, w = (Bounciness/Restitution)
+    pub velocity: [f32; 4], // 16b. xyz = linear speed, w = (Bounciness/Restitution)
     pub angular_velocity: [f32; 4], // 16b. xyz = angle speed, w = Friction
     pub physic_props: [f32; 4], // 16b. x = shape(0=Box,1=Sphere), y = mass, z = gravity_scale, w = grid_hack
 } // Total: 144 bytes, if you want you want to copy my library and rewrite it, remember always to keep `total mod 16 = 0` or GPU will work bad
@@ -25,7 +25,7 @@ pub struct PhysicsPushConstants {
     pub offset: u32,
     pub count: u32,
     pub num_big_objects: u32,
-    pub _pad: [u32; 3],           // padding to reach offset 32 (vec4 alignment)
+    pub _pad: [u32; 3], // padding to reach offset 32 (vec4 alignment)
     pub global_gravity: [f32; 4], // xyz = global gravity vector, w = (CELL_SIZE) [-9.81, 0.0, 0.0, ]
 }
 
@@ -126,11 +126,15 @@ impl Default for Transform {
 
 impl Transform {
     pub fn to_matrix(&self) -> [[f32; 4]; 4] {
-        let translation = Matrix4::new_translation(&Vector3::from(self.position));
+        let translation =
+            Matrix4::new_translation(&Vector3::from(self.position));
 
-        let rotation =
-            Rotation3::from_euler_angles(self.rotation[0], self.rotation[1], self.rotation[2])
-                .to_homogeneous();
+        let rotation = Rotation3::from_euler_angles(
+            self.rotation[0],
+            self.rotation[1],
+            self.rotation[2],
+        )
+        .to_homogeneous();
 
         let scale = Matrix4::new_nonuniform_scaling(&Vector3::from(self.scale));
 
@@ -159,7 +163,8 @@ impl Transform {
             m[(2, 2)] / scale[2],
         );
 
-        let rotation = Rotation3::from_matrix_unchecked(rotation_matrix).euler_angles();
+        let rotation =
+            Rotation3::from_matrix_unchecked(rotation_matrix).euler_angles();
 
         Self {
             position,

@@ -1,5 +1,6 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 
 pub fn main() {
@@ -13,7 +14,11 @@ pub fn main() {
     for i in 0..10 {
         engine.add_cube(
             Transform {
-                position: [-10.0 + (i as f32) * 5.0, 10.0 + (i as f32) * 2.0, -10.0],
+                position: [
+                    -10.0 + (i as f32) * 5.0,
+                    10.0 + (i as f32) * 2.0,
+                    -10.0,
+                ],
                 scale: [2.0, 2.0, 2.0],
                 ..Default::default()
             },
@@ -35,7 +40,11 @@ pub fn main() {
     for i in 0..10 {
         engine.add_sphere(
             Transform {
-                position: [-10.0 + (i as f32) * 5.0, 15.0 + (i as f32) * 2.0, 10.0],
+                position: [
+                    -10.0 + (i as f32) * 5.0,
+                    15.0 + (i as f32) * 2.0,
+                    10.0,
+                ],
                 scale: [2.0, 2.0, 2.0],
                 ..Default::default()
             },

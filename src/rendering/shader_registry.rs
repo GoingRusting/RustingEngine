@@ -62,31 +62,43 @@ pub struct ShaderRegistry {
 impl ShaderRegistry {
     /// Create a new registry, loading all shader modules and building all pipelines.
     pub fn new(device: &Arc<Device>, render_pass: &Arc<RenderPass>) -> Self {
-        let vs_module = vs::load(device.clone()).expect("Failed to load vertex shader");
+        let vs_module =
+            vs::load(device.clone()).expect("Failed to load vertex shader");
 
         let mut pipelines = HashMap::new();
 
         // PBR (default)
-        let fs_pbr = fs::load(device.clone()).expect("Failed to load PBR fragment shader");
+        let fs_pbr = fs::load(device.clone())
+            .expect("Failed to load PBR fragment shader");
         pipelines.insert(
             ShaderType::Pbr,
             create_pipeline(vs_module.clone(), fs_pbr, render_pass, device),
         );
 
         // Unlit
-        let fs_unlit_mod =
-            fs_unlit::load(device.clone()).expect("Failed to load Unlit fragment shader");
+        let fs_unlit_mod = fs_unlit::load(device.clone())
+            .expect("Failed to load Unlit fragment shader");
         pipelines.insert(
             ShaderType::Unlit,
-            create_pipeline(vs_module.clone(), fs_unlit_mod, render_pass, device),
+            create_pipeline(
+                vs_module.clone(),
+                fs_unlit_mod,
+                render_pass,
+                device,
+            ),
         );
 
         // Emissive
-        let fs_emissive_mod =
-            fs_emissive::load(device.clone()).expect("Failed to load Emissive fragment shader");
+        let fs_emissive_mod = fs_emissive::load(device.clone())
+            .expect("Failed to load Emissive fragment shader");
         pipelines.insert(
             ShaderType::Emissive,
-            create_pipeline(vs_module.clone(), fs_emissive_mod, render_pass, device),
+            create_pipeline(
+                vs_module.clone(),
+                fs_emissive_mod,
+                render_pass,
+                device,
+            ),
         );
 
         // NormalDebug
@@ -94,11 +106,16 @@ impl ShaderRegistry {
             .expect("Failed to load NormalDebug fragment shader");
         pipelines.insert(
             ShaderType::NormalDebug,
-            create_pipeline(vs_module.clone(), fs_normal_mod, render_pass, device),
+            create_pipeline(
+                vs_module.clone(),
+                fs_normal_mod,
+                render_pass,
+                device,
+            ),
         );
 
-        let fs_heavy_mod =
-            fs_heavy::load(device.clone()).expect("Failed to load Heavy fragment shader");
+        let fs_heavy_mod = fs_heavy::load(device.clone())
+            .expect("Failed to load Heavy fragment shader");
         pipelines.insert(
             ShaderType::Heavy,
             create_pipeline(vs_module, fs_heavy_mod, render_pass, device),
@@ -111,7 +128,10 @@ impl ShaderRegistry {
     }
 
     /// Get the pipeline for a specific shader type.
-    pub fn get_pipeline(&self, shader_type: ShaderType) -> &Arc<GraphicsPipeline> {
+    pub fn get_pipeline(
+        &self,
+        shader_type: ShaderType,
+    ) -> &Arc<GraphicsPipeline> {
         self.pipelines
             .get(&shader_type)
             .expect("ShaderType pipeline not found in registry")

@@ -1,9 +1,11 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 
 pub fn main() {
-    let mut engine = Engine::new("RustingEngine - Stress Test PBR (10k Objects)");
+    let mut engine =
+        Engine::new("RustingEngine - Stress Test PBR (10k Objects)");
     engine.set_light([300.0, 500.0, 300.0], [1.0, 1.0, 1.0], 50000.0);
 
     // engine.add_gltf(Transform {

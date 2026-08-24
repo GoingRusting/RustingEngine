@@ -1,6 +1,6 @@
 use nalgebra::{Matrix4, Rotation3, Vector3};
 
-#[derive(Copy, Clone, Debug)]
+#[derive(bevy_ecs::component::Component, Copy, Clone, Debug, PartialEq)]
 pub struct Transform {
     pub position: [f32; 3],
     pub rotation: [f32; 3],
@@ -41,10 +41,14 @@ impl Transform {
     }
 
     pub fn to_matrix(&self) -> [[f32; 4]; 4] {
-        let translation = Matrix4::new_translation(&Vector3::from(self.position));
-        let rotation =
-            Rotation3::from_euler_angles(self.rotation[0], self.rotation[1], self.rotation[2])
-                .to_homogeneous();
+        let translation =
+            Matrix4::new_translation(&Vector3::from(self.position));
+        let rotation = Rotation3::from_euler_angles(
+            self.rotation[0],
+            self.rotation[1],
+            self.rotation[2],
+        )
+        .to_homogeneous();
         let scale = Matrix4::new_nonuniform_scaling(&Vector3::from(self.scale));
         let model_matrix = translation * rotation * scale;
         model_matrix.into()
@@ -68,7 +72,8 @@ impl Transform {
             m[(2, 1)] / scale[1],
             m[(2, 2)] / scale[2],
         );
-        let rotation = Rotation3::from_matrix_unchecked(rotation_matrix).euler_angles();
+        let rotation =
+            Rotation3::from_matrix_unchecked(rotation_matrix).euler_angles();
         Self {
             position,
             rotation: [rotation.0, rotation.1, rotation.2],

@@ -81,22 +81,24 @@ fn process_node(
 
                 index
             });
-            let metallic_roughness_texture = pbr.metallic_roughness_texture().map(|info| {
-                let tex = info.texture();
-                let img = &images[tex.source().index()];
+            let metallic_roughness_texture =
+                pbr.metallic_roughness_texture().map(|info| {
+                    let tex = info.texture();
+                    let img = &images[tex.source().index()];
 
-                let index = textures.len();
+                    let index = textures.len();
 
-                textures.push(Texture {
-                    pixels: img.pixels.clone(),
-                    width: img.width,
-                    height: img.height,
+                    textures.push(Texture {
+                        pixels: img.pixels.clone(),
+                        width: img.width,
+                        height: img.height,
+                    });
+
+                    index
                 });
-
-                index
-            });
             let instance = Instance {
-                model_matrix: Transform::from_matrix(global_transform).to_matrix(),
+                model_matrix: Transform::from_matrix(global_transform)
+                    .to_matrix(),
                 color,
                 roughness,
                 metalness,

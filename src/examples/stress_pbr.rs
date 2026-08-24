@@ -1,5 +1,6 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 /// # Stress Test: 10,000 PBR Cubes
 /// This example spawns 10,000 objects utilizing standard PBR shading.
@@ -7,7 +8,8 @@ use rusting_engine::{
 /// calculates complex lighting, metallic/roughness values, and environment interactions.
 /// also good example of usage `set_scene_shader` and `set_scene_physic`
 pub fn main() {
-    let mut engine = Engine::new("RustingEngine - Stress Test PBR (10k Objects)");
+    let mut engine =
+        Engine::new("RustingEngine - Stress Test PBR (10k Objects)");
     engine.set_light([300.0, 500.0, 300.0], [1.0, 1.0, 1.0], 50000.0);
     let red_pbr = Material::standard()
         .color([1.0, 0.2, 0.2])

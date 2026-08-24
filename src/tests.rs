@@ -203,7 +203,8 @@ fn every_compute_shader_uses_the_canonical_instance_layout() {
     for shader in shaders {
         let mut previous = 0;
         for field in fields {
-            let offset = shader.find(field).expect("canonical field is missing");
+            let offset =
+                shader.find(field).expect("canonical field is missing");
             assert!(offset >= previous, "compute shader field order differs");
             previous = offset;
         }

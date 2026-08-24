@@ -1,5 +1,6 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 
 /// # Shaders Example

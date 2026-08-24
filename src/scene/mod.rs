@@ -22,23 +22,30 @@ use vulkano::command_buffer::allocator::{
     StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
 };
 use vulkano::command_buffer::RenderPassBeginInfo;
-use vulkano::command_buffer::SubpassContents;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfoTyped, PrimaryAutoCommandBuffer,
+    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfoTyped,
+    CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
     PrimaryCommandBufferAbstract,
 };
+use vulkano::command_buffer::{SubpassBeginInfo, SubpassContents};
 use vulkano::descriptor_set::{
-    allocator::StandardDescriptorSetAllocator, PersistentDescriptorSet, WriteDescriptorSet,
+    allocator::StandardDescriptorSetAllocator, DescriptorSet,
+    WriteDescriptorSet,
 };
 use vulkano::device::Queue;
 use vulkano::format::Format;
+use vulkano::image::sampler::{
+    Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode,
+    LOD_CLAMP_NONE,
+};
 use vulkano::image::view::ImageView;
-use vulkano::image::ImmutableImage;
-use vulkano::memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator};
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage};
+use vulkano::memory::allocator::{
+    AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+};
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint};
 use vulkano::render_pass::Framebuffer;
-use vulkano::sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode};
 use vulkano::sync::GpuFuture;
 
 use crate::geometry::Mesh;
@@ -91,13 +98,13 @@ pub struct RenderScene {
     /// Brightness multiplier for the light
     pub light_intensity: f32,
     /// Image views for all textures in the scene
-    pub texture_views: Vec<Arc<ImageView<ImmutableImage>>>,
+    pub texture_views: Vec<Arc<ImageView>>,
     /// Sampler used to sample textures - handles filtering and addressing modes
     pub texture_sampler: Arc<Sampler>,
     /// Allocator for descriptor sets - manages GPU memory for descriptors
     pub descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     /// Cached descriptor sets organized by frame and texture index
-    pub descriptor_sets: Vec<Vec<Arc<PersistentDescriptorSet>>>,
+    pub descriptor_sets: Vec<Vec<Arc<DescriptorSet>>>,
     /// Physics state buffer read by compute shaders - contains instance transforms/velocities
     pub physics_read: Subbuffer<[InstanceData]>,
     /// Physics state buffer written by compute shaders - double-buffered with physics_read
@@ -170,7 +177,8 @@ impl RenderScene {
                 && batch.shader == shader
                 && batch.compute_shader == compute_shader
                 && batch.base_color_texture == base_color_texture
-                && batch.metallic_roughness_texture == metallic_roughness_texture
+                && batch.metallic_roughness_texture
+                    == metallic_roughness_texture
             {
                 batch.instances.push(instance);
                 batch.instance_ids.push(id);
@@ -189,7 +197,7 @@ impl RenderScene {
             instances: vec![instance],
             base_instance_offset: self.total_instances,
             indirect_buffer: Buffer::new_slice::<DrawIndexedIndirectCommand>(
-                allocator,
+                allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::INDIRECT_BUFFER
                         | BufferUsage::STORAGE_BUFFER
@@ -197,7 +205,8 @@ impl RenderScene {
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    usage: MemoryUsage::Upload,
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
                 1,
@@ -267,16 +276,22 @@ impl RenderScene {
         max_instances: usize,
     ) -> Self {
         let mut frames = Vec::new();
-        let default_texture =
-            Self::create_texture_image(memory_allocator, queue, &[255, 255, 255, 255], 1, 1);
-        let default_texture_view = ImageView::new_default(default_texture).unwrap();
+        let default_texture = Self::create_texture_image(
+            memory_allocator,
+            queue,
+            &[255, 255, 255, 255],
+            1,
+            1,
+        );
+        let default_texture_view =
+            ImageView::new_default(default_texture).unwrap();
         let texture_sampler = Sampler::new(
             queue.device().clone(),
             SamplerCreateInfo {
                 mag_filter: Filter::Linear,
                 min_filter: Filter::Linear,
                 mipmap_mode: SamplerMipmapMode::Linear,
-                lod: 0.0..=vulkano::sampler::LOD_CLAMP_NONE,
+                lod: 0.0..=LOD_CLAMP_NONE,
                 address_mode: [SamplerAddressMode::Repeat; 3],
                 ..Default::default()
             },
@@ -284,7 +299,7 @@ impl RenderScene {
         .unwrap();
 
         let physics_read = Buffer::new_slice::<InstanceData>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER
                     | BufferUsage::TRANSFER_DST
@@ -292,14 +307,14 @@ impl RenderScene {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             max_instances as u64,
         )
         .unwrap();
         let physics_write = Buffer::new_slice::<InstanceData>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER
                     | BufferUsage::TRANSFER_DST
@@ -307,7 +322,7 @@ impl RenderScene {
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             max_instances as u64,
@@ -316,13 +331,14 @@ impl RenderScene {
 
         for _ in 0..frames_in_flight {
             let uniform_buffer = Buffer::from_data(
-                memory_allocator,
+                memory_allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::UNIFORM_BUFFER,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    usage: MemoryUsage::Upload,
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
                 UniformBufferObject::default(),
@@ -335,13 +351,13 @@ impl RenderScene {
         let max_per_cell = 128;
 
         let big_objects_indices = Buffer::new_slice::<u32>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             1024,
@@ -349,13 +365,13 @@ impl RenderScene {
         .unwrap();
 
         let grid_counts = Buffer::new_slice::<u32>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             hash_size,
@@ -363,13 +379,13 @@ impl RenderScene {
         .unwrap();
 
         let grid_objects = Buffer::new_slice::<u32>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             hash_size * max_per_cell,
@@ -377,13 +393,13 @@ impl RenderScene {
         .unwrap();
 
         let visible_indices = Buffer::new_slice::<u32>(
-            memory_allocator,
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
                 ..Default::default()
             },
             1_000_000,
@@ -448,8 +464,9 @@ impl RenderScene {
 
         let override_shader = compute_registry.scene_shader_optional();
         if override_shader.is_none() {
-            self.batches
-                .sort_by_key(|b| (b.compute_shader.sort_key(), b.shader.sort_key()));
+            self.batches.sort_by_key(|b| {
+                (b.compute_shader.sort_key(), b.shader.sort_key())
+            });
         }
 
         let mut current_offset = 0;
@@ -469,10 +486,13 @@ impl RenderScene {
                 let m = inst.model_matrix;
                 let scale = f32::max(
                     f32::max(
-                        (m[0][0].powi(2) + m[0][1].powi(2) + m[0][2].powi(2)).sqrt(),
-                        (m[1][0].powi(2) + m[1][1].powi(2) + m[1][2].powi(2)).sqrt(),
+                        (m[0][0].powi(2) + m[0][1].powi(2) + m[0][2].powi(2))
+                            .sqrt(),
+                        (m[1][0].powi(2) + m[1][1].powi(2) + m[1][2].powi(2))
+                            .sqrt(),
                     ),
-                    (m[2][0].powi(2) + m[2][1].powi(2) + m[2][2].powi(2)).sqrt(),
+                    (m[2][0].powi(2) + m[2][1].powi(2) + m[2][2].powi(2))
+                        .sqrt(),
                 );
 
                 // Subdivided sphere primitives have unit radius, while box extents
@@ -496,7 +516,12 @@ impl RenderScene {
 
                 flat_data.push(InstanceData {
                     model: inst.model_matrix,
-                    color: [inst.color[0], inst.color[1], inst.color[2], inst.emissive],
+                    color: [
+                        inst.color[0],
+                        inst.color[1],
+                        inst.color[2],
+                        inst.emissive,
+                    ],
                     mat_props: [inst.roughness, inst.metalness, 0.0, 0.0],
                     velocity: [
                         inst.physics.linear_velocity[0],
@@ -525,23 +550,26 @@ impl RenderScene {
         self.num_big_objects = big_indices.len() as u32;
 
         let staging = Buffer::from_iter(
-            allocator,
+            allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             flat_data,
         )
         .unwrap();
 
-        let cmd_allocator =
-            StandardCommandBufferAllocator::new(queue.device().clone(), Default::default());
+        let cmd_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            queue.device().clone(),
+            Default::default(),
+        ));
         let mut builder = AutoCommandBufferBuilder::primary(
-            &cmd_allocator,
+            cmd_allocator,
             queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
@@ -573,13 +601,14 @@ impl RenderScene {
         }
 
         let _indirect_staging = Buffer::from_iter(
-            allocator,
+            allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             indirect_data,
@@ -595,13 +624,14 @@ impl RenderScene {
                 first_instance: batch.base_instance_offset,
             };
             let single_staging = Buffer::from_iter(
-                allocator,
+                allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::TRANSFER_SRC,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    usage: MemoryUsage::Upload,
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
                 std::iter::once(cmd),
@@ -617,13 +647,14 @@ impl RenderScene {
 
         if !big_indices.is_empty() {
             let big_staging = Buffer::from_iter(
-                allocator,
+                allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::TRANSFER_SRC,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    usage: MemoryUsage::Upload,
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
                 big_indices,
@@ -698,36 +729,56 @@ impl RenderScene {
 
             for tex_idx in 0..target_tex_count {
                 // Buffer read
-                let set_a = PersistentDescriptorSet::new(
-                    &self.descriptor_set_allocator,
+                let set_a = DescriptorSet::new(
+                    self.descriptor_set_allocator.clone(),
                     layout.clone(),
                     [
-                        WriteDescriptorSet::buffer(0, frame.uniform_buffer.clone()),
+                        WriteDescriptorSet::buffer(
+                            0,
+                            frame.uniform_buffer.clone(),
+                        ),
                         WriteDescriptorSet::image_view_sampler(
                             1,
                             self.texture_views[tex_idx].clone(),
                             self.texture_sampler.clone(),
                         ),
-                        WriteDescriptorSet::buffer(2, self.physics_read.clone()),
-                        WriteDescriptorSet::buffer(3, self.visible_indices.clone()),
+                        WriteDescriptorSet::buffer(
+                            2,
+                            self.physics_read.clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            3,
+                            self.visible_indices.clone(),
+                        ),
                     ],
+                    [],
                 )
                 .unwrap();
 
                 // Buffer write
-                let set_b = PersistentDescriptorSet::new(
-                    &self.descriptor_set_allocator,
+                let set_b = DescriptorSet::new(
+                    self.descriptor_set_allocator.clone(),
                     layout.clone(),
                     [
-                        WriteDescriptorSet::buffer(0, frame.uniform_buffer.clone()),
+                        WriteDescriptorSet::buffer(
+                            0,
+                            frame.uniform_buffer.clone(),
+                        ),
                         WriteDescriptorSet::image_view_sampler(
                             1,
                             self.texture_views[tex_idx].clone(),
                             self.texture_sampler.clone(),
                         ),
-                        WriteDescriptorSet::buffer(2, self.physics_write.clone()),
-                        WriteDescriptorSet::buffer(3, self.visible_indices.clone()),
+                        WriteDescriptorSet::buffer(
+                            2,
+                            self.physics_write.clone(),
+                        ),
+                        WriteDescriptorSet::buffer(
+                            3,
+                            self.visible_indices.clone(),
+                        ),
                     ],
+                    [],
                 )
                 .unwrap();
 
@@ -748,7 +799,7 @@ impl RenderScene {
     ) {
         let mut current_offset = 0;
 
-        builder.bind_pipeline_graphics(pipeline.clone());
+        builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
 
         for batch in &self.batches {
             let count = batch.instances.len() as u32;
@@ -756,27 +807,44 @@ impl RenderScene {
                 continue;
             }
 
-            builder.bind_vertex_buffers(0, (batch.mesh.vertices.clone(),));
+            builder
+                .bind_vertex_buffers(0, (batch.mesh.vertices.clone(),))
+                .unwrap();
 
             let requested_tex = batch.base_color_texture.unwrap_or(0);
             let descriptor_idx = (requested_tex * 2) + physics_buffer_index;
 
-            builder.bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                pipeline.layout().clone(),
-                0,
-                self.descriptor_sets[frame_index][descriptor_idx].clone(),
-            );
+            builder
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    self.descriptor_sets[frame_index][descriptor_idx].clone(),
+                )
+                .unwrap();
 
             if let Some(indices) = &batch.mesh.indices {
-                builder.bind_index_buffer(indices.clone());
-                builder
-                    .draw_indexed(batch.mesh.index_count, count, 0, 0, current_offset)
-                    .unwrap();
+                builder.bind_index_buffer(indices.clone()).unwrap();
+                unsafe {
+                    builder.draw_indexed(
+                        batch.mesh.index_count,
+                        count,
+                        0,
+                        0,
+                        current_offset,
+                    )
+                }
+                .unwrap();
             } else {
-                builder
-                    .draw(batch.mesh.vertex_count, count, 0, current_offset)
-                    .unwrap();
+                unsafe {
+                    builder.draw(
+                        batch.mesh.vertex_count,
+                        count,
+                        0,
+                        current_offset,
+                    )
+                }
+                .unwrap();
             }
 
             current_offset += count;
@@ -804,60 +872,71 @@ impl RenderScene {
             let pipeline = registry.get_pipeline(effective_shader);
 
             if last_shader != Some(effective_shader) {
-                builder.bind_pipeline_graphics(pipeline.clone());
+                builder.bind_pipeline_graphics(pipeline.clone()).unwrap();
                 last_shader = Some(effective_shader);
             }
 
             let effective_culling = use_culling && batch.mesh.indices.is_some();
 
-            builder.push_constants(
-                pipeline.layout().clone(),
-                0,
-                MeshPushConstants {
-                    visible_list_offset: batch.base_instance_offset,
-                    use_culling: if effective_culling { 1 } else { 0 },
-                },
-            );
+            builder
+                .push_constants(
+                    pipeline.layout().clone(),
+                    0,
+                    MeshPushConstants {
+                        visible_list_offset: batch.base_instance_offset,
+                        use_culling: if effective_culling { 1 } else { 0 },
+                    },
+                )
+                .unwrap();
 
-            builder.bind_vertex_buffers(0, (batch.mesh.vertices.clone(),));
+            builder
+                .bind_vertex_buffers(0, (batch.mesh.vertices.clone(),))
+                .unwrap();
 
             let requested_tex = batch.base_color_texture.unwrap_or(0);
             let descriptor_idx = (requested_tex * 2) + physics_buffer_index;
 
-            builder.bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                pipeline.layout().clone(),
-                0,
-                self.descriptor_sets[frame_index][descriptor_idx].clone(),
-            );
+            builder
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    self.descriptor_sets[frame_index][descriptor_idx].clone(),
+                )
+                .unwrap();
 
             if let Some(indices) = &batch.mesh.indices {
-                builder.bind_index_buffer(indices.clone());
+                builder.bind_index_buffer(indices.clone()).unwrap();
 
                 if effective_culling {
-                    builder
-                        .draw_indexed_indirect(batch.indirect_buffer.clone())
-                        .unwrap();
+                    unsafe {
+                        builder.draw_indexed_indirect(
+                            batch.indirect_buffer.clone(),
+                        )
+                    }
+                    .unwrap();
                 } else {
-                    builder
-                        .draw_indexed(
+                    unsafe {
+                        builder.draw_indexed(
                             batch.mesh.index_count,
                             batch.instances.len() as u32,
                             0,
                             0,
                             batch.base_instance_offset,
                         )
-                        .unwrap();
+                    }
+                    .unwrap();
                 }
             } else {
-                builder
-                    .draw(
+                unsafe {
+                    builder.draw(
                         batch.mesh.vertex_count,
                         batch.instances.len() as u32,
                         0,
                         batch.base_instance_offset,
                     )
-                    .unwrap();
+                }
+                .unwrap();
             }
         }
     }
@@ -908,30 +987,51 @@ impl RenderScene {
         pixels_rgba: &[u8],
         width: u32,
         height: u32,
-    ) -> Arc<ImmutableImage> {
-        let cb_allocator = StandardCommandBufferAllocator::new(
+    ) -> Arc<Image> {
+        let cb_allocator = Arc::new(StandardCommandBufferAllocator::new(
             queue.device().clone(),
             StandardCommandBufferAllocatorCreateInfo::default(),
-        );
+        ));
         let mut upload_builder = AutoCommandBufferBuilder::primary(
-            &cb_allocator,
+            cb_allocator,
             queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-        let image = ImmutableImage::from_iter::<u8, _, _, _>(
-            memory_allocator.as_ref(),
-            pixels_rgba.iter().copied(),
-            vulkano::image::ImageDimensions::Dim2d {
-                width,
-                height,
-                array_layers: 1,
+        let staging = Buffer::from_iter(
+            memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_SRC,
+                ..Default::default()
             },
-            vulkano::image::MipmapsCount::Log2,
-            Format::R8G8B8A8_SRGB,
-            &mut upload_builder,
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            pixels_rgba.iter().copied(),
         )
         .unwrap();
+        let image = Image::new(
+            memory_allocator.clone(),
+            ImageCreateInfo {
+                format: Format::R8G8B8A8_SRGB,
+                extent: [width, height, 1],
+                usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        upload_builder
+            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                staging,
+                image.clone(),
+            ))
+            .unwrap();
         let upload_cmd = upload_builder.build().unwrap();
         vulkano::sync::now(queue.device().clone())
             .then_execute(queue.clone(), upload_cmd)
@@ -957,7 +1057,8 @@ impl RenderScene {
         match tex.pixels.len() as u32 {
             len if len == tex.width * tex.height * 4 => tex.pixels.clone(),
             len if len == tex.width * tex.height * 3 => {
-                let mut out = Vec::with_capacity((tex.width * tex.height * 4) as usize);
+                let mut out =
+                    Vec::with_capacity((tex.width * tex.height * 4) as usize);
                 for rgb in tex.pixels.chunks_exact(3) {
                     out.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
                 }
@@ -1008,7 +1109,12 @@ impl RenderScene {
     /// * `position` - Light position in world space (XYZ)
     /// * `color` - Light color as RGB values
     /// * `intensity` - Light brightness multiplier
-    pub fn set_light(&mut self, position: [f32; 3], color: [f32; 3], intensity: f32) {
+    pub fn set_light(
+        &mut self,
+        position: [f32; 3],
+        color: [f32; 3],
+        intensity: f32,
+    ) {
         self.light_pos = position;
         self.light_color = color;
         self.light_intensity = intensity;
@@ -1031,7 +1137,7 @@ impl RenderScene {
 pub fn record_compute_physics(
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     compute_pipeline: &Arc<vulkano::pipeline::ComputePipeline>,
-    compute_set: &Arc<PersistentDescriptorSet>,
+    compute_set: &Arc<DescriptorSet>,
     max_instances: u32,
     dt: f32,
     total_objects: u32,
@@ -1043,12 +1149,14 @@ pub fn record_compute_physics(
     }
     builder
         .bind_pipeline_compute(compute_pipeline.clone())
+        .unwrap()
         .bind_descriptor_sets(
             vulkano::pipeline::PipelineBindPoint::Compute,
             compute_pipeline.layout().clone(),
             0,
             compute_set.clone(),
         )
+        .unwrap()
         .push_constants(
             compute_pipeline.layout().clone(),
             0,
@@ -1062,8 +1170,8 @@ pub fn record_compute_physics(
                 global_gravity: [0.0, -9.81, 0.0, 2.0],
             },
         )
-        .dispatch([workgroups_x, 1, 1])
         .unwrap();
+    unsafe { builder.dispatch([workgroups_x, 1, 1]) }.unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1072,9 +1180,9 @@ pub fn record_compute_physics_multi(
     registry: &crate::rendering::compute_registry::ComputeShaderRegistry,
     compute_sets: &HashMap<
         ComputeShaderType,
-        (Arc<PersistentDescriptorSet>, Arc<PersistentDescriptorSet>),
+        (Arc<DescriptorSet>, Arc<DescriptorSet>),
     >,
-    grid_build_sets: &(Arc<PersistentDescriptorSet>, Arc<PersistentDescriptorSet>),
+    grid_build_sets: &(Arc<DescriptorSet>, Arc<DescriptorSet>),
     grid_counts: &Subbuffer<[u32]>,
     dispatches: &[ComputeDispatchInfo],
     dt: f32,
@@ -1092,12 +1200,14 @@ pub fn record_compute_physics_multi(
     };
     builder
         .bind_pipeline_compute(build_pipeline.clone())
+        .unwrap()
         .bind_descriptor_sets(
             PipelineBindPoint::Compute,
             build_pipeline.layout().clone(),
             0,
             grid_set.clone(),
         )
+        .unwrap()
         .push_constants(
             build_pipeline.layout().clone(),
             0,
@@ -1111,8 +1221,8 @@ pub fn record_compute_physics_multi(
                 global_gravity: [0.0, -9.81, 0.0, cell_size], // w = CELL_SIZE (must be >= 2 * max_object_radius)
             },
         )
-        .dispatch([total_objects.div_ceil(256), 1, 1])
         .unwrap();
+    unsafe { builder.dispatch([total_objects.div_ceil(256), 1, 1]) }.unwrap();
 
     let mut last_bound = None;
 
@@ -1126,13 +1236,17 @@ pub fn record_compute_physics_multi(
             let (set_0, set_1) = compute_sets.get(&shader_to_use).unwrap();
             let compute_set = if ping_pong { set_1 } else { set_0 };
             if last_bound != Some(shader_to_use) {
-                builder.bind_pipeline_compute(compute_pipeline.clone());
-                builder.bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    compute_pipeline.layout().clone(),
-                    0,
-                    compute_set.clone(),
-                );
+                builder
+                    .bind_pipeline_compute(compute_pipeline.clone())
+                    .unwrap();
+                builder
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Compute,
+                        compute_pipeline.layout().clone(),
+                        0,
+                        compute_set.clone(),
+                    )
+                    .unwrap();
                 last_bound = Some(shader_to_use);
             }
             let workgroups_x = dispatch.count.div_ceil(256);
@@ -1151,8 +1265,8 @@ pub fn record_compute_physics_multi(
                             global_gravity: [0.0, -9.81, 0.0, cell_size],
                         },
                     )
-                    .dispatch([workgroups_x, 1, 1])
                     .unwrap();
+                unsafe { builder.dispatch([workgroups_x, 1, 1]) }.unwrap();
             }
         }
     }
@@ -1171,20 +1285,28 @@ pub fn begin_render_pass_only(
                     Some([0.01, 0.01, 0.02, 1.0].into()), // Dark blue clear
                     Some(1.0.into()),
                 ],
-                ..RenderPassBeginInfo::framebuffer(framebuffers[img_index as usize].clone())
+                ..RenderPassBeginInfo::framebuffer(
+                    framebuffers[img_index as usize].clone(),
+                )
             },
-            SubpassContents::Inline,
+            SubpassBeginInfo {
+                contents: SubpassContents::Inline,
+                ..Default::default()
+            },
         )
         .unwrap()
         .set_viewport(
             0,
             vec![Viewport {
-                origin: [0.0, 0.0],
-                dimensions: [dims[0] as f32, dims[1] as f32],
-                depth_range: 0.0..1.0,
-            }],
+                offset: [0.0, 0.0],
+                extent: [dims[0] as f32, dims[1] as f32],
+                depth_range: 0.0..=1.0,
+            }]
+            .into(),
         )
-        .bind_pipeline_graphics(pipeline.clone());
+        .unwrap()
+        .bind_pipeline_graphics(pipeline.clone())
+        .unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1193,9 +1315,9 @@ pub fn record_compute_physics_spatial(
     registry: &ComputeShaderRegistry,
     compute_sets: &HashMap<
         ComputeShaderType,
-        (Arc<PersistentDescriptorSet>, Arc<PersistentDescriptorSet>),
+        (Arc<DescriptorSet>, Arc<DescriptorSet>),
     >,
-    grid_build_sets: &(Arc<PersistentDescriptorSet>, Arc<PersistentDescriptorSet>),
+    grid_build_sets: &(Arc<DescriptorSet>, Arc<DescriptorSet>),
     grid_counts: &Subbuffer<[u32]>,
     dispatches: &[ComputeDispatchInfo],
     dt: f32,
@@ -1219,12 +1341,14 @@ pub fn record_compute_physics_spatial(
 
         builder
             .bind_pipeline_compute(build_pipeline.clone())
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Compute,
                 build_pipeline.layout().clone(),
                 0,
                 grid_set.clone(),
             )
+            .unwrap()
             .push_constants(
                 build_pipeline.layout().clone(),
                 0,
@@ -1238,21 +1362,25 @@ pub fn record_compute_physics_spatial(
                     global_gravity: [0.0, -9.81, 0.0, cell_size],
                 },
             )
-            .dispatch([total_objects.div_ceil(256), 1, 1])
+            .unwrap();
+        unsafe { builder.dispatch([total_objects.div_ceil(256), 1, 1]) }
             .unwrap();
 
         let compute_pipeline = registry.get_pipeline(dispatch.compute_shader);
-        let (set_0, set_1) = compute_sets.get(&dispatch.compute_shader).unwrap();
+        let (set_0, set_1) =
+            compute_sets.get(&dispatch.compute_shader).unwrap();
         let compute_set = if ping_pong { set_1 } else { set_0 };
 
         builder
             .bind_pipeline_compute(compute_pipeline.clone())
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Compute,
                 compute_pipeline.layout().clone(),
                 0,
                 compute_set.clone(),
             )
+            .unwrap()
             .push_constants(
                 compute_pipeline.layout().clone(),
                 0,
@@ -1266,7 +1394,8 @@ pub fn record_compute_physics_spatial(
                     global_gravity: [0.0, -9.81, 0.0, 2.0],
                 },
             )
-            .dispatch([dispatch.count.div_ceil(256), 1, 1])
+            .unwrap();
+        unsafe { builder.dispatch([dispatch.count.div_ceil(256), 1, 1]) }
             .unwrap();
 
         read_index ^= 1;

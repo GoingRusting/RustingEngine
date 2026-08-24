@@ -4,10 +4,15 @@
 pub mod gltf_loader;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
-use vulkano::memory::allocator::{AllocationCreateInfo, MemoryUsage, StandardMemoryAllocator};
+use vulkano::memory::allocator::{
+    AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+};
 use vulkano::pipeline::graphics::vertex_input::Vertex;
 // * Trait combining all requirements for vertex types
-pub trait VertexType: Vertex + bytemuck::Pod + bytemuck::Zeroable + Send + Sync {}
+pub trait VertexType:
+    Vertex + bytemuck::Pod + bytemuck::Zeroable + Send + Sync
+{
+}
 
 // ! VERTEX WITH POSITION AND COLOR - Basic vertex format
 #[repr(C)]
@@ -57,9 +62,9 @@ impl VertexType for VertexPosColorNormal {}
 #[derive(Clone)]
 pub struct Mesh {
     pub vertices: Subbuffer<[VertexPosColorUv]>, // GPU buffer of vertices
-    pub indices: Option<Subbuffer<[u32]>>,       // Optional index buffer (for reuse)
-    pub vertex_count: u32,                       // Number of vertices
-    pub index_count: u32,                        // Number of indices (if using)
+    pub indices: Option<Subbuffer<[u32]>>, // Optional index buffer (for reuse)
+    pub vertex_count: u32,                 // Number of vertices
+    pub index_count: u32,                  // Number of indices (if using)
 }
 
 impl Mesh {
@@ -71,13 +76,14 @@ impl Mesh {
     ) -> Self {
         // Upload vertices to GPU
         let vertex_buffer = Buffer::from_iter(
-            &memory_allocator.clone(),
+            memory_allocator.clone(),
             BufferCreateInfo {
                 usage: BufferUsage::VERTEX_BUFFER,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                usage: MemoryUsage::Upload,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             vertices.iter().copied(),
@@ -89,13 +95,14 @@ impl Mesh {
         // Upload indices if provided
         let (index_buffer, index_count) = if let Some(indices) = indices {
             let buffer = Buffer::from_iter(
-                &memory_allocator.clone(),
+                memory_allocator.clone(),
                 BufferCreateInfo {
                     usage: BufferUsage::INDEX_BUFFER,
                     ..Default::default()
                 },
                 AllocationCreateInfo {
-                    usage: MemoryUsage::Upload,
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                     ..Default::default()
                 },
                 indices.iter().copied(),
@@ -292,7 +299,9 @@ pub mod shapes {
         });
     }
 
-    pub fn create_triangle(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_triangle(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices: Vec<VertexPosColorUv> = Vec::new();
 
         let v = [[-0.5, -0.5, 0.0], [0.5, -0.5, 0.0], [0.0, 0.5, 0.0]];
@@ -304,7 +313,9 @@ pub mod shapes {
     }
 
     // * Create a unit cube centered at origin
-    pub fn create_cube(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_cube(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices: Vec<VertexPosColorUv> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
@@ -347,7 +358,9 @@ pub mod shapes {
     }
 
     // * Wrong Cube, to test normals
-    pub fn create_wrong_cube(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_wrong_cube(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices: Vec<VertexPosColorUv> = Vec::new();
 
         let v = [
@@ -477,9 +490,9 @@ pub mod shapes {
         ];
 
         let initial_indices = [
-            0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7,
-            6, 7, 1, 8, 3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10,
-            8, 6, 7, 9, 8, 1,
+            0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4,
+            11, 10, 2, 10, 7, 6, 7, 1, 8, 3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8,
+            3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9, 8, 1,
         ];
 
         // Normalize all vertices to lie on sphere
@@ -570,12 +583,15 @@ pub mod shapes {
             });
         }
 
-        let final_indices: Vec<u32> = (0..final_vertices.len() as u32).collect();
+        let final_indices: Vec<u32> =
+            (0..final_vertices.len() as u32).collect();
         Mesh::new(memory_allocator, &final_vertices, Some(&final_indices))
     }
 
     // * Create a tetrahedron
-    pub fn create_tetrahedron(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_tetrahedron(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices = Vec::new();
         let a = 0.5;
 
@@ -592,7 +608,9 @@ pub mod shapes {
     }
 
     // * Create an octahedron
-    pub fn create_octahedron(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_octahedron(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices = Vec::new();
         let a = 0.5;
 
@@ -622,7 +640,9 @@ pub mod shapes {
     }
 
     // * Create a dodecahedron
-    pub fn create_dodecahedron(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_dodecahedron(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices = Vec::new();
         let phi = (1.0 + (5.0_f32).sqrt()) / 2.0; // Golden ratio
         let a = 0.3;
@@ -672,7 +692,12 @@ pub mod shapes {
         for face in faces.iter() {
             // Triangulate pentagon (fan from first vertex)
             for i in 1..(face.len() - 1) {
-                add_triangle(&mut vertices, v[face[0]], v[face[i]], v[face[i + 1]]);
+                add_triangle(
+                    &mut vertices,
+                    v[face[0]],
+                    v[face[i]],
+                    v[face[i + 1]],
+                );
             }
         }
 
@@ -680,7 +705,9 @@ pub mod shapes {
     }
 
     // * Create an icosahedron
-    pub fn create_icosahedron(memory_allocator: &Arc<StandardMemoryAllocator>) -> Mesh {
+    pub fn create_icosahedron(
+        memory_allocator: &Arc<StandardMemoryAllocator>,
+    ) -> Mesh {
         let mut vertices = Vec::new();
         let phi = (1.0 + (5.0_f32).sqrt()) / 2.0;
         let a = 0.5;
@@ -748,7 +775,8 @@ pub mod shapes {
 
         for i in 0..major_segments {
             let major_angle = (i as f32) * 2.0 * PI / major_segments as f32;
-            let next_major_angle = ((i + 1) as f32) * 2.0 * PI / major_segments as f32;
+            let next_major_angle =
+                ((i + 1) as f32) * 2.0 * PI / major_segments as f32;
 
             let cos_major = major_angle.cos();
             let sin_major = major_angle.sin();
@@ -757,7 +785,8 @@ pub mod shapes {
 
             for j in 0..minor_segments {
                 let minor_angle = (j as f32) * 2.0 * PI / minor_segments as f32;
-                let next_minor_angle = ((j + 1) as f32) * 2.0 * PI / minor_segments as f32;
+                let next_minor_angle =
+                    ((j + 1) as f32) * 2.0 * PI / minor_segments as f32;
 
                 let cos_minor = minor_angle.cos();
                 let sin_minor = minor_angle.sin();
@@ -778,8 +807,10 @@ pub mod shapes {
                 ];
 
                 let p3 = [
-                    (major_radius + minor_radius * cos_next_minor) * cos_next_major,
-                    (major_radius + minor_radius * cos_next_minor) * sin_next_major,
+                    (major_radius + minor_radius * cos_next_minor)
+                        * cos_next_major,
+                    (major_radius + minor_radius * cos_next_minor)
+                        * sin_next_major,
                     minor_radius * sin_next_minor,
                 ];
 

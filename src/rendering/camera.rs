@@ -6,7 +6,11 @@ pub struct Camera {
     pub pitch: f32,
 }
 
-pub fn create_look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
+pub fn create_look_at(
+    eye: [f32; 3],
+    target: [f32; 3],
+    up: [f32; 3],
+) -> [[f32; 4]; 4] {
     let f = {
         let v = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
         let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
@@ -41,7 +45,12 @@ pub fn create_look_at(eye: [f32; 3], target: [f32; 3], up: [f32; 3]) -> [[f32; 4
     // ? Why is here so much math, I am tired of math a bit
 }
 
-pub fn create_projection_matrix(aspect: f32, fov: f32, z_near: f32, z_far: f32) -> [[f32; 4]; 4] {
+pub fn create_projection_matrix(
+    aspect: f32,
+    fov: f32,
+    z_near: f32,
+    z_far: f32,
+) -> [[f32; 4]; 4] {
     let f = 1.0 / (fov / 2.0).tan();
     [
         [f / aspect, 0.0, 0.0, 0.0],
@@ -51,7 +60,10 @@ pub fn create_projection_matrix(aspect: f32, fov: f32, z_near: f32, z_far: f32) 
     ]
 }
 
-pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] {
+pub fn camera_rotate(
+    camera: &mut Camera,
+    inputs: &InputState,
+) -> [[f32; 4]; 4] {
     let (yaw_sin, yaw_cos) = camera.yaw.sin_cos();
     let (pitch_sin, pitch_cos) = camera.pitch.sin_cos();
 
@@ -67,23 +79,25 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
 
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::W)
+            .contains(&winit::keyboard::KeyCode::KeyW)
         {
-            for (position, direction) in camera.position.iter_mut().zip(forward) {
+            for (position, direction) in camera.position.iter_mut().zip(forward)
+            {
                 *position += direction * speed_mult;
             }
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::S)
+            .contains(&winit::keyboard::KeyCode::KeyS)
         {
-            for (position, direction) in camera.position.iter_mut().zip(forward) {
+            for (position, direction) in camera.position.iter_mut().zip(forward)
+            {
                 *position -= direction * speed_mult;
             }
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::A)
+            .contains(&winit::keyboard::KeyCode::KeyA)
         {
             for (position, direction) in camera.position.iter_mut().zip(right) {
                 *position -= direction * speed_mult;
@@ -91,7 +105,7 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::D)
+            .contains(&winit::keyboard::KeyCode::KeyD)
         {
             for (position, direction) in camera.position.iter_mut().zip(right) {
                 *position += direction * speed_mult;
@@ -99,13 +113,13 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::Space)
+            .contains(&winit::keyboard::KeyCode::Space)
         {
             camera.position[1] += speed_mult;
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::LControl)
+            .contains(&winit::keyboard::KeyCode::ControlLeft)
         {
             camera.position[1] -= speed_mult;
         }
@@ -122,7 +136,7 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
 
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::W)
+            .contains(&winit::keyboard::KeyCode::KeyW)
         {
             camera.position[0] += forward[0] * speed_step;
             camera.position[1] += forward[1] * speed_step;
@@ -130,7 +144,7 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::S)
+            .contains(&winit::keyboard::KeyCode::KeyS)
         {
             camera.position[0] -= forward[0] * speed_step;
             camera.position[1] -= forward[1] * speed_step;
@@ -138,27 +152,27 @@ pub fn camera_rotate(camera: &mut Camera, inputs: &InputState) -> [[f32; 4]; 4] 
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::A)
+            .contains(&winit::keyboard::KeyCode::KeyA)
         {
             camera.position[0] -= right[0] * speed_step;
             camera.position[2] -= right[2] * speed_step;
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::D)
+            .contains(&winit::keyboard::KeyCode::KeyD)
         {
             camera.position[0] += right[0] * speed_step;
             camera.position[2] += right[2] * speed_step;
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::Space)
+            .contains(&winit::keyboard::KeyCode::Space)
         {
             camera.position[1] += speed_step;
         }
         if inputs
             .keys_pressed
-            .contains(&winit::event::VirtualKeyCode::LControl)
+            .contains(&winit::keyboard::KeyCode::ControlLeft)
         {
             camera.position[1] -= speed_step;
         }

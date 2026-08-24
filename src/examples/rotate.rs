@@ -1,5 +1,6 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType, Transform,
+    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    Transform,
 };
 /// # Rotating test
 /// This example spawns a sphere on the on the floor and cube that fall on it and roll

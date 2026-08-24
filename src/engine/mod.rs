@@ -26,36 +26,43 @@ use crate::core::{Material, Physics, Transform};
 use crate::geometry::gltf_loader::load_gltf_scene;
 use crate::geometry::shapes::{create_cube, create_sphere_subdivided};
 use crate::rendering::camera::create_projection_matrix;
-use crate::rendering::compute_registry::{ComputeShaderRegistry, ComputeShaderType};
+use crate::rendering::compute_registry::{
+    ComputeShaderRegistry, ComputeShaderType,
+};
 use crate::rendering::init_vulkan;
 use crate::rendering::render::create_builder;
 use crate::rendering::shader_registry::{ShaderRegistry, ShaderType};
 use crate::rendering::swapchain::{create_framebuffers, create_render_pass};
 use crate::rendering::VulkanBase;
 use crate::scene::object::Instance;
-use crate::scene::{begin_render_pass_only, record_compute_physics_multi, RenderScene};
+use crate::scene::{
+    begin_render_pass_only, record_compute_physics_multi, RenderScene,
+};
 use nalgebra::Matrix4;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use vulkano::sync::GpuFuture;
-use winit::event::{Event, VirtualKeyCode, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
-use winit::platform::run_return::EventLoopExtRunReturn;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::CursorGrabMode;
+use winit::window::WindowId;
 
 use crate::rendering::compute_registry::CullPushConstants;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
 use vulkano::image::ImageUsage;
 use vulkano::pipeline::Pipeline;
 use vulkano::pipeline::PipelineBindPoint;
 use vulkano::swapchain::{
-    AcquireError, CompositeAlpha, PresentMode, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
+    PresentMode, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo,
 };
-use vulkano::sync::{self, FlushError};
+use vulkano::sync;
 
 /// Perspective camera for 3D rendering.
 ///
@@ -113,7 +120,7 @@ impl PerspectiveCamera {
     /// The view matrix transforming world coordinates to camera space
     pub fn update(
         &mut self,
-        keys: &HashSet<VirtualKeyCode>,
+        keys: &HashSet<KeyCode>,
         sprint: f32,
         dt: f32,
         mouse_captured: bool,
@@ -126,34 +133,41 @@ impl PerspectiveCamera {
         let forward = [forward[0] / len, 0.0, forward[2] / len];
 
         let right = [-self.yaw.sin(), 0.0, self.yaw.cos()];
-        let view_forward = [yaw_cos * pitch_cos, pitch_sin, yaw_sin * pitch_cos];
+        let view_forward =
+            [yaw_cos * pitch_cos, pitch_sin, yaw_sin * pitch_cos];
 
         if mouse_captured {
             let speed = 50.0 * sprint * dt;
-            if keys.contains(&VirtualKeyCode::W) {
-                for (position, direction) in self.position.iter_mut().zip(forward) {
+            if keys.contains(&KeyCode::KeyW) {
+                for (position, direction) in
+                    self.position.iter_mut().zip(forward)
+                {
                     *position += direction * speed;
                 }
             }
-            if keys.contains(&VirtualKeyCode::S) {
-                for (position, direction) in self.position.iter_mut().zip(forward) {
+            if keys.contains(&KeyCode::KeyS) {
+                for (position, direction) in
+                    self.position.iter_mut().zip(forward)
+                {
                     *position -= direction * speed;
                 }
             }
-            if keys.contains(&VirtualKeyCode::A) {
-                for (position, direction) in self.position.iter_mut().zip(right) {
+            if keys.contains(&KeyCode::KeyA) {
+                for (position, direction) in self.position.iter_mut().zip(right)
+                {
                     *position -= direction * speed;
                 }
             }
-            if keys.contains(&VirtualKeyCode::D) {
-                for (position, direction) in self.position.iter_mut().zip(right) {
+            if keys.contains(&KeyCode::KeyD) {
+                for (position, direction) in self.position.iter_mut().zip(right)
+                {
                     *position += direction * speed;
                 }
             }
-            if keys.contains(&VirtualKeyCode::Space) {
+            if keys.contains(&KeyCode::Space) {
                 self.position[1] += speed;
             }
-            if keys.contains(&VirtualKeyCode::LControl) {
+            if keys.contains(&KeyCode::ControlLeft) {
                 self.position[1] -= speed;
             }
         }
@@ -164,7 +178,11 @@ impl PerspectiveCamera {
             self.position[2] + view_forward[2],
         ];
 
-        crate::rendering::camera::create_look_at(self.position, target, [0.0, 1.0, 0.0])
+        crate::rendering::camera::create_look_at(
+            self.position,
+            target,
+            [0.0, 1.0, 0.0],
+        )
     }
 }
 
@@ -184,7 +202,7 @@ pub struct Engine {
     /// Vulkan swapchain - manages presentation
     swapchain: Arc<Swapchain>,
     /// Swapchain images - the render targets
-    images: Vec<Arc<vulkano::image::SwapchainImage>>,
+    images: Vec<Arc<vulkano::image::Image>>,
     /// Render pass - defines the rendering pipeline stages
     render_pass: Arc<vulkano::render_pass::RenderPass>,
     /// Graphics shader registry - maps shader types to pipelines
@@ -225,20 +243,62 @@ impl Engine {
     /// let engine = rusting_engine::Engine::new("My Game");
     /// ```
     pub fn new(title: &str) -> Self {
-        let event_loop = EventLoop::new();
+        let event_loop = EventLoop::new().expect("Failed to create event loop");
         let base = init_vulkan(&event_loop, title);
         let dims = base.window.inner_size();
+
+        let physical = base.device.physical_device();
+        let capabilities = physical
+            .surface_capabilities(&base.surface, Default::default())
+            .expect("Failed to query surface capabilities");
+        let (image_format, image_color_space) = physical
+            .surface_formats(&base.surface, Default::default())
+            .expect("Failed to query surface formats")
+            .into_iter()
+            .find(|(format, _)| {
+                matches!(
+                    format,
+                    vulkano::format::Format::B8G8R8A8_SRGB
+                        | vulkano::format::Format::R8G8B8A8_SRGB
+                )
+            })
+            .unwrap_or_else(|| {
+                physical
+                    .surface_formats(&base.surface, Default::default())
+                    .expect("Failed to query surface formats")[0]
+            });
+        let present_modes = physical
+            .surface_present_modes(&base.surface, Default::default())
+            .expect("Failed to query present modes");
+        let present_mode = [
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+            PresentMode::Fifo,
+        ]
+        .into_iter()
+        .find(|mode| present_modes.contains(mode))
+        .expect("Vulkan surfaces must support FIFO presentation");
+        let mut min_image_count =
+            capabilities.min_image_count.saturating_add(1);
+        if let Some(max_image_count) = capabilities.max_image_count {
+            min_image_count = min_image_count.min(max_image_count);
+        }
 
         let (swapchain, images) = Swapchain::new(
             base.device.clone(),
             base.surface.clone(),
             SwapchainCreateInfo {
-                min_image_count: 3,
-                image_format: None,
+                min_image_count,
+                image_format,
+                image_color_space,
                 image_extent: [dims.width, dims.height],
                 image_usage: ImageUsage::COLOR_ATTACHMENT,
-                composite_alpha: CompositeAlpha::Opaque,
-                present_mode: PresentMode::Immediate, // FASTEST MODE
+                composite_alpha: capabilities
+                    .supported_composite_alpha
+                    .into_iter()
+                    .next()
+                    .expect("Surface supports no composite alpha mode"),
+                present_mode,
                 ..Default::default()
             },
         )
@@ -251,9 +311,14 @@ impl Engine {
             base.device.clone(),
             Default::default(),
         ));
-        let ds_allocator = Arc::new(StandardDescriptorSetAllocator::new(base.device.clone()));
+        let ds_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            base.device.clone(),
+            Default::default(),
+        ));
         let mem_allocator = Arc::new(
-            vulkano::memory::allocator::StandardMemoryAllocator::new_default(base.device.clone()),
+            vulkano::memory::allocator::StandardMemoryAllocator::new_default(
+                base.device.clone(),
+            ),
         );
 
         let scene = RenderScene::new(
@@ -300,7 +365,12 @@ impl Engine {
     /// * `pos` - Light position in world space (X, Y, Z)
     /// * `color` - Light color as RGB values (typically 0.0-1.0)
     /// * `intensity` - Light brightness multiplier
-    pub fn set_light(&mut self, pos: [f32; 3], color: [f32; 3], intensity: f32) {
+    pub fn set_light(
+        &mut self,
+        pos: [f32; 3],
+        color: [f32; 3],
+        intensity: f32,
+    ) {
         self.scene.lock().unwrap().set_light(pos, color, intensity);
     }
 
@@ -313,7 +383,12 @@ impl Engine {
     /// * `transform` - Position, rotation, and scale of the cube
     /// * `mat` - Material properties (color, shader, roughness, metalness)
     /// * `phys` - Physics properties (collision type, mass, bounciness, etc.)
-    pub fn add_cube(&mut self, transform: Transform, mat: &Material, phys: &Physics) {
+    pub fn add_cube(
+        &mut self,
+        transform: Transform,
+        mat: &Material,
+        phys: &Physics,
+    ) {
         // Cache mesh on first use, then reuse
         let mesh = if let Some(cached) = &self.cached_cube_mesh {
             cached.clone()
@@ -329,10 +404,11 @@ impl Engine {
             ..Default::default()
         };
         inst.apply_material(mat);
-        self.scene
-            .lock()
-            .unwrap()
-            .add_instance(mesh, inst, &self.memory_allocator);
+        self.scene.lock().unwrap().add_instance(
+            mesh,
+            inst,
+            &self.memory_allocator,
+        );
     }
 
     /// Adds a sphere to the scene.
@@ -353,7 +429,8 @@ impl Engine {
         subdiv: u32,
     ) {
         // Each subdivision level has different geometry and needs its own cache entry.
-        let mesh = if let Some(cached) = self.cached_sphere_meshes.get(&subdiv) {
+        let mesh = if let Some(cached) = self.cached_sphere_meshes.get(&subdiv)
+        {
             cached.clone()
         } else {
             let m = create_sphere_subdivided(&self.memory_allocator, subdiv);
@@ -367,10 +444,11 @@ impl Engine {
             ..Default::default()
         };
         inst.apply_material(mat);
-        self.scene
-            .lock()
-            .unwrap()
-            .add_instance(mesh, inst, &self.memory_allocator);
+        self.scene.lock().unwrap().add_instance(
+            mesh,
+            inst,
+            &self.memory_allocator,
+        );
     }
 
     /// Adds a GLTF model to the scene.
@@ -390,7 +468,9 @@ impl Engine {
 
         // Load image using the image crate
         let img = image::open(path)
-            .unwrap_or_else(|e| panic!("Failed to load texture {}: {}", path, e))
+            .unwrap_or_else(|e| {
+                panic!("Failed to load texture {}: {}", path, e)
+            })
             .into_rgba8();
         let width = img.width();
         let height = img.height();
@@ -426,10 +506,18 @@ impl Engine {
     /// * `mat` - Material properties to apply to all meshes
     /// * `phys` - Physics properties for collision simulation
     /// * `path` - Path to the .gltf or .glb file
-    pub fn add_gltf(&mut self, transform: Transform, mat: &Material, phys: &Physics, path: &str) {
+    pub fn add_gltf(
+        &mut self,
+        transform: Transform,
+        mat: &Material,
+        phys: &Physics,
+        path: &str,
+    ) {
         if !self.gltf_cache.contains_key(path) {
-            let (mut objects, textures) = load_gltf_scene(&self.memory_allocator, path);
-            let base_texture_count = self.scene.lock().unwrap().texture_views.len();
+            let (mut objects, textures) =
+                load_gltf_scene(&self.memory_allocator, path);
+            let base_texture_count =
+                self.scene.lock().unwrap().texture_views.len();
             let pipeline = self.registry.default_pipeline();
 
             if !textures.is_empty() {
@@ -443,10 +531,12 @@ impl Engine {
 
             for (_mesh, instance) in &mut objects {
                 if let Some(tex_idx) = instance.base_color_texture {
-                    instance.base_color_texture = Some(tex_idx + base_texture_count);
+                    instance.base_color_texture =
+                        Some(tex_idx + base_texture_count);
                 }
                 if let Some(tex_idx) = instance.metallic_roughness_texture {
-                    instance.metallic_roughness_texture = Some(tex_idx + base_texture_count);
+                    instance.metallic_roughness_texture =
+                        Some(tex_idx + base_texture_count);
                 }
             }
             self.gltf_cache.insert(path.to_string(), objects);
@@ -472,13 +562,15 @@ impl Engine {
                 instance.base_color_texture = mat.base_color_texture;
             }
             if mat.metallic_roughness_texture.is_some() {
-                instance.metallic_roughness_texture = mat.metallic_roughness_texture;
+                instance.metallic_roughness_texture =
+                    mat.metallic_roughness_texture;
             }
 
-            self.scene
-                .lock()
-                .unwrap()
-                .add_instance(mesh.clone(), instance, &self.memory_allocator);
+            self.scene.lock().unwrap().add_instance(
+                mesh.clone(),
+                instance,
+                &self.memory_allocator,
+            );
         }
     }
 
@@ -532,7 +624,13 @@ impl Engine {
     pub fn run(mut self) {
         eprintln!("[DBG] run() start");
         eprintln!("[DBG] starting upload");
-        let (physics_read, physics_write, solid_obj_count, dispatches, visible_indices_buffer) = {
+        let (
+            physics_read,
+            physics_write,
+            solid_obj_count,
+            dispatches,
+            visible_indices_buffer,
+        ) = {
             let mut s = self.scene.lock().unwrap();
             let d = s.upload_to_gpu(
                 &self.memory_allocator,
@@ -541,7 +639,10 @@ impl Engine {
             );
             eprintln!("[DBG] upload done {}", d.len());
             let tex_count = s.texture_views.len();
-            s.ensure_descriptor_cache(self.registry.default_pipeline(), tex_count);
+            s.ensure_descriptor_cache(
+                self.registry.default_pipeline(),
+                tex_count,
+            );
             (
                 s.physics_read.clone(),
                 s.physics_write.clone(),
@@ -554,7 +655,7 @@ impl Engine {
 
         let mut compute_sets: HashMap<
             ComputeShaderType,
-            (Arc<PersistentDescriptorSet>, Arc<PersistentDescriptorSet>),
+            (Arc<DescriptorSet>, Arc<DescriptorSet>),
         > = HashMap::new();
 
         let mut used_shaders = HashSet::new();
@@ -562,7 +663,9 @@ impl Engine {
             used_shaders.insert(dispatch.compute_shader);
         }
 
-        if let Some(scene_shader) = self.compute_registry.scene_shader_optional() {
+        if let Some(scene_shader) =
+            self.compute_registry.scene_shader_optional()
+        {
             used_shaders.insert(scene_shader);
         }
 
@@ -581,20 +684,36 @@ impl Engine {
             let mut writes_1: Vec<WriteDescriptorSet> = vec![];
 
             if bindings.needs_read_buffer {
-                writes_0.push(WriteDescriptorSet::buffer(0, physics_read.clone()));
-                writes_1.push(WriteDescriptorSet::buffer(0, physics_write.clone()));
+                writes_0
+                    .push(WriteDescriptorSet::buffer(0, physics_read.clone()));
+                writes_1
+                    .push(WriteDescriptorSet::buffer(0, physics_write.clone()));
             }
             if bindings.needs_write_buffer {
-                writes_0.push(WriteDescriptorSet::buffer(1, physics_write.clone()));
-                writes_1.push(WriteDescriptorSet::buffer(1, physics_read.clone()));
+                writes_0
+                    .push(WriteDescriptorSet::buffer(1, physics_write.clone()));
+                writes_1
+                    .push(WriteDescriptorSet::buffer(1, physics_read.clone()));
             }
             if bindings.needs_grid_counts {
-                writes_0.push(WriteDescriptorSet::buffer(2, scene.grid_counts.clone()));
-                writes_1.push(WriteDescriptorSet::buffer(2, scene.grid_counts.clone()));
+                writes_0.push(WriteDescriptorSet::buffer(
+                    2,
+                    scene.grid_counts.clone(),
+                ));
+                writes_1.push(WriteDescriptorSet::buffer(
+                    2,
+                    scene.grid_counts.clone(),
+                ));
             }
             if bindings.needs_grid_objects {
-                writes_0.push(WriteDescriptorSet::buffer(3, scene.grid_objects.clone()));
-                writes_1.push(WriteDescriptorSet::buffer(3, scene.grid_objects.clone()));
+                writes_0.push(WriteDescriptorSet::buffer(
+                    3,
+                    scene.grid_objects.clone(),
+                ));
+                writes_1.push(WriteDescriptorSet::buffer(
+                    3,
+                    scene.grid_objects.clone(),
+                ));
             }
             if bindings.needs_big_indices {
                 writes_0.push(WriteDescriptorSet::buffer(
@@ -607,17 +726,19 @@ impl Engine {
                 ));
             }
 
-            let set_0 = PersistentDescriptorSet::new(
-                &self.descriptor_set_allocator,
+            let set_0 = DescriptorSet::new(
+                self.descriptor_set_allocator.clone(),
                 compute_layout.clone(),
                 writes_0,
+                [],
             )
             .unwrap();
 
-            let set_1 = PersistentDescriptorSet::new(
-                &self.descriptor_set_allocator,
+            let set_1 = DescriptorSet::new(
+                self.descriptor_set_allocator.clone(),
                 compute_layout.clone(),
                 writes_1,
+                [],
             )
             .unwrap();
 
@@ -634,25 +755,27 @@ impl Engine {
                 .set_layouts()[0]
                 .clone();
 
-            let gb_set_0 = PersistentDescriptorSet::new(
-                &self.descriptor_set_allocator,
+            let gb_set_0 = DescriptorSet::new(
+                self.descriptor_set_allocator.clone(),
                 grid_layout.clone(),
                 [
                     WriteDescriptorSet::buffer(0, physics_read.clone()),
                     WriteDescriptorSet::buffer(2, scene.grid_counts.clone()),
                     WriteDescriptorSet::buffer(3, scene.grid_objects.clone()),
                 ],
+                [],
             )
             .unwrap();
 
-            let gb_set_1 = PersistentDescriptorSet::new(
-                &self.descriptor_set_allocator,
+            let gb_set_1 = DescriptorSet::new(
+                self.descriptor_set_allocator.clone(),
                 grid_layout,
                 [
                     WriteDescriptorSet::buffer(0, physics_write.clone()),
                     WriteDescriptorSet::buffer(2, scene.grid_counts.clone()),
                     WriteDescriptorSet::buffer(3, scene.grid_objects.clone()),
                 ],
+                [],
             )
             .unwrap();
 
@@ -660,8 +783,11 @@ impl Engine {
         };
         eprintln!("[DBG] grid_build_sets done, starting event loop");
 
-        let mut framebuffers =
-            create_framebuffers(&self.images, &self.render_pass, &self.memory_allocator);
+        let mut framebuffers = create_framebuffers(
+            &self.images,
+            &self.render_pass,
+            &self.memory_allocator,
+        );
         let mut inputs = InputState::default();
         let mut last_frame_instant = Instant::now();
         let mut accumulator = 0.0;
@@ -672,334 +798,464 @@ impl Engine {
         let mut fps_timer = Instant::now();
         let mut frame_count = 0;
 
-        let mut event_loop = self.event_loop.take().unwrap();
-        event_loop.run_return(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Poll;
-            match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => *control_flow = ControlFlow::Exit,
-                Event::WindowEvent {
-                    event: WindowEvent::Resized(_),
-                    ..
-                } => recreate_swapchain = true,
-                Event::DeviceEvent {
-                    event: winit::event::DeviceEvent::MouseMotion { delta },
-                    ..
-                } if inputs.mouse_captured => {
-                    let mut cam = self.camera.lock().unwrap();
-                    cam.yaw -= delta.0 as f32 * 0.001;
-                    cam.pitch += delta.1 as f32 * 0.001;
-                    cam.pitch = cam.pitch.clamp(-1.5, 1.5);
-                }
-                Event::WindowEvent {
-                    event: WindowEvent::KeyboardInput { input, .. },
-                    ..
-                } => {
-                    if let Some(code) = input.virtual_keycode {
-                        if input.state == winit::event::ElementState::Pressed {
-                            if code == VirtualKeyCode::Escape {
-                                inputs.mouse_captured = !inputs.mouse_captured;
-                                let _ =
-                                    self.base.window.set_cursor_grab(if inputs.mouse_captured {
-                                        CursorGrabMode::Locked
-                                    } else {
-                                        CursorGrabMode::None
-                                    });
-                                self.base.window.set_cursor_visible(!inputs.mouse_captured);
-                            }
-                            if code == VirtualKeyCode::C {
-                                inputs.cull_enabled = !inputs.cull_enabled;
-                                eprintln!(
-                                    "[DBG] Culling {}",
-                                    if inputs.cull_enabled {
-                                        "ENABLED"
-                                    } else {
-                                        "DISABLED"
-                                    }
-                                );
-                            }
-                            inputs.keys.insert(code);
-                        } else {
-                            inputs.keys.remove(&code);
-                        }
+        let event_loop = self.event_loop.take().unwrap();
+        event_loop.set_control_flow(ControlFlow::Poll);
+        let window_id = self.base.window.id();
+        let mut handler = EngineEventHandler::new(
+            window_id,
+            move |event: EngineEvent, active_event_loop: &ActiveEventLoop| {
+                match event {
+                    EngineEvent::Window(WindowEvent::CloseRequested) => {
+                        active_event_loop.exit()
                     }
-                }
-
-                Event::MainEventsCleared => {
-                    frame_index = (frame_index + 1) % 3;
-
-                    frame_count += 1;
-                    if fps_timer.elapsed().as_secs_f32() >= 2.0 {
-                        println!(
-                            "FPS: {:.0}",
-                            frame_count as f32 / fps_timer.elapsed().as_secs_f32()
-                        );
-                        frame_count = 0;
-                        fps_timer = Instant::now();
+                    EngineEvent::Window(WindowEvent::Resized(_)) => {
+                        recreate_swapchain = true
                     }
-
-                    let frame_start = std::time::Instant::now();
-                    let now = Instant::now();
-                    let mut delta_time = now.duration_since(last_frame_instant).as_secs_f32();
-                    last_frame_instant = now;
-                    if delta_time > 0.05 {
-                        delta_time = 0.05;
-                    }
-                    accumulator += delta_time;
-
-                    if recreate_swapchain {
-                        let new_size = self.base.window.inner_size();
-                        if new_size.width > 0 && new_size.height > 0 {
-                            let (new_sw, new_img) = self
-                                .swapchain
-                                .recreate(SwapchainCreateInfo {
-                                    image_extent: new_size.into(),
-                                    ..self.swapchain.create_info()
-                                })
-                                .unwrap();
-                            self.swapchain = new_sw;
-                            framebuffers = create_framebuffers(
-                                &new_img,
-                                &self.render_pass,
-                                &self.memory_allocator,
-                            );
-                            self.camera.lock().unwrap().aspect =
-                                new_size.width as f32 / new_size.height as f32;
-                        }
-                        recreate_swapchain = false;
-                    }
-
-                    let (img_index, suboptimal, acquire_future) =
-                        match vulkano::swapchain::acquire_next_image(self.swapchain.clone(), None) {
-                            Ok(r) => r,
-                            Err(AcquireError::OutOfDate) => {
-                                recreate_swapchain = true;
-                                return;
-                            }
-                            Err(e) => panic!("{e}"),
-                        };
-                    if suboptimal {
-                        recreate_swapchain = true;
-                    }
-
-                    let (proj, view, cam_pos) = {
-                        let mut cam = self.camera.lock().unwrap();
-                        let sprint = if inputs.keys.contains(&VirtualKeyCode::LShift) {
-                            2.0
-                        } else {
-                            1.0
-                        };
-                        let view =
-                            cam.update(&inputs.keys, sprint, delta_time, inputs.mouse_captured);
-                        let proj = create_projection_matrix(cam.aspect, cam.fov, cam.near, cam.far);
-                        let cam_pos = cam.position;
-                        (proj, view, cam_pos)
-                    };
-
+                    EngineEvent::Device(DeviceEvent::MouseMotion { delta })
+                        if inputs.mouse_captured =>
                     {
-                        let mut s = self.scene.lock().unwrap();
-                        s.prepare_frame_ubo(frame_index, view, proj, cam_pos);
-                        let tex_count = s.texture_views.len();
-                        s.ensure_descriptor_cache(self.registry.default_pipeline(), tex_count);
+                        let mut cam = self.camera.lock().unwrap();
+                        cam.yaw -= delta.0 as f32 * 0.001;
+                        cam.pitch += delta.1 as f32 * 0.001;
+                        cam.pitch = cam.pitch.clamp(-1.5, 1.5);
                     }
-
-                    let mut comp_builder =
-                        create_builder(&self.command_buffer_allocator, &self.base.queue);
-                    let mut physics_ran = false;
-
-                    while accumulator >= fixed_dt {
-                        let scene = self.scene.lock().unwrap();
-                        let cell_size = scene.max_object_radius * 2.0 + 0.2;
-                        record_compute_physics_multi(
-                            &mut comp_builder,
-                            &self.compute_registry,
-                            &compute_sets,
-                            &grid_build_sets,
-                            &scene.grid_counts,
-                            &dispatches,
-                            fixed_dt,
-                            solid_obj_count,
-                            cell_size,
-                            scene.num_big_objects,
-                            compute_ping_pong,
-                        );
-
-                        compute_ping_pong = !compute_ping_pong;
-                        accumulator -= fixed_dt;
-                        physics_ran = true;
-                    }
-
-                    let physics_idx = if compute_ping_pong { 1 } else { 0 };
-
-                    if physics_ran {
-                        let comp_cb = comp_builder.build().unwrap();
-                        let comp_future = sync::now(self.base.device.clone())
-                            .then_execute(self.base.queue.clone(), comp_cb)
-                            .unwrap()
-                            .then_signal_fence_and_flush()
-                            .unwrap();
-
-                        comp_future.wait(None).unwrap();
-                    }
-
-                    let mut comp_builder =
-                        create_builder(&self.command_buffer_allocator, &self.base.queue);
-
-                    if inputs.cull_enabled {
-                        let cull_start = std::time::Instant::now();
-
-                        let view_proj = {
-                            let p = cgmath::Matrix4::from(proj);
-                            let v = cgmath::Matrix4::from(view);
-                            let vp: [[f32; 4]; 4] = (p * v).into();
-                            vp
-                        };
-
-                        let current_physics_buffer = if physics_idx == 0 {
-                            physics_read.clone()
-                        } else {
-                            physics_write.clone()
-                        };
-
-                        let mut s = self.scene.lock().unwrap();
-                        let mut current_physics_offset = 0u32;
-
-                        for batch in &mut s.batches {
-                            let count = batch.instances.len() as u32;
-                            if count == 0 {
-                                continue;
-                            }
-
+                    EngineEvent::Window(WindowEvent::KeyboardInput {
+                        event,
+                        ..
+                    }) => {
+                        if let PhysicalKey::Code(code) = event.physical_key {
+                            if event.state
+                                == winit::event::ElementState::Pressed
                             {
-                                let mut guard = batch.indirect_buffer.write().unwrap();
-                                guard[0].instance_count = 0;
+                                if code == KeyCode::Escape {
+                                    inputs.mouse_captured =
+                                        !inputs.mouse_captured;
+                                    let _ = self.base.window.set_cursor_grab(
+                                        if inputs.mouse_captured {
+                                            CursorGrabMode::Locked
+                                        } else {
+                                            CursorGrabMode::None
+                                        },
+                                    );
+                                    self.base.window.set_cursor_visible(
+                                        !inputs.mouse_captured,
+                                    );
+                                }
+                                if code == KeyCode::KeyC {
+                                    inputs.cull_enabled = !inputs.cull_enabled;
+                                    eprintln!(
+                                        "[DBG] Culling {}",
+                                        if inputs.cull_enabled {
+                                            "ENABLED"
+                                        } else {
+                                            "DISABLED"
+                                        }
+                                    );
+                                }
+                                inputs.keys.insert(code);
+                            } else {
+                                inputs.keys.remove(&code);
                             }
+                        }
+                    }
 
-                            let cull_pipeline =
-                                self.compute_registry.get_pipeline(ComputeShaderType::Cull);
-                            let cull_set = PersistentDescriptorSet::new(
-                                &self.descriptor_set_allocator,
-                                cull_pipeline.layout().set_layouts()[0].clone(),
-                                [
-                                    WriteDescriptorSet::buffer(0, current_physics_buffer.clone()),
-                                    WriteDescriptorSet::buffer(1, visible_indices_buffer.clone()),
-                                    WriteDescriptorSet::buffer(2, batch.indirect_buffer.clone()),
-                                ],
-                            )
-                            .unwrap();
+                    EngineEvent::AboutToWait => {
+                        frame_index = (frame_index + 1) % 3;
 
-                            comp_builder
-                                .bind_pipeline_compute(cull_pipeline.clone())
-                                .bind_descriptor_sets(
-                                    PipelineBindPoint::Compute,
-                                    cull_pipeline.layout().clone(),
-                                    0,
-                                    cull_set,
-                                )
-                                .push_constants(
-                                    cull_pipeline.layout().clone(),
-                                    0,
-                                    CullPushConstants {
-                                        view_proj,
-                                        batch_offset: current_physics_offset,
-                                        batch_count: count,
-                                        visible_list_offset: batch.base_instance_offset,
-                                    },
-                                )
-                                .dispatch([count.div_ceil(256), 1, 1])
-                                .unwrap();
-
-                            current_physics_offset += count;
+                        frame_count += 1;
+                        if fps_timer.elapsed().as_secs_f32() >= 2.0 {
+                            println!(
+                                "FPS: {:.0}",
+                                frame_count as f32
+                                    / fps_timer.elapsed().as_secs_f32()
+                            );
+                            frame_count = 0;
+                            fps_timer = Instant::now();
                         }
 
-                        let cull_cb = comp_builder.build().unwrap();
+                        let frame_start = std::time::Instant::now();
+                        let now = Instant::now();
+                        let mut delta_time = now
+                            .duration_since(last_frame_instant)
+                            .as_secs_f32();
+                        last_frame_instant = now;
+                        if delta_time > 0.05 {
+                            delta_time = 0.05;
+                        }
+                        accumulator += delta_time;
 
-                        let cull_future = sync::now(self.base.device.clone())
-                            .then_execute(self.base.queue.clone(), cull_cb)
-                            .unwrap()
-                            .then_signal_fence_and_flush()
-                            .unwrap();
+                        if recreate_swapchain {
+                            let new_size = self.base.window.inner_size();
+                            if new_size.width > 0 && new_size.height > 0 {
+                                let (new_sw, new_img) = self
+                                    .swapchain
+                                    .recreate(SwapchainCreateInfo {
+                                        image_extent: new_size.into(),
+                                        ..self.swapchain.create_info()
+                                    })
+                                    .unwrap();
+                                self.swapchain = new_sw;
+                                framebuffers = create_framebuffers(
+                                    &new_img,
+                                    &self.render_pass,
+                                    &self.memory_allocator,
+                                );
+                                self.camera.lock().unwrap().aspect =
+                                    new_size.width as f32
+                                        / new_size.height as f32;
+                            }
+                            recreate_swapchain = false;
+                        }
 
-                        cull_future.wait(None).unwrap();
+                        let (img_index, suboptimal, acquire_future) =
+                            match vulkano::swapchain::acquire_next_image(
+                                self.swapchain.clone(),
+                                None,
+                            ) {
+                                Ok(r) => r,
+                                Err(vulkano::Validated::Error(
+                                    vulkano::VulkanError::OutOfDate,
+                                )) => {
+                                    recreate_swapchain = true;
+                                    return;
+                                }
+                                Err(e) => panic!("{e}"),
+                            };
+                        if suboptimal {
+                            recreate_swapchain = true;
+                        }
 
-                        if frame_count <= 3 {
-                            let visible: u32 = s
-                                .batches
-                                .iter()
-                                .map(|b| {
-                                    let guard = b.indirect_buffer.read().unwrap();
-                                    guard[0].instance_count
-                                })
-                                .sum();
-                            eprintln!(
+                        let (proj, view, cam_pos) = {
+                            let mut cam = self.camera.lock().unwrap();
+                            let sprint =
+                                if inputs.keys.contains(&KeyCode::ShiftLeft) {
+                                    2.0
+                                } else {
+                                    1.0
+                                };
+                            let view = cam.update(
+                                &inputs.keys,
+                                sprint,
+                                delta_time,
+                                inputs.mouse_captured,
+                            );
+                            let proj = create_projection_matrix(
+                                cam.aspect, cam.fov, cam.near, cam.far,
+                            );
+                            let cam_pos = cam.position;
+                            (proj, view, cam_pos)
+                        };
+
+                        {
+                            let mut s = self.scene.lock().unwrap();
+                            s.prepare_frame_ubo(
+                                frame_index,
+                                view,
+                                proj,
+                                cam_pos,
+                            );
+                            let tex_count = s.texture_views.len();
+                            s.ensure_descriptor_cache(
+                                self.registry.default_pipeline(),
+                                tex_count,
+                            );
+                        }
+
+                        let mut comp_builder = create_builder(
+                            &self.command_buffer_allocator,
+                            &self.base.queue,
+                        );
+                        let mut physics_ran = false;
+
+                        while accumulator >= fixed_dt {
+                            let scene = self.scene.lock().unwrap();
+                            let cell_size = scene.max_object_radius * 2.0 + 0.2;
+                            record_compute_physics_multi(
+                                &mut comp_builder,
+                                &self.compute_registry,
+                                &compute_sets,
+                                &grid_build_sets,
+                                &scene.grid_counts,
+                                &dispatches,
+                                fixed_dt,
+                                solid_obj_count,
+                                cell_size,
+                                scene.num_big_objects,
+                                compute_ping_pong,
+                            );
+
+                            compute_ping_pong = !compute_ping_pong;
+                            accumulator -= fixed_dt;
+                            physics_ran = true;
+                        }
+
+                        let physics_idx = if compute_ping_pong { 1 } else { 0 };
+
+                        if physics_ran {
+                            let comp_cb = comp_builder.build().unwrap();
+                            let comp_future =
+                                sync::now(self.base.device.clone())
+                                    .then_execute(
+                                        self.base.queue.clone(),
+                                        comp_cb,
+                                    )
+                                    .unwrap()
+                                    .then_signal_fence_and_flush()
+                                    .unwrap();
+
+                            comp_future.wait(None).unwrap();
+                        }
+
+                        let mut comp_builder = create_builder(
+                            &self.command_buffer_allocator,
+                            &self.base.queue,
+                        );
+
+                        if inputs.cull_enabled {
+                            let cull_start = std::time::Instant::now();
+
+                            let view_proj = {
+                                let p = cgmath::Matrix4::from(proj);
+                                let v = cgmath::Matrix4::from(view);
+                                let vp: [[f32; 4]; 4] = (p * v).into();
+                                vp
+                            };
+
+                            let current_physics_buffer = if physics_idx == 0 {
+                                physics_read.clone()
+                            } else {
+                                physics_write.clone()
+                            };
+
+                            let mut s = self.scene.lock().unwrap();
+                            let mut current_physics_offset = 0u32;
+
+                            for batch in &mut s.batches {
+                                let count = batch.instances.len() as u32;
+                                if count == 0 {
+                                    continue;
+                                }
+
+                                {
+                                    let mut guard =
+                                        batch.indirect_buffer.write().unwrap();
+                                    guard[0].instance_count = 0;
+                                }
+
+                                let cull_pipeline = self
+                                    .compute_registry
+                                    .get_pipeline(ComputeShaderType::Cull);
+                                let cull_set = DescriptorSet::new(
+                                    self.descriptor_set_allocator.clone(),
+                                    cull_pipeline.layout().set_layouts()[0]
+                                        .clone(),
+                                    [
+                                        WriteDescriptorSet::buffer(
+                                            0,
+                                            current_physics_buffer.clone(),
+                                        ),
+                                        WriteDescriptorSet::buffer(
+                                            1,
+                                            visible_indices_buffer.clone(),
+                                        ),
+                                        WriteDescriptorSet::buffer(
+                                            2,
+                                            batch.indirect_buffer.clone(),
+                                        ),
+                                    ],
+                                    [],
+                                )
+                                .unwrap();
+
+                                comp_builder
+                                    .bind_pipeline_compute(
+                                        cull_pipeline.clone(),
+                                    )
+                                    .unwrap()
+                                    .bind_descriptor_sets(
+                                        PipelineBindPoint::Compute,
+                                        cull_pipeline.layout().clone(),
+                                        0,
+                                        cull_set,
+                                    )
+                                    .unwrap()
+                                    .push_constants(
+                                        cull_pipeline.layout().clone(),
+                                        0,
+                                        CullPushConstants {
+                                            view_proj,
+                                            batch_offset:
+                                                current_physics_offset,
+                                            batch_count: count,
+                                            visible_list_offset: batch
+                                                .base_instance_offset,
+                                        },
+                                    )
+                                    .unwrap();
+                                unsafe {
+                                    comp_builder.dispatch([
+                                        count.div_ceil(256),
+                                        1,
+                                        1,
+                                    ])
+                                }
+                                .unwrap();
+
+                                current_physics_offset += count;
+                            }
+
+                            let cull_cb = comp_builder.build().unwrap();
+
+                            let cull_future =
+                                sync::now(self.base.device.clone())
+                                    .then_execute(
+                                        self.base.queue.clone(),
+                                        cull_cb,
+                                    )
+                                    .unwrap()
+                                    .then_signal_fence_and_flush()
+                                    .unwrap();
+
+                            cull_future.wait(None).unwrap();
+
+                            if frame_count <= 3 {
+                                let visible: u32 = s
+                                    .batches
+                                    .iter()
+                                    .map(|b| {
+                                        let guard =
+                                            b.indirect_buffer.read().unwrap();
+                                        guard[0].instance_count
+                                    })
+                                    .sum();
+                                eprintln!(
                                 "[DBG] Culling took {}us — visible: {} / {}",
                                 cull_start.elapsed().as_micros(),
                                 visible,
                                 solid_obj_count,
                             );
+                            }
+
+                            drop(s);
                         }
 
-                        drop(s);
-                    }
-
-                    let mut render_builder =
-                        create_builder(&self.command_buffer_allocator, &self.base.queue);
-                    {
-                        let mut s = self.scene.lock().unwrap();
-                        begin_render_pass_only(
-                            &mut render_builder,
-                            &framebuffers,
-                            img_index,
-                            self.base.window.inner_size().into(),
-                            self.registry.default_pipeline(),
+                        let mut render_builder = create_builder(
+                            &self.command_buffer_allocator,
+                            &self.base.queue,
                         );
-                        s.record_draws_multi(
-                            &mut render_builder,
-                            &self.registry,
-                            frame_index,
-                            physics_idx,
-                            inputs.cull_enabled,
-                        );
-                        render_builder.end_render_pass().unwrap();
-                    }
-
-                    let render_cb = render_builder.build().unwrap();
-
-                    let future = sync::now(self.base.device.clone())
-                        .join(acquire_future)
-                        .then_execute(self.base.queue.clone(), render_cb)
-                        .unwrap()
-                        .then_swapchain_present(
-                            self.base.queue.clone(),
-                            SwapchainPresentInfo::swapchain_image_index(
-                                self.swapchain.clone(),
+                        {
+                            let mut s = self.scene.lock().unwrap();
+                            begin_render_pass_only(
+                                &mut render_builder,
+                                &framebuffers,
                                 img_index,
-                            ),
-                        )
-                        .then_signal_fence_and_flush();
+                                self.base.window.inner_size().into(),
+                                self.registry.default_pipeline(),
+                            );
+                            s.record_draws_multi(
+                                &mut render_builder,
+                                &self.registry,
+                                frame_index,
+                                physics_idx,
+                                inputs.cull_enabled,
+                            );
+                            render_builder
+                                .end_render_pass(Default::default())
+                                .unwrap();
+                        }
 
-                    match future {
-                        Ok(_) => {
-                            if frame_count <= 2 {
-                                eprintln!(
-                                    "[DBG] Frame total: {}us",
-                                    frame_start.elapsed().as_micros()
-                                );
+                        let render_cb = render_builder.build().unwrap();
+
+                        let future = sync::now(self.base.device.clone())
+                            .join(acquire_future)
+                            .then_execute(self.base.queue.clone(), render_cb)
+                            .unwrap()
+                            .then_swapchain_present(
+                                self.base.queue.clone(),
+                                SwapchainPresentInfo::swapchain_image_index(
+                                    self.swapchain.clone(),
+                                    img_index,
+                                ),
+                            )
+                            .then_signal_fence_and_flush();
+
+                        match future {
+                            Ok(_) => {
+                                if frame_count <= 2 {
+                                    eprintln!(
+                                        "[DBG] Frame total: {}us",
+                                        frame_start.elapsed().as_micros()
+                                    );
+                                }
+                            }
+                            Err(vulkano::Validated::Error(
+                                vulkano::VulkanError::OutOfDate,
+                            )) => {
+                                recreate_swapchain = true;
+                            }
+                            Err(e) => {
+                                eprintln!("[DBG] Flush error: {:?}", e);
                             }
                         }
-                        Err(FlushError::OutOfDate) => {
-                            recreate_swapchain = true;
-                        }
-                        Err(e) => {
-                            eprintln!("[DBG] Flush error: {:?}", e);
-                        }
                     }
+                    _ => (),
                 }
-                _ => (),
-            }
-        });
+            },
+        );
+        event_loop
+            .run_app(&mut handler)
+            .expect("Engine event loop failed");
+    }
+}
+
+enum EngineEvent {
+    Window(WindowEvent),
+    Device(DeviceEvent),
+    AboutToWait,
+}
+
+struct EngineEventHandler<F> {
+    window_id: WindowId,
+    callback: F,
+}
+
+impl<F> EngineEventHandler<F> {
+    fn new(window_id: WindowId, callback: F) -> Self {
+        Self {
+            window_id,
+            callback,
+        }
+    }
+}
+
+impl<F> ApplicationHandler for EngineEventHandler<F>
+where
+    F: FnMut(EngineEvent, &ActiveEventLoop),
+{
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        if window_id == self.window_id {
+            (self.callback)(EngineEvent::Window(event), event_loop);
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        (self.callback)(EngineEvent::Device(event), event_loop);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        (self.callback)(EngineEvent::AboutToWait, event_loop);
     }
 }
 
@@ -1008,7 +1264,7 @@ impl Engine {
 #[derive(Default)]
 struct InputState {
     /// Set of currently pressed keyboard keys
-    keys: HashSet<VirtualKeyCode>,
+    keys: HashSet<KeyCode>,
     /// Whether the mouse is captured (for camera look)
     mouse_captured: bool,
     /// Whether frustum culling is enabled

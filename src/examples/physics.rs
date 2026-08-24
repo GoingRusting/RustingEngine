@@ -14,7 +14,8 @@ pub fn main() {
     for i in 0..10 {
         for j in 0..3 {
             for k in 0..10 {
-                let pos = [i as f32 * 1.5, j as f32 * 2.0 + 7.0, k as f32 * 1.5];
+                let pos =
+                    [i as f32 * 1.5, j as f32 * 2.0 + 7.0, k as f32 * 1.5];
                 engine.add_cube(
                     Transform {
                         position: pos,

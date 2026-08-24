@@ -2,7 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use vulkano::device::Device;
-use vulkano::pipeline::ComputePipeline;
+use vulkano::pipeline::compute::ComputePipelineCreateInfo;
+use vulkano::pipeline::layout::{
+    PipelineDescriptorSetLayoutCreateInfo, PipelineLayout,
+};
+use vulkano::pipeline::{ComputePipeline, PipelineShaderStageCreateInfo};
+use vulkano::shader::ShaderModule;
 
 use crate::shaders::compute::*;
 
@@ -93,100 +98,45 @@ impl ComputeShaderRegistry {
     pub fn new(device: &Arc<Device>) -> Self {
         let mut pipelines = HashMap::new();
 
-        // Full physics
-        let cs_full =
-            cs_full::load(device.clone()).expect("Failed to load FullPhysics compute shader");
-        let cp_full = ComputePipeline::new(
-            device.clone(),
-            cs_full.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create FullPhysics pipeline");
+        let cs_full = cs_full::load(device.clone())
+            .expect("Failed to load FullPhysics compute shader");
+        let cp_full = create_compute_pipeline(device, cs_full, "FullPhysics");
         pipelines.insert(ComputeShaderType::FullPhysics, cp_full);
 
-        // Mid physics
-        let cs_mid =
-            cs_no_rot::load(device.clone()).expect("Failed to load MidPhysics compute shader");
-        let cp_mid = ComputePipeline::new(
-            device.clone(),
-            cs_mid.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create FullPhysics pipeline");
+        let cs_mid = cs_no_rot::load(device.clone())
+            .expect("Failed to load MidPhysics compute shader");
+        let cp_mid = create_compute_pipeline(device, cs_mid, "MidPhysics");
         pipelines.insert(ComputeShaderType::MidPhysic, cp_mid);
 
-        let cs_static =
-            cs_empty::load(device.clone()).expect("Failed to load Static compute shader");
-        let cp_static = ComputePipeline::new(
-            device.clone(),
-            cs_static.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create Static pipeline");
+        let cs_static = cs_empty::load(device.clone())
+            .expect("Failed to load Static compute shader");
+        let cp_static = create_compute_pipeline(device, cs_static, "Static");
         pipelines.insert(ComputeShaderType::Static, cp_static);
 
-        // NoCollision (gravity and velocity, but no collision loop)
-        let cs_no_col =
-            cs_no_coll::load(device.clone()).expect("Failed to load NoCollision compute shader");
-        let cp_no_col = ComputePipeline::new(
-            device.clone(),
-            cs_no_col.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create NoCollision pipeline");
+        let cs_no_col = cs_no_coll::load(device.clone())
+            .expect("Failed to load NoCollision compute shader");
+        let cp_no_col =
+            create_compute_pipeline(device, cs_no_col, "NoCollision");
         pipelines.insert(ComputeShaderType::NoCollision, cp_no_col);
 
-        let cs_grid =
-            cs_grid_build::load(device.clone()).expect("Failed to load GridBuild compute shader");
-        let cp_grid = ComputePipeline::new(
-            device.clone(),
-            cs_grid.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create GridBuild pipeline");
+        let cs_grid = cs_grid_build::load(device.clone())
+            .expect("Failed to load GridBuild compute shader");
+        let cp_grid = create_compute_pipeline(device, cs_grid, "GridBuild");
         pipelines.insert(ComputeShaderType::GridBuild, cp_grid);
 
-        let cs_empty = cs_empty::load(device.clone()).expect("Failed to load Empty compute shader");
-        let cp_empty = ComputePipeline::new(
-            device.clone(),
-            cs_empty.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create Empty shader pipeline");
+        let cs_empty = cs_empty::load(device.clone())
+            .expect("Failed to load Empty compute shader");
+        let cp_empty = create_compute_pipeline(device, cs_empty, "Empty");
         pipelines.insert(ComputeShaderType::Empty, cp_empty);
 
-        let cs_cull = cs_cull::load(device.clone()).expect("Failed to load Cull compute shader");
-        let cp_cull = ComputePipeline::new(
-            device.clone(),
-            cs_cull.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create Cull shader pipeline");
+        let cs_cull = cs_cull::load(device.clone())
+            .expect("Failed to load Cull compute shader");
+        let cp_cull = create_compute_pipeline(device, cs_cull, "Cull");
         pipelines.insert(ComputeShaderType::Cull, cp_cull);
 
-        let cs_test = cs_test::load(device.clone()).expect("Failed to load Test compute shader");
-        let cp_test = ComputePipeline::new(
-            device.clone(),
-            cs_test.entry_point("main").unwrap(),
-            &(),
-            None,
-            |_| {},
-        )
-        .expect("Failed to create Test pipeline");
+        let cs_test = cs_test::load(device.clone())
+            .expect("Failed to load Test compute shader");
+        let cp_test = create_compute_pipeline(device, cs_test, "Test");
         pipelines.insert(ComputeShaderType::Test, cp_test);
 
         Self {
@@ -195,7 +145,10 @@ impl ComputeShaderRegistry {
         }
     }
 
-    pub fn get_pipeline(&self, shader_type: ComputeShaderType) -> &Arc<ComputePipeline> {
+    pub fn get_pipeline(
+        &self,
+        shader_type: ComputeShaderType,
+    ) -> &Arc<ComputePipeline> {
         self.pipelines
             .get(&shader_type)
             .expect("Compute pipeline not found")
@@ -226,6 +179,31 @@ impl ComputeShaderRegistry {
     pub fn scene_shader_optional(&self) -> Option<ComputeShaderType> {
         self.scene_shader
     }
+}
+
+fn create_compute_pipeline(
+    device: &Arc<Device>,
+    shader: Arc<ShaderModule>,
+    name: &str,
+) -> Arc<ComputePipeline> {
+    let stage =
+        PipelineShaderStageCreateInfo::new(shader.entry_point("main").unwrap());
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages([&stage])
+            .into_pipeline_layout_create_info(device.clone())
+            .unwrap(),
+    )
+    .unwrap();
+
+    ComputePipeline::new(
+        device.clone(),
+        None,
+        ComputePipelineCreateInfo::stage_layout(stage, layout),
+    )
+    .unwrap_or_else(|error| {
+        panic!("Failed to create {name} compute pipeline: {error}")
+    })
 }
 
 #[repr(C)]

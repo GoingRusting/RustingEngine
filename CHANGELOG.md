@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.45] - 2026-08-24
+
+### Added
+
+- Added first version of ECS runtime with schedules, hierarchy and stable entity identities
+- Added typed asset handles, render extraction and revision-aware GPU mesh cache
+- Added first version of egui editor with hierarchy, inspector, camera settings, play controls and live 3D Vulkan viewport
+- Added roadmap and architecture documentation for future engine implementation
+- Added more tests for runtime, assets, GPU layouts and perspective projection
+
 ## [0.1.43] - 2026-08-24
 
 ### Added

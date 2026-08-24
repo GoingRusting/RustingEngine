@@ -1,10 +1,10 @@
 [package]
 name = "rusting_engine"
-version = "0.1.44"
+version = "0.1.45"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "A high-performance Vulkano-based 3D engine with GPU physics."
-license = "MIT OR Apache-2.0"
+license-file = "LICENSE.md"
 repository = "https://github.com/Vasyl-Trefilov/RustingEngine"
 readme = "README.md"
 keywords = ["vulkan", "engine", "graphics", "physics", "gamedev"]
@@ -15,22 +15,42 @@ exclude = ["testModels/*", "AGENTS.md", "plan.md", "benchmark/"]
 name = "user_main"
 path = "src/user_main.rs"
 
+[[bin]]
+name = "editor"
+path = "src/bin/editor.rs"
+required-features = ["editor"]
+
 [lib]
 path = "src/lib.rs"
+
+[features]
+default = ["editor"]
+editor = [
+    "dep:egui",
+    "dep:egui-winit",
+    "dep:egui_winit_vulkano",
+    "dep:vulkano-util",
+]
+validation = []
+experimental-gpu-physics = []
 
 [dependencies]
 bytemuck = "1.25.0"
 nalgebra = "0.34.2"
 rand = "0.10.0"
-vulkano = "0.33.0"
-vulkano-shaders = "0.33.0"
-vulkano-win = "0.33.0"
-winit = "0.28.0"
+vulkano = "0.35.2"
+vulkano-shaders = "0.35.0"
+winit = "0.30.12"
 rayon = "1.10"
 gltf = "1.4.1"
 smallvec = "1.15.1"
 cgmath = "0.18.0"
 image = "0.25.10"
+bevy_ecs = { version = "0.19.1", features = ["multi_threaded"] }
+egui = { version = "0.31.1", optional = true }
+egui-winit = { version = "0.31.1", default-features = false, features = ["wayland", "x11"], optional = true }
+egui_winit_vulkano = { version = "0.28.0", default-features = false, features = ["wayland", "x11"], optional = true }
+vulkano-util = { version = "0.35.0", optional = true }
 
 [profile.release]
 opt-level = 3

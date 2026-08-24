@@ -2,13 +2,15 @@ use crate::scene::object::PhysicsPushConstants;
 use std::sync::Arc;
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
-    SubpassContents,
+    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
+    RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
 };
-use vulkano::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor_set::DescriptorSet;
 use vulkano::device::Queue;
 use vulkano::pipeline::graphics::viewport::Viewport;
-use vulkano::pipeline::{ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint};
+use vulkano::pipeline::{
+    ComputePipeline, GraphicsPipeline, Pipeline, PipelineBindPoint,
+};
 use vulkano::render_pass::Framebuffer;
 
 #[allow(clippy::too_many_arguments)]
@@ -19,7 +21,7 @@ pub fn process_render(
     dims: [u32; 2],
     pipeline: &Arc<GraphicsPipeline>,
     compute_pipeline: &Arc<ComputePipeline>,
-    compute_set: &Arc<PersistentDescriptorSet>,
+    compute_set: &Arc<DescriptorSet>,
     total_objects: u32,
     dt: f32,
     num_big_objects: u32,
@@ -29,12 +31,14 @@ pub fn process_render(
 
         builder
             .bind_pipeline_compute(compute_pipeline.clone())
+            .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Compute,
                 compute_pipeline.layout().clone(),
                 0,
                 compute_set.clone(),
             )
+            .unwrap()
             .push_constants(
                 compute_pipeline.layout().clone(),
                 0,
@@ -48,36 +52,47 @@ pub fn process_render(
                     global_gravity: [0.0, -9.81, 0.0, 2.0],
                 },
             )
-            .dispatch([workgroups_x, 1, 1])
             .unwrap();
+        unsafe { builder.dispatch([workgroups_x, 1, 1]) }.unwrap();
     }
 
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into()), Some(1.0.into())],
-                ..RenderPassBeginInfo::framebuffer(framebuffers[img_index as usize].clone())
+                clear_values: vec![
+                    Some([0.0, 0.0, 0.0, 1.0].into()),
+                    Some(1.0.into()),
+                ],
+                ..RenderPassBeginInfo::framebuffer(
+                    framebuffers[img_index as usize].clone(),
+                )
             },
-            SubpassContents::Inline,
+            SubpassBeginInfo {
+                contents: SubpassContents::Inline,
+                ..Default::default()
+            },
         )
         .unwrap()
         .set_viewport(
             0,
             vec![Viewport {
-                origin: [0.0, 0.0],
-                dimensions: [dims[0] as f32, dims[1] as f32],
-                depth_range: 0.0..1.0,
-            }],
+                offset: [0.0, 0.0],
+                extent: [dims[0] as f32, dims[1] as f32],
+                depth_range: 0.0..=1.0,
+            }]
+            .into(),
         )
-        .bind_pipeline_graphics(pipeline.clone());
+        .unwrap()
+        .bind_pipeline_graphics(pipeline.clone())
+        .unwrap();
 }
 
 pub fn create_builder(
-    cb_allocator: &StandardCommandBufferAllocator,
+    cb_allocator: &Arc<StandardCommandBufferAllocator>,
     queue: &Arc<Queue>,
 ) -> AutoCommandBufferBuilder<PrimaryAutoCommandBuffer> {
     AutoCommandBufferBuilder::primary(
-        cb_allocator,
+        cb_allocator.clone(),
         queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )

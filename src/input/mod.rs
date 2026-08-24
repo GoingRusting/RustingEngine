@@ -1,9 +1,9 @@
 use std::collections::HashSet;
-use winit::event::VirtualKeyCode;
+use winit::keyboard::KeyCode;
 use winit::window::CursorGrabMode;
 
 pub struct InputState {
-    pub keys_pressed: HashSet<VirtualKeyCode>,
+    pub keys_pressed: HashSet<KeyCode>,
     pub mouse_delta: [f32; 2],
     pub mouse_captured: bool,
     pub last_mouse_pos: [f32; 2],
