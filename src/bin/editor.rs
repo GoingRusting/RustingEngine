@@ -7,7 +7,9 @@ use rusting_engine::editor::{
     EditorState, EditorViewport, EditorWorkspace,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
-use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
+use rusting_engine::rendering::scene_renderer::{
+    SceneRenderOptions, SceneRenderer, SceneViewport,
+};
 use rusting_engine::runtime::{
     load_scene, Camera, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
     SceneLoadMode, TimeControl,
@@ -277,22 +279,25 @@ impl ApplicationHandler for EditorApplication {
                                 future,
                                 renderer.swapchain_image_view(),
                                 target_extent,
-                                viewport,
+                                SceneRenderOptions {
+                                    viewport,
+                                    debug_overlay: (self
+                                        .runtime
+                                        .world()
+                                        .resource::<EditorState>()
+                                        .workspace
+                                        == EditorWorkspace::Scene)
+                                        .then(|| {
+                                            &self
+                                                .runtime
+                                                .world()
+                                                .resource::<EditorDebugOverlay>(
+                                                )
+                                                .0
+                                        }),
+                                },
                                 self.runtime.world().resource::<RenderWorld>(),
                                 self.runtime.world().resource::<AssetServer>(),
-                                (self
-                                    .runtime
-                                    .world()
-                                    .resource::<EditorState>()
-                                    .workspace
-                                    == EditorWorkspace::Scene)
-                                    .then(|| {
-                                        &self
-                                            .runtime
-                                            .world()
-                                            .resource::<EditorDebugOverlay>()
-                                            .0
-                                    }),
                             ) {
                                 Ok(future) => future,
                                 Err(error) => {

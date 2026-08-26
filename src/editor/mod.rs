@@ -6,6 +6,7 @@
 mod dock;
 pub mod gui_elements;
 mod hierarchy;
+mod picking;
 mod project;
 mod view;
 

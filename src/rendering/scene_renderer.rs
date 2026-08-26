@@ -222,6 +222,29 @@ pub struct SceneViewport {
     pub extent: [u32; 2],
 }
 
+/// Per-frame options that differ between a normal game render and Scene View.
+///
+/// The generic overlay type keeps editor code out of the renderer API. Games
+/// use [`Self::game`] and therefore cannot accidentally draw editor helpers.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneRenderOptions<'a> {
+    /// Portion of the target image used by this 3D view.
+    pub viewport: SceneViewport,
+    /// Optional temporary lines drawn after scene meshes.
+    pub debug_overlay: Option<&'a RenderDebugOverlay>,
+}
+
+impl<'a> SceneRenderOptions<'a> {
+    /// Creates the normal, editor-free game rendering configuration.
+    #[must_use]
+    pub fn game(extent: [u32; 2]) -> Self {
+        Self {
+            viewport: SceneViewport::full(extent),
+            debug_overlay: None,
+        }
+    }
+}
+
 impl SceneViewport {
     #[must_use]
     pub const fn full(extent: [u32; 2]) -> Self {
@@ -339,12 +362,11 @@ impl SceneRenderer {
         before: Box<dyn GpuFuture>,
         target: Arc<ImageView>,
         extent: [u32; 2],
-        viewport: SceneViewport,
+        options: SceneRenderOptions<'_>,
         render_world: &RenderWorld,
         assets: &AssetServer,
-        debug_overlay: Option<&RenderDebugOverlay>,
     ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
-        let viewport = viewport.clamped_to(extent);
+        let viewport = options.viewport.clamped_to(extent);
         if extent[0] == 0
             || extent[1] == 0
             || viewport.extent[0] == 0
@@ -598,8 +620,9 @@ impl SceneRenderer {
         // Debug geometry is submitted in the same render pass, so it uses the
         // exact editor camera and viewport as the scene below it. The optional
         // input is never provided by the game runner.
-        if let Some(overlay) =
-            debug_overlay.filter(|overlay| !overlay.lines.is_empty())
+        if let Some(overlay) = options
+            .debug_overlay
+            .filter(|overlay| !overlay.lines.is_empty())
         {
             let vertices = overlay
                 .lines

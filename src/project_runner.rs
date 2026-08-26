@@ -17,7 +17,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
 
 use crate::rendering::frame_pacer::{select_present_mode, FramePacer};
-use crate::rendering::scene_renderer::{SceneRenderer, SceneViewport};
+use crate::rendering::scene_renderer::{SceneRenderOptions, SceneRenderer};
 use crate::runtime::{
     load_scene, route_gpu_physics_events, AppError, EventQueue, FrameTime,
     GpuEventRegistry, GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule,
@@ -753,10 +753,9 @@ impl ApplicationHandler for ProjectApplication {
                                 future,
                                 renderer.swapchain_image_view(),
                                 extent,
-                                SceneViewport::full(extent),
+                                SceneRenderOptions::game(extent),
                                 self.runtime.world().resource::<RenderWorld>(),
                                 self.runtime.world().resource::<AssetServer>(),
-                                None,
                             ) {
                                 Ok(future) => future,
                                 Err(error) => {

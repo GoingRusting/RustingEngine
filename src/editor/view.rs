@@ -3,6 +3,7 @@
 //! Keeping the complete frame in this file makes the smaller editor modules
 //! easier to read while this view is gradually divided into panel modules.
 
+use super::picking::pick_entity;
 use super::*;
 
 /// Draws the interactive editor into an already-open egui frame.
@@ -122,6 +123,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     // Buttons set these small requests while drawing. We apply them later,
     // after egui no longer borrows temporary values.
     let mut viewport_rect = None;
+    let mut scene_click_position = None;
     let mut save_clicked = false;
     let mut load_clicked = false;
     let mut component_edits = Vec::new();
@@ -626,7 +628,19 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         }
                         ui.separator();
                         if viewport_rect.is_none() {
-                            viewport_rect = Some(ui.available_rect_before_wrap());
+                            let rect = ui.available_rect_before_wrap();
+                            if workspace == EditorWorkspace::Scene {
+                                let response = ui.interact(
+                                    rect,
+                                    ui.id().with("scene_view_pick_area"),
+                                    egui::Sense::click(),
+                                );
+                                if response.clicked() {
+                                    scene_click_position =
+                                        response.interact_pointer_pos();
+                                }
+                            }
+                            viewport_rect = Some(rect);
                             rendered_workspace = Some(workspace);
                         } else {
                             ui.centered_and_justified(|ui| {
@@ -976,6 +990,18 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     }
     if let Some(workspace) = rendered_workspace {
         state.workspace = workspace;
+    }
+
+    // A Scene View click selects the closest renderable mesh under the editor
+    // camera ray. Game View clicks never change editor selection.
+    if let (Some(click), Some(viewport), Some(camera)) =
+        (scene_click_position, viewport_rect, state.editor_camera)
+    {
+        state.selected = pick_entity(world, camera, click, viewport);
+        state.rename_draft = state
+            .selected
+            .and_then(|entity| world.get::<Name>(entity))
+            .map_or_else(String::new, |name| name.0.clone());
     }
 
     // Build helpers after the UI has picked the active Scene/Game area and
