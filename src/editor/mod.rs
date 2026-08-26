@@ -6,9 +6,10 @@
 mod dock;
 pub mod gui_elements;
 mod hierarchy;
+mod overlay;
 mod picking;
 mod project;
-mod view;
+pub mod view;
 
 use dock::EditorLayoutFile;
 pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
@@ -168,6 +169,8 @@ pub struct EditorGizmoSettings {
     pub show_grid: bool,
     /// Draw red X, green Y, and blue Z axes on the selected object.
     pub show_selected_axes: bool,
+    /// Draw a yellow box around the selected render mesh.
+    pub show_selected_bounds: bool,
 }
 
 impl Default for EditorGizmoSettings {
@@ -175,6 +178,7 @@ impl Default for EditorGizmoSettings {
         Self {
             show_grid: true,
             show_selected_axes: true,
+            show_selected_bounds: true,
         }
     }
 }

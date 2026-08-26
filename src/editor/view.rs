@@ -5,6 +5,7 @@
 
 use super::picking::pick_entity;
 use super::*;
+use crate::editor::overlay::{add_axis, add_bound_box};
 
 /// Draws the interactive editor into an already-open egui frame.
 ///
@@ -623,6 +624,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 )
                                 .on_hover_text(
                                     "Show X/Y/Z arrows on the selected object",
+                                );
+                                ui.checkbox(
+                                    &mut gizmo_settings.show_selected_bounds,
+                                    "Bounds",
+                                )
+                                .on_hover_text(
+                                    "Show a yellow box around the selected mesh",
                                 );
                             });
                         }
@@ -2055,10 +2063,35 @@ fn build_scene_debug_overlay(
                     normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
                     [0.25, 0.52, 1.0, 1.0],
                 );
+                if settings.show_selected_bounds {
+                    add_selected_bounds(&mut overlay, world, entity, matrix);
+                }
             }
         }
     }
     overlay
+}
+
+/// Finds the selected mesh's local bounds and asks the overlay helper to draw
+/// them in world space. Physics colliders are intentionally not involved.
+fn add_selected_bounds(
+    overlay: &mut RenderDebugOverlay,
+    world: &World,
+    entity: Entity,
+    matrix: [[f32; 4]; 4],
+) {
+    let Some(renderer) = world.get::<MeshRenderer>(entity).copied() else {
+        return;
+    };
+    let Some(mesh) = world.resource::<AssetServer>().meshes.get(renderer.mesh)
+    else {
+        return;
+    };
+    let Some((minimum, maximum)) = crate::editor::overlay::mesh_bounds(mesh)
+    else {
+        return;
+    };
+    add_bound_box(overlay, matrix, minimum, maximum, [1.0, 0.78, 0.12, 1.0]);
 }
 
 /// Removes object scale from a transform column so gizmos stay a useful size.
@@ -2069,38 +2102,5 @@ fn normalized_axis(axis: [f32; 3]) -> [f32; 3] {
         [axis[0] / length, axis[1] / length, axis[2] / length]
     } else {
         [1.0, 0.0, 0.0]
-    }
-}
-
-/// Adds a one-unit axis plus a small two-line arrow head.
-fn add_axis(
-    overlay: &mut RenderDebugOverlay,
-    origin: [f32; 3],
-    direction: [f32; 3],
-    color: [f32; 4],
-) {
-    let end = [
-        origin[0] + direction[0],
-        origin[1] + direction[1],
-        origin[2] + direction[2],
-    ];
-    overlay.line(origin, end, color);
-    // A compact arrow head is intentionally world-space and simple. It is a
-    // visual guide, not the interactive transform tool yet.
-    let side = if direction[1] == 0.0 {
-        [0.0, 1.0, 0.0]
-    } else {
-        [1.0, 0.0, 0.0]
-    };
-    for sign in [-1.0, 1.0] {
-        overlay.line(
-            end,
-            [
-                end[0] - direction[0] * 0.18 + side[0] * 0.09 * sign,
-                end[1] - direction[1] * 0.18 + side[1] * 0.09 * sign,
-                end[2] - direction[2] * 0.18 + side[2] * 0.09 * sign,
-            ],
-            color,
-        );
     }
 }
