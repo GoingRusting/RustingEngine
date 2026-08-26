@@ -1164,12 +1164,12 @@ fn show_dock_node(
                     }
                     let stroke = if active {
                         egui::Stroke::new(
-                            2.0,
+                            2.0_f32,
                             gui_elements::EditorTheme::ACCENT,
                         )
                     } else {
                         egui::Stroke::new(
-                            1.0,
+                            1.0_f32,
                             gui_elements::EditorTheme::BORDER,
                         )
                     };

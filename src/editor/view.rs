@@ -159,7 +159,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 .fill(gui_elements::EditorTheme::PANEL)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     gui_elements::EditorTheme::BORDER_SOFT,
                 )),
         )

@@ -252,7 +252,18 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
 
 ### Visibility and quality
 
-- [ ] CPU or GPU frustum culling selected by capability/profile.
+- [ ] Add `RenderBounds` as a rendering-only component independent from the physics `Collider`.
+- [ ] Support local bounding spheres and axis-aligned boxes, transformed into world bounds during render preparation.
+- [ ] Generate default render bounds automatically for primitives and imported meshes, with an explicit editor override for unusual meshes and animations.
+- [ ] Add `CullingMode::{Auto, Disabled, Frustum, FrustumAndOcclusion}`. Start with the first three modes; reserve occlusion culling for a later pass.
+- [ ] Select CPU or GPU frustum culling by object count, simulation ownership, device capability, and quality profile.
+- [ ] Cull GPU-owned objects directly from their newest GPU physics transforms. Do not read every transform back to the CPU merely to decide visibility.
+- [ ] Make GPU culling write a compact visible-instance list and indirect draw commands consumed by the normal instanced renderer.
+- [ ] Let `Auto` bypass the culling dispatch for small scenes where direct rendering is cheaper, using a tested threshold before timing-based selection exists.
+- [ ] Keep render visibility separate from simulation activity: a culled object continues physics unless an explicit simulation-distance policy says otherwise.
+- [ ] Add Render Bounds editing and debug visualization to the Inspector and viewport.
+- [ ] Report submitted, visible, and culled instance counts plus culling compute time in the profiler.
+- [ ] Add hierarchical-Z occlusion culling after frustum culling, depth-pyramid generation, and conservative-bound tests are stable.
 - [ ] LOD asset groups and distance/error-based selection.
 - [ ] Transparent sorting.
 - [ ] Shadow resolution and distance scaling by quality profile.
@@ -489,6 +500,10 @@ Goal: prove that the engine architecture works as a usable game-development stac
 - [ ] Frames-in-flight reuse and validation-clean shutdown.
 - [ ] Asset unload/reload while referenced by submitted frames.
 - [ ] Culling enabled/disabled equivalence.
+- [ ] Automatic primitive/imported-mesh bounds contain their complete source geometry.
+- [ ] GPU-owned objects are culled from the current GPU transform without full-state CPU readback.
+- [ ] Objects outside the camera stop producing render work but continue physics simulation.
+- [ ] `CullingMode::Auto` skips culling overhead below its tested scene-size threshold.
 - [ ] Capability fallback behavior on the low-end baseline.
 
 ### Golden-image tests

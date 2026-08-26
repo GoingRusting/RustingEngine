@@ -73,10 +73,10 @@ impl EditorTheme {
         style.visuals.faint_bg_color = Self::PANEL_RAISED;
         style.visuals.code_bg_color = Self::INPUT;
         style.visuals.selection.bg_fill = Self::ACCENT;
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, Self::TEXT);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, Self::TEXT);
         style.visuals.window_corner_radius = egui::CornerRadius::same(8);
         style.visuals.menu_corner_radius = egui::CornerRadius::same(7);
-        style.visuals.window_stroke = egui::Stroke::new(1.0, Self::BORDER);
+        style.visuals.window_stroke = egui::Stroke::new(1.0_f32, Self::BORDER);
         style.visuals.window_shadow = egui::epaint::Shadow {
             offset: [0, 8],
             blur: 24,
@@ -92,23 +92,23 @@ impl EditorTheme {
         style.visuals.widgets.inactive.weak_bg_fill = Self::BUTTON;
         style.visuals.widgets.inactive.bg_fill = Self::BUTTON;
         style.visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0, Self::BORDER);
+            egui::Stroke::new(1.0_f32, Self::BORDER);
         style.visuals.widgets.inactive.corner_radius =
             egui::CornerRadius::same(5);
         style.visuals.widgets.hovered.weak_bg_fill = Self::BUTTON_HOVER;
         style.visuals.widgets.hovered.bg_fill = Self::BUTTON_HOVER;
         style.visuals.widgets.hovered.bg_stroke =
-            egui::Stroke::new(1.0, Self::ACCENT);
+            egui::Stroke::new(1.0_f32, Self::ACCENT);
         style.visuals.widgets.hovered.corner_radius =
             egui::CornerRadius::same(5);
         style.visuals.widgets.active.weak_bg_fill = Self::ACCENT_ACTIVE;
         style.visuals.widgets.active.bg_fill = Self::ACCENT_ACTIVE;
         style.visuals.widgets.active.bg_stroke =
-            egui::Stroke::new(1.0, Self::ACCENT_HOVER);
+            egui::Stroke::new(1.0_f32, Self::ACCENT_HOVER);
         style.visuals.widgets.active.corner_radius =
             egui::CornerRadius::same(5);
         style.visuals.widgets.noninteractive.bg_stroke =
-            egui::Stroke::new(1.0, Self::BORDER_SOFT);
+            egui::Stroke::new(1.0_f32, Self::BORDER_SOFT);
         style.visuals.collapsing_header_frame = true;
         style.visuals.indent_has_left_vline = false;
         context.set_style(style);
@@ -297,7 +297,7 @@ impl EditorTheme {
                         egui::pos2(x, response.rect.top()),
                         egui::pos2(x, response.rect.bottom()),
                     ],
-                    egui::Stroke::new(1.0, Self::BORDER),
+                    egui::Stroke::new(1.0_f32, Self::BORDER),
                 );
             }
             let branch_x = response.rect.left() - INDENT * 0.5;
@@ -309,7 +309,7 @@ impl EditorTheme {
                         response.rect.center().y,
                     ),
                 ],
-                egui::Stroke::new(1.0, Self::BORDER),
+                egui::Stroke::new(1.0_f32, Self::BORDER),
             );
         }
         response

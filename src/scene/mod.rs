@@ -1077,8 +1077,8 @@ impl RenderScene {
             len if len == tex.width * tex.height * 3 => {
                 let mut out =
                     Vec::with_capacity((tex.width * tex.height * 4) as usize);
-                for rgb in tex.pixels.chunks_exact(3) {
-                    out.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                for &[red, green, blue] in tex.pixels.as_chunks::<3>().0 {
+                    out.extend_from_slice(&[red, green, blue, 255]);
                 }
                 out
             }
