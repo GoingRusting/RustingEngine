@@ -1,5 +1,9 @@
 name: Release
 
+# Keep shaderc-sys source builds working on runners that provide CMake 4.
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 on:
   push:
     tags: ["v*"]
@@ -49,4 +53,3 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/*
-

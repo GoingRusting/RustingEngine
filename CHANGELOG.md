@@ -36,6 +36,7 @@
 
 ### Fixed
 
+- Shaderc source builds now configure correctly with CMake 4 on GitHub's Windows runners
 - Inspector values no longer leak from the previous object into a newly selected object
 - Native ECS rendering now batches equal mesh/material objects into indexed instanced draws instead of recording one Vulkan draw per object
 - The 10,000-body example aggregates event logs instead of printing thousands of terminal lines per frame

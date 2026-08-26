@@ -1,5 +1,10 @@
 name: CI
 
+# CMake 4 removed compatibility below 3.5. shaderc-sys 0.8 still contains
+# third-party CMake files with an older policy declaration.
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 on:
   push:
   pull_request:
@@ -26,4 +31,3 @@ jobs:
         run: cargo test --workspace --all-targets
       - name: Documentation tests
         run: cargo test --workspace --doc
-
