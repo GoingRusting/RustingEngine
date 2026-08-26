@@ -1,11 +1,72 @@
 # Changelog
 
+## [1.0.0] - 2026-08-26
+
+### Added
+
+- Added Project Manager with project creation, folder picker and recent projects
+- Added scene New, Open, Save As, object creation, duplicate, rename, delete and parenting
+- Added scene dirty state, safe confirmation and Undo/Redo
+- Added Assets browser with file import, texture loading and glTF mesh assignment
+- Added real Cargo Check, release Build and compiler output in Code Editor
+- Added portable game export with executable, cooked scene, assets and license
+- Added Linux and Windows CI and automatic GitHub release archives
+- Added public contribution guidelines and a reproducible 10,000-body benchmark summary
+- Added reusable responsive GUI elements with CSS-like style values
+- Added modern editor theme with reusable hover, active, border, and shadow styles
+- Added Debug and Release choices beside the editor Play button
+- Added a reusable CSS-style ComboBox with a toolbar-aligned preset
+- Added compact File, Edit, and View menus while keeping Play directly visible
+- Added generation-checked physics IDs shared by ECS and future GPU readback
+- Added typed Rust GPU-condition builders with comparisons, ranges, boolean logic, timers, collisions, sleeping state and custom values
+- Added serializable GPU physics watch rules, event modes, payload selection and cooldown settings
+- Added a fixed 48-byte GPU physics event ABI with safe routing back to live ECS entities
+- Connected GPU Dynamic bodies to native-game compute gravity and GPU-owned render transforms
+- Connected compiled GPU conditions to asynchronous fence-polled Rust gameplay events
+- Added `GameScene::watch_gpu_object` and `GameScene::gpu_events` for concise game code
+- Added multi-class object tagging and `GameScene::watch_gpu_class` so shared GPU rules affect only explicitly selected object classes
+- Added unique scene-name validation for reliable single-object lookup
+- Added `GameScene::once`, reusable cube spawning, and class-based GPU physics assignment for procedural 10,000-body scenes
+- Added a directly runnable `hybrid_10k` native game example
+- Added visible vertical and horizontal scroll areas to Code, Inspector, Hierarchy, Project, Console, and Assets panels
+- Moved Cargo compiler and native game output from Code Editor into the Console panel so source editing keeps its full height
+- Added migration support for version 1 cooked scenes created before GPU watch rules
+- Added cached procedural `SphereSpawn` and `GameScene::spawn_sphere` for native Rust games
+- Reduced high-instance runtime overhead by using ECS change detection for physics IDs, revision-based render extraction, cached swapchain frame resources, and fixed-tick-only GPU event readback
+
+### Fixed
+
+- Inspector values no longer leak from the previous object into a newly selected object
+- Native ECS rendering now batches equal mesh/material objects into indexed instanced draws instead of recording one Vulkan draw per object
+- The 10,000-body example aggregates event logs instead of printing thousands of terminal lines per frame
+- Editor areas showing the same panel now use separate Egui IDs
+- Custom ComboBoxes now keep separate popup IDs in repeated dock areas
+- New Project now requires an explicitly selected parent folder
+- Project switching now clears stale code and uses project-relative source and scene paths
+- Project and scene save actions now have separate, unambiguous controls
+- Toolbar dropdowns now open wider styled panels with aligned full-width actions
+- Replaced editor icon-font symbols with portable text to prevent missing-glyph squares
+- Grouped Hierarchy object creation into one styled Add Object popup
+- Hierarchy now renders a real parent-first indented tree instead of grouping rows only by depth
+- Hierarchy Rename, Duplicate, and Delete actions now live in each object's right-click menu
+- Rename now edits the selected tree row inline with Apply, Cancel, Enter, and Escape controls
+- Split the large editor module into view, dock, project, test, and GUI files
+- Dock selection now follows clicks anywhere inside an area
+- Dock content now keeps safe spacing from borders and neighboring areas
+- Cargo Output now streams native game stdout, stderr, panics, and exit status
+- Editor Play now cooks, compiles, and runs the real Rust game instead of only changing preview mode
+- Scene loading now validates object IDs and hierarchy before replacing current scene
+- Saved and cooked asset paths are now portable between project and export folders
+- Old unversioned projects and scenes are now migrated safely
+
 ## [0.1.47] - 2026-08-25
 
 ### Added
 
 - More settings in gui like: Game/Scene/Code modes
-- Adding working editor with custom script language that has some events like "onSceneStart, onSceneUpdate" and etc.
+- Adding native Rust game projects that can be edited and built from GUI
+- Adding simple Rust scene API to move and edit objects without ECS boilerplate
+- Adding Blender-style editor areas that can be split, resized and changed to another panel type
 
 ### Fixed
 
@@ -32,7 +93,7 @@
 - Added roadmap and architecture documentation for future engine implementation
 - Added more tests for runtime, assets, GPU layouts and perspective projection
 
-## [0.1.43] - 2026-08-24
+## [0.1.44] - 2026-08-24
 
 ### Added
 

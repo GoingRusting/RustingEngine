@@ -3,13 +3,14 @@ use std::time::Instant;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
-    configure_editor_style, draw_editor_view, EditorState, EditorViewport,
+    configure_editor_style, draw_editor_view, EditorPlugin, EditorState,
+    EditorViewport,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
 use rusting_engine::runtime::{
     load_scene, Camera, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
-    SceneLoadMode, ScriptPlugin, ScriptSettings, TimeControl,
+    SceneLoadMode, TimeControl,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
@@ -24,28 +25,36 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
 
 struct EditorApplication {
+    /// Vulkan device, queues, and shared memory allocators.
     vulkan: VulkanoContext,
+    /// Winit windows and their Vulkan swapchains.
     windows: VulkanoWindows,
+    /// Egui renderer created after the window opens.
     gui: Option<Gui>,
+    /// 3D renderer created after the swapchain format is known.
     scene_renderer: Option<SceneRenderer>,
+    /// ECS world containing scene objects and editor state.
     runtime: RuntimeApp,
+    /// Time of the previous frame, used to calculate delta time.
     previous_frame: Instant,
+    /// Handles unlimited and limited frame-rate modes.
     frame_pacer: FramePacer,
+    /// VSync value currently used by the swapchain.
     applied_vsync: Option<bool>,
 }
 
 impl EditorApplication {
+    /// Creates editor data that does not need an open operating-system window.
     fn new() -> Self {
+        // Plugins add assets, render extraction, demo behaviour, and GUI state.
         let mut runtime = RuntimeApp::new();
         runtime.add_plugin(AssetPlugin).unwrap();
         runtime.add_plugin(RenderExtractPlugin).unwrap();
         runtime.add_plugin(DemoPlugin).unwrap();
-        runtime.add_plugin(ScriptPlugin).unwrap();
-        runtime.insert_resource(EditorState::default());
-        runtime.insert_resource(EditorViewport::default());
+        runtime.add_plugin(EditorPlugin).unwrap();
         runtime.world_mut().resource_mut::<TimeControl>().pause();
-        runtime.world_mut().resource_mut::<ScriptSettings>().enabled = false;
 
+        // Create the mesh and materials used by the small default scene.
         let (mesh, blue_material, orange_material) = {
             let mut assets = runtime.world_mut().resource_mut::<AssetServer>();
             let blue_material = assets.materials.insert(MaterialAsset {
@@ -64,6 +73,7 @@ impl EditorApplication {
             cast_shadows: true,
             receive_shadows: true,
         };
+        // Spawn a scene that is visible before the user saves a project scene.
         let scene_root =
             runtime.spawn((Name("Demo Scene".into()), Transform::default()));
         let blue = runtime.spawn((
@@ -94,6 +104,7 @@ impl EditorApplication {
                 ..Camera::default()
             },
         ));
+        // Replace the demo objects when a saved editor scene already exists.
         let scene_path =
             runtime.world().resource::<EditorState>().scene_path.clone();
         if std::path::Path::new(&scene_path).is_file() {
@@ -105,6 +116,7 @@ impl EditorApplication {
                 eprintln!("failed to restore editor scene: {error}");
             }
         }
+        // The editor camera is separate from the camera shipped with the game.
         let editor_camera = runtime
             .world_mut()
             .spawn((
@@ -141,9 +153,11 @@ impl EditorApplication {
 
 impl ApplicationHandler for EditorApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // Winit can resume more than once, but the GUI must be created once.
         if self.gui.is_some() {
             return;
         }
+        // Set the initial size and title of the editor window.
         let descriptor = WindowDescriptor {
             title: "RustingEngine Editor".into(),
             width: 1440.0,
@@ -161,6 +175,7 @@ impl ApplicationHandler for EditorApplication {
             },
         );
 
+        // The window now exists, so swapchain-dependent renderers can be made.
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
         let settings = self
             .runtime
@@ -181,6 +196,7 @@ impl ApplicationHandler for EditorApplication {
             )
             .expect("failed to create editor scene renderer"),
         );
+        // Egui draws last, which places controls over the 3D scene.
         let gui = Gui::new(
             event_loop,
             renderer.surface(),
@@ -204,6 +220,7 @@ impl ApplicationHandler for EditorApplication {
         let Some(gui) = self.gui.as_mut() else {
             return;
         };
+        // Give keyboard, mouse, and clipboard events to egui first.
         gui.update(&event);
         let renderer = self.windows.get_renderer_mut(window_id).unwrap();
 
@@ -214,6 +231,7 @@ impl ApplicationHandler for EditorApplication {
                 renderer.resize();
             }
             WindowEvent::RedrawRequested => {
+                // Update game time and all ECS schedules before drawing.
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
@@ -223,6 +241,7 @@ impl ApplicationHandler for EditorApplication {
                     return;
                 }
 
+                // GUI changes ECS values and reports the live 3D rectangle.
                 gui.immediate_ui(|gui| {
                     draw_editor_view(self.runtime.world_mut(), &gui.context());
                 });
@@ -239,6 +258,7 @@ impl ApplicationHandler for EditorApplication {
                     ));
                     self.applied_vsync = Some(vsync);
                 }
+                // Draw Vulkan scene first, egui second, and then present.
                 match renderer.acquire(None, |_| {}) {
                     Ok(future) => {
                         let target_extent = renderer.swapchain_image_size();

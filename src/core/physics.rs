@@ -114,6 +114,8 @@ impl Physics {
     ///
     /// # Example
     /// ```
+    /// use rusting_engine::Physics;
+    ///
     /// // Rotate 180 degrees per second (π radians/sec)
     /// let spinning = Physics::default()
     ///     .angular_velocity([3.14159, 0.0, 0.0]);
@@ -146,6 +148,8 @@ impl Physics {
     ///
     /// # Example
     /// ```
+    /// use rusting_engine::{CollisionType, Physics};
+    ///
     ///  // Invisible Box collision
     ///  let box_collision_physic = &Physics::default()
     ///     .collision_type(CollisionType::Box);

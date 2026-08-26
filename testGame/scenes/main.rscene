@@ -1,171 +1,24 @@
 {
-  "format_version": 1,
+  "format_version": 3,
   "name": "Main Scene",
   "entities": [
     {
-      "id": "10000000-0000-4000-8000-000000000001",
-      "parent": null,
-      "name": "Demo Scene",
-      "transform": {
-        "position": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "mesh_renderer": null,
-      "camera": null,
-      "visible": null,
-      "physics_body": null,
-      "rigid_body": null,
-      "collider": null,
-      "collision_layers": null,
-      "script": {
-        "source_path": "testGame/scripts/main.rscript",
-        "enabled": true
-      },
-      "components": {}
-    },
-    {
-      "id": "20000000-0000-4000-8000-000000000002",
-      "parent": "10000000-0000-4000-8000-000000000001",
-      "name": "Blue Cube",
-      "transform": {
-        "position": [
-          -1.5,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "mesh_renderer": {
-        "mesh": "BuiltinCube",
-        "material": {
-          "Inline": {
-            "model": "Pbr",
-            "base_color": [
-              0.08,
-              0.35,
-              0.95,
-              1.0
-            ],
-            "emissive": [
-              0.0,
-              0.0,
-              0.0
-            ],
-            "metallic": 0.0,
-            "roughness": 0.5,
-            "base_color_texture": null,
-            "normal_texture": null,
-            "metallic_roughness_texture": null,
-            "occlusion_texture": null,
-            "emissive_texture": null
-          }
-        },
-        "cast_shadows": true,
-        "receive_shadows": true
-      },
-      "camera": null,
-      "visible": null,
-      "physics_body": null,
-      "rigid_body": null,
-      "collider": null,
-      "collision_layers": null,
-      "script": null,
-      "components": {}
-    },
-    {
-      "id": "30000000-0000-4000-8000-000000000003",
-      "parent": "10000000-0000-4000-8000-000000000001",
-      "name": "Orange Cube",
-      "transform": {
-        "position": [
-          1.0,
-          0.0,
-          0.0
-        ],
-        "rotation": [
-          0.0,
-          3.06,
-          0.0
-        ],
-        "scale": [
-          1.0,
-          1.0,
-          1.0
-        ]
-      },
-      "mesh_renderer": {
-        "mesh": "BuiltinCube",
-        "material": {
-          "Inline": {
-            "model": "Pbr",
-            "base_color": [
-              1.0,
-              0.28,
-              0.04,
-              1.0
-            ],
-            "emissive": [
-              0.0,
-              0.0,
-              0.0
-            ],
-            "metallic": 0.0,
-            "roughness": 0.5,
-            "base_color_texture": null,
-            "normal_texture": null,
-            "metallic_roughness_texture": null,
-            "occlusion_texture": null,
-            "emissive_texture": null
-          }
-        },
-        "cast_shadows": true,
-        "receive_shadows": true
-      },
-      "camera": null,
-      "visible": null,
-      "physics_body": null,
-      "rigid_body": null,
-      "collider": null,
-      "collision_layers": null,
-      "script": null,
-      "components": {}
-    },
-    {
-      "id": "40000000-0000-4000-8000-000000000004",
+      "id": "b0d3c91d-f830-44ed-ad4c-029437f934f3",
       "parent": null,
       "name": "Game Camera",
+      "classes": [
+        "camera"
+      ],
       "transform": {
         "position": [
-          0.0,
-          3.0,
-          8.0
+          114.3,
+          121.2,
+          228.6
         ],
         "rotation": [
-          0.0,
-          0.0,
-          0.0
+          -0.63,
+          0.4,
+          -0.07
         ],
         "scale": [
           1.0,
@@ -179,7 +32,7 @@
           "Perspective": {
             "vertical_fov_radians": 1.0471976,
             "near": 0.1,
-            "far": 1000.0
+            "far": 2000.0
           }
         },
         "active": true,
@@ -190,7 +43,7 @@
       "rigid_body": null,
       "collider": null,
       "collision_layers": null,
-      "script": null,
+      "gpu_physics_watch": null,
       "components": {}
     }
   ]

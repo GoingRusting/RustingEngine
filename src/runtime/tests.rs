@@ -175,3 +175,159 @@ fn rendering_is_uncapped_by_default() {
     assert!(!settings.limit_fps);
     assert!(settings.max_fps > 0);
 }
+
+#[test]
+fn physics_ids_reject_delayed_events_after_slot_reuse() {
+    let first = Entity::from_raw_u32(10).unwrap();
+    let second = Entity::from_raw_u32(11).unwrap();
+    let mut ids = PhysicsIdRegistry::default();
+
+    let old_id = ids.assign(first);
+    assert_eq!(ids.resolve(old_id), Some(first));
+    ids.release(first);
+    let new_id = ids.assign(second);
+
+    assert_eq!(old_id.slot, new_id.slot);
+    assert_ne!(old_id.generation, new_id.generation);
+    assert_eq!(ids.resolve(old_id), None);
+    assert_eq!(ids.resolve(new_id), Some(second));
+}
+
+#[test]
+fn rust_condition_builder_compiles_to_postfix_gpu_instructions() {
+    let condition = GpuCondition::position_y()
+        .less_than(-100.0)
+        .and(GpuCondition::velocity_y().less_than(0.0))
+        .or(!GpuCondition::sleeping());
+
+    let instructions = condition.compile().unwrap();
+
+    // Two comparisons, AND, sleeping, NOT, OR.
+    assert_eq!(instructions.len(), 6);
+    assert_eq!(instructions[0].values[0], -100.0);
+    assert_eq!(instructions[1].values[0], 0.0);
+    assert_ne!(instructions[2].opcode, instructions[5].opcode);
+}
+
+#[test]
+fn one_class_rule_is_prepared_for_ten_thousand_matching_gpu_bodies() {
+    const BODY_COUNT: usize = 10_000;
+
+    let mut app = App::new();
+    app.add_plugin(HybridPhysicsPlugin).unwrap();
+    let rule = GpuPhysicsRule::new(
+        "body_fell",
+        GpuCondition::position_y().less_than(-100.0),
+    );
+    {
+        let mut watches =
+            app.world_mut().resource_mut::<GpuPhysicsClassWatches>();
+        watches.add("falling_cubes", rule.clone());
+        // The same rule reached through two classes must still emit only once.
+        watches.add("gravity", rule);
+    }
+
+    for index in 0..BODY_COUNT {
+        app.spawn((
+            Transform {
+                position: [index as f32, 0.0, 0.0],
+                ..Transform::default()
+            },
+            PhysicsBody {
+                simulation: SimulationClass::GpuDynamic,
+                ..PhysicsBody::default()
+            },
+            RigidBody::default(),
+            ObjectClasses::new(["falling_cubes", "gravity"]),
+        ));
+    }
+    app.spawn((
+        Transform::default(),
+        PhysicsBody {
+            simulation: SimulationClass::GpuDynamic,
+            ..PhysicsBody::default()
+        },
+        RigidBody::default(),
+        ObjectClasses::new(["unrelated"]),
+    ));
+
+    // PostUpdate assigns one stable PhysicsId to every GPU-owned body.
+    app.update(Duration::ZERO).unwrap();
+    let extracted =
+        super::hybrid_physics::extract_gpu_physics_bodies(app.world_mut());
+
+    assert_eq!(
+        app.world().resource::<GpuPhysicsClassWatches>().classes
+            ["falling_cubes"]
+            .len(),
+        1
+    );
+    assert_eq!(extracted.len(), BODY_COUNT + 1);
+    assert_eq!(
+        extracted
+            .iter()
+            .filter(|body| body.rules.len() == 1)
+            .count(),
+        BODY_COUNT
+    );
+    assert_eq!(
+        extracted
+            .iter()
+            .filter(|body| body.rules.is_empty())
+            .count(),
+        1
+    );
+    assert!(extracted
+        .windows(2)
+        .all(|bodies| bodies[0].physics_id != bodies[1].physics_id));
+}
+
+#[test]
+fn gpu_event_and_instruction_layouts_are_stable() {
+    use std::mem::{offset_of, size_of};
+
+    assert_eq!(size_of::<PhysicsId>(), 8);
+    assert_eq!(size_of::<GpuConditionInstruction>(), 32);
+    assert_eq!(offset_of!(GpuConditionInstruction, values), 16);
+    assert_eq!(size_of::<RawGpuPhysicsEvent>(), 48);
+    assert_eq!(offset_of!(RawGpuPhysicsEvent, tick_low), 16);
+    assert_eq!(offset_of!(RawGpuPhysicsEvent, payload), 32);
+}
+
+#[test]
+fn raw_gpu_events_reach_the_live_ecs_entity() {
+    let mut app = App::new();
+    app.add_plugin(HybridPhysicsPlugin).unwrap();
+    let entity = app.spawn(PhysicsBody {
+        simulation: SimulationClass::GpuDynamic,
+        ..PhysicsBody::default()
+    });
+    app.update(Duration::from_secs_f64(1.0 / 60.0)).unwrap();
+
+    let physics_id = *app.world().get::<PhysicsId>(entity).unwrap();
+    let event_id = app
+        .world_mut()
+        .resource_mut::<GpuEventRegistry>()
+        .register("cube_fell");
+    let tick = u64::from(u32::MAX) + 25;
+    let raw = RawGpuPhysicsEvent {
+        body_slot: physics_id.slot,
+        body_generation: physics_id.generation,
+        event_id: event_id.0,
+        tick_low: tick as u32,
+        tick_high: (tick >> 32) as u32,
+        payload_kind: GpuEventPayload::Position as u32,
+        payload: [1.0, -101.0, 2.0, 1.0],
+        ..Default::default()
+    };
+
+    let report = route_gpu_physics_events(app.world_mut(), &[raw]);
+    assert_eq!(report.delivered, 1);
+    app.update(Duration::ZERO).unwrap();
+
+    let events = app.world().resource::<EventQueue<GpuPhysicsEvent>>();
+    let event = events.iter().next().unwrap();
+    assert_eq!(event.entity, entity);
+    assert_eq!(event.tick, tick);
+    assert_eq!(event.payload[1], -101.0);
+}

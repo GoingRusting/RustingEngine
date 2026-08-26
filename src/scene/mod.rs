@@ -17,6 +17,18 @@ pub mod object;
 use crate::scene::object::PhysicsPushConstants;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Returns the push-constant vector used by one legacy compute profile.
+///
+/// Normal physics receives a directional gravity vector. Space mode instead
+/// receives an attractor position in xyz and its strength in w.
+fn physics_force_vector(shader: ComputeShaderType, cell_size: f32) -> [f32; 4] {
+    if shader == ComputeShaderType::Space {
+        [0.0, 0.0, 0.0, 500.0]
+    } else {
+        [0.0, -9.81, 0.0, cell_size]
+    }
+}
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::{
     StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
@@ -1268,7 +1280,10 @@ pub fn record_compute_physics_multi(
                             count: dispatch.count,
                             num_big_objects,
                             _pad: [0, 0, 0],
-                            global_gravity: [0.0, -9.81, 0.0, cell_size],
+                            global_gravity: physics_force_vector(
+                                shader_to_use,
+                                cell_size,
+                            ),
                         },
                     )
                     .unwrap();
@@ -1397,7 +1412,10 @@ pub fn record_compute_physics_spatial(
                     count: dispatch.count,
                     num_big_objects,
                     _pad: [0, 0, 0],
-                    global_gravity: [0.0, -9.81, 0.0, 2.0],
+                    global_gravity: physics_force_vector(
+                        dispatch.compute_shader,
+                        2.0,
+                    ),
                 },
             )
             .unwrap();

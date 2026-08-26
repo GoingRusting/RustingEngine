@@ -243,7 +243,7 @@ impl Engine {
     /// * `title` - The window title.
     ///
     /// # Examples
-    /// ```
+    /// ```no_run
     /// let engine = rusting_engine::Engine::new("My Game");
     /// ```
     pub fn new(title: &str) -> Self {
@@ -822,6 +822,10 @@ impl Engine {
         let mut fps_timer = Instant::now();
         let mut frame_count = 0;
         let mut next_frame = Instant::now();
+        // Retain the submitted frame so swapchain images and per-frame GPU
+        // resources are not reused while the device is still reading them.
+        let mut previous_frame_end: Option<Box<dyn GpuFuture>> =
+            Some(sync::now(self.base.device.clone()).boxed());
 
         let event_loop = self.event_loop.take().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -909,17 +913,6 @@ impl Engine {
                         }
 
                         frame_index = (frame_index + 1) % 3;
-
-                        frame_count += 1;
-                        if fps_timer.elapsed().as_secs_f32() >= 2.0 {
-                            println!(
-                                "FPS: {:.0}",
-                                frame_count as f32
-                                    / fps_timer.elapsed().as_secs_f32()
-                            );
-                            frame_count = 0;
-                            fps_timer = Instant::now();
-                        }
 
                         let frame_start = std::time::Instant::now();
                         let now = Instant::now();
@@ -1214,7 +1207,10 @@ impl Engine {
 
                         let render_cb = render_builder.build().unwrap();
 
-                        let future = sync::now(self.base.device.clone())
+                        previous_frame_end.as_mut().unwrap().cleanup_finished();
+                        let future = previous_frame_end
+                            .take()
+                            .unwrap()
                             .join(acquire_future)
                             .then_execute(self.base.queue.clone(), render_cb)
                             .unwrap()
@@ -1228,10 +1224,21 @@ impl Engine {
                             .then_signal_fence_and_flush();
 
                         match future {
-                            Ok(_) => {
+                            Ok(future) => {
+                                previous_frame_end = Some(future.boxed());
+                                frame_count += 1;
+                                if fps_timer.elapsed().as_secs_f32() >= 2.0 {
+                                    println!(
+                                        "Presented FPS: {:.0}",
+                                        frame_count as f32
+                                            / fps_timer.elapsed().as_secs_f32()
+                                    );
+                                    frame_count = 0;
+                                    fps_timer = Instant::now();
+                                }
                                 if frame_count <= 2 {
                                     eprintln!(
-                                        "[DBG] Frame total: {}us",
+                                        "[DBG] CPU frame submission: {}us",
                                         frame_start.elapsed().as_micros()
                                     );
                                 }
@@ -1240,9 +1247,15 @@ impl Engine {
                                 vulkano::VulkanError::OutOfDate,
                             )) => {
                                 recreate_swapchain = true;
+                                previous_frame_end = Some(
+                                    sync::now(self.base.device.clone()).boxed(),
+                                );
                             }
                             Err(e) => {
                                 eprintln!("[DBG] Flush error: {:?}", e);
+                                previous_frame_end = Some(
+                                    sync::now(self.base.device.clone()).boxed(),
+                                );
                             }
                         }
                     }

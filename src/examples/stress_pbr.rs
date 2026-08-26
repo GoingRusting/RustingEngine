@@ -22,7 +22,7 @@ pub fn main() {
     let grid_size = 20;
 
     for x in 0..grid_size {
-        for y in 0..grid_size {
+        for y in 0..25 {
             for z in 0..grid_size {
                 let pos = [
                     (x as f32 - grid_size as f32 / 2.0) * 5.0,

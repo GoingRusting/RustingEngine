@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Resource, World};
+use bevy_ecs::prelude::{Changed, Or, Resource, Without, World};
 use nalgebra::Matrix4;
 
 use crate::Transform;
@@ -69,6 +69,40 @@ pub(super) fn clear_parent(
 
 /// Rebuilds every global transform while safely diagnosing malformed cycles.
 pub fn propagate_transforms(world: &mut World) {
+    // Most high-volume effect scenes contain independent root objects. In
+    // that common case, only changed or newly spawned transforms need work;
+    // building several 10,000-entry hierarchy maps every frame is wasteful.
+    let has_parents = {
+        let mut query = world.query::<&Parent>();
+        query.iter(world).next().is_some()
+    };
+    if !has_parents {
+        let updates = {
+            let mut query = world.query_filtered::<
+                (Entity, &Transform),
+                Or<(Changed<Transform>, Without<GlobalTransform>)>,
+            >();
+            query
+                .iter(world)
+                .map(|(entity, transform)| {
+                    (
+                        entity,
+                        GlobalTransform {
+                            matrix: transform.to_matrix(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (entity, global) in updates {
+            world.entity_mut(entity).insert(global);
+        }
+        let mut diagnostics = world.resource_mut::<HierarchyDiagnostics>();
+        diagnostics.cycles.clear();
+        diagnostics.missing_parents.clear();
+        return;
+    }
+
     let mut locals = HashMap::new();
     let mut parents = HashMap::new();
     let mut query = world.query::<(Entity, &Transform, Option<&Parent>)>();

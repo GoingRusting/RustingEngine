@@ -1,105 +1,142 @@
 # RustingEngine
 
-RustingEngine is a Vulkan 3D engine focused on one problem: running very large
-physics-heavy scenes without reducing the game to a slideshow.
+<!--[![CI](https://github.com/GoingRusting/RustingEngine/actions/workflows/ci.yml/badge.svg)](https://github.com/GoingRusting/RustingEngine/actions/workflows/ci.yml)-->
 
-The engine uses hybrid physics calculation. Gameplay-critical simulation can
-stay on the CPU, while high-volume physics workloads can run in parallel on the
-GPU through Vulkan compute shaders. Rendering uses instanced batches, indirect
-drawing, and optional GPU frustum culling so thousands of similar objects do
-not become thousands of expensive CPU draw calls.
+**10,000 GPU-simulated cubes at more than 2,000 FPS on an RTX 3060.**
+RustingEngine is built for physics-heavy scenes that can overwhelm traditional
+CPU-first engines long before the GPU is fully used.
 
-The target workload is a scene such as 10,000 cubes stacked and colliding while
-still rendering at extremely high frame rates. Specialized stress scenes can
-reach thousands of frames per second on suitable hardware, where a conventional
-CPU-bound engine may fall into single-digit FPS. Exact performance depends on
-the selected physics solver, scene complexity, and GPU.
+![10,000 cubes orbiting a planet at 2,191 FPS](docs/images/spaceCubes.jpg)
 
-RustingEngine also includes a visual editor, a serializable scene format, and a
-separate cooked runtime. A scene can be assembled in the editor and then run
-without shipping the editor or its GUI dependencies.
+The screenshot shows the current native space demo in a 1920×1080 release
+build. All 10,000 satellites are rendered through instancing and updated with
+Vulkan compute rather than 10,000 CPU-side object updates.
 
-## Main features
+| Benchmark            | Value                                             |
+| -------------------- | ------------------------------------------------- |
+| Scene                | One planet and 10,000 moving cubes                |
+| Measured result      | 2,191 FPS / 0.5 ms frame time                     |
+| GPU                  | NVIDIA GeForce RTX 3060 12 GB                     |
+| CPU                  | AMD Ryzen 5 7600X, 6 cores / 12 threads           |
+| Memory               | 16 GB RAM                                         |
+| Operating system     | CachyOS Linux                                     |
+| Resolution           | 1920×1080                                         |
+| Captured utilization | 35% GPU / 9% CPU                                  |
+| Build                | Native Rust release build, measured with MangoHUD |
 
-- Vulkan rendering and compute with low-level control over the GPU
-- CPU and GPU physics paths selectable for different workloads
-- Instanced and indirect rendering for large object counts
-- Optional GPU frustum culling
-- Visual scene editor with save and load support
-- Cooked gameplay scripts with scene lifecycle functions
-- Cooked game runtime without editor code
+This is a measurement of one deliberately GPU-friendly stress scene, not a
+promise that every game will run at the same speed. Performance depends on the
+solver, shaders, visible geometry, hardware, and gameplay work.
 
-## Running
+## Why RustingEngine exists
 
-Install Rust and make sure that a Vulkan-compatible graphics driver is available.
+Most game engines keep authoritative physics on the CPU. That is useful for
+gameplay queries, but it becomes expensive when thousands of independent
+bodies must be updated. RustingEngine uses a hybrid model:
 
-Run the editor GUI:
+- CPU simulation is available for objects that need immediate gameplay access.
+- Vulkan compute handles large effect, debris, crowd, and simulation workloads.
+- GPU conditions return small, meaningful events to Rust without downloading
+  every body transform—for example, when any member of a class enters an area.
+- Instanced batches keep thousands of equal meshes from becoming thousands of
+  draw calls.
+
+The goal is not to move everything blindly to the GPU. The game chooses which
+objects need CPU authority, which can stay GPU-owned, and what information must
+cross between them.
+
+## Included in v1.0.0
+
+- Vulkan renderer with depth buffering, resize handling, materials, cameras,
+  instancing, indirect drawing, and optional frustum culling
+- Fixed-step GPU physics with built-in and custom compute shader profiles
+- Stable GPU body IDs, object classes, programmable conditions, and
+  asynchronous GPU-to-Rust events
+- Native Rust gameplay code with normal Cargo dependencies
+- Scene editor with a dockable layout, hierarchy, inspector, asset browser,
+  Rust/GLSL editor, console, and Debug/Release Play modes
+- Versioned text scenes, cooked runtime scenes, project creation, and game export
+- Linux and Windows CI and release packaging
+
+RustingEngine v1.0.0 is the first public release. It is suitable for experiments,
+stress scenes, and early games, but the editor and physics APIs will continue to
+grow.
+
+## Quick start
+
+You need stable Rust and a Vulkan-capable driver. Linux and Windows are the
+primary platforms.
 
 ```bash
+git clone https://github.com/GoingRusting/RustingEngine.git
+cd RustingEngine
 ./scripts/run_editor.sh
 ```
 
-Run the simulation without the editor:
+To run the included 10,000-cube space project without the editor:
 
 ```bash
-cargo run --bin user_main
+cd testGame
+mangohud cargo run --release
 ```
 
-The editor can also be started directly through Cargo:
+To run the original renderer stress test:
 
 ```bash
-cargo run --bin editor
+cargo run --release -p rusting_engine --bin user_main
 ```
 
-The editor has three workspaces. **Scene** uses an editor-only camera for
-authoring, **Game** shows the active game camera, and **Code** opens and saves
-project gameplay scripts, Rust, or GLSL files. Play mode snapshots the authored scene; pressing
-Stop restores it instead of keeping runtime changes.
+The editor creates complete Rust projects in a directory you choose. **Play**
+saves and cooks the scene, compiles the game's Rust code, and starts a separate
+native window. Debug mode compiles quickly during development; Release enables
+the settings used for performance measurements.
 
-Select an entity and use the **Physics** inspector to choose `Static`,
-`Gameplay (CPU)`, or `GPU Dynamic`. GPU bodies can use the full, simplified,
-no-collision, or custom compute profile. Static bodies are not included in a
-per-frame compute dispatch. A custom shader can be opened directly in the Code
-workspace and saved inside the game project.
+## Small Rust gameplay API
 
-Game files are kept outside the engine source:
+A game project is a normal Cargo project. Simple behavior stays short, while
+advanced projects can use ECS systems and any compatible Rust crate directly.
 
-```text
-testGame/
-  project.json
-  scenes/main.rscene
-  scripts/main.rscript
-  build/main.rscene.bin
-```
+```rust
+use rusting_engine::prelude::*;
 
-Gameplay scripts can bind scene objects and update their ECS transforms:
-
-```text
-let orange = scene.get_object("Orange Cube");
-
-onSceneUpdate() {
-    orange.x = 5;
-    orange.rotation.y += 1.5 * delta;
+fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
+    scene.object("Planet").rotate_y(0.2 * time.delta_seconds());
 }
+
+rusting_game!(update);
 ```
 
-The cooker validates scripts and embeds compiled instructions in the cooked
-scene. The release runtime does not need `.rscript` source files or the editor.
+Procedural objects can share a class, material, mesh, and GPU physics profile.
+GPU rules can then watch that class and send only matching events back to Rust.
+See [the included space project](testGame/src/main.rs) and
+[hybrid GPU example](src/examples/hybrid_10k.rs) for complete examples.
 
-## Building an editor scene
+## Project layout
 
-1. Run the editor, change the scene and click **Save Scene**.
-2. Cook the human-readable scene into compact runtime data:
+- `src/runtime` — ECS, time, hierarchy, scenes, and hybrid physics types
+- `src/rendering` — Vulkan context, compute profiles, and scene renderer
+- `src/editor` — dockable editor and reusable GUI elements
+- `src/project_runner.rs` — concise native Rust game API and game window
+- `testGame` — the 10,000-cube space project shown above
+- `roadmap.md` — implemented work and planned engine milestones
 
-```bash
-./scripts/cook_scene.sh
-```
+More documentation:
 
-3. Run the cooked scene without egui or editor code:
+- [Editor guide](editor_gui.md)
+- [Architecture](architecture.md)
+- [Roadmap](roadmap.md)
+- [Release guide](RELEASE.md)
+- [Contributing](CONTRIBUTING.md)
 
-```bash
-./scripts/run_game.sh
-```
+## Contributing
 
-The source scene is saved to `testGame/scenes/main.rscene`. The default cooked
-output is `testGame/build/main.rscene.bin`.
+Bug reports, profiling results, documentation fixes, and focused pull requests
+are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
+Performance changes should include the scene, hardware, resolution, build mode,
+and before/after measurements so results can be reproduced.
+
+## License
+
+RustingEngine uses the [Rusting Engine License 1.0](LICENSE.md). Games and other
+created works may be commercial. Redistribution of the engine is subject to the
+license terms and attribution requirements.

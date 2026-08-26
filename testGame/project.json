@@ -1,5 +1,7 @@
 {
-  "name": "Test Game",
+  "format_version": 1,
+  "name": "Project1",
   "main_scene": "scenes/main.rscene",
-  "cooked_scene": "build/main.rscene.bin"
+  "cooked_scene": "build/main.rscene.bin",
+  "binary_name": "project1"
 }

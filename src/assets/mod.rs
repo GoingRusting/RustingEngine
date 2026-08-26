@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 
 use bevy_ecs::prelude::Resource;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::{App, AppError, Plugin};
 
@@ -155,6 +156,23 @@ impl<T> Default for Assets<T> {
 impl<T> Assets<T> {
     pub fn insert(&mut self, value: T) -> Handle<T> {
         self.insert_slot(value, None)
+    }
+
+    /// Inserts a prepared asset with a source path, or returns the asset that
+    /// was already imported from the same path.
+    pub fn insert_with_path(
+        &mut self,
+        path: impl AsRef<Path>,
+        value: T,
+    ) -> Result<Handle<T>, AssetError> {
+        let path = normalize_path(path.as_ref())?;
+        if let Some(handle) = self.paths.get(&path).copied() {
+            if self.contains(handle) {
+                return Ok(handle);
+            }
+            self.paths.remove(&path);
+        }
+        Ok(self.insert_slot(value, Some(path)))
     }
 
     pub fn get_or_insert_with(
@@ -396,7 +414,7 @@ fn normalize_path(path: &Path) -> Result<PathBuf, AssetError> {
     Ok(normalized)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
@@ -404,7 +422,7 @@ pub struct MeshVertex {
     pub tangent: [f32; 4],
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeshAsset {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
@@ -474,14 +492,195 @@ pub struct AssetServer {
     pub materials: Assets<MaterialAsset>,
     pub scenes: Assets<SceneAsset>,
     pub fallback_mesh: Handle<MeshAsset>,
+    /// Shared smooth sphere used by the editor's Add Sphere action.
+    pub builtin_sphere: Handle<MeshAsset>,
     pub fallback_texture: Handle<TextureAsset>,
     pub fallback_material: Handle<MaterialAsset>,
+}
+
+/// One glTF primitive prepared for assignment in the editor.
+#[derive(Clone, Debug)]
+pub struct ImportedGltfPrimitive {
+    /// Readable mesh and primitive name shown in Assets.
+    pub name: String,
+    /// Typed CPU mesh created from the primitive.
+    pub mesh: Handle<MeshAsset>,
+    /// PBR material factors created from the glTF material.
+    pub material: Handle<MaterialAsset>,
+}
+
+impl AssetServer {
+    /// Loads an engine-native mesh created by the glTF importer.
+    pub fn load_mesh(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Handle<MeshAsset>, AssetError> {
+        self.meshes.get_or_insert_with(path, |path| {
+            let bytes =
+                std::fs::read(path).map_err(|error| AssetError::Load {
+                    path: path.to_owned(),
+                    message: error.to_string(),
+                })?;
+            bincode::deserialize(&bytes).map_err(|error| AssetError::Load {
+                path: path.to_owned(),
+                message: error.to_string(),
+            })
+        })
+    }
+
+    /// Loads an image as an sRGB texture and deduplicates its source path.
+    pub fn load_texture(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Handle<TextureAsset>, AssetError> {
+        self.textures.get_or_insert_with(path, |path| {
+            let image =
+                image::open(path).map_err(|error| AssetError::Load {
+                    path: path.to_owned(),
+                    message: error.to_string(),
+                })?;
+            let rgba = image.to_rgba8();
+            Ok(TextureAsset {
+                size: [rgba.width(), rgba.height()],
+                rgba8: rgba.into_raw(),
+                color_space: TextureColorSpace::Srgb,
+            })
+        })
+    }
+
+    /// Imports every triangle primitive from a glTF or GLB file as typed CPU
+    /// mesh and material assets. Rendering uploads them later as usual.
+    pub fn import_gltf(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<ImportedGltfPrimitive>, AssetError> {
+        let source = normalize_path(path.as_ref())?;
+        let (document, buffers, _) =
+            gltf::import(&source).map_err(|error| AssetError::Load {
+                path: source.clone(),
+                message: error.to_string(),
+            })?;
+        let mut imported = Vec::new();
+        for mesh in document.meshes() {
+            for primitive in mesh.primitives() {
+                if primitive.mode() != gltf::mesh::Mode::Triangles {
+                    return Err(AssetError::Load {
+                        path: source.clone(),
+                        message: "only triangle glTF primitives are supported"
+                            .into(),
+                    });
+                }
+                let reader =
+                    primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+                let positions = reader
+                    .read_positions()
+                    .ok_or_else(|| AssetError::Load {
+                        path: source.clone(),
+                        message: "glTF primitive has no positions".into(),
+                    })?
+                    .collect::<Vec<_>>();
+                let normals = reader
+                    .read_normals()
+                    .map(Iterator::collect)
+                    .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
+                let uvs = reader
+                    .read_tex_coords(0)
+                    .map(|values| values.into_f32().collect())
+                    .unwrap_or_else(|| vec![[0.0; 2]; positions.len()]);
+                let tangents = reader
+                    .read_tangents()
+                    .map(Iterator::collect)
+                    .unwrap_or_else(|| {
+                        vec![[1.0, 0.0, 0.0, 1.0]; positions.len()]
+                    });
+                if normals.len() != positions.len()
+                    || uvs.len() != positions.len()
+                    || tangents.len() != positions.len()
+                {
+                    return Err(AssetError::Load {
+                        path: source.clone(),
+                        message:
+                            "glTF vertex attributes have different lengths"
+                                .into(),
+                    });
+                }
+                let vertices = positions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, position)| MeshVertex {
+                        position,
+                        normal: normals[index],
+                        uv: uvs[index],
+                        tangent: tangents[index],
+                    })
+                    .collect::<Vec<_>>();
+                let indices =
+                    if let Some(values) = reader.read_indices() {
+                        values.into_u32().collect()
+                    } else {
+                        let vertex_count = u32::try_from(vertices.len())
+                            .map_err(|_| AssetError::Load {
+                                path: source.clone(),
+                                message: "glTF primitive has too many vertices"
+                                    .into(),
+                            })?;
+                        (0..vertex_count).collect()
+                    };
+                let mesh_key = source.with_extension(format!(
+                    "mesh-{}-{}.rmesh",
+                    mesh.index(),
+                    primitive.index()
+                ));
+                let mesh_asset = MeshAsset { vertices, indices };
+                std::fs::write(
+                    &mesh_key,
+                    bincode::serialize(&mesh_asset).map_err(|error| {
+                        AssetError::Load {
+                            path: mesh_key.clone(),
+                            message: error.to_string(),
+                        }
+                    })?,
+                )
+                .map_err(|error| AssetError::Load {
+                    path: mesh_key.clone(),
+                    message: error.to_string(),
+                })?;
+                let mesh_handle =
+                    self.meshes.insert_with_path(mesh_key, mesh_asset)?;
+                let pbr = primitive.material().pbr_metallic_roughness();
+                let material_key = source.with_extension(format!(
+                    "gltf-material-{}",
+                    primitive.material().index().unwrap_or(usize::MAX)
+                ));
+                let material = self.materials.insert_with_path(
+                    material_key,
+                    MaterialAsset {
+                        base_color: pbr.base_color_factor(),
+                        metallic: pbr.metallic_factor(),
+                        roughness: pbr.roughness_factor(),
+                        ..MaterialAsset::default()
+                    },
+                )?;
+                imported.push(ImportedGltfPrimitive {
+                    name: format!(
+                        "{} / Primitive {}",
+                        mesh.name().unwrap_or("Mesh"),
+                        primitive.index()
+                    ),
+                    mesh: mesh_handle,
+                    material,
+                });
+            }
+        }
+        Ok(imported)
+    }
 }
 
 impl Default for AssetServer {
     fn default() -> Self {
         let mut meshes = Assets::default();
         let fallback_mesh = meshes.insert(fallback_cube());
+        let builtin_sphere = meshes.insert(procedural_sphere_mesh(16));
         let mut textures = Assets::default();
         let fallback_texture = textures.insert(TextureAsset {
             size: [1, 1],
@@ -500,10 +699,60 @@ impl Default for AssetServer {
             materials,
             scenes: Assets::default(),
             fallback_mesh,
+            builtin_sphere,
             fallback_texture,
             fallback_material,
         }
     }
+}
+
+/// Builds a half-size UV sphere for built-in and procedural scene objects.
+///
+/// The returned CPU mesh can be stored in [`Assets`] and uploaded by any
+/// renderer. Keeping this generator in the asset module lets the editor,
+/// ECS runtime, and future import tools use the same geometry format.
+pub fn procedural_sphere_mesh(subdivisions: u32) -> MeshAsset {
+    use std::f32::consts::PI;
+
+    let stacks = subdivisions.clamp(2, 128);
+    let sectors = stacks * 2;
+    let mut vertices =
+        Vec::with_capacity(((stacks + 1) * (sectors + 1)) as usize);
+    let mut indices = Vec::with_capacity((stacks * sectors * 6) as usize);
+    for stack in 0..=stacks {
+        let vertical = stack as f32 / stacks as f32;
+        let phi = PI * vertical;
+        let ring = 0.5 * phi.sin();
+        let y = 0.5 * phi.cos();
+        for sector in 0..=sectors {
+            let horizontal = sector as f32 / sectors as f32;
+            let theta = 2.0 * PI * horizontal;
+            let x = ring * theta.cos();
+            let z = ring * theta.sin();
+            vertices.push(MeshVertex {
+                position: [x, y, z],
+                normal: [x * 2.0, y * 2.0, z * 2.0],
+                uv: [horizontal, vertical],
+                tangent: [0.0, 1.0, 0.0, 1.0],
+            });
+        }
+    }
+    let row = sectors + 1;
+    for stack in 0..stacks {
+        for sector in 0..sectors {
+            let first = stack * row + sector;
+            let second = first + row;
+            indices.extend_from_slice(&[
+                first,
+                second,
+                first + 1,
+                second,
+                second + 1,
+                first + 1,
+            ]);
+        }
+    }
+    MeshAsset { vertices, indices }
 }
 
 fn fallback_cube() -> MeshAsset {
@@ -661,5 +910,49 @@ mod tests {
         *assets.get_mut(handle).unwrap() = 2;
         assert!(assets.revision(handle).unwrap() > initial);
         assert_eq!(assets.get(handle), Some(&2));
+    }
+
+    #[test]
+    fn texture_loader_decodes_and_deduplicates_image_files() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-texture-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("pixel.png");
+        image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255])
+            .unwrap()
+            .save(&path)
+            .unwrap();
+        let mut server = AssetServer::default();
+
+        let first = server.load_texture(&path).unwrap();
+        let second = server.load_texture(&path).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(server.textures.get(first).unwrap().size, [1, 1]);
+        assert_eq!(
+            server.textures.get(first).unwrap().rgba8,
+            [12, 34, 56, 255]
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn native_mesh_loader_restores_imported_mesh_data() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-mesh-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("triangle.rmesh");
+        let mesh = MeshAsset {
+            vertices: vec![MeshVertex::default(); 3],
+            indices: vec![0, 1, 2],
+        };
+        std::fs::write(&path, bincode::serialize(&mesh).unwrap()).unwrap();
+        let mut server = AssetServer::default();
+
+        let handle = server.load_mesh(&path).unwrap();
+
+        assert_eq!(server.meshes.get(handle), Some(&mesh));
+        assert_eq!(server.load_mesh(&path).unwrap(), handle);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

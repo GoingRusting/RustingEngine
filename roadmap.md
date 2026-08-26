@@ -1,6 +1,6 @@
 # RustingEngine Roadmap
 
-RustingEngine is currently a functional Vulkan renderer prototype. The goal of this roadmap is to evolve it into a playable Windows/Linux game engine with an integrated egui editor, stable runtime architecture, CPU-authoritative gameplay physics, and optional high-volume GPU effects.
+RustingEngine is currently a functional Vulkan renderer prototype. The goal of this roadmap is to evolve it into a playable Windows/Linux game engine with an integrated egui editor, stable runtime architecture, and a self-written hybrid physics system that can divide work between the CPU and GPU without making GPU state invisible to gameplay.
 
 This document is the implementation source of truth. Tasks should be completed in dependency order, kept behind compiling intermediate states, and verified against the acceptance gates at the end of each milestone.
 
@@ -13,11 +13,11 @@ The first major release should provide:
 - A real application runtime with ECS entities, components, resources, schedules, events, input, and fixed updates.
 - A Vulkan renderer with explicit frames in flight, forward PBR, shadows, transparency, HDR tone mapping, culling, LOD, and profiling.
 - Typed, deduplicated assets with glTF import, scene serialization, and hot reload.
-- Rapier-authoritative gameplay physics plus an explicitly separate GPU effects simulation tier.
+- Self-written hybrid physics with per-object CPU/GPU allocation, asynchronous GPU events, selective state readback, and custom compute shaders.
 - An in-engine egui editor with a viewport, hierarchy, inspector, asset browser, console, profiler, gizmos, and play controls.
 - A representative vertical-slice game and a repeatable 1080p performance benchmark.
 
-Primary platforms are Windows and Linux desktop. Rust systems remain the maximum-performance gameplay API. The editor also provides a small cooked gameplay-script format; Lua/WASM, deferred rendering, and a stable custom-shader ABI remain deferred.
+Primary platforms are Windows and Linux desktop. Native Rust systems are the gameplay API, and games remain normal Cargo projects that can use external libraries. A versioned custom physics-compute ABI is part of the hybrid milestone; Lua/WASM, deferred rendering, and an unrestricted custom render-shader ABI remain deferred.
 
 ## Architectural direction
 
@@ -28,7 +28,7 @@ rusting-core       ECS components, schedules, time, input, hierarchy, events
       ↑
 rusting-assets     typed handles, cache, importers, serialization, hot reload
       ↑
-rusting-physics    Rapier integration and optional GPU-effect simulation
+rusting-physics    CPU physics, GPU compute simulation, synchronization, queries
       ↑
 rusting-render     Vulkan context, extraction, frame graph, materials, profiling
       ↑
@@ -39,7 +39,7 @@ rusting-engine     plugins, application facade, compatibility API
 vertical-slice    integration, gameplay, visual, and performance target
 ```
 
-Dependency cycles between runtime, renderer, physics, assets, and editor are not allowed. ECS entities are canonical state. Render batches, physics arrays, indirect buffers, and other GPU representations are derived data.
+Dependency cycles between runtime, renderer, physics, assets, and editor are not allowed. ECS entities are the canonical identity and authored scene state. A GPU-owned body's newest runtime transform may live on the GPU; ECS keeps its stable ID, settings, last synchronized state, and pending events. Render batches, physics arrays, indirect buffers, and other GPU representations are derived data.
 
 The existing `Engine::new`, `add_cube`, `add_sphere`, `add_gltf`, and `run` API remains temporarily available as a deprecated compatibility facade implemented over the new runtime.
 
@@ -113,7 +113,7 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 - [x] `MeshRenderer` and visibility components using typed asset handles.
 - [x] Directional, point, and ambient light components.
 - [x] `RigidBody`, primitive `Collider`, sensor, and collision-layer components.
-- [x] `GpuEffectBody` marker with explicit non-authoritative semantics.
+- [x] `GpuEffectBody` marker for bodies currently assigned to GPU simulation.
 - [x] `FrameTime`, `TimeControl`, `RenderSettings`, `PhysicsSettings`, and `QualityProfile` resources.
 - [ ] Input action mapping with keyboard, mouse, and gamepad-ready abstractions.
 
@@ -166,7 +166,7 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
 - [x] Add an allowlisted component serialization registry.
 - [ ] Serialize hierarchy, transforms, renderers, lights, physics, and editor metadata.
 - [x] Reject unsupported scene versions with a clear structured error.
-- [ ] Add schema migration hooks when format version 2 is introduced.
+- [x] Add explicit migration for legacy unversioned project and text-scene files.
 - [ ] Add scene save, load, additive load, and unload operations.
 
 ### Hot reload
@@ -230,6 +230,7 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
 
 ### Pass schedule
 
+- [x] Batch opaque ECS renderables by mesh and material and draw them through a cached GPU instance buffer.
 - [ ] Directional shadow-map pass.
 - [ ] Opaque forward PBR pass.
 - [ ] Transparent forward pass with back-to-front sorting.
@@ -272,45 +273,87 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
 
 ## Milestone 5: Hybrid physics
 
-Goal: make gameplay physics reliable and preserve GPU simulation for deliberately non-authoritative effects.
+Goal: let each body use the processing unit and solver that fits its job while preserving a practical two-way connection between GPU simulation and normal Rust gameplay code.
 
-### Authoritative Rapier physics
+### Ownership and public model
 
-- [ ] Add `rapier3d` and a `PhysicsWorld` resource.
-- [ ] Synchronize ECS rigid bodies/colliders into Rapier using stable entity mappings.
-- [ ] Write authoritative dynamic transforms back to ECS after fixed updates.
-- [ ] Support fixed, dynamic, and kinematic rigid bodies.
-- [ ] Support boxes, spheres, capsules, convex meshes, and static triangle meshes.
-- [ ] Add triggers/sensors and collision events.
-- [ ] Add collision groups and query filters.
-- [ ] Add raycasts, shape casts, overlap queries, and editor picking queries.
-- [ ] Add character movement and joints required by the vertical slice.
-- [ ] Add sleeping and continuous collision detection settings.
-- [ ] Support snapshots needed for play/stop restoration.
+- [ ] Replace the old effect-only distinction with `SimulationClass::{Static, Cpu, Gpu}`. The selected class says where the newest runtime physics state lives.
+- [ ] Add `PhysicsSyncMode::{None, Events, SelectedState, FullState}`. Synchronization is an explicit cost chosen per body or group, not a hidden full-scene copy.
+- [x] Give GPU-simulated bodies a stable, generation-checked `PhysicsId` that is valid in ECS, GPU buffers, and events even after bodies are removed or buffers are sorted. Extend the same ID to the command bridge when commands are added.
+- [ ] Keep authored settings and identity in ECS while recording when mirrored transform/velocity data was produced and how many frames old it is.
+- [ ] Allow CPU and GPU bodies in the same scene and allow static colliders to be consumed by both solvers.
+- [ ] Show simulation owner, synchronization mode, readback age, and approximate synchronization cost in the editor.
 
-### GPU effects tier
+### Programmable GPU condition and event bridge
 
-- [ ] Introduce `SimulationClass::{Gameplay, GpuEffect, Static}`.
-- [ ] Document and enforce one-way ownership: gameplay/static transforms may be uploaded, but GPU contacts never synchronously drive gameplay state.
-- [ ] Use GPU simulation for particles, debris, crowds, or other query-free bodies.
+- [x] Define a compact `GpuPhysicsEvent` layout shared by Rust and every physics shader: body ID, registered event ID, tick, flags, and a configurable small payload.
+- [x] Provide a typed Rust condition builder for common GPU state fields, comparisons, boolean combinations, ranges, collision state, sleeping state, timers, and per-body custom values. This is a Rust API, not a separate scripting language.
+- [x] Define event modes such as `OnEnter`, `OnExit`, `WhileTrue`, `Once`, and cooldown/rate-limited emission so conditions do not accidentally flood the readback buffer.
+- [x] Upload built-in per-body condition instructions and rule parameters as compact GPU buffers. CPU-only custom-value uploads remain part of the command bridge.
+- [x] Allow shared rules to target explicit multi-class object groups while keeping separate edge and cooldown state per body. Unrelated GPU bodies are not affected, and only matching body IDs and selected payloads return to Rust.
+- [ ] Add a custom condition-compute hook for arbitrary GLSL logic over GPU-accessible state. Custom physics and condition shaders use the same `emit_event(...)` ABI as built-in rules.
+- [x] Allow events to return selected position, velocity, angular velocity, or custom-value payloads so a second state readback is often unnecessary. Add collision/contact payloads with the spatial solver.
+- [ ] Treat `Y < -100` only as the first end-to-end acceptance example. The implementation must not hard-code an axis, threshold, or event meaning.
+- [x] Compare previous and current condition results so edge-triggered events are emitted exactly when a condition changes state.
+- [x] Let the native physics compute shader append events with an atomic counter into a per-frame event buffer.
+- [x] Keep event output in per-frame mapped readback allocations so only emitted records cross into Rust; move the write target fully device-local if profiling shows mapped writes are costly on discrete GPUs.
+- [x] Consume completed readback buffers asynchronously after their frame fence signals. Normal frames never wait for unfinished physics work.
+- [x] Convert `PhysicsId` values back into live ECS entities and expose events to Rust systems through the engine event API.
+- [ ] Define event latency clearly: GPU events normally reach CPU gameplay one to three frames later. Logic requiring same-tick answers must use CPU simulation or an explicit blocking query.
+- [ ] Track event-buffer overflow, resize it within the configured memory budget, and provide an overflow fallback. Events must never disappear silently.
+
+### CPU to GPU command bridge
+
+- [ ] Add a compact command stream for spawn, despawn, teleport, velocity change, force, impulse, wake, solver change, and watch-condition updates.
+- [ ] Upload commands in batches through each frame context instead of mapping or rewriting the complete physics buffer.
+- [ ] Apply commands before the fixed GPU step and reject commands whose body generation is stale.
+- [ ] Support CPU-controlled kinematic bodies that collide with GPU bodies without transferring every GPU body to the CPU.
+- [ ] Record command count and uploaded bytes for profiling.
+
+### Selective state synchronization
+
+- [ ] Support asynchronous requests for selected transforms, velocities, sleeping state, or contact data by stable body ID.
+- [ ] Provide batched region/group snapshots for gameplay systems that need more than events.
+- [ ] Keep full-state readback available for debugging, save-state capture, editor inspection, and tests, but keep it off the normal gameplay path.
+- [ ] Triple-buffer readback storage with frame contexts so GPU writes, transfer copies, and CPU reads never race.
+- [ ] Add an explicit blocking readback API only for tooling and exceptional cases, with a name and warning that make its performance cost obvious.
+- [ ] Support play/stop snapshots without requiring continuous full-state synchronization.
+
+### Self-written CPU physics and queries
+
+- [ ] Add an engine-owned CPU `PhysicsWorld` for bodies that require immediate gameplay answers.
+- [ ] Support fixed, dynamic, and kinematic rigid bodies plus boxes, spheres, capsules, convex meshes, and static triangle meshes.
+- [ ] Add triggers, collision layers, raycasts, shape casts, overlap queries, character movement, and the joints required by the vertical slice.
+- [ ] Add sleeping, continuous collision detection, stable contact generation, and iterative solving.
+- [ ] Allow selected GPU events to create, update, or remove CPU proxy bodies when gameplay needs an approximate local query representation.
+
+### GPU solvers and custom allocation
+
+- [ ] Connect per-object `ComputeShaderType` selection to the ECS/editor game runner instead of only the compatibility `Engine` path.
+- [ ] Preserve mixed `Static`, `NoCollision`, simplified, full, spatial-grid, and custom compute batches in one scene. A scene-wide override remains a debugging tool only.
+- [ ] Rename the stable form of `ComputeShaderType::Test` to describe its actual solver while keeping a temporary compatibility alias.
+- [ ] Add a true spatial broad phase to every collision solver before claiming sub-quadratic collision complexity.
 - [ ] Replace fixed hash capacities with device-budgeted growable buffers.
-- [ ] Track grid cell overflow and total overflow counters.
-- [ ] Implement a tested fallback when a grid cell or table overflows.
-- [ ] Ensure bodies are never silently omitted.
+- [ ] Track grid-cell overflow, hash collisions, oversized-body count, and total fallback work.
+- [ ] Implement a tested overflow fallback that preserves every body.
+- [ ] Define a versioned custom-compute ABI for instance state, commands, condition inputs, custom values, and event output.
+- [ ] Let custom shaders emit the same typed events as built-in solvers so Rust gameplay can react without downloading complete buffers.
 
-### Experimental custom solver
+### Profiling and automatic allocation
 
-- [ ] Move the current solver behind an `experimental-gpu-physics` feature.
-- [ ] Add a true spatial broad phase before claiming sub-quadratic collision complexity.
-- [ ] Add stable contact generation, iterative solving, sleeping, and continuous collision detection.
-- [ ] Compare deterministic scenarios and tolerances against Rapier.
+- [ ] Measure CPU physics time, GPU physics time, dispatch count, command bytes, event bytes, selected-state bytes, synchronization latency, and overflow counts.
+- [ ] Add repeatable 1K, 10K, and 100K body benchmark scenes covering falling, stacking, debris, and mixed solvers.
+- [ ] Add an optional `Auto` allocation policy that uses body requirements, query needs, hardware capabilities, transfer cost, and measured timings.
+- [ ] Keep manual CPU/GPU and solver selection available; automatic allocation must be observable and overridable.
 
 ### Exit gate
 
-- Tests cover triggers, raycasts, stacking, tunneling, collision layers, and fixed-step independence.
-- GPU grid overflow is observable and its fallback preserves every body.
-- Gameplay queries never depend on unread GPU results.
-- Rapier and GPU-effect ownership boundaries are visible in components and editor UI.
+- A scene with at least 10,000 GPU-simulated cubes can evaluate a user-configured condition and emit a Rust event when any cube crosses `Y = -100` without copying all cube transforms or blocking the frame loop. Replacing that rule with another supported or custom condition does not require engine changes.
+- Tests cover triggers, raycasts, stacking, tunneling, collision layers, fixed-step independence, stale IDs, and CPU/GPU event delivery.
+- GPU event and grid overflow are observable and their fallbacks never silently omit bodies or events.
+- CPU/GPU commands and events remain correct with multiple frames in flight.
+- Immediate gameplay queries never pretend that delayed GPU mirrors are current; state age is available to callers.
+- Per-body ownership, solver, synchronization mode, traffic, latency, and overflow are visible in runtime diagnostics and the editor.
 
 ## Milestone 6: Integrated egui editor
 
@@ -320,6 +363,9 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 
 ### Editor shell
 
+- [x] Add a startup Project Manager with create, open, folder selection, validation, and recent projects.
+- [x] Create complete standalone Cargo game templates without overwriting existing folders.
+- [x] Store project format versions and reject projects made by a newer editor.
 - [x] Add a feature-gated editor plugin that can be excluded from runtime builds.
 - [x] Build the initial egui shell with toolbar, hierarchy, transform inspector, viewport placeholder, and structured console.
 - [x] Connect play, pause, single-step, and stop controls to runtime time control.
@@ -331,14 +377,20 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Expose camera FOV, clipping planes, priority, and active state in the inspector.
 - [x] Add Scene, Game, and Code workspaces with editor/game camera selection.
 - [x] Add a project-local Rust/GLSL editor with open, validation, and save actions.
-- [x] Add project-local `.rscript` editing, scene attachment, lifecycle execution, and cook-time embedding.
-- [ ] Add a dockable main layout and persistent panel arrangement.
+- [x] Run Cargo checks and Debug/Release builds in a worker and show compiler output inside Code Editor.
+- [x] Export a native release folder with the executable, cooked scene, project assets, license, and run instructions.
+- [x] Store portable scene-relative asset paths and resolve packaged scene data beside the executable.
+- [x] Add a separate native Rust Cargo game project, project-local source editing, and Debug/Release build/run from the editor.
+- [x] Add a concise native Rust scene API for common transform operations without hiding the ECS from advanced games.
+- [x] Add a dockable area-tree layout with selectable editor types and project-local persistence.
 - [ ] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass.
 - [ ] Route keyboard and mouse focus correctly between viewport navigation and UI.
 - [ ] Add DPI scaling, font configuration, and theme persistence.
 
 ### Core panels
 
+- [x] Add project asset file import, filtering, typed texture loading, glTF primitive import, and selected-object assignment.
+- [x] Persist imported glTF geometry as reloadable engine-native `.rmesh` assets.
 - [ ] Scene viewport rendered to an editor texture.
 - [ ] Entity hierarchy with filtering, selection, reparenting, and drag/drop.
 - [ ] Component inspector driven by an allowlisted reflection/editor registry.
@@ -353,19 +405,21 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [ ] Selection outlines and editor-only overlays.
 - [ ] Translate, rotate, and scale gizmos with local/global modes and snapping.
 - [ ] Camera orbit, pan, fly, focus-selection, and framing controls.
-- [ ] Create, duplicate, rename, delete, and reparent entities.
+- [x] Create empty, cube, and camera objects; duplicate, rename, delete, and reparent entities.
 - [x] Add/remove/edit registered compiled components through the generic JSON inspector.
 - [ ] Assign meshes, materials, textures, and physics shapes by typed handle.
-- [ ] Scene new/open/save/save-as operations.
+- [x] Scene new/open/save/save-as operations with native file pickers.
 
 ### Play workflow and history
 
-- [x] Edit, play, pause, single-step, and stop states.
-- [x] Snapshot the edit scene before play and restore it on stop.
+- [x] Make Play save and cook the scene, compile the real Rust project, and launch its native game window.
+- [x] Use fast Debug builds by default and allow optimized Release play tests.
+- [ ] Add stop and restart controls for the native game process.
+- [ ] Add an optional embedded preview for workflows that do not need compiled Rust systems.
 - [ ] Make runtime-spawned entities visually distinct where useful.
-- [ ] Implement command-based undo/redo for scene edits.
-- [ ] Group continuous gizmo/field edits into single undo transactions.
-- [ ] Mark scenes dirty and prompt before destructive close/load actions.
+- [x] Implement snapshot-based undo/redo for scene and Inspector edits.
+- [x] Group continuous Inspector field edits into single undo transactions.
+- [x] Mark scenes dirty and prompt before destructive new/load/project-switch actions.
 
 ### Exit gate
 
@@ -382,9 +436,10 @@ Goal: prove that the engine architecture works as a usable game-development stac
 
 - [ ] One representative imported environment with PBR assets.
 - [ ] Player camera/controller.
-- [ ] Authoritative collisions, triggers, and at least one physics query.
+- [ ] CPU collisions, triggers, and at least one immediate physics query.
 - [ ] Directional shadows, point lights, sky/environment light, and transparent content.
-- [ ] GPU debris, particles, or crowds demonstrating the effects tier.
+- [ ] At least 10,000 GPU bodies that evaluate configurable conditions and send typed events to Rust gameplay without full-state readback.
+- [ ] CPU-to-GPU commands that alter selected GPU bodies while the simulation is running.
 - [ ] Runtime UI and editor UI.
 - [ ] Scene persistence and live asset reload.
 - [ ] Runtime editing through play/pause/stop.
@@ -394,7 +449,7 @@ Goal: prove that the engine architecture works as a usable game-development stac
 
 - [ ] Define a fixed benchmark scene and camera path.
 - [ ] Target 1920×1080 at 60 FPS on approximately Intel UHD 620-class hardware using Eco/Auto settings.
-- [ ] Record CPU frame time, GPU pass time, draw/dispatch count, triangles, memory, visible instances, upload bytes, physics bodies, and grid overflow.
+- [ ] Record CPU frame time, GPU pass time, draw/dispatch count, triangles, memory, visible instances, upload bytes, physics bodies, event/readback bytes, synchronization latency, and overflow.
 - [ ] Store performance baselines and reject material regressions rather than relying only on FPS logs.
 - [ ] Document tested drivers, operating systems, resolutions, and quality settings.
 
@@ -417,7 +472,7 @@ Goal: prove that the engine architecture works as a usable game-development stac
 - [ ] Asset path canonicalization and deduplication.
 - [ ] Input action mapping.
 - [ ] Quality-profile selection.
-- [ ] ECS/Rapier conversion and entity mapping.
+- [ ] Stable ECS/GPU `PhysicsId` conversion, generation rejection, and entity mapping.
 
 ### Layout and shader tests
 
@@ -454,14 +509,19 @@ Goal: prove that the engine architecture works as a usable game-development stac
 - [ ] Tunneling/CCD cases.
 - [ ] Fixed-step independence from render frame rate.
 - [ ] GPU grid overflow and fallback.
-- [ ] Explicit CPU/GPU simulation ownership boundaries.
+- [ ] GPU event overflow and fallback.
+- [ ] Built-in boolean/range conditions and custom shader conditions emit according to `OnEnter`, `OnExit`, `WhileTrue`, `Once`, and cooldown modes.
+- [ ] Condition events reach the correct ECS entity with their registered event ID and requested payload.
+- [ ] CPU-to-GPU commands reject stale body generations.
+- [ ] Asynchronous selected-state readback reports its source tick and frame age.
+- [ ] Explicit CPU/GPU simulation ownership and synchronization modes.
 
 ### CI matrix
 
 - [ ] Linux software Vulkan runner for deterministic smoke tests where supported.
 - [ ] Linux hardware runner.
 - [ ] Windows hardware runner.
-- [ ] Formatting, strict clippy, unit tests, docs, and shader compilation on every pull request.
+- [x] Formatting, strict clippy, unit tests, and docs on Linux and Windows for every pull request.
 - [ ] Scheduled validation and performance runs with stored artifacts.
 
 ## Cross-cutting engineering rules
@@ -484,7 +544,7 @@ Work on one vertical path at a time rather than creating empty crates for every 
 3. Add typed assets and static scene serialization.
 4. Add render extraction and correct frames-in-flight synchronization.
 5. Complete the forward PBR pass schedule and profiling.
-6. Integrate Rapier and formalize GPU-effect ownership.
+6. Build the self-written hybrid physics bridge: stable IDs, GPU events, CPU commands, selective readback, and mixed CPU/GPU ownership.
 7. Add the minimal egui shell, viewport, hierarchy, and inspector.
 8. Build the vertical slice while filling in editor, rendering, asset, and physics gaps.
 9. Add hot reload, undo/redo, polish, packaging, and performance gating.

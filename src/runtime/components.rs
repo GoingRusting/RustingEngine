@@ -77,6 +77,54 @@ pub struct Camera {
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct Name(pub String);
 
+/// Reusable classes assigned to one scene object.
+///
+/// Names identify one object. Classes select any number of objects, and one
+/// object can belong to several classes at the same time.
+#[derive(
+    Component, Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+pub struct ObjectClasses {
+    /// Class names such as `gravity`, `enemy`, or `falling_cubes`.
+    pub names: Vec<String>,
+}
+
+impl ObjectClasses {
+    /// Creates a clean class list without empty or repeated names.
+    #[must_use]
+    pub fn new(classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let mut result = Self::default();
+        for class in classes {
+            result.add(class);
+        }
+        result
+    }
+
+    /// Adds a class if this object does not already have it.
+    pub fn add(&mut self, class: impl Into<String>) -> bool {
+        let class = class.into();
+        let class = class.trim();
+        if class.is_empty() || self.contains(class) {
+            return false;
+        }
+        self.names.push(class.to_owned());
+        true
+    }
+
+    /// Removes a class from this object.
+    pub fn remove(&mut self, class: &str) -> bool {
+        let old_len = self.names.len();
+        self.names.retain(|current| current != class);
+        self.names.len() != old_len
+    }
+
+    /// Returns true when this object belongs to the requested class.
+    #[must_use]
+    pub fn contains(&self, class: &str) -> bool {
+        self.names.iter().any(|current| current == class)
+    }
+}
+
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct DirectionalLight {
     pub color: [f32; 3],
@@ -162,6 +210,8 @@ pub struct RenderSettings {
     pub limit_fps: bool,
     pub max_fps: u32,
     pub render_scale: f32,
+    /// RGBA color used to clear the game render target before drawing.
+    pub background_color: [f32; 4],
 }
 
 impl Default for RenderSettings {
@@ -172,6 +222,7 @@ impl Default for RenderSettings {
             limit_fps: false,
             max_fps: 120,
             render_scale: 1.0,
+            background_color: [0.025, 0.04, 0.07, 1.0],
         }
     }
 }
@@ -227,6 +278,7 @@ pub enum PhysicsSolver {
     Full,
     Simplified,
     NoCollision,
+    Space,
     Custom,
 }
 

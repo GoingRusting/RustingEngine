@@ -1,39 +1,50 @@
 //! Feature-gated egui editor state and ECS panels.
 //!
-//! The renderer consumes [`EditorUi::take_output`] and is responsible for
-//! uploading egui textures and meshes in its compositing pass.
+//! The window runner calls [`draw_editor_view`] inside its egui frame and
+//! composites the resulting shapes over the Vulkan scene.
+
+mod dock;
+pub mod gui_elements;
+mod hierarchy;
+mod project;
+mod view;
+
+use dock::EditorLayoutFile;
+pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
+use hierarchy::{collect_entities, draw_hierarchy_area};
+pub use view::draw_editor_view;
+
+pub use project::{
+    create_project, open_project, OpenProject, ProjectError,
+    ProjectManagerState, ProjectManifest, RecentProject,
+    PROJECT_FORMAT_VERSION,
+};
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Resource, World};
-use egui::{
-    CentralPanel, ComboBox, Context, DragValue, RawInput, SidePanel,
-    TopBottomPanel,
-};
+use egui::{CentralPanel, ComboBox, Context, DragValue, TopBottomPanel};
+use std::path::PathBuf;
 
 use crate::runtime::{
-    add_registered_component, load_scene, registered_component_names,
-    registered_component_values, remove_registered_component, save_scene,
-    scene_document, set_registered_component, App, AppError, Camera, Collider,
-    ColliderShape, CollisionLayers, FrameTime, MeshRenderer, Name, Parent,
+    add_registered_component, cook_scene, load_scene,
+    registered_component_names, registered_component_values,
+    remove_registered_component, save_scene, scene_document,
+    set_registered_component, App, AppError, Camera, Collider, ColliderShape,
+    CollisionLayers, FrameTime, MeshRenderer, Name, ObjectClasses,
     PhysicsBackendStatus, PhysicsBody, PhysicsSolver, Plugin, Projection,
     RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
-    RigidBodyKind, SceneDocument, SceneLoadMode, ScheduleStage,
-    ScriptComponent, ScriptRuntime, ScriptSettings, SimulationClass,
-    TimeControl,
+    RigidBodyKind, SceneDocument, SceneId, SceneLoadMode, SimulationClass,
+    Visibility,
 };
-use crate::AssetServer;
 use crate::Transform;
+use crate::{
+    AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset, MeshAsset,
+    TextureAsset,
+};
 
 /// Applies the editor's compact dark workspace theme to an egui context.
 pub fn configure_editor_style(context: &Context) {
-    let mut style = (*context.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = egui::Color32::from_rgb(24, 26, 31);
-    style.visuals.window_fill = egui::Color32::from_rgb(28, 30, 36);
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(45, 104, 210);
-    context.set_style(style);
+    gui_elements::EditorTheme::apply(context);
 }
 
 /// Editor interaction mode. Edit state never advances gameplay fixed updates.
@@ -45,8 +56,37 @@ pub enum EditorMode {
     Paused,
 }
 
-/// Main editor workspace. Scene and Game share the same renderer but select
-/// different cameras; Code is a real project-file editor.
+/// Cargo profile used when the editor starts the native game.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GameBuildProfile {
+    /// Compiles quickly and keeps debug information for normal development.
+    #[default]
+    Debug,
+    /// Takes longer to compile, but enables the game's optimizations.
+    Release,
+}
+
+impl GameBuildProfile {
+    /// Short name shown in the editor's Play selector.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Debug => "Debug",
+            Self::Release => "Release",
+        }
+    }
+
+    /// Cargo flag needed by this profile. Debug is Cargo's default.
+    const fn cargo_flag(self) -> Option<&'static str> {
+        match self {
+            Self::Debug => None,
+            Self::Release => Some("--release"),
+        }
+    }
+}
+
+/// Internal mode of the first live viewport. Areas use [`EditorPanel`] for
+/// their independently selected content.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorWorkspace {
     #[default]
@@ -55,26 +95,51 @@ pub enum EditorWorkspace {
     Code,
 }
 
-/// Persistent selection and panel visibility.
+/// Persistent editor selection, project state, and area layout.
 #[derive(Resource, Clone, Debug)]
 pub struct EditorState {
+    /// Object currently selected in the Hierarchy.
     pub selected: Option<Entity>,
+    /// Tells the editor if the game is stopped, playing, or paused.
     pub mode: EditorMode,
-    pub hierarchy_open: bool,
-    pub inspector_open: bool,
-    pub console_open: bool,
-    pub assets_open: bool,
+    /// Chooses a fast Debug build or an optimized Release build for Play.
+    pub game_build_profile: GameBuildProfile,
+    /// Scene path relative to the selected project folder.
     pub scene_path: String,
+    /// Folder that contains the current game project.
     pub project_root: String,
+    /// Last save, load, layout, or component message.
     pub scene_message: Option<String>,
+    /// True when the scene changed after its last successful save or load.
+    pub scene_dirty: bool,
+    /// Editable name copied from the selected object.
+    pub rename_draft: String,
+    /// Object currently showing an inline rename field in Hierarchy.
+    pub rename_target: Option<Entity>,
+    /// New class name being typed in the Inspector.
+    pub class_draft: String,
+    /// Text being edited for custom serialized components.
     pub component_drafts: std::collections::HashMap<(Entity, String), String>,
+    /// Camera mode used by the first live 3D area.
     pub workspace: EditorWorkspace,
+    /// Camera used by Scene View instead of the game's camera.
     pub editor_camera: Option<Entity>,
+    /// Copy of the scene restored when Stop is pressed.
     pub play_snapshot: Option<SceneDocument>,
+    /// Source path relative to the selected project folder.
     pub code_path: String,
+    /// Editable text loaded from `code_path`.
     pub code_source: String,
+    /// Last message created by the Code Editor.
     pub code_message: Option<String>,
+    /// True when code text changed but was not saved.
     pub code_dirty: bool,
+    /// Tree that stores every editor area and divider.
+    pub dock_layout: EditorDockNode,
+    /// Area changed by the main toolbar and marked with a blue border.
+    pub active_area: u64,
+    /// Unique ID reserved for the next split area.
+    pub next_area_id: u64,
 }
 
 /// Physical pixel rectangle occupied by the editor's live scene view.
@@ -83,9 +148,38 @@ pub struct EditorState {
 /// it into a renderer viewport, keeping egui out of the rendering API.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EditorViewport {
+    /// Top-left viewport position in physical window pixels.
     pub offset: [u32; 2],
+    /// Width and height in physical window pixels.
     pub extent: [u32; 2],
+    /// False when the layout does not contain a live 3D area.
     pub valid: bool,
+}
+
+/// Scene snapshots used by Undo and Redo.
+#[derive(Resource, Clone, Debug, Default)]
+struct EditorHistory {
+    /// Scene states restored by Undo, newest last.
+    undo: Vec<SceneDocument>,
+    /// Scene states restored by Redo, newest last.
+    redo: Vec<SceneDocument>,
+    /// Scene state from before the current continuous Inspector edit.
+    pending_inspector: Option<SceneDocument>,
+}
+
+impl EditorHistory {
+    /// Keeps history useful without growing memory forever.
+    const MAX_SNAPSHOTS: usize = 100;
+
+    fn push_undo(&mut self, document: SceneDocument) {
+        if self.undo.last() != Some(&document) {
+            self.undo.push(document);
+            if self.undo.len() > Self::MAX_SNAPSHOTS {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+    }
 }
 
 impl Default for EditorState {
@@ -93,45 +187,72 @@ impl Default for EditorState {
         Self {
             selected: None,
             mode: EditorMode::Edit,
-            hierarchy_open: true,
-            inspector_open: true,
-            console_open: true,
-            assets_open: true,
-            scene_path: "testGame/scenes/main.rscene".into(),
-            project_root: "testGame".into(),
+            game_build_profile: GameBuildProfile::Debug,
+            scene_path: String::new(),
+            project_root: String::new(),
             scene_message: None,
+            scene_dirty: false,
+            rename_draft: String::new(),
+            rename_target: None,
+            class_draft: String::new(),
             component_drafts: std::collections::HashMap::new(),
             workspace: EditorWorkspace::Scene,
             editor_camera: None,
             play_snapshot: None,
-            code_path: "testGame/scripts/main.rscript".into(),
+            code_path: "src/main.rs".into(),
             code_source: String::new(),
             code_message: None,
             code_dirty: false,
+            dock_layout: EditorDockNode::default_layout(),
+            active_area: 2,
+            next_area_id: 5,
         }
     }
+}
+
+/// Switches every editor document path to one validated project.
+fn set_open_project_paths(state: &mut EditorState, project: &OpenProject) {
+    state.project_root = project.root.display().to_string();
+    state.scene_path = project.manifest.main_scene.display().to_string();
+    state.code_path = project
+        .code_path
+        .strip_prefix(&project.root)
+        .unwrap_or(std::path::Path::new("src/main.rs"))
+        .display()
+        .to_string();
+    // Never show text left over from the previously opened project.
+    state.code_source.clear();
+    state.code_dirty = false;
+    state.rename_target = None;
 }
 
 /// Structured editor console entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsoleEntry {
+    /// Controls the color and importance of this message.
     pub level: ConsoleLevel,
+    /// Text shown in the Console area.
     pub message: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConsoleLevel {
+    /// Normal status message.
     Info,
+    /// Something may be wrong, but the editor can continue.
     Warning,
+    /// An operation failed.
     Error,
 }
 
 #[derive(Resource, Clone, Debug, Default)]
 pub struct EditorConsole {
+    /// Messages kept in the order they were added.
     entries: Vec<ConsoleEntry>,
 }
 
 impl EditorConsole {
+    /// Adds one message to the bottom of the Console area.
     pub fn push(&mut self, level: ConsoleLevel, message: impl Into<String>) {
         self.entries.push(ConsoleEntry {
             level,
@@ -144,310 +265,813 @@ impl EditorConsole {
         &self.entries
     }
 
+    /// Removes every old console message.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
 }
 
-/// Egui context plus the latest tessellation-ready frame output.
-#[derive(Resource, Default)]
-pub struct EditorUi {
-    context: Context,
-    output: Option<egui::FullOutput>,
-    next_input: RawInput,
-}
-
-impl EditorUi {
-    #[must_use]
-    pub fn context(&self) -> &Context {
-        &self.context
-    }
-
-    pub fn set_input(&mut self, input: RawInput) {
-        self.next_input = input;
-    }
-
-    pub fn take_output(&mut self) -> Option<egui::FullOutput> {
-        self.output.take()
-    }
-}
-
-/// Installs the editor shell without coupling runtime-only builds to egui.
+/// Installs editor state, viewport data, and the message console.
+///
+/// Add this after render extraction when building an editor application:
+///
+/// ```no_run
+/// # use rusting_engine::{App, EditorPlugin};
+/// # use rusting_engine::runtime::RenderExtractPlugin;
+/// let mut app = App::new();
+/// app.add_plugin(RenderExtractPlugin)?;
+/// app.add_plugin(EditorPlugin)?;
+/// # Ok::<(), rusting_engine::runtime::AppError>(())
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) -> Result<(), AppError> {
+        // These resources keep GUI data inside the same ECS world as the game.
         app.insert_resource(EditorState::default())
             .insert_resource(EditorViewport::default())
             .insert_resource(EditorConsole::default())
-            .insert_resource(EditorUi::default())
-            .add_systems(ScheduleStage::Update, draw_editor);
+            .insert_resource(EditorHistory::default())
+            .insert_resource(PendingDestructiveAction::default())
+            .insert_resource(EditorAssetState::default())
+            .insert_resource(EditorBuildState::default())
+            .insert_resource(ProjectManagerState::default());
         Ok(())
     }
 }
 
-fn draw_editor(world: &mut World) {
-    let (context, input) = {
-        let mut editor_ui = world.resource_mut::<EditorUi>();
-        (
-            editor_ui.context.clone(),
-            std::mem::take(&mut editor_ui.next_input),
-        )
-    };
-    let mut state = world.resource::<EditorState>().clone();
-    let frame_time = *world.resource::<FrameTime>();
-    let entities = collect_entities(world);
-    let console_entries = world.resource::<EditorConsole>().entries.clone();
-    let asset_summary =
-        world
-            .get_resource::<AssetServer>()
-            .map(|server| AssetSummary {
-                meshes: server.meshes.len(),
-                textures: server.textures.len(),
-                materials: server.materials.len(),
-                scenes: server.scenes.len(),
-                paths: server
-                    .meshes
-                    .paths()
-                    .map(|(_, path)| path.display().to_string())
-                    .chain(
-                        server
-                            .textures
-                            .paths()
-                            .map(|(_, path)| path.display().to_string()),
-                    )
-                    .chain(
-                        server
-                            .materials
-                            .paths()
-                            .map(|(_, path)| path.display().to_string()),
-                    )
-                    .collect(),
-            });
-    let render_summary =
-        world.get_resource::<RenderWorld>().map(|render_world| {
-            (render_world.report, render_world.dirty_ranges.clone())
-        });
-    let mut edited_transform = state
-        .selected
-        .and_then(|entity| world.get::<Transform>(entity).copied());
-    let mut play_clicked = false;
-    let mut pause_clicked = false;
-    let mut stop_clicked = false;
-    let mut step_clicked = false;
-
-    let output = context.run(input, |context| {
-        TopBottomPanel::top("rusting_editor_toolbar").show(context, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("RustingEngine");
-                ui.separator();
-                play_clicked = ui.button("▶ Play").clicked();
-                pause_clicked = ui.button("⏸ Pause").clicked();
-                step_clicked = ui.button("⏭ Step").clicked();
-                stop_clicked = ui.button("⏹ Stop").clicked();
-                ui.separator();
-                ui.label(format!(
-                    "frame {} · {:.2} ms",
-                    frame_time.frame,
-                    frame_time.real_delta.as_secs_f64() * 1_000.0
-                ));
-            });
-        });
-
-        if state.hierarchy_open {
-            SidePanel::left("rusting_editor_hierarchy")
-                .default_width(220.0)
-                .show(context, |ui| {
-                    ui.heading("Hierarchy");
-                    ui.separator();
-                    for item in &entities {
-                        let indentation = "  ".repeat(item.depth);
-                        let label = format!("{indentation}{}", item.name);
-                        if ui
-                            .selectable_label(
-                                state.selected == Some(item.entity),
-                                label,
-                            )
-                            .clicked()
-                        {
-                            state.selected = Some(item.entity);
-                            edited_transform = item.transform;
-                        }
-                    }
-                });
-        }
-
-        if state.inspector_open {
-            SidePanel::right("rusting_editor_inspector")
-                .default_width(280.0)
-                .show(context, |ui| {
-                    ui.heading("Inspector");
-                    ui.separator();
-                    if let Some(entity) = state.selected {
-                        ui.monospace(format!("{entity:?}"));
-                        if let Some(transform) = &mut edited_transform {
-                            ui.collapsing("Transform", |ui| {
-                                edit_vector(
-                                    ui,
-                                    "Position",
-                                    &mut transform.position,
-                                    0.1,
-                                );
-                                edit_vector(
-                                    ui,
-                                    "Rotation",
-                                    &mut transform.rotation,
-                                    0.01,
-                                );
-                                edit_vector(
-                                    ui,
-                                    "Scale",
-                                    &mut transform.scale,
-                                    0.01,
-                                );
-                            });
-                        } else {
-                            ui.label("This entity has no editable Transform.");
-                        }
-                        if let Some(renderer) =
-                            world.get::<MeshRenderer>(entity).copied()
-                        {
-                            ui.collapsing("Mesh Renderer", |ui| {
-                                ui.monospace(format!(
-                                    "Mesh: {}:{}",
-                                    renderer.mesh.index(),
-                                    renderer.mesh.generation()
-                                ));
-                                ui.monospace(format!(
-                                    "Material: {}:{}",
-                                    renderer.material.index(),
-                                    renderer.material.generation()
-                                ));
-                                ui.label(format!(
-                                    "Cast shadows: {}",
-                                    renderer.cast_shadows
-                                ));
-                            });
-                        }
-                    } else {
-                        ui.label("Select an entity to inspect it.");
-                    }
-                });
-        }
-
-        if state.console_open {
-            TopBottomPanel::bottom("rusting_editor_console")
-                .default_height(140.0)
-                .show(context, |ui| {
-                    ui.heading("Console");
-                    ui.separator();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for entry in &console_entries {
-                            let color = match entry.level {
-                                ConsoleLevel::Info => ui.visuals().text_color(),
-                                ConsoleLevel::Warning => egui::Color32::YELLOW,
-                                ConsoleLevel::Error => egui::Color32::LIGHT_RED,
-                            };
-                            ui.colored_label(color, &entry.message);
-                        }
-                        if let Some((report, dirty_ranges)) = &render_summary {
-                            ui.separator();
-                            ui.label(format!(
-                                "Render extract: {} total, +{}, ~{}, -{}",
-                                report.total,
-                                report.added,
-                                report.changed,
-                                report.removed
-                            ));
-                            ui.monospace(format!(
-                                "Dirty uploads: {dirty_ranges:?}"
-                            ));
-                        }
-                    });
-                });
-        }
-
-        if state.assets_open {
-            egui::Window::new("Asset Browser")
-                .default_pos([240.0, 80.0])
-                .default_size([360.0, 260.0])
-                .show(context, |ui| {
-                    if let Some(summary) = &asset_summary {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Meshes: {}", summary.meshes));
-                            ui.label(format!("Textures: {}", summary.textures));
-                            ui.label(format!(
-                                "Materials: {}",
-                                summary.materials
-                            ));
-                            ui.label(format!("Scenes: {}", summary.scenes));
-                        });
-                        ui.separator();
-                        if summary.paths.is_empty() {
-                            ui.label("No file-backed assets loaded.");
-                        } else {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                for path in &summary.paths {
-                                    ui.monospace(path);
-                                }
-                            });
-                        }
-                    } else {
-                        ui.label("AssetPlugin is not installed.");
-                    }
-                });
-        }
-
-        CentralPanel::default().show(context, |ui| {
-            ui.heading("Scene Viewport");
-            ui.separator();
-            let rect = ui.available_rect_before_wrap();
-            ui.painter().rect_filled(
-                rect,
-                2.0,
-                egui::Color32::from_rgb(18, 20, 24),
-            );
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "Renderer viewport target",
-                egui::FontId::proportional(18.0),
-                egui::Color32::GRAY,
-            );
-        });
-    });
-
-    if play_clicked {
-        state.mode = EditorMode::Play;
-        world.resource_mut::<TimeControl>().resume();
-    }
-    if pause_clicked {
-        state.mode = EditorMode::Paused;
-        world.resource_mut::<TimeControl>().pause();
-    }
-    if step_clicked {
-        state.mode = EditorMode::Paused;
-        let mut time = world.resource_mut::<TimeControl>();
-        time.pause();
-        time.step();
-    }
-    if stop_clicked {
-        state.mode = EditorMode::Edit;
-        world.resource_mut::<TimeControl>().pause();
-    }
-    if let (Some(entity), Some(transform)) = (state.selected, edited_transform)
-    {
-        if let Ok(mut entity) = world.get_entity_mut(entity) {
-            entity.insert(transform);
-        } else {
-            state.selected = None;
-        }
-    }
-    *world.resource_mut::<EditorState>() = state;
-    world.resource_mut::<EditorUi>().output = Some(output);
+/// Work requested by one Project Manager button.
+#[derive(Clone)]
+enum ProjectRequest {
+    /// Creates a project inside the selected parent folder.
+    Create { parent: PathBuf, name: String },
+    /// Opens a folder that already contains a RustingEngine project.
+    Open(PathBuf),
 }
 
+/// Action held while the editor asks what to do with unsaved changes.
+#[derive(Clone)]
+enum DestructiveRequest {
+    NewScene,
+    ReloadScene,
+    OpenScene(PathBuf),
+    OpenProject(ProjectRequest),
+}
+
+/// Keeps a confirmation request alive between GUI frames.
+#[derive(Resource, Clone, Default)]
+struct PendingDestructiveAction {
+    request: Option<DestructiveRequest>,
+}
+
+/// Asset Browser filter, imported sub-assets, and its last status message.
+#[derive(Resource, Clone, Default)]
+struct EditorAssetState {
+    /// Text used to filter project asset paths.
+    filter: String,
+    /// glTF primitives imported during this editor session.
+    gltf_primitives: Vec<ImportedGltfPrimitive>,
+    /// Result of the latest import or assignment.
+    message: Option<String>,
+}
+
+/// Cargo work that can run without freezing the editor window.
+#[derive(Clone)]
+enum BuildRequest {
+    Check,
+    BuildAndRun {
+        /// Profile selected beside the editor's Play button.
+        profile: GameBuildProfile,
+    },
+    Export {
+        parent: PathBuf,
+        project_name: String,
+        binary_name: String,
+        cooked_scene: PathBuf,
+    },
+}
+
+/// Result sent from the Cargo worker back to the main editor thread.
+struct BuildFinished {
+    success: bool,
+    output: String,
+}
+
+/// One update sent by the compiler or running game to the editor.
+enum BuildWorkerMessage {
+    /// Text that should appear immediately in Cargo Output.
+    Output(String),
+    /// Final status after Cargo or the native game exits.
+    Finished(BuildFinished),
+}
+
+/// Current compiler state displayed below the Rust Code Editor.
+#[derive(Resource, Default)]
+struct EditorBuildState {
+    /// True while Cargo is checking or compiling the project.
+    running: bool,
+    /// Combined Cargo output kept for the Code and Console areas.
+    output: String,
+    /// Byte position already copied into the Console panel.
+    console_cursor: usize,
+    /// Receiver is locked only because ECS resources must be thread-safe.
+    receiver:
+        std::sync::Mutex<Option<std::sync::mpsc::Receiver<BuildWorkerMessage>>>,
+}
+
+impl EditorBuildState {
+    /// Starts one Cargo task. A second click is ignored until it finishes.
+    fn start(
+        &mut self,
+        project_root: PathBuf,
+        request: BuildRequest,
+    ) -> Result<(), String> {
+        if self.running {
+            return Err("A Cargo task is already running".into());
+        }
+        let manifest = project_root.join("Cargo.toml");
+        if !manifest.is_file() {
+            return Err(format!("{} is missing", manifest.display()));
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.receiver.get_mut().map_err(|error| error.to_string())? =
+            Some(receiver);
+        self.running = true;
+        self.output = match &request {
+            BuildRequest::Check => "Running cargo check...".into(),
+            BuildRequest::BuildAndRun { profile } => {
+                format!("Building {} game...", profile.label())
+            }
+            BuildRequest::Export { .. } => "Building game for export...".into(),
+        };
+        self.console_cursor = 0;
+        std::thread::spawn(move || {
+            let command = match &request {
+                BuildRequest::Check => "check",
+                BuildRequest::BuildAndRun { .. }
+                | BuildRequest::Export { .. } => "build",
+            };
+            let profile = match &request {
+                BuildRequest::BuildAndRun { profile } => Some(*profile),
+                BuildRequest::Export { .. } => Some(GameBuildProfile::Release),
+                BuildRequest::Check => None,
+            };
+            let mut cargo = std::process::Command::new("cargo");
+            cargo.arg(command);
+            if let Some(flag) = profile.and_then(GameBuildProfile::cargo_flag) {
+                cargo.arg(flag);
+            }
+            let result = cargo
+                .args(["--message-format", "short", "--manifest-path"])
+                .arg(&manifest)
+                .current_dir(&project_root)
+                .output();
+            let finished = match result {
+                Ok(output) => {
+                    let mut success = output.status.success();
+                    let mut text =
+                        String::from_utf8_lossy(&output.stdout).into_owned();
+                    text.push_str(&String::from_utf8_lossy(&output.stderr));
+                    if !text.is_empty() {
+                        let _ = sender.send(BuildWorkerMessage::Output(text));
+                    }
+                    if output.status.success() {
+                        if let BuildRequest::BuildAndRun { profile } = &request
+                        {
+                            return run_native_game(
+                                &project_root,
+                                &manifest,
+                                *profile,
+                                sender,
+                            );
+                        } else if let BuildRequest::Export {
+                            parent,
+                            project_name,
+                            binary_name,
+                            cooked_scene,
+                        } = &request
+                        {
+                            match export_built_game(
+                                &project_root,
+                                &manifest,
+                                parent,
+                                project_name,
+                                binary_name,
+                                cooked_scene,
+                            ) {
+                                Ok(path) => {
+                                    let _ = sender.send(
+                                        BuildWorkerMessage::Output(format!(
+                                            "\nExported game to {}\n",
+                                            path.display()
+                                        )),
+                                    );
+                                }
+                                Err(error) => {
+                                    success = false;
+                                    let _ = sender.send(
+                                        BuildWorkerMessage::Output(format!(
+                                            "\nBuild passed, but export failed: {error}\n"
+                                        )),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    BuildFinished {
+                        success,
+                        output: if success {
+                            "\nCargo task finished successfully.\n".into()
+                        } else {
+                            "\nCargo task failed.\n".into()
+                        },
+                    }
+                }
+                Err(error) => BuildFinished {
+                    success: false,
+                    output: format!("Could not start Cargo: {error}"),
+                },
+            };
+            let _ = sender.send(BuildWorkerMessage::Finished(finished));
+        });
+        Ok(())
+    }
+
+    /// Receives new compiler and game output without blocking the editor.
+    fn poll(&mut self) -> Option<bool> {
+        let mut messages = Vec::new();
+        let mut disconnected = false;
+        {
+            let receiver = self.receiver.get_mut().ok()?.as_ref()?;
+            loop {
+                match receiver.try_recv() {
+                    Ok(message) => messages.push(message),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut finished_status = None;
+        for message in messages {
+            match message {
+                BuildWorkerMessage::Output(text) => {
+                    self.append_output(&text);
+                }
+                BuildWorkerMessage::Finished(finished) => {
+                    self.append_output(&finished.output);
+                    self.running = false;
+                    finished_status = Some(finished.success);
+                }
+            }
+        }
+        if finished_status.is_some() {
+            *self.receiver.get_mut().ok()? = None;
+            finished_status
+        } else if disconnected {
+            if self.running {
+                self.running = false;
+                self.append_output("\nCargo worker stopped unexpectedly.\n");
+                *self.receiver.get_mut().ok()? = None;
+                Some(false)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Keeps recent output while preventing an unlimited memory allocation.
+    fn append_output(&mut self, text: &str) {
+        const MAX_OUTPUT_BYTES: usize = 500_000;
+        self.output.push_str(text);
+        if self.output.len() > MAX_OUTPUT_BYTES {
+            let mut remove = self.output.len() - MAX_OUTPUT_BYTES;
+            while !self.output.is_char_boundary(remove) {
+                remove += 1;
+            }
+            self.output.drain(..remove);
+            self.output.insert_str(0, "[older output truncated]\n");
+        }
+    }
+
+    /// Returns build text that has not yet been sent to the Console panel.
+    fn take_console_output(&mut self) -> String {
+        if self.console_cursor > self.output.len() {
+            // The bounded output buffer discarded old bytes.
+            self.console_cursor = 0;
+        }
+        let text = self.output[self.console_cursor..].to_owned();
+        self.console_cursor = self.output.len();
+        text
+    }
+}
+
+/// Starts the native game and forwards both output streams to the editor.
+fn run_native_game(
+    project_root: &std::path::Path,
+    manifest: &std::path::Path,
+    profile: GameBuildProfile,
+    sender: std::sync::mpsc::Sender<BuildWorkerMessage>,
+) {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    let _ = sender.send(BuildWorkerMessage::Output(
+        "\nBuild passed. Starting native game...\n".into(),
+    ));
+    let mut cargo = std::process::Command::new("cargo");
+    cargo.arg("run");
+    if let Some(flag) = profile.cargo_flag() {
+        cargo.arg(flag);
+    }
+    let child = cargo
+        .arg("--manifest-path")
+        .arg(manifest)
+        .current_dir(project_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = sender.send(BuildWorkerMessage::Finished(BuildFinished {
+                success: false,
+                output: format!("Could not start native game: {error}\n"),
+            }));
+            return;
+        }
+    };
+
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let sender = sender.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                match line {
+                    Ok(line) => {
+                        let _ = sender.send(BuildWorkerMessage::Output(
+                            format!("{line}\n"),
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = sender.send(BuildWorkerMessage::Output(
+                            format!("Could not read game output: {error}\n"),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let sender = sender.clone();
+        readers.push(std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr).lines() {
+                match line {
+                    Ok(line) => {
+                        let _ = sender.send(BuildWorkerMessage::Output(
+                            format!("{line}\n"),
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = sender.send(BuildWorkerMessage::Output(
+                            format!("Could not read game errors: {error}\n"),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+
+    let status = child.wait();
+    for reader in readers {
+        let _ = reader.join();
+    }
+    let finished = match status {
+        Ok(status) if status.success() => BuildFinished {
+            success: true,
+            output: "\nNative game exited successfully.\n".into(),
+        },
+        Ok(status) => BuildFinished {
+            success: false,
+            output: format!("\nNative game exited with status {status}.\n"),
+        },
+        Err(error) => BuildFinished {
+            success: false,
+            output: format!("\nCould not wait for native game: {error}\n"),
+        },
+    };
+    let _ = sender.send(BuildWorkerMessage::Finished(finished));
+}
+
+/// Creates a portable folder after Cargo has produced the release binary.
+fn export_built_game(
+    project_root: &std::path::Path,
+    manifest: &std::path::Path,
+    parent: &std::path::Path,
+    project_name: &str,
+    binary_name: &str,
+    cooked_scene: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if !parent.is_dir() {
+        return Err(format!("{} is not a folder", parent.display()));
+    }
+    let metadata = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(["--manifest-path"])
+        .arg(manifest)
+        .current_dir(project_root)
+        .output()
+        .map_err(|error| format!("Could not read Cargo metadata: {error}"))?;
+    if !metadata.status.success() {
+        return Err(String::from_utf8_lossy(&metadata.stderr).into_owned());
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)
+        .map_err(|error| format!("Invalid Cargo metadata: {error}"))?;
+    let target = metadata
+        .get("target_directory")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Cargo metadata has no target directory".to_owned())?;
+    let executable_name = if cfg!(target_os = "windows") {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.to_owned()
+    };
+    let executable =
+        PathBuf::from(target).join("release").join(&executable_name);
+    if !executable.is_file() {
+        return Err(format!(
+            "Release executable {} was not produced",
+            executable.display()
+        ));
+    }
+    package_game_files(
+        project_root,
+        &executable,
+        parent,
+        project_name,
+        binary_name,
+        cooked_scene,
+    )
+}
+
+/// Copies a verified executable and runtime data into one new export folder.
+fn package_game_files(
+    project_root: &std::path::Path,
+    executable: &std::path::Path,
+    parent: &std::path::Path,
+    project_name: &str,
+    binary_name: &str,
+    cooked_scene: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let executable_name = if cfg!(target_os = "windows") {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.to_owned()
+    };
+    let cooked_source = project_root.join(cooked_scene);
+    if !cooked_source.is_file() {
+        return Err(format!(
+            "Cooked scene {} is missing",
+            cooked_source.display()
+        ));
+    }
+
+    // A unique final name avoids replacing an older playable export.
+    let safe_name = binary_name.replace('-', "_");
+    let mut destination = parent.join(format!("{safe_name}_export"));
+    for number in 2.. {
+        if !destination.exists() {
+            break;
+        }
+        destination = parent.join(format!("{safe_name}_export_{number}"));
+    }
+    let temporary =
+        parent.join(format!(".rusting-export-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        std::fs::create_dir_all(&temporary)
+            .map_err(|error| error.to_string())?;
+        std::fs::copy(executable, temporary.join(&executable_name))
+            .map_err(|error| error.to_string())?;
+        let cooked_destination = temporary.join(cooked_scene);
+        if let Some(folder) = cooked_destination.parent() {
+            std::fs::create_dir_all(folder)
+                .map_err(|error| error.to_string())?;
+        }
+        std::fs::copy(&cooked_source, cooked_destination)
+            .map_err(|error| error.to_string())?;
+        let assets = project_root.join("assets");
+        if assets.is_dir() {
+            copy_directory(&assets, &temporary.join("assets"))?;
+        }
+        let engine_license =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("LICENSE.md");
+        if engine_license.is_file() {
+            std::fs::copy(
+                engine_license,
+                temporary.join("RUSTING_ENGINE_LICENSE.md"),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        std::fs::write(
+            temporary.join("README.txt"),
+            format!(
+                "{project_name}\n\nRun {executable_name} to start the game.\nThe system needs a Vulkan-capable graphics driver.\n"
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+        std::fs::rename(&temporary, &destination)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() && temporary.exists() {
+        let _ = std::fs::remove_dir_all(&temporary);
+    }
+    result.map(|()| destination)
+}
+
+/// Recursively copies normal files and folders while ignoring symbolic links.
+fn copy_directory(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), target)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Work selected inside the Assets area and applied after drawing.
+enum AssetRequest {
+    ImportFiles(Vec<PathBuf>),
+    LoadTexture(PathBuf),
+    ImportGltf(PathBuf),
+    AssignTexture(Handle<TextureAsset>),
+    AssignPrimitive(Handle<MeshAsset>, Handle<MaterialAsset>),
+}
+
+/// Scene-object operation requested by the Hierarchy area.
+enum EntityRequest {
+    /// Adds an object that only has a name and transform.
+    CreateEmpty,
+    /// Adds a visible cube using the project's fallback assets.
+    CreateCube,
+    /// Adds a visible sphere using the project's fallback assets.
+    CreateSphere,
+    /// Adds an inactive perspective camera.
+    CreateCamera,
+    /// Copies every serialized component of one object.
+    Duplicate(Entity),
+    /// Removes one object and all of its children.
+    Delete(Entity),
+    /// Changes the display name stored in the scene.
+    Rename(Entity, String),
+    /// Moves one object below another object, or back to the scene root.
+    Reparent(Entity, Option<Entity>),
+}
+
+/// Stores the current scene before an editor command changes it.
+fn remember_scene_before_edit(
+    world: &mut World,
+    history: &mut EditorHistory,
+) -> Result<(), String> {
+    if let Some(document) = history.pending_inspector.take() {
+        history.push_undo(document);
+    }
+    scene_document(world, "Undo Snapshot")
+        .map(|document| history.push_undo(document))
+        .map_err(|error| format!("Could not create undo snapshot: {error}"))
+}
+
+/// Gives a new object a readable name that is not already in the Hierarchy.
+fn unique_object_name(world: &mut World, base: &str) -> String {
+    let mut query = world.query::<&Name>();
+    let names = query
+        .iter(world)
+        .map(|name| name.0.clone())
+        .collect::<std::collections::HashSet<_>>();
+    if !names.contains(base) {
+        return base.into();
+    }
+    for number in 2.. {
+        let candidate = format!("{base} {number}");
+        if !names.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("a free object name always exists")
+}
+
+/// Returns normal files below a project's `assets` folder without following
+/// directory symbolic links.
+fn project_asset_files(project_root: &str) -> Vec<PathBuf> {
+    let root = PathBuf::from(project_root).join("assets");
+    let mut pending = vec![root];
+    let mut files = Vec::new();
+    while let Some(folder) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                files.push(entry.path());
+            }
+            if files.len() >= 10_000 {
+                break;
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Copies an external file into the project without replacing an existing
+/// asset. Name collisions receive `_2`, `_3`, and so on.
+fn copy_into_project_assets(
+    project_root: &str,
+    source: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if !source.is_file() {
+        return Err(format!("{} is not a file", source.display()));
+    }
+    let asset_folder = PathBuf::from(project_root).join("assets");
+    std::fs::create_dir_all(&asset_folder)
+        .map_err(|error| format!("Could not create assets folder: {error}"))?;
+    let source = source
+        .canonicalize()
+        .map_err(|error| format!("Could not open asset: {error}"))?;
+    let asset_folder = asset_folder
+        .canonicalize()
+        .map_err(|error| format!("Could not open assets folder: {error}"))?;
+    if source.starts_with(&asset_folder) {
+        return Ok(source);
+    }
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| "Asset path has no file name".to_owned())?;
+    let mut destination = asset_folder.join(file_name);
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("asset");
+    let extension = source.extension().and_then(|value| value.to_str());
+    for number in 2.. {
+        if !destination.exists() {
+            break;
+        }
+        let name = extension.map_or_else(
+            || format!("{stem}_{number}"),
+            |extension| format!("{stem}_{number}.{extension}"),
+        );
+        destination = asset_folder.join(name);
+    }
+    std::fs::copy(&source, &destination).map_err(|error| {
+        format!(
+            "Could not copy {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(destination)
+}
+
+/// Draws the startup Project Manager and returns one requested action.
+fn draw_project_manager(
+    context: &Context,
+    manager: &mut ProjectManagerState,
+) -> Option<ProjectRequest> {
+    if !manager.open {
+        return None;
+    }
+
+    let mut request = None;
+    egui::Window::new("RustingEngine Project Manager")
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(620.0)
+        .show(context, |ui| {
+            ui.heading("Open a project");
+            if manager.recent_projects.is_empty() {
+                ui.label("No recent projects yet.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for project in &manager.recent_projects {
+                            let text = format!(
+                                "{}\n{}",
+                                project.name,
+                                project.path.display()
+                            );
+                            if ui.button(text).clicked() {
+                                request = Some(ProjectRequest::Open(
+                                    project.path.clone(),
+                                ));
+                            }
+                        }
+                    });
+            }
+            if ui.button("Browse for existing project...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Open RustingEngine Project")
+                    .pick_folder()
+                {
+                    request = Some(ProjectRequest::Open(path));
+                }
+            }
+
+            ui.separator();
+            ui.heading("Create a project");
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut manager.project_name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Parent folder");
+                if manager.parent_directory.as_os_str().is_empty() {
+                    ui.colored_label(
+                        gui_elements::EditorTheme::TEXT_MUTED,
+                        "Not selected",
+                    );
+                } else {
+                    ui.monospace(
+                        manager.parent_directory.display().to_string(),
+                    );
+                }
+                if ui.button("Browse...").clicked() {
+                    let mut dialog = rfd::FileDialog::new()
+                        .set_title("Choose Project Parent Folder");
+                    if !manager.parent_directory.as_os_str().is_empty() {
+                        dialog =
+                            dialog.set_directory(&manager.parent_directory);
+                    }
+                    if let Some(path) = dialog.pick_folder() {
+                        manager.parent_directory = path;
+                    }
+                }
+            });
+            if ui.button("Create Project").clicked() {
+                if manager.parent_directory.as_os_str().is_empty() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Choose Where to Create the Project")
+                        .pick_folder()
+                    {
+                        manager.parent_directory = path.clone();
+                        request = Some(ProjectRequest::Create {
+                            parent: path,
+                            name: manager.project_name.clone(),
+                        });
+                    }
+                } else {
+                    request = Some(ProjectRequest::Create {
+                        parent: manager.parent_directory.clone(),
+                        name: manager.project_name.clone(),
+                    });
+                }
+            }
+            if let Some(message) = &manager.message {
+                ui.separator();
+                ui.label(message);
+            }
+        });
+    request
+}
+
+/// Draws three number inputs for an X, Y, and Z value.
+///
+/// # Arguments
+/// * `ui` - Egui area that receives the inputs.
+/// * `label` - Name shown before the three values.
+/// * `values` - Numbers changed by the inputs.
+/// * `speed` - Amount changed while dragging the mouse.
 fn edit_vector(
     ui: &mut egui::Ui,
     label: &str,
@@ -463,878 +1087,612 @@ fn edit_vector(
     });
 }
 
-struct HierarchyItem {
-    entity: Entity,
-    name: String,
-    depth: usize,
-    transform: Option<Transform>,
-}
-
-struct AssetSummary {
-    meshes: usize,
-    textures: usize,
-    materials: usize,
-    scenes: usize,
-    paths: Vec<String>,
-}
-
-fn collect_entities(world: &mut World) -> Vec<HierarchyItem> {
-    let mut query = world.query::<(
-        Entity,
-        Option<&Name>,
-        Option<&Parent>,
-        Option<&Transform>,
-    )>();
-    let raw = query
-        .iter(world)
-        .filter(|(_, name, parent, transform)| {
-            name.is_some() || parent.is_some() || transform.is_some()
-        })
-        .map(|(entity, name, parent, transform)| {
-            (
-                entity,
-                name.map_or_else(
-                    || format!("Entity {entity:?}"),
-                    |name| name.0.clone(),
-                ),
-                parent.map(|parent| parent.0),
-                transform.copied(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let parents = raw
-        .iter()
-        .filter_map(|(entity, _, parent, _)| {
-            parent.map(|parent| (*entity, parent))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
-
-    let mut items = raw
-        .into_iter()
-        .map(|(entity, name, _, transform)| {
-            let mut depth = 0;
-            let mut cursor = entity;
-            let mut visited = std::collections::HashSet::new();
-            while let Some(parent) = parents.get(&cursor).copied() {
-                if !visited.insert(parent) {
-                    break;
-                }
-                depth += 1;
-                cursor = parent;
-            }
-            HierarchyItem {
-                entity,
-                name,
-                depth,
-                transform,
-            }
-        })
-        .collect::<Vec<_>>();
-    items.sort_by_key(|item| (item.depth, item.name.clone(), item.entity));
-    items
-}
-
-/// Draws the interactive editor into an already-open egui frame.
+/// Draws one fixed-size button in an editor area header.
 ///
-/// Window runners use this entry point after forwarding winit input to egui.
-pub fn draw_editor_view(world: &mut World, context: &Context) {
-    let mut state = world.resource::<EditorState>().clone();
-    let entities = collect_entities(world);
-    let frame_time = *world.resource::<FrameTime>();
-    let mut render_settings = world.resource::<RenderSettings>().clone();
-    let physics_backends = *world.resource::<PhysicsBackendStatus>();
-    let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
-        (
-            assets.meshes.len(),
-            assets.materials.len(),
-            assets.textures.len(),
-            assets.scenes.len(),
-        )
-    });
-    let render_report = world
-        .get_resource::<RenderWorld>()
-        .map(|render_world| render_world.report);
-    let mut edited_transform = state
-        .selected
-        .and_then(|entity| world.get::<Transform>(entity).copied());
-    let mut edited_camera = state
-        .selected
-        .and_then(|entity| world.get::<Camera>(entity).copied());
-    let mut edited_physics = state
-        .selected
-        .and_then(|entity| world.get::<PhysicsBody>(entity).cloned());
-    let mut edited_rigid_body = state
-        .selected
-        .and_then(|entity| world.get::<RigidBody>(entity).copied());
-    let mut edited_collider = state
-        .selected
-        .and_then(|entity| world.get::<Collider>(entity).copied());
-    let mut edited_script = state
-        .selected
-        .and_then(|entity| world.get::<ScriptComponent>(entity).cloned());
-    let registered_names = registered_component_names(world);
-    let custom_values = state
-        .selected
-        .map(|entity| registered_component_values(world, entity))
-        .transpose()
-        .unwrap_or_else(|error| {
-            state.scene_message = Some(format!("Inspector failed: {error}"));
-            None
-        })
-        .unwrap_or_default();
-    if let Some(entity) = state.selected {
-        for (name, value) in &custom_values {
-            state
-                .component_drafts
-                .entry((entity, name.clone()))
-                .or_insert_with(|| value.clone());
+/// The rectangle and symbol are painted separately. Different symbol sizes can
+/// therefore never change the size or vertical position of the button.
+fn dock_header_button(
+    ui: &mut egui::Ui,
+    symbol: &str,
+    hover_text: &str,
+) -> egui::Response {
+    gui_elements::EditorTheme::dock_button(ui, symbol, hover_text)
+}
+
+#[derive(Clone, Copy)]
+enum DockAction {
+    /// Area ID and direction for a new divider.
+    Split(u64, EditorSplitAxis),
+    /// Area ID that should be removed.
+    Close(u64),
+}
+
+/// Draws one layout node and all children below it.
+///
+/// # Arguments
+/// * `ui` - Egui area used to paint controls.
+/// * `node` - Area or split currently being drawn.
+/// * `rect` - Screen space available to this node.
+/// * `active_area` - ID of the area with the blue border.
+/// * `actions` - Changes that will be applied after drawing is finished.
+/// * `show_panel` - Draws the selected content inside a leaf area.
+fn show_dock_node(
+    ui: &mut egui::Ui,
+    node: &mut EditorDockNode,
+    rect: egui::Rect,
+    active_area: &mut u64,
+    actions: &mut Vec<DockAction>,
+    show_panel: &mut impl FnMut(&mut egui::Ui, EditorPanel),
+) {
+    const DIVIDER: f32 = 6.0;
+    match node {
+        EditorDockNode::Area { id, panel } => {
+            let id = *id;
+            // Leave breathing room between the panel and its resize divider.
+            let panel_rect = rect.shrink(2.0);
+            // Every area gets its own ID space. Two areas can show the same
+            // panel without Egui thinking that their controls are duplicates.
+            // A leaf draws its header first and panel content below it.
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id_salt(("dock_area", id))
+                    .max_rect(panel_rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    // A panel must never draw or receive clicks over its neighbor.
+                    ui.set_clip_rect(ui.clip_rect().intersect(panel_rect));
+                    // Clicking any empty space or control selects this area.
+                    let pressed_inside = ui.input(|input| {
+                        input.pointer.primary_pressed()
+                            && input.pointer.interact_pos().is_some_and(
+                                |position| panel_rect.contains(position),
+                            )
+                    });
+                    if pressed_inside {
+                        *active_area = id;
+                    }
+                    let active = *active_area == id;
+                    if !matches!(panel, EditorPanel::Scene | EditorPanel::Game)
+                    {
+                        // Normal panels need a solid background. A 3D view stays
+                        // transparent because Vulkan draws below egui.
+                        ui.painter().rect_filled(
+                            panel_rect,
+                            6.0,
+                            gui_elements::EditorTheme::PANEL,
+                        );
+                    }
+                    let stroke = if active {
+                        egui::Stroke::new(
+                            2.0,
+                            gui_elements::EditorTheme::ACCENT,
+                        )
+                    } else {
+                        egui::Stroke::new(
+                            1.0,
+                            gui_elements::EditorTheme::BORDER,
+                        )
+                    };
+                    egui::Frame::NONE
+                        .fill(gui_elements::EditorTheme::PANEL_RAISED)
+                        .inner_margin(egui::Margin::symmetric(8, 5))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let buttons_width = 22.0 * 3.0
+                                    + ui.spacing().item_spacing.x * 2.0;
+                                let selector_width = (ui.available_width()
+                                    - buttons_width
+                                    - 12.0)
+                                    .clamp(60.0, 140.0);
+                                gui_elements::EditorTheme::toolbar_combo_box_with_popup(
+                                    ui,
+                                    ("dock_panel_selector", id),
+                                    panel.title(),
+                                    selector_width,
+                                    220.0,
+                                    |ui| {
+                                            for choice in EditorPanel::ALL {
+                                                if gui_elements::EditorTheme::menu_choice(
+                                                    ui,
+                                                    choice.title(),
+                                                    *panel == choice,
+                                                    true,
+                                                )
+                                                .clicked()
+                                                {
+                                                    *panel = choice;
+                                                }
+                                            }
+                                        },
+                                );
+                                // Keep all three buttons together on the right side.
+                                ui.add_space(
+                                    (ui.available_width() - buttons_width)
+                                        .max(0.0),
+                                );
+                                if dock_header_button(
+                                    ui,
+                                    "<>",
+                                    "Split into left/right areas",
+                                )
+                                .clicked()
+                                {
+                                    actions.push(DockAction::Split(
+                                        id,
+                                        EditorSplitAxis::Columns,
+                                    ));
+                                }
+                                if dock_header_button(
+                                    ui,
+                                    "||",
+                                    "Split into top/bottom areas",
+                                )
+                                .clicked()
+                                {
+                                    actions.push(DockAction::Split(
+                                        id,
+                                        EditorSplitAxis::Rows,
+                                    ));
+                                }
+                                if dock_header_button(
+                                    ui,
+                                    "x",
+                                    "Close this area",
+                                )
+                                .clicked()
+                                {
+                                    actions.push(DockAction::Close(id));
+                                }
+                            });
+                        });
+                    egui::Frame::NONE
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| show_panel(ui, *panel));
+                    // Paint the selection border last so panel contents cannot hide it.
+                    ui.painter().rect_stroke(
+                        panel_rect,
+                        6.0,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                },
+            );
+        }
+        EditorDockNode::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
+            // Keep both children large enough to stay usable.
+            let ratio_clamped = ratio.clamp(0.1, 0.9);
+            *ratio = ratio_clamped;
+            // Turn the ratio into two child rectangles and one thin divider.
+            let (first_rect, divider_rect, second_rect) = match axis {
+                EditorSplitAxis::Columns => {
+                    let split =
+                        rect.left() + (rect.width() - DIVIDER) * ratio_clamped;
+                    (
+                        egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(split, rect.bottom()),
+                        ),
+                        egui::Rect::from_min_max(
+                            egui::pos2(split, rect.top()),
+                            egui::pos2(split + DIVIDER, rect.bottom()),
+                        ),
+                        egui::Rect::from_min_max(
+                            egui::pos2(split + DIVIDER, rect.top()),
+                            rect.max,
+                        ),
+                    )
+                }
+                EditorSplitAxis::Rows => {
+                    let split =
+                        rect.top() + (rect.height() - DIVIDER) * ratio_clamped;
+                    (
+                        egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(rect.right(), split),
+                        ),
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), split),
+                            egui::pos2(rect.right(), split + DIVIDER),
+                        ),
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), split + DIVIDER),
+                            rect.max,
+                        ),
+                    )
+                }
+            };
+            let divider_id = ui.id().with((
+                "dock_divider",
+                first_rect.min.x.to_bits(),
+                first_rect.min.y.to_bits(),
+                second_rect.max.x.to_bits(),
+                second_rect.max.y.to_bits(),
+            ));
+            let response = ui.interact(
+                divider_rect,
+                divider_id,
+                egui::Sense::click_and_drag(),
+            );
+            if response.dragged() {
+                // Mouse position becomes the new size ratio while dragging.
+                if let Some(pointer) = response.interact_pointer_pos() {
+                    *ratio = match axis {
+                        EditorSplitAxis::Columns => {
+                            (pointer.x - rect.left()) / rect.width()
+                        }
+                        EditorSplitAxis::Rows => {
+                            (pointer.y - rect.top()) / rect.height()
+                        }
+                    }
+                    .clamp(0.1, 0.9);
+                }
+            }
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(match axis {
+                    EditorSplitAxis::Columns => {
+                        egui::CursorIcon::ResizeHorizontal
+                    }
+                    EditorSplitAxis::Rows => egui::CursorIcon::ResizeVertical,
+                });
+            }
+            ui.painter().rect_filled(
+                divider_rect,
+                0.0,
+                if response.hovered() || response.dragged() {
+                    egui::Color32::from_rgb(55, 120, 220)
+                } else {
+                    egui::Color32::from_rgb(38, 41, 48)
+                },
+            );
+            // Splits can contain more splits, so draw both children the same way.
+            show_dock_node(
+                ui,
+                first,
+                first_rect,
+                active_area,
+                actions,
+                show_panel,
+            );
+            show_dock_node(
+                ui,
+                second,
+                second_rect,
+                active_area,
+                actions,
+                show_panel,
+            );
         }
     }
-    let mut requested_mode = None;
-    let mut viewport_rect = None;
-    let mut save_clicked = false;
-    let mut load_clicked = false;
-    let mut component_edits = Vec::new();
-    let mut add_physics = false;
-    let mut remove_physics = false;
-    let mut edit_custom_shader = false;
-    let mut load_code = false;
-    let mut save_code = false;
-    let mut validate_code = false;
-    let mut remove_script = false;
-    let mut open_script = false;
+}
 
-    TopBottomPanel::top("visible_editor_toolbar").show(context, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading("RustingEngine");
-            ui.separator();
-            if ui.button("▶ Play").clicked() {
-                requested_mode = Some(EditorMode::Play);
-            }
-            if ui.button("⏸ Pause").clicked() {
-                requested_mode = Some(EditorMode::Paused);
-            }
-            if ui.button("⏭ Step").clicked() {
-                requested_mode = Some(EditorMode::Paused);
-                world.resource_mut::<TimeControl>().step();
-            }
-            if ui.button("⏹ Stop").clicked() {
-                requested_mode = Some(EditorMode::Edit);
-            }
-            ui.separator();
-            ui.selectable_value(
-                &mut state.workspace,
-                EditorWorkspace::Scene,
-                "Scene",
-            );
-            ui.selectable_value(
-                &mut state.workspace,
-                EditorWorkspace::Game,
-                "Game",
-            );
-            ui.selectable_value(
-                &mut state.workspace,
-                EditorWorkspace::Code,
-                "Code",
-            );
-            ui.separator();
-            save_clicked = ui.button("Save Scene").clicked();
-            load_clicked = ui.button("Load Scene").clicked();
-            ui.separator();
-            ui.label(format!(
-                "Frame {} · {:.2} ms",
-                frame_time.frame,
-                frame_time.real_delta.as_secs_f64() * 1_000.0
-            ));
-            ui.separator();
-            ui.label(match state.mode {
-                EditorMode::Edit => "EDIT",
-                EditorMode::Play => "PLAYING",
-                EditorMode::Paused => "PAUSED",
-            });
-        });
-    });
-
-    SidePanel::left("visible_editor_hierarchy")
-        .default_width(230.0)
-        .show(context, |ui| {
-            ui.heading("Hierarchy");
-            ui.separator();
-            for item in &entities {
-                let label = format!("{}{}", "  ".repeat(item.depth), item.name);
-                if ui
-                    .selectable_label(
-                        state.selected == Some(item.entity),
-                        label,
-                    )
-                    .clicked()
-                {
-                    state.selected = Some(item.entity);
-                    edited_transform = item.transform;
-                    edited_camera = world.get::<Camera>(item.entity).copied();
-                    edited_physics =
-                        world.get::<PhysicsBody>(item.entity).cloned();
-                    edited_rigid_body =
-                        world.get::<RigidBody>(item.entity).copied();
-                    edited_collider =
-                        world.get::<Collider>(item.entity).copied();
-                    edited_script =
-                        world.get::<ScriptComponent>(item.entity).cloned();
+/// Applies split and close requests after the layout is no longer borrowed.
+///
+/// Egui creates actions while drawing. Waiting until drawing is finished keeps
+/// Rust from borrowing and changing the same tree at the same time.
+fn apply_dock_actions(state: &mut EditorState, actions: Vec<DockAction>) {
+    for action in actions {
+        match action {
+            DockAction::Split(id, axis) => {
+                let new_id = state.next_area_id;
+                state.next_area_id = state.next_area_id.saturating_add(1);
+                if state.dock_layout.split(id, axis, new_id) {
+                    state.active_area = new_id;
                 }
             }
-        });
+            DockAction::Close(id) => {
+                if state.dock_layout.close(id) && state.active_area == id {
+                    state.active_area = state.dock_layout.first_area_id();
+                }
+            }
+        }
+    }
+}
 
-    SidePanel::right("visible_editor_inspector")
-        .default_width(300.0)
-        .show(context, |ui| {
-            ui.heading("Inspector");
-            ui.separator();
-            if let Some(entity) = state.selected {
-                ui.monospace(format!("{entity:?}"));
-                if let Some(transform) = &mut edited_transform {
-                    ui.collapsing("Transform", |ui| {
-                        edit_vector(
-                            ui,
-                            "Position",
-                            &mut transform.position,
-                            0.1,
-                        );
-                        edit_vector(
-                            ui,
-                            "Rotation",
-                            &mut transform.rotation,
-                            0.01,
-                        );
-                        edit_vector(ui, "Scale", &mut transform.scale, 0.01);
+#[allow(clippy::too_many_arguments)]
+/// Draws settings for the object selected in the Hierarchy.
+///
+/// Editable values are temporary copies. `draw_editor_view` writes them back
+/// to the ECS world after egui finishes using them.
+///
+/// # Arguments
+/// * `ui` - Egui area used to draw the Inspector.
+/// * `world` - ECS world used to read the selected object's components.
+/// * `state` - Selection, project paths, and unfinished text edits.
+/// * `physics_backends` - Tells which physics choices work right now.
+/// * `edited_transform` - Temporary Transform changed by GUI inputs.
+/// * `edited_camera` - Temporary Camera changed by GUI inputs.
+/// * `edited_classes` - Temporary object classes changed by GUI inputs.
+/// * `edited_physics` - Temporary physics choice changed by GUI inputs.
+/// * `edited_rigid_body` - Temporary mass and velocity values.
+/// * `edited_collider` - Temporary collider shape and material values.
+/// * `registered_names` - Custom Rust component types available to add.
+/// * `custom_values` - Custom Rust components already on the object.
+/// * `component_edits` - Component changes applied after drawing.
+/// * `add_physics` - Becomes true when Add Physics is pressed.
+/// * `remove_physics` - Becomes true when Remove is pressed.
+/// * `edit_custom_shader` - Opens the selected compute shader in Code Editor.
+fn draw_inspector_area(
+    ui: &mut egui::Ui,
+    world: &World,
+    state: &mut EditorState,
+    physics_backends: PhysicsBackendStatus,
+    edited_transform: &mut Option<Transform>,
+    edited_camera: &mut Option<Camera>,
+    edited_classes: &mut Option<ObjectClasses>,
+    edited_physics: &mut Option<PhysicsBody>,
+    edited_rigid_body: &mut Option<RigidBody>,
+    edited_collider: &mut Option<Collider>,
+    registered_names: &[String],
+    custom_values: &[(String, String)],
+    component_edits: &mut Vec<ComponentEdit>,
+    add_physics: &mut bool,
+    remove_physics: &mut bool,
+    edit_custom_shader: &mut bool,
+) {
+    let Some(entity) = state.selected else {
+        ui.label("Select an entity in the Hierarchy area.");
+        return;
+    };
+    egui::ScrollArea::both()
+        .id_salt("inspector_panel_scroll")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(
+            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+        )
+        .show(ui, |ui| {
+        ui.monospace(format!("{entity:?}"));
+        if let Some(classes) = edited_classes {
+            ui.collapsing("Classes", |ui| {
+                let mut remove = None;
+                for class in &classes.names {
+                    ui.horizontal(|ui| {
+                        ui.label(class);
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(class.clone());
+                        }
                     });
                 }
-                if let Some(renderer) = world.get::<MeshRenderer>(entity) {
-                    ui.separator();
-                    ui.label("Mesh Renderer");
-                    ui.monospace(format!("Mesh: {}", renderer.mesh.key()));
-                    ui.monospace(format!(
-                        "Material: {}",
-                        renderer.material.key()
-                    ));
+                if let Some(class) = remove {
+                    classes.remove(&class);
                 }
-                if let Some(camera) = &mut edited_camera {
-                    ui.separator();
-                    ui.label("Camera");
-                    ui.checkbox(&mut camera.active, "Active");
-                    ui.add(
-                        DragValue::new(&mut camera.priority)
-                            .prefix("Priority ")
-                            .speed(1.0),
-                    );
-                    match &mut camera.projection {
-                        Projection::Perspective {
-                            vertical_fov_radians,
-                            near,
-                            far,
-                        } => {
-                            let mut fov_degrees =
-                                vertical_fov_radians.to_degrees();
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut fov_degrees,
-                                    10.0..=120.0,
-                                )
-                                .text("Vertical FOV")
-                                .suffix("°"),
-                            );
-                            *vertical_fov_radians = fov_degrees.to_radians();
-                            projection_planes(ui, near, far);
-                        }
-                        Projection::Orthographic {
-                            vertical_size,
-                            near,
-                            far,
-                        } => {
-                            ui.add(
-                                DragValue::new(vertical_size)
-                                    .prefix("Vertical size ")
-                                    .range(0.01..=100_000.0)
-                                    .speed(0.1),
-                            );
-                            projection_planes(ui, near, far);
-                        }
-                    }
-                }
-                ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Physics");
-                    if edited_physics.is_some() {
-                        if ui.small_button("Remove").clicked() {
-                            remove_physics = true;
-                        }
-                    } else if ui.small_button("Add Physics").clicked() {
-                        add_physics = true;
-                        edited_physics = Some(PhysicsBody::default());
-                        edited_rigid_body = Some(RigidBody::default());
-                        edited_collider = Some(Collider::default());
+                    ui.text_edit_singleline(&mut state.class_draft);
+                    if ui.button("Add Class").clicked()
+                        && classes.add(&state.class_draft)
+                    {
+                        state.class_draft.clear();
                     }
                 });
-                if let Some(physics) = &mut edited_physics {
-                    ComboBox::from_label("Simulation")
-                        .selected_text(simulation_class_name(
-                            physics.simulation,
-                        ))
+                ui.small("An object can belong to several classes.");
+            });
+        }
+        if let Some(transform) = edited_transform {
+            ui.collapsing("Transform", |ui| {
+                edit_vector(ui, "Position", &mut transform.position, 0.1);
+                edit_vector(ui, "Rotation", &mut transform.rotation, 0.01);
+                edit_vector(ui, "Scale", &mut transform.scale, 0.01);
+            });
+        }
+        if let Some(renderer) = world.get::<MeshRenderer>(entity) {
+            ui.collapsing("Mesh Renderer", |ui| {
+                ui.monospace(format!("Mesh: {}", renderer.mesh.key()));
+                ui.monospace(format!("Material: {}", renderer.material.key()));
+            });
+        }
+        if let Some(camera) = edited_camera {
+            ui.collapsing("Camera", |ui| {
+                ui.checkbox(&mut camera.active, "Active");
+                ui.add(
+                    DragValue::new(&mut camera.priority)
+                        .prefix("Priority ")
+                        .speed(1.0),
+                );
+                match &mut camera.projection {
+                    Projection::Perspective {
+                        vertical_fov_radians,
+                        near,
+                        far,
+                    } => {
+                        let mut fov = vertical_fov_radians.to_degrees();
+                        ui.add(
+                            egui::Slider::new(&mut fov, 10.0..=120.0)
+                                .text("Vertical FOV")
+                                .suffix(" deg"),
+                        );
+                        *vertical_fov_radians = fov.to_radians();
+                        projection_planes(ui, near, far);
+                    }
+                    Projection::Orthographic {
+                        vertical_size,
+                        near,
+                        far,
+                    } => {
+                        ui.add(
+                            DragValue::new(vertical_size)
+                                .prefix("Vertical size ")
+                                .range(0.01..=100_000.0)
+                                .speed(0.1),
+                        );
+                        projection_planes(ui, near, far);
+                    }
+                }
+            });
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Physics");
+            if edited_physics.is_some() {
+                if ui.small_button("Remove").clicked() {
+                    *remove_physics = true;
+                }
+            } else if ui.small_button("Add Physics").clicked() {
+                *add_physics = true;
+                *edited_physics = Some(PhysicsBody::default());
+                *edited_rigid_body = Some(RigidBody::default());
+                *edited_collider = Some(Collider::default());
+            }
+        });
+        if let Some(physics) = edited_physics {
+            ComboBox::from_label("Simulation")
+                .selected_text(simulation_class_name(physics.simulation))
+                .show_ui(ui, |ui| {
+                    for class in [
+                        SimulationClass::None,
+                        SimulationClass::Static,
+                        SimulationClass::Gameplay,
+                        SimulationClass::GpuDynamic,
+                    ] {
+                        ui.selectable_value(
+                            &mut physics.simulation,
+                            class,
+                            simulation_class_name(class),
+                        );
+                    }
+                });
+            match physics.simulation {
+                SimulationClass::None => {
+                    ui.small("No physics simulation.");
+                }
+                SimulationClass::Static => {
+                    if let Some(body) = edited_rigid_body {
+                        body.kind = RigidBodyKind::Fixed;
+                    }
+                    ui.small("Static collider; never dispatched per frame.");
+                }
+                SimulationClass::Gameplay => {
+                    ui.colored_label(
+                        if physics_backends.gameplay_available {
+                            ui.visuals().text_color()
+                        } else {
+                            egui::Color32::LIGHT_RED
+                        },
+                        if physics_backends.gameplay_available {
+                            "CPU-authoritative gameplay physics."
+                        } else {
+                            "Gameplay physics backend is not connected yet."
+                        },
+                    );
+                }
+                SimulationClass::GpuDynamic => {
+                    if !physics_backends.gpu_dynamic_available {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_YELLOW,
+                            "GPU gravity and condition events run in native Play; editor preview simulation is not active yet.",
+                        );
+                    }
+                    ComboBox::from_label("GPU solver")
+                        .selected_text(physics_solver_name(physics.solver))
                         .show_ui(ui, |ui| {
-                            for class in [
-                                SimulationClass::None,
-                                SimulationClass::Static,
-                                SimulationClass::Gameplay,
-                                SimulationClass::GpuDynamic,
+                            for solver in [
+                                PhysicsSolver::Full,
+                                PhysicsSolver::Simplified,
+                                PhysicsSolver::NoCollision,
+                                PhysicsSolver::Custom,
                             ] {
                                 ui.selectable_value(
-                                    &mut physics.simulation,
-                                    class,
-                                    simulation_class_name(class),
+                                    &mut physics.solver,
+                                    solver,
+                                    physics_solver_name(solver),
                                 );
                             }
                         });
-                    match physics.simulation {
-                        SimulationClass::None => {
-                            ui.small("Excluded from every physics backend.");
+                    if physics.solver == PhysicsSolver::Custom {
+                        let path =
+                            physics.custom_shader.get_or_insert_with(|| {
+                                format!(
+                                    "{}/shaders/custom.comp",
+                                    state.project_root
+                                )
+                            });
+                        ui.text_edit_singleline(path);
+                        if ui.button("Open in Code Editor").clicked() {
+                            *edit_custom_shader = true;
                         }
-                        SimulationClass::Static => {
-                            ui.small(
-                                "Static collider: uploaded once, never dispatched.",
-                            );
-                            if let Some(body) = &mut edited_rigid_body {
-                                body.kind = RigidBodyKind::Fixed;
-                            }
-                        }
-                        SimulationClass::Gameplay => {
-                            if physics_backends.gameplay_available {
-                                ui.small("CPU-authoritative gameplay physics.");
-                            } else {
-                                ui.colored_label(
-                                    egui::Color32::LIGHT_RED,
-                                    "Gameplay physics backend is not connected yet.",
-                                );
-                            }
-                        }
-                        SimulationClass::GpuDynamic => {
-                            if physics_backends.gpu_dynamic_available {
-                                ui.small("High-volume Vulkan compute simulation.");
-                            } else {
-                                ui.colored_label(
-                                    egui::Color32::LIGHT_RED,
-                                    "GPU physics is saved, but the ECS renderer cannot execute it yet.",
-                                );
-                            }
-                            ComboBox::from_label("GPU solver")
-                                .selected_text(physics_solver_name(
-                                    physics.solver,
-                                ))
-                                .show_ui(ui, |ui| {
-                                    for solver in [
-                                        PhysicsSolver::Full,
-                                        PhysicsSolver::Simplified,
-                                        PhysicsSolver::NoCollision,
-                                        PhysicsSolver::Custom,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut physics.solver,
-                                            solver,
-                                            physics_solver_name(solver),
-                                        );
-                                    }
-                                });
-                            if physics.solver == PhysicsSolver::Custom {
-                                let path = physics
-                                    .custom_shader
-                                    .get_or_insert_with(|| {
-                                        format!(
-                                            "{}/shaders/custom.comp",
-                                            state.project_root
-                                        )
-                                    });
-                                ui.horizontal(|ui| {
-                                    ui.label("Shader");
-                                    ui.text_edit_singleline(path);
-                                });
-                                if ui.button("Open in Code Editor").clicked() {
-                                    edit_custom_shader = true;
-                                }
-                            }
-                        }
-                    }
-                    if physics.simulation != SimulationClass::None {
-                        let body = edited_rigid_body
-                            .get_or_insert_with(RigidBody::default);
-                        if physics.simulation != SimulationClass::Static {
-                            ComboBox::from_label("Body")
-                                .selected_text(rigid_body_kind_name(body.kind))
-                                .show_ui(ui, |ui| {
-                                    for kind in [
-                                        RigidBodyKind::Dynamic,
-                                        RigidBodyKind::Kinematic,
-                                        RigidBodyKind::Fixed,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut body.kind,
-                                            kind,
-                                            rigid_body_kind_name(kind),
-                                        );
-                                    }
-                                });
-                            ui.add(
-                                DragValue::new(&mut body.mass)
-                                    .prefix("Mass ")
-                                    .suffix(" kg")
-                                    .range(0.001..=1_000_000.0)
-                                    .speed(0.1),
-                            );
-                            ui.add(
-                                DragValue::new(&mut body.gravity_scale)
-                                    .prefix("Gravity ")
-                                    .range(-100.0..=100.0)
-                                    .speed(0.05),
-                            );
-                            edit_vector(
-                                ui,
-                                "Velocity",
-                                &mut body.linear_velocity,
-                                0.1,
-                            );
-                        }
-                        let collider = edited_collider
-                            .get_or_insert_with(Collider::default);
-                        edit_collider(ui, collider);
                     }
                 }
-                ui.separator();
+            };
+            if physics.simulation != SimulationClass::None {
+                let body =
+                    edited_rigid_body.get_or_insert_with(RigidBody::default);
+                if physics.simulation != SimulationClass::Static {
+                    ComboBox::from_label("Body")
+                        .selected_text(rigid_body_kind_name(body.kind))
+                        .show_ui(ui, |ui| {
+                            for kind in [
+                                RigidBodyKind::Dynamic,
+                                RigidBodyKind::Kinematic,
+                                RigidBodyKind::Fixed,
+                            ] {
+                                ui.selectable_value(
+                                    &mut body.kind,
+                                    kind,
+                                    rigid_body_kind_name(kind),
+                                );
+                            }
+                        });
+                    ui.add(
+                        DragValue::new(&mut body.mass)
+                            .prefix("Mass ")
+                            .suffix(" kg")
+                            .range(0.001..=1_000_000.0),
+                    );
+                    ui.add(
+                        DragValue::new(&mut body.gravity_scale)
+                            .prefix("Gravity ")
+                            .range(-100.0..=100.0),
+                    );
+                    edit_vector(ui, "Velocity", &mut body.linear_velocity, 0.1);
+                }
+                edit_collider(
+                    ui,
+                    edited_collider.get_or_insert_with(Collider::default),
+                );
+            }
+        }
+        ui.separator();
+        ui.label("Compiled Components");
+        for (name, _) in custom_values {
+            let key = (entity, name.clone());
+            ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Gameplay Script");
-                    if edited_script.is_some() {
-                        if ui.small_button("Remove").clicked() {
-                            remove_script = true;
+                    ui.monospace(name);
+                    if ui.button("Apply").clicked() {
+                        if let Some(value) = state.component_drafts.get(&key) {
+                            component_edits.push(ComponentEdit::Set {
+                                entity,
+                                name: name.clone(),
+                                value: value.clone(),
+                            });
                         }
-                    } else if ui.small_button("Add Script").clicked() {
-                        edited_script = Some(ScriptComponent {
-                            source_path: format!(
-                                "{}/scripts/main.rscript",
-                                state.project_root
-                            ),
-                            ..ScriptComponent::default()
-                        });
                     }
-                });
-                if let Some(script) = &mut edited_script {
-                    ui.checkbox(&mut script.enabled, "Enabled");
-                    ui.horizontal(|ui| {
-                        ui.label("Source");
-                        ui.text_edit_singleline(&mut script.source_path);
-                    });
-                    if ui.button("Open Gameplay Script").clicked() {
-                        open_script = true;
-                    }
-                    if let Some(error) = world
-                        .get_resource::<ScriptRuntime>()
-                        .and_then(|runtime| runtime.errors().get(&entity))
-                    {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                }
-                ui.separator();
-                ui.label("Compiled Components");
-                for (name, _) in &custom_values {
-                    let key = (entity, name.clone());
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.monospace(name);
-                            if ui.button("Apply").clicked() {
-                                if let Some(value) =
-                                    state.component_drafts.get(&key)
-                                {
-                                    component_edits.push(ComponentEdit::Set {
-                                        entity,
-                                        name: name.clone(),
-                                        value: value.clone(),
-                                    });
-                                }
-                            }
-                            if ui.button("Remove").clicked() {
-                                component_edits.push(ComponentEdit::Remove {
-                                    entity,
-                                    name: name.clone(),
-                                });
-                            }
-                        });
-                        if let Some(value) =
-                            state.component_drafts.get_mut(&key)
-                        {
-                            ui.text_edit_multiline(value);
-                        }
-                    });
-                }
-                for name in registered_names.iter().filter(|name| {
-                    !custom_values.iter().any(|(present, _)| present == *name)
-                }) {
-                    if ui.button(format!("+ {name}")).clicked() {
-                        component_edits.push(ComponentEdit::Add {
+                    if ui.button("Remove").clicked() {
+                        component_edits.push(ComponentEdit::Remove {
                             entity,
                             name: name.clone(),
                         });
                     }
-                }
-            } else {
-                ui.label("Select an entity in the hierarchy.");
-            }
-        });
-
-    TopBottomPanel::bottom("visible_editor_status")
-        .default_height(110.0)
-        .show(context, |ui| {
-            ui.heading("Assets & Render Extract");
-            ui.horizontal(|ui| {
-                ui.label("Project");
-                ui.text_edit_singleline(&mut state.project_root);
-                ui.separator();
-                ui.label("Scene");
-                ui.text_edit_singleline(&mut state.scene_path);
-            });
-            if let Some(message) = &state.scene_message {
-                ui.label(message);
-            }
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut render_settings.vsync, "VSync");
-                ui.checkbox(&mut render_settings.limit_fps, "Limit FPS");
-                ui.add_enabled(
-                    render_settings.limit_fps,
-                    DragValue::new(&mut render_settings.max_fps)
-                        .prefix("Maximum ")
-                        .range(1..=1_000),
-                );
-            });
-            if let Some((meshes, materials, textures, scenes)) = asset_counts {
-                ui.label(format!(
-                    "Meshes {meshes} · Materials {materials} · Textures {textures} · Scenes {scenes}"
-                ));
-            }
-            if let Some(report) = render_report {
-                ui.label(format!(
-                    "Renderables {} · added {} · changed {} · removed {}",
-                    report.total, report.added, report.changed, report.removed
-                ));
-            }
-        });
-
-    CentralPanel::default()
-        .frame(match state.workspace {
-            EditorWorkspace::Scene | EditorWorkspace::Game => {
-                egui::Frame::NONE.fill(egui::Color32::TRANSPARENT)
-            }
-            EditorWorkspace::Code => egui::Frame::NONE
-                .inner_margin(egui::Margin::same(10))
-                .fill(egui::Color32::from_rgb(20, 22, 27)),
-        })
-        .show(context, |ui| match state.workspace {
-            EditorWorkspace::Scene | EditorWorkspace::Game => {
-                ui.horizontal(|ui| {
-                    ui.heading(match state.workspace {
-                        EditorWorkspace::Scene => "Scene View",
-                        EditorWorkspace::Game => "Game View",
-                        EditorWorkspace::Code => unreachable!(),
-                    });
-                    ui.separator();
-                    ui.small(match state.workspace {
-                        EditorWorkspace::Scene => {
-                            "Editor camera · selection and authoring"
-                        }
-                        EditorWorkspace::Game => {
-                            "Active game camera · runtime preview"
-                        }
-                        EditorWorkspace::Code => unreachable!(),
-                    });
                 });
-                ui.separator();
-                let rect = ui.available_rect_before_wrap();
-                viewport_rect = Some(rect);
-            }
-            EditorWorkspace::Code => {
-                ui.horizontal(|ui| {
-                    ui.heading("Code Editor");
-                    ui.separator();
-                    load_code = ui.button("Open").clicked();
-                    save_code = ui.button("Save").clicked();
-                    validate_code = ui.button("Validate").clicked();
-                    if state.code_dirty {
-                        ui.colored_label(
-                            egui::Color32::YELLOW,
-                            "Unsaved changes",
-                        );
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Project file");
-                    ui.text_edit_singleline(&mut state.code_path);
-                });
-                if let Some(message) = &state.code_message {
-                    ui.small(message);
+                if let Some(value) = state.component_drafts.get_mut(&key) {
+                    ui.text_edit_multiline(value);
                 }
-                ui.separator();
-                let editor = egui::TextEdit::multiline(&mut state.code_source)
-                    .code_editor()
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(30)
-                    .lock_focus(true);
-                if ui.add_sized(ui.available_size(), editor).changed() {
-                    state.code_dirty = true;
-                }
-            }
-        });
-
-    if let Some(rect) = viewport_rect {
-        let pixels_per_point = context.pixels_per_point();
-        let min = rect.min * pixels_per_point;
-        let max = rect.max * pixels_per_point;
-        let offset =
-            [min.x.max(0.0).floor() as u32, min.y.max(0.0).floor() as u32];
-        let end = [
-            max.x.max(min.x).ceil() as u32,
-            max.y.max(min.y).ceil() as u32,
-        ];
-        let viewport = EditorViewport {
-            offset,
-            extent: [
-                end[0].saturating_sub(offset[0]),
-                end[1].saturating_sub(offset[1]),
-            ],
-            valid: true,
-        };
-        if let Some(mut current) = world.get_resource_mut::<EditorViewport>() {
-            *current = viewport;
-        } else {
-            world.insert_resource(viewport);
-        }
-    } else if let Some(mut current) = world.get_resource_mut::<EditorViewport>()
-    {
-        current.valid = false;
-    }
-
-    if let (Some(entity), Some(transform)) = (state.selected, edited_transform)
-    {
-        if let Ok(mut entity) = world.get_entity_mut(entity) {
-            entity.insert(transform);
-        }
-    }
-    if let (Some(entity), Some(camera)) = (state.selected, edited_camera) {
-        if let Ok(mut entity) = world.get_entity_mut(entity) {
-            entity.insert(camera);
-        }
-    }
-    if let Some(entity) = state.selected {
-        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
-            if remove_physics {
-                entity_mut.remove::<(
-                    PhysicsBody,
-                    RigidBody,
-                    Collider,
-                    CollisionLayers,
-                    crate::runtime::GpuEffectBody,
-                )>();
-            } else if let Some(physics) = edited_physics {
-                let uses_gpu = physics.uses_gpu();
-                entity_mut.insert(physics);
-                if let Some(rigid_body) = edited_rigid_body {
-                    entity_mut.insert(rigid_body);
-                }
-                if let Some(collider) = edited_collider {
-                    entity_mut.insert(collider);
-                }
-                if add_physics && !entity_mut.contains::<CollisionLayers>() {
-                    entity_mut.insert(CollisionLayers::default());
-                }
-                if uses_gpu {
-                    entity_mut.insert(crate::runtime::GpuEffectBody);
-                } else {
-                    entity_mut.remove::<crate::runtime::GpuEffectBody>();
-                }
-            }
-        }
-    }
-    if let Some(entity) = state.selected {
-        let existing_path = world
-            .get::<ScriptComponent>(entity)
-            .map(|script| script.source_path.clone());
-        if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
-            if remove_script {
-                entity_mut.remove::<ScriptComponent>();
-            } else if let Some(mut script) = edited_script {
-                if existing_path.as_deref() != Some(&script.source_path) {
-                    script.compiled = None;
-                }
-                entity_mut.insert(script);
-            }
-        }
-    }
-    if open_script {
-        if let Some(path) = state
-            .selected
-            .and_then(|entity| world.get::<ScriptComponent>(entity))
-            .map(|script| script.source_path.clone())
-        {
-            state.code_path = path;
-            state.workspace = EditorWorkspace::Code;
-            load_code = true;
-        }
-    }
-    if edit_custom_shader {
-        if let Some(path) = state
-            .selected
-            .and_then(|entity| world.get::<PhysicsBody>(entity))
-            .and_then(|physics| physics.custom_shader.clone())
-        {
-            state.code_path = path;
-            state.workspace = EditorWorkspace::Code;
-            load_code = true;
-        }
-    }
-    if load_code {
-        match load_project_source(&state.project_root, &state.code_path) {
-            Ok(source) => {
-                state.code_source = source;
-                state.code_dirty = false;
-                state.code_message =
-                    Some(format!("Opened {}", state.code_path));
-            }
-            Err(error) => state.code_message = Some(error),
-        }
-    }
-    if validate_code {
-        state.code_message = Some(
-            validate_project_source(
-                &state.project_root,
-                &state.code_path,
-                &state.code_source,
-            )
-            .map_or_else(|error| error, |()| "Validation passed".into()),
-        );
-    }
-    if save_code {
-        state.code_message = Some(
-            match save_project_source(
-                &state.project_root,
-                &state.code_path,
-                &state.code_source,
-            ) {
-                Ok(()) => {
-                    state.code_dirty = false;
-                    if state.code_path.ends_with(".rscript") {
-                        crate::runtime::invalidate_script(
-                            world,
-                            &state.code_path,
-                        );
-                    }
-                    format!("Saved {}", state.code_path)
-                }
-                Err(error) => error,
-            },
-        );
-    }
-    if let Some(mode) = requested_mode {
-        match mode {
-            EditorMode::Play => {
-                if state.mode == EditorMode::Edit {
-                    match scene_document(world, "Play Snapshot") {
-                        Ok(snapshot) => state.play_snapshot = Some(snapshot),
-                        Err(error) => {
-                            state.scene_message =
-                                Some(format!("Play failed: {error}"));
-                            *world.resource_mut::<EditorState>() = state;
-                            return;
-                        }
-                    }
-                }
-                state.mode = EditorMode::Play;
-                state.workspace = EditorWorkspace::Game;
-                world.resource_mut::<ScriptSettings>().enabled = true;
-                world.resource_mut::<TimeControl>().resume();
-            }
-            EditorMode::Paused => {
-                state.mode = EditorMode::Paused;
-                world.resource_mut::<TimeControl>().pause();
-            }
-            EditorMode::Edit => {
-                world.resource_mut::<TimeControl>().pause();
-                world.resource_mut::<ScriptSettings>().enabled = false;
-                world.resource_mut::<ScriptRuntime>().reset();
-                if let Some(snapshot) = state.play_snapshot.take() {
-                    match crate::runtime::load_scene_document(
-                        world,
-                        &snapshot,
-                        SceneLoadMode::Replace,
-                    ) {
-                        Ok(_) => {
-                            state.selected = None;
-                            state.scene_message = Some(
-                                "Stopped play mode and restored the scene"
-                                    .into(),
-                            );
-                        }
-                        Err(error) => {
-                            state.scene_message = Some(format!(
-                                "Could not restore play snapshot: {error}"
-                            ));
-                        }
-                    }
-                }
-                state.mode = EditorMode::Edit;
-                state.workspace = EditorWorkspace::Scene;
-            }
-        }
-    }
-    if save_clicked {
-        state.scene_message =
-            Some(match save_scene(world, &state.scene_path, "Main Scene") {
-                Ok(()) => format!("Saved {}", state.scene_path),
-                Err(error) => format!("Save failed: {error}"),
             });
-    }
-    if load_clicked {
-        state.scene_message = Some(
-            match load_scene(world, &state.scene_path, SceneLoadMode::Replace) {
-                Ok(entity_count) => {
-                    state.selected = None;
-                    format!(
-                        "Loaded {entity_count} entities from {}",
-                        state.scene_path
-                    )
-                }
-                Err(error) => format!("Load failed: {error}"),
-            },
-        );
-    }
-    for edit in component_edits {
-        let result = match edit {
-            ComponentEdit::Set {
-                entity,
-                name,
-                value,
-            } => set_registered_component(world, entity, &name, &value),
-            ComponentEdit::Add { entity, name } => {
-                add_registered_component(world, entity, &name)
-            }
-            ComponentEdit::Remove { entity, name } => {
-                state.component_drafts.remove(&(entity, name.clone()));
-                remove_registered_component(world, entity, &name)
-            }
-        };
-        if let Err(error) = result {
-            state.scene_message =
-                Some(format!("Component edit failed: {error}"));
         }
-    }
-    world.resource_mut::<RenderCameraOverride>().entity = (state.workspace
-        == EditorWorkspace::Scene)
-        .then_some(state.editor_camera)
-        .flatten();
-    render_settings.max_fps = render_settings.max_fps.max(1);
-    *world.resource_mut::<RenderSettings>() = render_settings;
-    *world.resource_mut::<EditorState>() = state;
+        for name in registered_names.iter().filter(|name| {
+            !custom_values.iter().any(|(present, _)| present == *name)
+        }) {
+            if ui.button(format!("+ {name}")).clicked() {
+                component_edits.push(ComponentEdit::Add {
+                    entity,
+                    name: name.clone(),
+                });
+            }
+        }
+    });
 }
 
 enum ComponentEdit {
@@ -1353,6 +1711,7 @@ enum ComponentEdit {
     },
 }
 
+/// Returns the simple name shown for a physics simulation choice.
 fn simulation_class_name(class: SimulationClass) -> &'static str {
     match class {
         SimulationClass::None => "No Physics",
@@ -1362,15 +1721,18 @@ fn simulation_class_name(class: SimulationClass) -> &'static str {
     }
 }
 
+/// Returns the simple name shown for a GPU physics solver.
 fn physics_solver_name(solver: PhysicsSolver) -> &'static str {
     match solver {
         PhysicsSolver::Full => "Full Physics",
         PhysicsSolver::Simplified => "Simplified",
         PhysicsSolver::NoCollision => "Gravity / No Collision",
+        PhysicsSolver::Space => "Space",
         PhysicsSolver::Custom => "Custom Compute Shader",
     }
 }
 
+/// Returns the simple name shown for a rigid-body type.
 fn rigid_body_kind_name(kind: RigidBodyKind) -> &'static str {
     match kind {
         RigidBodyKind::Fixed => "Fixed",
@@ -1379,6 +1741,10 @@ fn rigid_body_kind_name(kind: RigidBodyKind) -> &'static str {
     }
 }
 
+/// Draws shape, friction, bounce, and trigger settings for one collider.
+///
+/// * `ui` - Egui area that receives the controls.
+/// * `collider` - Collider changed by those controls.
 fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
     let shape_name = match collider.shape {
         ColliderShape::Box { .. } => "Box",
@@ -1452,58 +1818,92 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
     ui.checkbox(&mut collider.sensor, "Trigger / sensor");
 }
 
-fn project_source_path<'a>(
+/// Checks that an editable source file stays inside the selected game project.
+///
+/// * `project_root` - Folder containing the game's `project.json`.
+/// * `path` - Rust or shader file requested by Code Editor.
+fn project_source_path(
     project_root: &str,
-    path: &'a str,
-) -> Result<&'a std::path::Path, String> {
-    use std::path::Component;
-
-    let root = std::path::Path::new(project_root);
-    if root.as_os_str().is_empty()
-        || root.is_absolute()
-        || root
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_)))
-        || !root.join("project.json").is_file()
-    {
-        return Err(
-            "Selected project must contain a project.json manifest".into()
-        );
-    }
-    let path = std::path::Path::new(path);
-    if path.is_absolute()
-        || path.components().any(|part| {
-            !matches!(part, Component::Normal(_) | Component::CurDir)
-        })
-        || !path.starts_with(project_root)
-    {
-        return Err(
-            "Code editor paths must stay inside the selected game project"
-                .into(),
-        );
-    }
+    path: &str,
+) -> Result<PathBuf, String> {
+    let path = project_content_path(project_root, path)?;
     let supported = path.extension().and_then(|extension| extension.to_str());
-    if !matches!(
-        supported,
-        Some("rs" | "rscript" | "glsl" | "comp" | "vert" | "frag")
-    ) {
+    if !matches!(supported, Some("rs" | "glsl" | "comp" | "vert" | "frag")) {
         return Err(
-            "Supported source types: .rscript, .rs, .glsl, .comp, .vert, .frag"
-                .into(),
+            "Supported source types: .rs, .glsl, .comp, .vert, .frag".into()
         );
     }
     Ok(path)
 }
 
-fn load_project_source(
+/// Resolves one project-relative file without allowing it to leave the root.
+fn project_content_path(
     project_root: &str,
     path: &str,
-) -> Result<String, String> {
-    let path = project_source_path(project_root, path)?;
-    std::fs::read_to_string(path)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+) -> Result<PathBuf, String> {
+    use std::path::Component;
+
+    let root = std::path::Path::new(project_root);
+    if root.as_os_str().is_empty() || !root.join("project.json").is_file() {
+        return Err(
+            "Selected project must contain a project.json manifest".into()
+        );
+    }
+    let requested = std::path::Path::new(path);
+    if requested
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(
+            "Project paths must stay inside the selected game project".into()
+        );
+    }
+    let absolute_root = root
+        .canonicalize()
+        .map_err(|error| format!("Could not open project folder: {error}"))?;
+    let path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        absolute_root.join(requested)
+    };
+    // Walk up to the closest existing folder. This allows a new `scripts`
+    // folder while still catching an existing symbolic link that leaves the
+    // project.
+    let mut existing_ancestor = path.as_path();
+    while !existing_ancestor.exists() {
+        existing_ancestor = existing_ancestor.parent().ok_or_else(|| {
+            "Project path must stay inside the project".to_owned()
+        })?;
+    }
+    let checked_ancestor = existing_ancestor
+        .canonicalize()
+        .map_err(|error| format!("Could not check source path: {error}"))?;
+    if !checked_ancestor.starts_with(&absolute_root) {
+        return Err(
+            "Project paths must stay inside the selected game project".into()
+        );
+    }
+    Ok(path)
 }
 
+/// Converts a checked project file back into the short path stored by the GUI.
+fn project_relative_path(
+    project_root: &str,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let absolute = project_content_path(project_root, &path.to_string_lossy())?;
+    let root = std::path::Path::new(project_root)
+        .canonicalize()
+        .map_err(|error| format!("Could not open project folder: {error}"))?;
+    absolute
+        .strip_prefix(root)
+        .map_err(|_| "File must stay inside the selected project".to_owned())
+        .map(|relative| relative.to_string_lossy().into_owned())
+}
+
+/// Performs quick checks before source text is saved.
+///
+/// Rust still receives its complete check from Cargo during Build & Run.
 fn validate_project_source(
     project_root: &str,
     path: &str,
@@ -1536,15 +1936,12 @@ fn validate_project_source(
         Some("rs") if !source.contains('{') => {
             return Err("Rust source does not contain a code block".into());
         }
-        Some("rscript") => {
-            crate::runtime::compile_script(source)
-                .map_err(|error| error.to_string())?;
-        }
         _ => {}
     }
     Ok(())
 }
 
+/// Validates and saves text from Code Editor inside the game project.
 fn save_project_source(
     project_root: &str,
     path: &str,
@@ -1557,10 +1954,15 @@ fn save_project_source(
             format!("Could not create {}: {error}", parent.display())
         })?;
     }
-    std::fs::write(path, source)
+    std::fs::write(&path, source)
         .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 
+/// Draws valid near and far camera clipping-plane inputs.
+///
+/// * `ui` - Egui area that receives both number inputs.
+/// * `near` - Closest distance visible to the camera.
+/// * `far` - Furthest distance visible to the camera.
 fn projection_planes(ui: &mut egui::Ui, near: &mut f32, far: &mut f32) {
     ui.add(
         DragValue::new(near)
@@ -1578,61 +1980,4 @@ fn projection_planes(ui: &mut egui::Ui, near: &mut f32, far: &mut f32) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-
-    #[test]
-    fn editor_plugin_builds_panels_and_preserves_selection() {
-        let mut app = App::new();
-        app.add_plugin(EditorPlugin).unwrap();
-        let entity = app.spawn((Name("Cube".into()), Transform::default()));
-        app.world_mut().resource_mut::<EditorState>().selected = Some(entity);
-
-        app.update(Duration::from_millis(16)).unwrap();
-
-        assert_eq!(
-            app.world().resource::<EditorState>().selected,
-            Some(entity)
-        );
-        let output = app
-            .world_mut()
-            .resource_mut::<EditorUi>()
-            .take_output()
-            .expect("editor should emit a UI frame");
-        assert!(!output.shapes.is_empty());
-    }
-
-    #[test]
-    fn code_editor_rejects_paths_outside_project_sources() {
-        assert!(project_source_path("testGame", "../outside.comp").is_err());
-        assert!(project_source_path("testGame", "/tmp/outside.comp").is_err());
-        assert!(project_source_path(
-            "testGame",
-            "testGame/shaders/custom.comp"
-        )
-        .is_ok());
-        assert!(project_source_path(
-            "testGame",
-            "src/shaders/compute/full.comp"
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn compute_shader_validation_checks_entry_point_and_workgroup() {
-        assert!(validate_project_source(
-            "testGame",
-            "testGame/shaders/custom.comp",
-            "#version 450\nlayout(local_size_x = 64) in;\nvoid main() {}",
-        )
-        .is_ok());
-        assert!(validate_project_source(
-            "testGame",
-            "testGame/shaders/custom.comp",
-            "#version 450\nvoid main() {}",
-        )
-        .is_err());
-    }
-}
+mod tests;

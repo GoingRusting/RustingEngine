@@ -1,0 +1,7 @@
+[package]
+name = "project1"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusting_engine = { path = "..", default-features = false, features = ["window"] }

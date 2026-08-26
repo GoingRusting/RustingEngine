@@ -6,9 +6,9 @@
 mod components;
 mod events;
 mod hierarchy;
+mod hybrid_physics;
 mod render_world;
 mod scene_file;
-mod script;
 #[cfg(test)]
 mod tests;
 mod time;
@@ -16,19 +16,57 @@ mod time;
 pub use components::*;
 pub use events::EventQueue;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
+pub use hybrid_physics::*;
 pub use render_world::*;
 pub use scene_file::*;
-pub use script::*;
 pub use time::{FrameTime, TimeControl};
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::hash::Hasher;
 use std::time::{Duration, Instant};
 
 use bevy_ecs::bundle::Bundle;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{IntoScheduleConfigs, Resource, Schedule, World};
 use bevy_ecs::system::ScheduleSystem;
+
+/// Small non-cryptographic hasher for per-frame ECS change fingerprints.
+/// Stable handles and float bits do not need the cost of a DOS-resistant map
+/// hasher; this value is only used to decide whether cached data needs a check.
+pub(super) struct FastHasher(u64);
+
+impl Default for FastHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 ^= value;
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+}
 
 /// The ordered stages executed by [`App::update`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

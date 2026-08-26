@@ -1,17 +1,28 @@
 [package]
 name = "rusting_engine"
-version = "0.1.47"
+version = "1.0.0"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
-description = "A high-performance Vulkano-based 3D engine with GPU physics."
+description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
 license-file = "LICENSE.md"
-repository = "https://github.com/Vasyl-Trefilov/RustingEngine"
+repository = "https://github.com/GoingRusting/RustingEngine"
 readme = "README.md"
-keywords = ["vulkan", "engine", "graphics", "physics", "gamedev"]
+keywords = [
+    "vulkan",
+    "gpu-physics",
+    "game-engine",
+    "3d",
+    "gamedev",
+]
 categories = ["rendering", "game-engines"]
 exclude = ["testModels/*", "AGENTS.md", "plan.md", "benchmark/"]
-homepage = "https://github.com/Vasyl-Trefilov/RustingEngine"
+homepage = "https://github.com/GoingRusting/RustingEngine"
 documentation = "https://docs.rs/rusting_engine"
+
+[workspace]
+members = ["testGame"]
+default-members = ["."]
+resolver = "2"
 
 [[bin]]
 name = "user_main"
@@ -42,6 +53,7 @@ editor = [
     "dep:egui",
     "dep:egui-winit",
     "dep:egui_winit_vulkano",
+    "dep:rfd",
     "dep:vulkano-util",
 ]
 validation = []
@@ -58,7 +70,7 @@ rayon = "1.10"
 gltf = "1.4.1"
 smallvec = "1.15.1"
 cgmath = "0.18.0"
-image = "0.25.10"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga"] }
 bevy_ecs = { version = "0.19.1", features = ["multi_threaded"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -67,6 +79,7 @@ uuid = { version = "1.25.0", features = ["serde", "v4"] }
 egui = { version = "0.31.1", optional = true }
 egui-winit = { version = "0.31.1", default-features = false, features = ["clipboard", "wayland", "x11"], optional = true }
 egui_winit_vulkano = { version = "0.28.0", default-features = false, features = ["clipboard", "wayland", "x11"], optional = true }
+rfd = { version = "0.17.2", optional = true }
 vulkano-util = { version = "0.35.0", optional = true }
 
 [profile.release]
@@ -82,3 +95,8 @@ path = "src/examples/gltf_test.rs"
 [[example]]
 name = "native_texture"
 path = "src/examples/native_texture.rs"
+
+[[example]]
+name = "hybrid_10k"
+path = "src/examples/hybrid_10k.rs"
+required-features = ["window"]

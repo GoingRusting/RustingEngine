@@ -1,6 +1,6 @@
 //! Versioned, editor-authored scene files and compiled runtime scene data.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -18,12 +18,12 @@ use crate::assets::{
 use crate::Transform;
 
 use super::{
-    compile_script, Camera, Collider, CollisionLayers, CompiledScript,
-    MeshRenderer, Name, Parent, PhysicsBody, Projection, RigidBody, SceneId,
-    ScriptComponent, Visibility,
+    Camera, Collider, CollisionLayers, GpuPhysicsWatch, MeshRenderer, Name,
+    ObjectClasses, Parent, PhysicsBody, Projection, RigidBody, SceneId,
+    Visibility,
 };
 
-pub const SCENE_FORMAT_VERSION: u32 = 1;
+pub const SCENE_FORMAT_VERSION: u32 = 3;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -35,12 +35,15 @@ pub enum SceneIoError {
     DuplicateComponent(String),
     UnknownComponent(String),
     Component { name: String, message: String },
-    Script { path: PathBuf, message: String },
     MissingAssetServer,
     MissingAssetPath(PathBuf),
+    AssetLoad { path: PathBuf, message: String },
     UnsavedMesh(u64),
     UnsavedTexture(u64),
+    DuplicateEntity(Uuid),
+    DuplicateName(String),
     MissingParent(Uuid),
+    HierarchyCycle(Uuid),
     Runtime(super::AppError),
 }
 
@@ -68,19 +71,19 @@ impl Display for SceneIoError {
                     "failed to process component `{name}`: {message}"
                 )
             }
-            Self::Script { path, message } => {
-                write!(
-                    formatter,
-                    "failed to compile script `{}`: {message}",
-                    path.display()
-                )
-            }
             Self::MissingAssetServer => formatter
                 .write_str("AssetPlugin must be installed before scene I/O"),
             Self::MissingAssetPath(path) => {
                 write!(
                     formatter,
                     "scene asset `{}` is not loaded",
+                    path.display()
+                )
+            }
+            Self::AssetLoad { path, message } => {
+                write!(
+                    formatter,
+                    "could not load scene asset `{}`: {message}",
                     path.display()
                 )
             }
@@ -96,8 +99,20 @@ impl Display for SceneIoError {
                     "texture {key} has no asset path and cannot be saved"
                 )
             }
+            Self::DuplicateEntity(id) => {
+                write!(formatter, "scene contains duplicate object ID {id}")
+            }
+            Self::DuplicateName(name) => {
+                write!(
+                    formatter,
+                    "scene contains duplicate object name `{name}`"
+                )
+            }
             Self::MissingParent(id) => {
                 write!(formatter, "scene parent {id} does not exist")
+            }
+            Self::HierarchyCycle(id) => {
+                write!(formatter, "scene object {id} has a parent cycle")
             }
             Self::Runtime(error) => Display::fmt(error, formatter),
         }
@@ -132,6 +147,7 @@ impl From<super::AppError> for SceneIoError {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SceneDocument {
+    #[serde(default)]
     pub format_version: u32,
     pub name: String,
     pub entities: Vec<SceneEntity>,
@@ -142,6 +158,8 @@ pub struct SceneEntity {
     pub id: Uuid,
     pub parent: Option<Uuid>,
     pub name: Option<String>,
+    #[serde(default)]
+    pub classes: Vec<String>,
     pub transform: Option<SceneTransform>,
     pub mesh_renderer: Option<SceneMeshRenderer>,
     pub camera: Option<SceneCamera>,
@@ -155,17 +173,116 @@ pub struct SceneEntity {
     #[serde(default)]
     pub collision_layers: Option<CollisionLayers>,
     #[serde(default)]
-    pub script: Option<SceneScript>,
+    pub gpu_physics_watch: Option<GpuPhysicsWatch>,
     #[serde(default)]
     pub components: BTreeMap<String, String>,
 }
 
+/// Cooked version 1 did not store programmable GPU physics watches.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SceneScript {
-    pub source_path: PathBuf,
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compiled: Option<CompiledScript>,
+struct LegacySceneDocumentV1 {
+    format_version: u32,
+    name: String,
+    entities: Vec<LegacySceneEntityV1>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct LegacySceneEntityV1 {
+    id: Uuid,
+    parent: Option<Uuid>,
+    name: Option<String>,
+    transform: Option<SceneTransform>,
+    mesh_renderer: Option<SceneMeshRenderer>,
+    camera: Option<SceneCamera>,
+    visible: Option<bool>,
+    physics_body: Option<PhysicsBody>,
+    rigid_body: Option<RigidBody>,
+    collider: Option<Collider>,
+    collision_layers: Option<CollisionLayers>,
+    components: BTreeMap<String, String>,
+}
+
+impl From<LegacySceneDocumentV1> for SceneDocument {
+    fn from(document: LegacySceneDocumentV1) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document
+                .entities
+                .into_iter()
+                .map(|entity| SceneEntity {
+                    id: entity.id,
+                    parent: entity.parent,
+                    name: entity.name,
+                    classes: Vec::new(),
+                    transform: entity.transform,
+                    mesh_renderer: entity.mesh_renderer,
+                    camera: entity.camera,
+                    visible: entity.visible,
+                    physics_body: entity.physics_body,
+                    rigid_body: entity.rigid_body,
+                    collider: entity.collider,
+                    collision_layers: entity.collision_layers,
+                    gpu_physics_watch: None,
+                    components: entity.components,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Cooked version 2 stored GPU watches but did not store object classes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct LegacySceneDocumentV2 {
+    format_version: u32,
+    name: String,
+    entities: Vec<LegacySceneEntityV2>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct LegacySceneEntityV2 {
+    id: Uuid,
+    parent: Option<Uuid>,
+    name: Option<String>,
+    transform: Option<SceneTransform>,
+    mesh_renderer: Option<SceneMeshRenderer>,
+    camera: Option<SceneCamera>,
+    visible: Option<bool>,
+    physics_body: Option<PhysicsBody>,
+    rigid_body: Option<RigidBody>,
+    collider: Option<Collider>,
+    collision_layers: Option<CollisionLayers>,
+    gpu_physics_watch: Option<GpuPhysicsWatch>,
+    components: BTreeMap<String, String>,
+}
+
+impl From<LegacySceneDocumentV2> for SceneDocument {
+    fn from(document: LegacySceneDocumentV2) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document
+                .entities
+                .into_iter()
+                .map(|entity| SceneEntity {
+                    id: entity.id,
+                    parent: entity.parent,
+                    name: entity.name,
+                    classes: Vec::new(),
+                    transform: entity.transform,
+                    mesh_renderer: entity.mesh_renderer,
+                    camera: entity.camera,
+                    visible: entity.visible,
+                    physics_body: entity.physics_body,
+                    rigid_body: entity.rigid_body,
+                    collider: entity.collider,
+                    collision_layers: entity.collision_layers,
+                    gpu_physics_watch: entity.gpu_physics_watch,
+                    components: entity.components,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -198,6 +315,7 @@ impl From<SceneTransform> for Transform {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SceneMesh {
     BuiltinCube,
+    BuiltinSphere,
     AssetPath(PathBuf),
 }
 
@@ -445,6 +563,7 @@ pub fn scene_document(
         &SceneId,
         Option<&Parent>,
         Option<&Name>,
+        Option<&ObjectClasses>,
         Option<&Transform>,
         Option<&MeshRenderer>,
         Option<&Camera>,
@@ -453,7 +572,7 @@ pub fn scene_document(
         Option<&RigidBody>,
         Option<&Collider>,
         Option<&CollisionLayers>,
-        Option<&ScriptComponent>,
+        Option<&GpuPhysicsWatch>,
     )>();
     let raw = query
         .iter(world)
@@ -463,6 +582,7 @@ pub fn scene_document(
                 id,
                 parent,
                 name,
+                classes,
                 transform,
                 renderer,
                 camera,
@@ -471,13 +591,14 @@ pub fn scene_document(
                 rigid_body,
                 collider,
                 collision_layers,
-                script,
+                gpu_physics_watch,
             )| {
                 (
                     entity,
                     *id,
                     parent.copied(),
                     name.cloned(),
+                    classes.cloned(),
                     transform.copied(),
                     renderer.copied(),
                     camera.copied(),
@@ -486,7 +607,7 @@ pub fn scene_document(
                     rigid_body.copied(),
                     collider.copied(),
                     collision_layers.copied(),
-                    script.cloned(),
+                    gpu_physics_watch.cloned(),
                 )
             },
         )
@@ -504,6 +625,7 @@ pub fn scene_document(
         id,
         parent,
         name,
+        classes,
         transform,
         renderer,
         camera,
@@ -512,7 +634,7 @@ pub fn scene_document(
         rigid_body,
         collider,
         collision_layers,
-        script,
+        gpu_physics_watch,
     ) in raw
     {
         let parent = parent
@@ -535,6 +657,7 @@ pub fn scene_document(
             id: id.0,
             parent,
             name: name.map(|name| name.0),
+            classes: classes.unwrap_or_default().names,
             transform: transform.map(Into::into),
             mesh_renderer,
             camera: camera.map(scene_camera),
@@ -543,20 +666,18 @@ pub fn scene_document(
             rigid_body,
             collider,
             collision_layers,
-            script: script.map(|script| SceneScript {
-                source_path: PathBuf::from(script.source_path),
-                enabled: script.enabled,
-                compiled: None,
-            }),
+            gpu_physics_watch,
             components,
         });
     }
     entities.sort_by_key(|entity| entity.id);
-    Ok(SceneDocument {
+    let document = SceneDocument {
         format_version: SCENE_FORMAT_VERSION,
         name: name.into(),
         entities,
-    })
+    };
+    validate_scene_structure(&document)?;
+    Ok(document)
 }
 
 pub fn save_scene(
@@ -564,10 +685,11 @@ pub fn save_scene(
     path: impl AsRef<Path>,
     name: impl Into<String>,
 ) -> Result<(), SceneIoError> {
-    let document = scene_document(world, name)?;
+    let mut document = scene_document(world, name)?;
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        relativize_scene_assets(&mut document, parent)?;
     }
     std::fs::write(path, serde_json::to_vec_pretty(&document)?)?;
     Ok(())
@@ -578,8 +700,12 @@ pub fn load_scene(
     path: impl AsRef<Path>,
     mode: SceneLoadMode,
 ) -> Result<usize, SceneIoError> {
+    let path = path.as_ref();
     let bytes = std::fs::read(path)?;
-    let document = decode_scene(&bytes)?;
+    let mut document = decode_scene(&bytes)?;
+    if let Some(parent) = path.parent() {
+        absolutize_scene_assets(&mut document, parent)?;
+    }
     load_scene_document(world, &document, mode)
 }
 
@@ -588,40 +714,20 @@ pub fn cook_scene(
     destination: impl AsRef<Path>,
 ) -> Result<(), SceneIoError> {
     let source = source.as_ref();
+    let destination = destination.as_ref();
     let mut document: SceneDocument =
         serde_json::from_slice(&std::fs::read(source)?)?;
+    migrate_scene_document(&mut document)?;
     validate_version(&document)?;
-    let project_root = source
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| Path::new("."));
-    for entity in &mut document.entities {
-        let Some(script) = &mut entity.script else {
-            continue;
-        };
-        let path = if script.source_path.is_absolute()
-            || script.source_path.exists()
-        {
-            script.source_path.clone()
-        } else {
-            project_root.join(&script.source_path)
-        };
-        let source = std::fs::read_to_string(&path).map_err(|error| {
-            SceneIoError::Script {
-                path: path.clone(),
-                message: error.to_string(),
-            }
-        })?;
-        script.compiled = Some(compile_script(&source).map_err(|error| {
-            SceneIoError::Script {
-                path: path.clone(),
-                message: error.to_string(),
-            }
-        })?);
+    validate_scene_structure(&document)?;
+    if let Some(parent) = source.parent() {
+        absolutize_scene_assets(&mut document, parent)?;
+    }
+    if let Some(parent) = destination.parent() {
+        relativize_scene_assets(&mut document, parent)?;
     }
     let mut bytes = COMPILED_MAGIC.to_vec();
     bytes.extend(bincode::serialize(&document)?);
-    let destination = destination.as_ref();
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -629,12 +735,124 @@ pub fn cook_scene(
     Ok(())
 }
 
+/// Applies one path conversion to every mesh and texture in a scene.
+fn map_scene_asset_paths(
+    document: &mut SceneDocument,
+    mut convert: impl FnMut(&Path) -> Result<PathBuf, SceneIoError>,
+) -> Result<(), SceneIoError> {
+    for entity in &mut document.entities {
+        let Some(renderer) = &mut entity.mesh_renderer else {
+            continue;
+        };
+        if let SceneMesh::AssetPath(path) = &mut renderer.mesh {
+            *path = convert(path)?;
+        }
+        let SceneMaterial::Inline(material) = &mut renderer.material else {
+            continue;
+        };
+        for current in [
+            &mut material.base_color_texture,
+            &mut material.normal_texture,
+            &mut material.metallic_roughness_texture,
+            &mut material.occlusion_texture,
+            &mut material.emissive_texture,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *current = convert(current)?;
+        }
+    }
+    Ok(())
+}
+
+/// Converts scene-relative asset paths to normalized absolute paths.
+fn absolutize_scene_assets(
+    document: &mut SceneDocument,
+    scene_folder: &Path,
+) -> Result<(), SceneIoError> {
+    let base = absolute_path(scene_folder)?;
+    map_scene_asset_paths(document, |path| {
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
+        } else {
+            Ok(normalize_lexical(&base.join(path)))
+        }
+    })
+}
+
+/// Converts absolute paths to paths relative to the scene being written.
+fn relativize_scene_assets(
+    document: &mut SceneDocument,
+    scene_folder: &Path,
+) -> Result<(), SceneIoError> {
+    let base = absolute_path(scene_folder)?;
+    map_scene_asset_paths(document, |path| {
+        let target = absolute_path(path)?;
+        Ok(path_relative_to(&base, &target).unwrap_or(target))
+    })
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf, SceneIoError> {
+    if let Ok(path) = path.canonicalize() {
+        return Ok(path);
+    }
+    if path.is_absolute() {
+        Ok(normalize_lexical(path))
+    } else {
+        Ok(normalize_lexical(&std::env::current_dir()?.join(path)))
+    }
+}
+
+/// Removes `.` and `..` without requiring the final file to exist.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Builds a relative path when both paths use the same platform root.
+fn path_relative_to(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base = base.components().collect::<Vec<_>>();
+    let target = target.components().collect::<Vec<_>>();
+    let common = base
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common == 0 {
+        return None;
+    }
+    let mut relative = PathBuf::new();
+    for component in &base[common..] {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative.push("..");
+        }
+    }
+    for component in &target[common..] {
+        relative.push(component.as_os_str());
+    }
+    Some(relative)
+}
+
 pub fn load_scene_document(
     world: &mut World,
     document: &SceneDocument,
     mode: SceneLoadMode,
 ) -> Result<usize, SceneIoError> {
+    let mut migrated = document.clone();
+    migrate_scene_document(&mut migrated)?;
+    let document = &migrated;
     validate_version(document)?;
+    validate_scene_structure(document)?;
     let registrations = world
         .resource::<SceneComponentRegistry>()
         .registrations
@@ -666,6 +884,9 @@ pub fn load_scene_document(
         if let Some(name) = &scene_entity.name {
             entity.insert(Name(name.clone()));
         }
+        if !scene_entity.classes.is_empty() {
+            entity.insert(ObjectClasses::new(scene_entity.classes.clone()));
+        }
         if let Some(transform) = scene_entity.transform {
             entity.insert(Transform::from(transform));
         }
@@ -690,12 +911,8 @@ pub fn load_scene_document(
         if let Some(collision_layers) = scene_entity.collision_layers {
             entity.insert(collision_layers);
         }
-        if let Some(script) = &scene_entity.script {
-            entity.insert(ScriptComponent {
-                source_path: script.source_path.display().to_string(),
-                enabled: script.enabled,
-                compiled: script.compiled.clone(),
-            });
+        if let Some(gpu_physics_watch) = &scene_entity.gpu_physics_watch {
+            entity.insert(gpu_physics_watch.clone());
         }
         spawned.insert(scene_entity.id, entity.id());
     }
@@ -719,14 +936,79 @@ pub fn load_scene_document(
     Ok(document.entities.len())
 }
 
+/// Checks every stable ID and parent chain before replacing the open scene.
+fn validate_scene_structure(
+    document: &SceneDocument,
+) -> Result<(), SceneIoError> {
+    let mut parents = HashMap::new();
+    let mut names = HashSet::new();
+    for entity in &document.entities {
+        if parents.insert(entity.id, entity.parent).is_some() {
+            return Err(SceneIoError::DuplicateEntity(entity.id));
+        }
+        if let Some(name) = entity.name.as_deref() {
+            if !names.insert(name) {
+                return Err(SceneIoError::DuplicateName(name.to_owned()));
+            }
+        }
+    }
+    for entity in &document.entities {
+        let mut ancestor = entity.parent;
+        let mut visited = HashSet::new();
+        while let Some(id) = ancestor {
+            if !visited.insert(id) || id == entity.id {
+                return Err(SceneIoError::HierarchyCycle(entity.id));
+            }
+            ancestor = parents
+                .get(&id)
+                .copied()
+                .ok_or(SceneIoError::MissingParent(id))?;
+        }
+    }
+    Ok(())
+}
+
 fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
-    let document = if let Some(compiled) = bytes.strip_prefix(COMPILED_MAGIC) {
-        bincode::deserialize(compiled)?
+    let mut document = if let Some(compiled) =
+        bytes.strip_prefix(COMPILED_MAGIC)
+    {
+        match bincode::deserialize(compiled) {
+            Ok(document) => document,
+            Err(current_error) => {
+                if let Ok(legacy) =
+                    bincode::deserialize::<LegacySceneDocumentV2>(compiled)
+                {
+                    legacy.into()
+                } else {
+                    let legacy =
+                        bincode::deserialize::<LegacySceneDocumentV1>(compiled)
+                            .map_err(|_| current_error)?;
+                    legacy.into()
+                }
+            }
+        }
     } else {
         serde_json::from_slice(bytes)?
     };
+    migrate_scene_document(&mut document)?;
     validate_version(&document)?;
     Ok(document)
+}
+
+/// Upgrades old text-scene shapes before normal validation and loading.
+fn migrate_scene_document(
+    document: &mut SceneDocument,
+) -> Result<(), SceneIoError> {
+    match document.format_version {
+        0..=2 => {
+            // Versions before programmable GPU watches use safe defaults for
+            // the fields that were added later.
+            document.format_version = SCENE_FORMAT_VERSION;
+            Ok(())
+        }
+        SCENE_FORMAT_VERSION => Ok(()),
+        version => Err(SceneIoError::UnsupportedVersion(version)),
+    }
 }
 
 fn validate_version(document: &SceneDocument) -> Result<(), SceneIoError> {
@@ -743,6 +1025,8 @@ fn scene_renderer(
 ) -> Result<SceneMeshRenderer, SceneIoError> {
     let mesh = if renderer.mesh == assets.fallback_mesh {
         SceneMesh::BuiltinCube
+    } else if renderer.mesh == assets.builtin_sphere {
+        SceneMesh::BuiltinSphere
     } else if let Some(path) = assets.meshes.path(renderer.mesh) {
         SceneMesh::AssetPath(path.to_path_buf())
     } else {
@@ -815,16 +1099,24 @@ fn prepare_assets(
             };
             let mesh = match &renderer.mesh {
                 SceneMesh::BuiltinCube => assets.fallback_mesh,
+                SceneMesh::BuiltinSphere => assets.builtin_sphere,
                 SceneMesh::AssetPath(path) => {
-                    assets.meshes.handle_for_path(path).ok_or_else(|| {
-                        SceneIoError::MissingAssetPath(path.clone())
-                    })?
+                    if let Some(handle) = assets.meshes.handle_for_path(path) {
+                        handle
+                    } else {
+                        assets.load_mesh(path).map_err(|error| {
+                            SceneIoError::AssetLoad {
+                                path: path.clone(),
+                                message: error.to_string(),
+                            }
+                        })?
+                    }
                 }
             };
             let material = match &renderer.material {
                 SceneMaterial::BuiltinError => assets.fallback_material,
                 SceneMaterial::Inline(material) => {
-                    let material = runtime_material(material, &assets)?;
+                    let material = runtime_material(material, &mut assets)?;
                     let existing = assets.materials.iter().find_map(
                         |(handle, existing)| {
                             (*existing == material).then_some(handle)
@@ -846,18 +1138,27 @@ fn prepare_assets(
 
 fn runtime_material(
     material: &SceneMaterialData,
-    assets: &AssetServer,
+    assets: &mut AssetServer,
 ) -> Result<MaterialAsset, SceneIoError> {
-    let texture = |path: &Option<PathBuf>| {
+    fn texture(
+        assets: &mut AssetServer,
+        path: &Option<PathBuf>,
+    ) -> Result<Option<Handle<TextureAsset>>, SceneIoError> {
         path.as_ref()
             .map(|path| {
-                assets
-                    .textures
-                    .handle_for_path(path)
-                    .ok_or_else(|| SceneIoError::MissingAssetPath(path.clone()))
+                if let Some(handle) = assets.textures.handle_for_path(path) {
+                    Ok(handle)
+                } else {
+                    assets.load_texture(path).map_err(|error| {
+                        SceneIoError::AssetLoad {
+                            path: path.clone(),
+                            message: error.to_string(),
+                        }
+                    })
+                }
             })
             .transpose()
-    };
+    }
     Ok(MaterialAsset {
         model: match material.model {
             SceneMaterialModel::Pbr => MaterialModel::Pbr,
@@ -867,13 +1168,14 @@ fn runtime_material(
         emissive: material.emissive,
         metallic: material.metallic,
         roughness: material.roughness,
-        base_color_texture: texture(&material.base_color_texture)?,
-        normal_texture: texture(&material.normal_texture)?,
+        base_color_texture: texture(assets, &material.base_color_texture)?,
+        normal_texture: texture(assets, &material.normal_texture)?,
         metallic_roughness_texture: texture(
+            assets,
             &material.metallic_roughness_texture,
         )?,
-        occlusion_texture: texture(&material.occlusion_texture)?,
-        emissive_texture: texture(&material.emissive_texture)?,
+        occlusion_texture: texture(assets, &material.occlusion_texture)?,
+        emissive_texture: texture(assets, &material.emissive_texture)?,
     })
 }
 
@@ -937,7 +1239,8 @@ mod tests {
 
     use super::*;
     use crate::runtime::{
-        App, PhysicsSolver, RenderExtractPlugin, ScriptPlugin, SimulationClass,
+        App, GpuCondition, GpuEventPayload, GpuPhysicsRule, PhysicsSolver,
+        RenderExtractPlugin, SimulationClass,
     };
     use crate::MaterialAsset;
 
@@ -999,6 +1302,14 @@ mod tests {
                 restitution: 0.75,
                 ..Collider::default()
             },
+            GpuPhysicsWatch {
+                rules: vec![GpuPhysicsRule::new(
+                    "cube_fell",
+                    GpuCondition::position_y().less_than(-100.0),
+                )
+                .payload(GpuEventPayload::Position)],
+            },
+            ObjectClasses::new(["falling_cubes", "gravity"]),
         ));
         app.set_parent(child, parent).unwrap();
         let document = scene_document(app.world_mut(), "Test").unwrap();
@@ -1015,11 +1326,22 @@ mod tests {
             Option<&PhysicsBody>,
             Option<&RigidBody>,
             Option<&Collider>,
+            Option<&GpuPhysicsWatch>,
+            Option<&ObjectClasses>,
         )>();
         let entities = query.iter(app.world()).collect::<Vec<_>>();
         assert_eq!(entities.len(), 2);
-        let (_, transform, tag, parent, physics, rigid_body, collider) =
-            entities.iter().find(|(name, ..)| name.0 == "Cube").unwrap();
+        let (
+            _,
+            transform,
+            tag,
+            parent,
+            physics,
+            rigid_body,
+            collider,
+            watch,
+            classes,
+        ) = entities.iter().find(|(name, ..)| name.0 == "Cube").unwrap();
         assert_eq!(transform.position, [1.0, 2.0, 3.0]);
         assert_eq!(tag.copied(), Some(GameplayTag { speed: 2.5 }));
         assert!(parent.is_some());
@@ -1029,6 +1351,16 @@ mod tests {
         );
         assert_eq!(rigid_body.map(|body| body.mass), Some(12.0));
         assert_eq!(collider.map(|collider| collider.restitution), Some(0.75));
+        assert_eq!(
+            watch
+                .and_then(|watch| watch.rules.first())
+                .map(|rule| rule.event.as_str()),
+            Some("cube_fell")
+        );
+        assert_eq!(
+            classes.map(|classes| classes.names.as_slice()),
+            Some(["falling_cubes".to_owned(), "gravity".to_owned()].as_slice())
+        );
     }
 
     #[test]
@@ -1045,6 +1377,112 @@ mod tests {
         compiled.extend(bincode::serialize(&document).unwrap());
         assert_eq!(decode_scene(&source).unwrap(), document);
         assert_eq!(decode_scene(&compiled).unwrap(), document);
+    }
+
+    #[test]
+    fn version_one_cooked_scene_migrates_without_gpu_watch_data() {
+        let legacy = LegacySceneDocumentV1 {
+            format_version: 1,
+            name: "Old Cooked Scene".into(),
+            entities: Vec::new(),
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+
+        let migrated = decode_scene(&bytes).unwrap();
+
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        assert_eq!(migrated.name, "Old Cooked Scene");
+    }
+
+    #[test]
+    fn version_two_cooked_scene_migrates_without_object_classes() {
+        let legacy = LegacySceneDocumentV2 {
+            format_version: 2,
+            name: "Scene Before Classes".into(),
+            entities: Vec::new(),
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+
+        let migrated = decode_scene(&bytes).unwrap();
+
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        assert_eq!(migrated.name, "Scene Before Classes");
+    }
+
+    #[test]
+    fn unversioned_text_scene_migrates_but_newer_scene_is_rejected() {
+        let mut app = scene_app();
+        app.spawn((Name("Legacy".into()), Transform::default()));
+        let current = scene_document(app.world_mut(), "Legacy").unwrap();
+        let mut legacy = serde_json::to_value(&current).unwrap();
+        legacy.as_object_mut().unwrap().remove("format_version");
+
+        let migrated =
+            decode_scene(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        assert_eq!(migrated.entities, current.entities);
+
+        let mut newer = current;
+        newer.format_version = SCENE_FORMAT_VERSION + 1;
+        assert!(matches!(
+            decode_scene(&serde_json::to_vec(&newer).unwrap()),
+            Err(SceneIoError::UnsupportedVersion(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_hierarchy_is_rejected_before_the_open_scene_is_replaced() {
+        let mut app = scene_app();
+        let root = app.spawn((Name("Root".into()), Transform::default()));
+        let child = app.spawn((Name("Child".into()), Transform::default()));
+        app.set_parent(child, root).unwrap();
+        let original = scene_document(app.world_mut(), "Original").unwrap();
+        let mut invalid = original.clone();
+        let root_id = invalid
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Root"))
+            .unwrap()
+            .id;
+        let child_id = invalid
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Child"))
+            .unwrap()
+            .id;
+        invalid
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == root_id)
+            .unwrap()
+            .parent = Some(child_id);
+
+        assert!(matches!(
+            load_scene_document(
+                app.world_mut(),
+                &invalid,
+                SceneLoadMode::Replace
+            ),
+            Err(SceneIoError::HierarchyCycle(_))
+        ));
+        assert_eq!(
+            scene_document(app.world_mut(), "Original").unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn duplicate_object_names_are_rejected() {
+        let mut app = scene_app();
+        app.spawn((Name("Cube".into()), Transform::default()));
+        app.spawn((Name("Cube".into()), Transform::default()));
+
+        assert!(matches!(
+            scene_document(app.world_mut(), "Duplicates"),
+            Err(SceneIoError::DuplicateName(name)) if name == "Cube"
+        ));
     }
 
     #[test]
@@ -1080,49 +1518,63 @@ mod tests {
     }
 
     #[test]
-    fn cooked_scene_executes_embedded_script_without_source_file() {
-        let test_directory = std::env::temp_dir()
-            .join(format!("rusting-script-cook-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&test_directory).unwrap();
-        let script_path = test_directory.join("main.rscript");
-        let source_scene = test_directory.join("scene.rscene");
-        let compiled_scene = test_directory.join("scene.rscene.bin");
-        std::fs::write(
-            &script_path,
-            "let cube = scene.get_object(\"Scripted Cube\");\n\
-             onSceneStart() { cube.x = 9; }",
-        )
-        .unwrap();
-
-        let mut editor_app = scene_app();
-        editor_app.spawn((Name("Scripted Cube".into()), Transform::default()));
-        editor_app.spawn(ScriptComponent {
-            source_path: script_path.display().to_string(),
-            enabled: true,
-            compiled: None,
-        });
-        save_scene(editor_app.world_mut(), &source_scene, "Scripted").unwrap();
-        cook_scene(&source_scene, &compiled_scene).unwrap();
-        std::fs::remove_file(script_path).unwrap();
-
-        let mut game_app = scene_app();
-        game_app.add_plugin(ScriptPlugin).unwrap();
-        load_scene(
-            game_app.world_mut(),
-            &compiled_scene,
-            SceneLoadMode::Replace,
-        )
-        .unwrap();
-        game_app.update(Duration::from_millis(16)).unwrap();
-        let mut query = game_app.world_mut().query::<(&Name, &Transform)>();
-        let (_, transform) = query
-            .iter(game_app.world())
-            .find(|(name, _)| name.0 == "Scripted Cube")
+    fn cooked_scene_asset_paths_remain_project_relative_and_reloadable() {
+        let project = std::env::temp_dir()
+            .join(format!("rusting-portable-scene-{}", Uuid::new_v4()));
+        let assets_folder = project.join("assets");
+        let scenes_folder = project.join("scenes");
+        let build_folder = project.join("build");
+        std::fs::create_dir_all(&assets_folder).unwrap();
+        std::fs::create_dir_all(&scenes_folder).unwrap();
+        let texture_path = assets_folder.join("pixel.png");
+        image::RgbaImage::from_raw(1, 1, vec![255, 128, 0, 255])
+            .unwrap()
+            .save(&texture_path)
             .unwrap();
-        assert_eq!(transform.position[0], 9.0);
+        let source = scenes_folder.join("main.rscene");
+        let cooked = build_folder.join("main.rscene.bin");
+        let mut editor = scene_app();
+        let (mesh, material) = {
+            let mut assets = editor.world_mut().resource_mut::<AssetServer>();
+            let texture = assets.load_texture(&texture_path).unwrap();
+            let material = assets.materials.insert(MaterialAsset {
+                base_color_texture: Some(texture),
+                ..MaterialAsset::default()
+            });
+            (assets.fallback_mesh, material)
+        };
+        editor.spawn((
+            Name("Textured Cube".into()),
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ));
 
-        std::fs::remove_file(source_scene).unwrap();
-        std::fs::remove_file(compiled_scene).unwrap();
-        std::fs::remove_dir(test_directory).unwrap();
+        save_scene(editor.world_mut(), &source, "Portable").unwrap();
+        let saved: SceneDocument =
+            serde_json::from_slice(&std::fs::read(&source).unwrap()).unwrap();
+        let saved_texture = saved.entities[0]
+            .mesh_renderer
+            .as_ref()
+            .and_then(|renderer| match &renderer.material {
+                SceneMaterial::Inline(material) => {
+                    material.base_color_texture.as_ref()
+                }
+                SceneMaterial::BuiltinError => None,
+            })
+            .unwrap();
+        assert!(!saved_texture.is_absolute());
+        assert!(saved_texture.ends_with(Path::new("assets").join("pixel.png")));
+        cook_scene(&source, &cooked).unwrap();
+
+        let mut runtime = scene_app();
+        load_scene(runtime.world_mut(), &cooked, SceneLoadMode::Replace)
+            .unwrap();
+        assert_eq!(runtime.world().resource::<AssetServer>().textures.len(), 2);
+        std::fs::remove_dir_all(project).unwrap();
     }
 }

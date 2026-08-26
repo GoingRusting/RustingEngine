@@ -40,6 +40,9 @@ pub fn physics_execution(body: &PhysicsBody) -> PhysicsExecution {
             PhysicsSolver::NoCollision => {
                 PhysicsExecution::GpuBuiltIn(ComputeShaderType::NoCollision)
             }
+            PhysicsSolver::Space => {
+                PhysicsExecution::GpuBuiltIn(ComputeShaderType::Space)
+            }
             PhysicsSolver::Custom => body.custom_shader.clone().map_or(
                 PhysicsExecution::InvalidCustomShader,
                 PhysicsExecution::GpuCustom,
@@ -95,6 +98,8 @@ pub enum ComputeShaderType {
     NoCollision,
     /// Yes
     GridBuild,
+    /// Space shader, it use gravity not like direction, but point to fly so [0,0,0]-> Push object to this point instead of "no gravity"
+    Space,
     /// useless shader that has no effect on anything. You can use it to test for fast render without compute shader or I dont know
     Empty,
     /// culling shaders for insane optimization
@@ -114,6 +119,7 @@ impl ComputeShaderType {
             ComputeShaderType::Empty => 5,
             ComputeShaderType::Cull => 6,
             ComputeShaderType::Test => 7,
+            ComputeShaderType::Space => 8,
         }
     }
 
@@ -175,6 +181,11 @@ impl ComputeShaderRegistry {
             .expect("Failed to load Test compute shader");
         let cp_test = create_compute_pipeline(device, cs_test, "Test");
         pipelines.insert(ComputeShaderType::Test, cp_test);
+
+        let cs_space = cs_space::load(device.clone())
+            .expect("Failed to load Space compute shader");
+        let cp_space = create_compute_pipeline(device, cs_space, "Space");
+        pipelines.insert(ComputeShaderType::Space, cp_space);
 
         Self {
             pipelines,

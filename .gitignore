@@ -1,4 +1,6 @@
 /target
+/dist
+/testGame/target
 /compare/build
 .vscode
 /compare/target

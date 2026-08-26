@@ -1,6 +1,7 @@
 //! Renderer-facing snapshot extracted from canonical gameplay ECS state.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 use bevy_ecs::entity::Entity;
@@ -65,14 +66,30 @@ pub struct ExtractionReport {
 #[derive(Resource, Default)]
 pub struct RenderWorld {
     pub renderables: Vec<ExtractedRenderable>,
+    /// Changes only when the extracted object list or one of its transforms
+    /// changes. The renderer uses this instead of comparing every object.
+    pub renderables_revision: u64,
     pub active_camera: Option<ExtractedCamera>,
     pub directional_lights: Vec<ExtractedDirectionalLight>,
     pub point_lights: Vec<ExtractedPointLight>,
     pub ambient_light: Option<AmbientLight>,
     pub dirty_ranges: Vec<Range<usize>>,
     pub report: ExtractionReport,
+    /// Bodies whose newest runtime transforms will be owned by GPU compute.
+    pub gpu_physics: Vec<super::ExtractedGpuPhysicsBody>,
+    /// Signature of a rule-free GPU body set reused between render frames.
+    pub gpu_physics_signature: Option<u64>,
+    /// Changes only when CPU data used to create GPU physics buffers changes.
+    pub gpu_physics_revision: u64,
+    pub physics_tick: u64,
+    pub fixed_delta_seconds: f32,
+    pub elapsed_seconds: f32,
+    pub physics_gravity: [f32; 3],
+    pub physics_enabled: bool,
+    pub background_color: [f32; 4],
     cached: HashMap<Entity, ExtractedRenderable>,
     previous_order: Vec<Entity>,
+    renderables_signature: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -88,72 +105,162 @@ impl Plugin for RenderExtractPlugin {
 }
 
 pub fn extract_render_world(world: &mut World) {
-    let renderables = collect_renderables(world);
+    // Most game frames do not add objects or change their CPU transforms.
+    // Hashing in place is much cheaper than allocating and sorting a new list
+    // of ten thousand objects only to discover that nothing changed.
+    let renderables_signature = renderables_signature(world);
+    let previous_renderables_signature =
+        world.resource::<RenderWorld>().renderables_signature;
+    let renderables = (previous_renderables_signature
+        != Some(renderables_signature))
+    .then(|| collect_renderables(world));
     let active_camera = collect_active_camera(world);
     let directional_lights = collect_directional_lights(world);
     let point_lights = collect_point_lights(world);
     let ambient_light = collect_ambient_light(world);
+    let has_gpu_physics_resources = world
+        .contains_resource::<super::PhysicsIdRegistry>()
+        && world.contains_resource::<super::GpuEventRegistry>()
+        && world.contains_resource::<super::GpuPhysicsClassWatches>();
+    let gpu_physics_signature = has_gpu_physics_resources
+        .then(|| super::hybrid_physics::simple_gpu_physics_signature(world))
+        .flatten();
+    let previous_gpu_signature =
+        world.resource::<RenderWorld>().gpu_physics_signature;
+    let gpu_physics = if gpu_physics_signature.is_some()
+        && gpu_physics_signature == previous_gpu_signature
+    {
+        None
+    } else if has_gpu_physics_resources {
+        Some(super::hybrid_physics::extract_gpu_physics_bodies(world))
+    } else {
+        Some(Vec::new())
+    };
+    let time = *world.resource::<super::FrameTime>();
+    let physics_settings = world.resource::<super::PhysicsSettings>().clone();
+    let background_color =
+        world.resource::<super::RenderSettings>().background_color;
 
     let mut render_world = world.resource_mut::<RenderWorld>();
-    let current_entities = renderables
-        .iter()
-        .map(|renderable| renderable.entity)
-        .collect::<HashSet<_>>();
-    let removed = render_world
-        .cached
-        .keys()
-        .filter(|entity| !current_entities.contains(entity))
-        .count();
-    let mut added = 0;
-    let mut dirty_entities = HashSet::new();
-    for renderable in &renderables {
-        match render_world.cached.get(&renderable.entity) {
-            None => {
-                added += 1;
-                dirty_entities.insert(renderable.entity);
+    match renderables {
+        None => {
+            // GPU-owned effects usually leave their canonical ECS transforms
+            // unchanged. Avoid rebuilding three large hash collections when the
+            // extracted render list is byte-for-byte identical to last frame.
+            render_world.report = ExtractionReport {
+                total: render_world.renderables.len(),
+                ..ExtractionReport::default()
+            };
+            render_world.dirty_ranges.clear();
+        }
+        Some(renderables) => {
+            let current_entities = renderables
+                .iter()
+                .map(|renderable| renderable.entity)
+                .collect::<HashSet<_>>();
+            let removed = render_world
+                .cached
+                .keys()
+                .filter(|entity| !current_entities.contains(entity))
+                .count();
+            let mut added = 0;
+            let mut dirty_entities = HashSet::new();
+            for renderable in &renderables {
+                match render_world.cached.get(&renderable.entity) {
+                    None => {
+                        added += 1;
+                        dirty_entities.insert(renderable.entity);
+                    }
+                    Some(previous) if previous != renderable => {
+                        dirty_entities.insert(renderable.entity);
+                    }
+                    Some(_) => {}
+                }
             }
-            Some(previous) if previous != renderable => {
-                dirty_entities.insert(renderable.entity);
-            }
-            Some(_) => {}
+            let changed = dirty_entities.len().saturating_sub(added);
+            let order = renderables
+                .iter()
+                .map(|renderable| renderable.entity)
+                .collect::<Vec<_>>();
+            let dirty_ranges = if order != render_world.previous_order {
+                (!renderables.is_empty())
+                    .then_some(0..renderables.len())
+                    .into_iter()
+                    .collect()
+            } else {
+                contiguous_ranges(renderables.iter().enumerate().filter_map(
+                    |(index, renderable)| {
+                        dirty_entities
+                            .contains(&renderable.entity)
+                            .then_some(index)
+                    },
+                ))
+            };
+            render_world.cached = renderables
+                .iter()
+                .copied()
+                .map(|renderable| (renderable.entity, renderable))
+                .collect();
+            render_world.previous_order = order;
+            render_world.report = ExtractionReport {
+                added,
+                changed,
+                removed,
+                total: renderables.len(),
+            };
+            render_world.dirty_ranges = dirty_ranges;
+            render_world.renderables = renderables;
+            render_world.renderables_revision =
+                render_world.renderables_revision.wrapping_add(1);
         }
     }
-    let changed = dirty_entities.len().saturating_sub(added);
-    let order = renderables
-        .iter()
-        .map(|renderable| renderable.entity)
-        .collect::<Vec<_>>();
-    let dirty_ranges = if order != render_world.previous_order {
-        (!renderables.is_empty())
-            .then_some(0..renderables.len())
-            .into_iter()
-            .collect()
-    } else {
-        contiguous_ranges(renderables.iter().enumerate().filter_map(
-            |(index, renderable)| {
-                dirty_entities.contains(&renderable.entity).then_some(index)
-            },
-        ))
-    };
-
-    render_world.cached = renderables
-        .iter()
-        .copied()
-        .map(|renderable| (renderable.entity, renderable))
-        .collect();
-    render_world.previous_order = order;
-    render_world.report = ExtractionReport {
-        added,
-        changed,
-        removed,
-        total: renderables.len(),
-    };
-    render_world.renderables = renderables;
+    render_world.renderables_signature = Some(renderables_signature);
     render_world.active_camera = active_camera;
     render_world.directional_lights = directional_lights;
     render_world.point_lights = point_lights;
     render_world.ambient_light = ambient_light;
-    render_world.dirty_ranges = dirty_ranges;
+    if let Some(gpu_physics) = gpu_physics {
+        render_world.gpu_physics = gpu_physics;
+        render_world.gpu_physics_revision =
+            render_world.gpu_physics_revision.wrapping_add(1);
+    }
+    render_world.gpu_physics_signature = gpu_physics_signature;
+    render_world.physics_tick = time.fixed_tick;
+    render_world.fixed_delta_seconds = time.fixed_delta.as_secs_f32();
+    render_world.elapsed_seconds = time.elapsed.as_secs_f32();
+    render_world.physics_gravity = physics_settings.gravity;
+    render_world.physics_enabled = physics_settings.enabled;
+    render_world.background_color = background_color;
+}
+
+/// Creates a small fingerprint without allocating or sorting render objects.
+fn renderables_signature(world: &mut World) -> u64 {
+    let mut hasher = super::FastHasher::default();
+    let mut count = 0_u64;
+    let mut query = world.query::<(
+        Entity,
+        &GlobalTransform,
+        &MeshRenderer,
+        Option<&Visibility>,
+    )>();
+    for (entity, transform, renderer, visibility) in query.iter(world) {
+        if visibility.is_some_and(|visibility| !visibility.visible) {
+            continue;
+        }
+        count += 1;
+        entity.to_bits().hash(&mut hasher);
+        renderer.mesh.key().hash(&mut hasher);
+        renderer.material.key().hash(&mut hasher);
+        renderer.cast_shadows.hash(&mut hasher);
+        renderer.receive_shadows.hash(&mut hasher);
+        for row in transform.matrix {
+            for value in row {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
+    }
+    count.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {

@@ -5,6 +5,13 @@ pub mod cs_test {
     }
 }
 
+pub mod cs_space {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        path: "src/shaders/compute/space.comp",
+    }
+}
+
 pub mod cs_grid_build {
     vulkano_shaders::shader! {
         ty: "compute",

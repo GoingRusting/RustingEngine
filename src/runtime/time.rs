@@ -7,11 +7,17 @@ use super::AppError;
 /// Frame and simulation timing visible to systems.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct FrameTime {
+    /// Number of rendered updates since the app started.
     pub frame: u64,
+    /// Real time since the previous frame, even while paused.
     pub real_delta: Duration,
+    /// Game time since the previous frame after pause and time scale.
     pub delta: Duration,
+    /// Total game time, without time spent paused.
     pub elapsed: Duration,
+    /// Time simulated by one fixed physics update.
     pub fixed_delta: Duration,
+    /// Number of completed fixed physics updates.
     pub fixed_tick: u64,
 }
 
@@ -25,6 +31,20 @@ impl Default for FrameTime {
             fixed_delta: Duration::from_secs_f64(1.0 / 60.0),
             fixed_tick: 0,
         }
+    }
+}
+
+impl FrameTime {
+    /// Returns the current game-frame time as an easy-to-use `f32` value.
+    #[must_use]
+    pub fn delta_seconds(&self) -> f32 {
+        self.delta.as_secs_f32()
+    }
+
+    /// Returns total running game time as an easy-to-use `f32` value.
+    #[must_use]
+    pub fn elapsed_seconds(&self) -> f32 {
+        self.elapsed.as_secs_f32()
     }
 }
 
