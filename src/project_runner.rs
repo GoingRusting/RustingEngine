@@ -756,6 +756,7 @@ impl ApplicationHandler for ProjectApplication {
                                 SceneViewport::full(extent),
                                 self.runtime.world().resource::<RenderWorld>(),
                                 self.runtime.world().resource::<AssetServer>(),
+                                None,
                             ) {
                                 Ok(future) => future,
                                 Err(error) => {

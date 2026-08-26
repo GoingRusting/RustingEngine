@@ -35,7 +35,9 @@ use vulkano::pipeline::graphics::color_blend::{
 use vulkano::pipeline::graphics::depth_stencil::{
     DepthState, DepthStencilState,
 };
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
+use vulkano::pipeline::graphics::input_assembly::{
+    InputAssemblyState, PrimitiveTopology,
+};
 use vulkano::pipeline::graphics::multisample::MultisampleState;
 use vulkano::pipeline::graphics::rasterization::{
     CullMode, FrontFace, RasterizationState,
@@ -58,6 +60,7 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::GpuFuture;
 
 use crate::assets::{AssetServer, Handle, MaterialAsset, MeshAsset};
+use crate::rendering::debug_overlay::RenderDebugOverlay;
 use crate::runtime::{
     GpuConditionInstruction, Projection, RawGpuPhysicsEvent, RenderWorld,
 };
@@ -80,6 +83,16 @@ struct SceneVertex {
     position: [f32; 3],
     #[format(R32G32B32_SFLOAT)]
     normal: [f32; 3],
+}
+
+/// Vertex used by the editor-only debug pass.
+#[repr(C)]
+#[derive(BufferContents, Vertex, Clone, Copy)]
+struct DebugVertex {
+    #[format(R32G32B32_SFLOAT)]
+    position: [f32; 3],
+    #[format(R32G32B32A32_SFLOAT)]
+    color: [f32; 4],
 }
 
 /// Per-object data read with `gl_InstanceIndex` by the graphics shader.
@@ -241,6 +254,7 @@ pub struct SceneRenderer {
     descriptor_allocator: Arc<StandardDescriptorSetAllocator>,
     render_pass: Arc<RenderPass>,
     pipeline: Arc<GraphicsPipeline>,
+    debug_pipeline: Arc<GraphicsPipeline>,
     physics_pipeline: Arc<ComputePipeline>,
     depth: Arc<ImageView>,
     depth_extent: [u32; 2],
@@ -285,6 +299,8 @@ impl SceneRenderer {
         )
         .map_err(|error| SceneRenderError(error.to_string()))?;
         let pipeline = create_pipeline(queue.clone(), render_pass.clone())?;
+        let debug_pipeline =
+            create_debug_pipeline(queue.clone(), render_pass.clone())?;
         let physics_pipeline = create_physics_pipeline(queue.clone())?;
         let depth = create_depth(&memory_allocator, initial_extent)?;
         Ok(Self {
@@ -302,6 +318,7 @@ impl SceneRenderer {
             memory_allocator,
             render_pass,
             pipeline,
+            debug_pipeline,
             physics_pipeline,
             depth,
             depth_extent: initial_extent,
@@ -325,6 +342,7 @@ impl SceneRenderer {
         viewport: SceneViewport,
         render_world: &RenderWorld,
         assets: &AssetServer,
+        debug_overlay: Option<&RenderDebugOverlay>,
     ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
         let viewport = viewport.clamped_to(extent);
         if extent[0] == 0
@@ -574,6 +592,55 @@ impl SceneRenderer {
                         0,
                         batch.first_instance,
                     )
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+            }
+        }
+        // Debug geometry is submitted in the same render pass, so it uses the
+        // exact editor camera and viewport as the scene below it. The optional
+        // input is never provided by the game runner.
+        if let Some(overlay) =
+            debug_overlay.filter(|overlay| !overlay.lines.is_empty())
+        {
+            let vertices = overlay
+                .lines
+                .iter()
+                .flat_map(|line| {
+                    [
+                        DebugVertex {
+                            position: line.start,
+                            color: line.color,
+                        },
+                        DebugVertex {
+                            position: line.end,
+                            color: line.color,
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let vertices = Buffer::from_iter(
+                self.memory_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::VERTEX_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                vertices,
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+            commands
+                .bind_pipeline_graphics(self.debug_pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .push_constants(self.debug_pipeline.layout().clone(), 0, camera)
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_vertex_buffers(0, vertices.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            unsafe {
+                commands
+                    .draw(vertices.len() as u32, 1, 0, 0)
                     .map_err(|error| SceneRenderError(error.to_string()))?;
             }
         }
@@ -1103,6 +1170,80 @@ fn create_pipeline(
     .map_err(|error| SceneRenderError(error.to_string()))
 }
 
+/// Makes a minimal unlit line pipeline for Scene View helpers.
+///
+/// We use standard one-pixel Vulkan lines here. Interactive handles can later
+/// use triangle geometry when they need thick, portable shapes.
+fn create_debug_pipeline(
+    queue: Arc<Queue>,
+    render_pass: Arc<RenderPass>,
+) -> Result<Arc<GraphicsPipeline>, SceneRenderError> {
+    let vertex = debug_vertex_shader::load(queue.device().clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("debug vertex entry point is missing".into())
+        })?;
+    let fragment = debug_fragment_shader::load(queue.device().clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("debug fragment entry point is missing".into())
+        })?;
+    let stages = [
+        PipelineShaderStageCreateInfo::new(vertex.clone()),
+        PipelineShaderStageCreateInfo::new(fragment),
+    ];
+    let layout = PipelineLayout::new(
+        queue.device().clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(queue.device().clone())
+            .map_err(|error| SceneRenderError(error.to_string()))?,
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    let subpass = Subpass::from(render_pass, 0)
+        .ok_or_else(|| SceneRenderError("debug subpass is missing".into()))?;
+    GraphicsPipeline::new(
+        queue.device().clone(),
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(
+                DebugVertex::per_vertex()
+                    .definition(&vertex)
+                    .map_err(|error| SceneRenderError(error.to_string()))?,
+            ),
+            input_assembly_state: Some(InputAssemblyState {
+                topology: PrimitiveTopology::LineList,
+                ..Default::default()
+            }),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState {
+                cull_mode: CullMode::None,
+                ..Default::default()
+            }),
+            multisample_state: Some(MultisampleState::default()),
+            depth_stencil_state: Some(DepthStencilState {
+                // Helpers should hide correctly behind scene meshes, but never
+                // change the depth buffer used by the actual rendered scene.
+                depth: Some(DepthState {
+                    write_enable: false,
+                    ..DepthState::simple()
+                }),
+                ..Default::default()
+            }),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                1,
+                ColorBlendAttachmentState::default(),
+            )),
+            dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))
+}
+
 fn create_physics_pipeline(
     queue: Arc<Queue>,
 ) -> Result<Arc<ComputePipeline>, SceneRenderError> {
@@ -1262,6 +1403,41 @@ void main() {
 }
 "
                         }
+}
+
+#[rustfmt::skip]
+mod debug_vertex_shader {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: r"
+#version 450
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec4 color;
+layout(location = 0) out vec4 v_color;
+layout(push_constant) uniform Camera {
+    mat4 view_projection;
+} camera;
+void main() {
+    gl_Position = camera.view_projection * vec4(position, 1.0);
+    v_color = color;
+}
+"
+    }
+}
+
+#[rustfmt::skip]
+mod debug_fragment_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+#version 450
+layout(location = 0) in vec4 v_color;
+layout(location = 0) out vec4 f_color;
+void main() {
+    f_color = v_color;
+}
+"
+    }
 }
 
 #[rustfmt::skip]

@@ -60,6 +60,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         .unwrap_or_default();
     let frame_time = *world.resource::<FrameTime>();
     let mut render_settings = world.resource::<RenderSettings>().clone();
+    let mut gizmo_settings = *world.resource::<EditorGizmoSettings>();
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
@@ -605,6 +606,24 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         } else {
                             "Active game camera | runtime preview"
                         });
+                        if workspace == EditorWorkspace::Scene {
+                            ui.horizontal(|ui| {
+                                ui.checkbox(
+                                    &mut gizmo_settings.show_grid,
+                                    "Grid",
+                                )
+                                .on_hover_text(
+                                    "Show the editor-only XZ ground grid",
+                                );
+                                ui.checkbox(
+                                    &mut gizmo_settings.show_selected_axes,
+                                    "Axes",
+                                )
+                                .on_hover_text(
+                                    "Show X/Y/Z arrows on the selected object",
+                                );
+                            });
+                        }
                         ui.separator();
                         if viewport_rect.is_none() {
                             viewport_rect = Some(ui.available_rect_before_wrap());
@@ -958,6 +977,16 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     if let Some(workspace) = rendered_workspace {
         state.workspace = workspace;
     }
+
+    // Build helpers after the UI has picked the active Scene/Game area and
+    // selection. They live in an editor resource, not in the saved ECS scene.
+    let overlay = if state.workspace == EditorWorkspace::Scene {
+        build_scene_debug_overlay(world, state.selected, gizmo_settings)
+    } else {
+        RenderDebugOverlay::default()
+    };
+    world.resource_mut::<EditorDebugOverlay>().0 = overlay;
+    *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
 
     // Convert egui points into physical pixels used by the Vulkan viewport.
     if let Some(rect) = viewport_rect {
@@ -1953,4 +1982,99 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     *world.resource_mut::<PendingDestructiveAction>() = pending_action;
     *world.resource_mut::<EditorAssetState>() = editor_assets;
     *world.resource_mut::<ProjectManagerState>() = project_manager;
+}
+
+/// Creates the first editor helpers: a quiet XZ grid and selected-object axes.
+/// More helpers such as bounds and collider shapes can append lines here later.
+fn build_scene_debug_overlay(
+    world: &World,
+    selected: Option<Entity>,
+    settings: EditorGizmoSettings,
+) -> RenderDebugOverlay {
+    let mut overlay = RenderDebugOverlay::default();
+    if settings.show_grid {
+        // A future procedural grid can follow the editor camera
+        // without building CPU vertices every frame.
+        for index in -20..=20 {
+            let value = index as f32;
+            let color = if index == 0 {
+                [0.34, 0.38, 0.46, 0.9]
+            } else {
+                [0.16, 0.18, 0.23, 0.72]
+            };
+            overlay.line([value, 0.0, -20.0], [value, 0.0, 20.0], color);
+            overlay.line([-20.0, 0.0, value], [20.0, 0.0, value], color);
+        }
+    }
+    if settings.show_selected_axes {
+        if let Some(entity) = selected {
+            if let Some(transform) = world.get::<GlobalTransform>(entity) {
+                let matrix = transform.matrix;
+                let origin = [matrix[3][0], matrix[3][1], matrix[3][2]];
+                add_axis(
+                    &mut overlay,
+                    origin,
+                    normalized_axis([matrix[0][0], matrix[0][1], matrix[0][2]]),
+                    [0.95, 0.24, 0.24, 1.0],
+                );
+                add_axis(
+                    &mut overlay,
+                    origin,
+                    normalized_axis([matrix[1][0], matrix[1][1], matrix[1][2]]),
+                    [0.25, 0.90, 0.35, 1.0],
+                );
+                add_axis(
+                    &mut overlay,
+                    origin,
+                    normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
+                    [0.25, 0.52, 1.0, 1.0],
+                );
+            }
+        }
+    }
+    overlay
+}
+
+/// Removes object scale from a transform column so gizmos stay a useful size.
+fn normalized_axis(axis: [f32; 3]) -> [f32; 3] {
+    let length =
+        (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if length > f32::EPSILON {
+        [axis[0] / length, axis[1] / length, axis[2] / length]
+    } else {
+        [1.0, 0.0, 0.0]
+    }
+}
+
+/// Adds a one-unit axis plus a small two-line arrow head.
+fn add_axis(
+    overlay: &mut RenderDebugOverlay,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    color: [f32; 4],
+) {
+    let end = [
+        origin[0] + direction[0],
+        origin[1] + direction[1],
+        origin[2] + direction[2],
+    ];
+    overlay.line(origin, end, color);
+    // A compact arrow head is intentionally world-space and simple. It is a
+    // visual guide, not the interactive transform tool yet.
+    let side = if direction[1] == 0.0 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    for sign in [-1.0, 1.0] {
+        overlay.line(
+            end,
+            [
+                end[0] - direction[0] * 0.18 + side[0] * 0.09 * sign,
+                end[1] - direction[1] * 0.18 + side[1] * 0.09 * sign,
+                end[2] - direction[2] * 0.18 + side[2] * 0.09 * sign,
+            ],
+            color,
+        );
+    }
 }

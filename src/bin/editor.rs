@@ -3,8 +3,8 @@ use std::time::Instant;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
-    configure_editor_style, draw_editor_view, EditorPlugin, EditorState,
-    EditorViewport,
+    configure_editor_style, draw_editor_view, EditorDebugOverlay, EditorPlugin,
+    EditorState, EditorViewport, EditorWorkspace,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{SceneRenderer, SceneViewport};
@@ -280,6 +280,19 @@ impl ApplicationHandler for EditorApplication {
                                 viewport,
                                 self.runtime.world().resource::<RenderWorld>(),
                                 self.runtime.world().resource::<AssetServer>(),
+                                (self
+                                    .runtime
+                                    .world()
+                                    .resource::<EditorState>()
+                                    .workspace
+                                    == EditorWorkspace::Scene)
+                                    .then(|| {
+                                        &self
+                                            .runtime
+                                            .world()
+                                            .resource::<EditorDebugOverlay>()
+                                            .0
+                                    }),
                             ) {
                                 Ok(future) => future,
                                 Err(error) => {

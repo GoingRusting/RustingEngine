@@ -25,14 +25,15 @@ use bevy_ecs::prelude::{Resource, World};
 use egui::{CentralPanel, ComboBox, Context, DragValue, TopBottomPanel};
 use std::path::PathBuf;
 
+use crate::rendering::debug_overlay::RenderDebugOverlay;
 use crate::runtime::{
     add_registered_component, cook_scene, load_scene,
     registered_component_names, registered_component_values,
     remove_registered_component, save_scene, scene_document,
     set_registered_component, App, AppError, Camera, Collider, ColliderShape,
-    CollisionLayers, FrameTime, MeshRenderer, Name, ObjectClasses,
-    PhysicsBackendStatus, PhysicsBody, PhysicsSolver, Plugin, Projection,
-    RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
+    CollisionLayers, FrameTime, GlobalTransform, MeshRenderer, Name,
+    ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver, Plugin,
+    Projection, RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
     RigidBodyKind, SceneDocument, SceneId, SceneLoadMode, SimulationClass,
     Visibility,
 };
@@ -155,6 +156,31 @@ pub struct EditorViewport {
     /// False when the layout does not contain a live 3D area.
     pub valid: bool,
 }
+
+/// Options for helpers visible only while authoring in the Scene View.
+///
+/// These are not scene components. Saving a scene or running a cooked game
+/// never includes a grid, selection axes, or any other editor helper.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct EditorGizmoSettings {
+    /// Draw a ground grid on the XZ plane.
+    pub show_grid: bool,
+    /// Draw red X, green Y, and blue Z axes on the selected object.
+    pub show_selected_axes: bool,
+}
+
+impl Default for EditorGizmoSettings {
+    fn default() -> Self {
+        Self {
+            show_grid: true,
+            show_selected_axes: true,
+        }
+    }
+}
+
+/// Editor-built geometry consumed by the renderer for the current frame.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct EditorDebugOverlay(pub RenderDebugOverlay);
 
 /// Scene snapshots used by Undo and Redo.
 #[derive(Resource, Clone, Debug, Default)]
@@ -290,6 +316,8 @@ impl Plugin for EditorPlugin {
         // These resources keep GUI data inside the same ECS world as the game.
         app.insert_resource(EditorState::default())
             .insert_resource(EditorViewport::default())
+            .insert_resource(EditorGizmoSettings::default())
+            .insert_resource(EditorDebugOverlay::default())
             .insert_resource(EditorConsole::default())
             .insert_resource(EditorHistory::default())
             .insert_resource(PendingDestructiveAction::default())
