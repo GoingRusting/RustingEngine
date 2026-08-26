@@ -213,13 +213,12 @@ impl Default for EditorState {
 /// Switches every editor document path to one validated project.
 fn set_open_project_paths(state: &mut EditorState, project: &OpenProject) {
     state.project_root = project.root.display().to_string();
-    state.scene_path = project.manifest.main_scene.display().to_string();
-    state.code_path = project
+    state.scene_path = editor_relative_path(&project.manifest.main_scene);
+    let code_path = project
         .code_path
         .strip_prefix(&project.root)
-        .unwrap_or(std::path::Path::new("src/main.rs"))
-        .display()
-        .to_string();
+        .unwrap_or(std::path::Path::new("src/main.rs"));
+    state.code_path = editor_relative_path(code_path);
     // Never show text left over from the previously opened project.
     state.code_source.clear();
     state.code_dirty = false;
@@ -1898,7 +1897,16 @@ fn project_relative_path(
     absolute
         .strip_prefix(root)
         .map_err(|_| "File must stay inside the selected project".to_owned())
-        .map(|relative| relative.to_string_lossy().into_owned())
+        .map(editor_relative_path)
+}
+
+/// Uses one portable separator style for paths shown and stored by the editor.
+///
+/// `PathBuf` keeps native separators for real filesystem work. Text fields,
+/// scene files, project files, and tests use `/` so a project has the same
+/// document paths on Windows and Linux.
+fn editor_relative_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Performs quick checks before source text is saved.

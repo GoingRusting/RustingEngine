@@ -831,7 +831,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 let relative = path
                                     .strip_prefix(&state.project_root)
                                     .unwrap_or(path);
-                                let label = relative.display().to_string();
+                                let label = editor_relative_path(relative);
                                 if !filter.is_empty()
                                     && !label.to_lowercase().contains(&filter)
                                 {

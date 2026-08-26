@@ -52,6 +52,14 @@ fn code_editor_keeps_relative_and_absolute_paths_inside_project() {
 }
 
 #[test]
+fn editor_document_paths_always_use_forward_slashes() {
+    assert_eq!(
+        editor_relative_path(std::path::Path::new(r"src\main.rs")),
+        "src/main.rs"
+    );
+}
+
+#[test]
 fn opening_project_replaces_stale_code_with_relative_document_paths() {
     let folder = std::env::temp_dir()
         .join(format!("rusting-open-path-test-{}", uuid::Uuid::new_v4()));
