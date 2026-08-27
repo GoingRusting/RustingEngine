@@ -24,7 +24,7 @@ pub use project::{
 };
 pub use shortcuts::{
     add_mouse_delta, handle_keyboard_input, update_fly_camera, EditorFlyCamera,
-    EditorShortcut, EditorShortcutAction, EditorShortcuts,
+    EditorShortcuts, KeyBinding, SceneViewAction, ShortcutAction,
 };
 
 use bevy_ecs::entity::Entity;

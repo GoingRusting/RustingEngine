@@ -13,6 +13,10 @@ pub struct DebugLine {
     pub end: [f32; 3],
     /// Linear RGBA colour.
     pub color: [f32; 4],
+    /// Width in physical viewport pixels.
+    pub thickness: f32,
+    /// Draw after scene depth when this helper must remain readable.
+    pub on_top: bool,
 }
 
 /// Editor-only geometry collected for one frame.
@@ -25,6 +29,29 @@ pub struct RenderDebugOverlay {
 impl RenderDebugOverlay {
     /// Adds one line without making the editor depend on Vulkan types.
     pub fn line(&mut self, start: [f32; 3], end: [f32; 3], color: [f32; 4]) {
-        self.lines.push(DebugLine { start, end, color });
+        self.lines.push(DebugLine {
+            start,
+            end,
+            color,
+            thickness: 1.0,
+            on_top: false,
+        });
+    }
+
+    /// Adds a portable thick line that ignores scene depth.
+    pub fn line_on_top(
+        &mut self,
+        start: [f32; 3],
+        end: [f32; 3],
+        color: [f32; 4],
+        thickness: f32,
+    ) {
+        self.lines.push(DebugLine {
+            start,
+            end,
+            color,
+            thickness: thickness.max(1.0),
+            on_top: true,
+        });
     }
 }

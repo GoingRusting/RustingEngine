@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.1] - 2026-08-27
+
+### Added
+
+- Scene view overlay
+- Bound box for selected object in Scene view
+- Axis arrows for selected object
+- Shortcut system
+- Move camera to selected object on "F" in Scene view
+- FPS like camera fly on "Num 0" in Scene view
+
 ## [1.0.0] - 2026-08-26
 
 ### Added

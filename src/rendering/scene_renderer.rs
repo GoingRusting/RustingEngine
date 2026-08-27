@@ -60,7 +60,7 @@ use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::GpuFuture;
 
 use crate::assets::{AssetServer, Handle, MaterialAsset, MeshAsset};
-use crate::rendering::debug_overlay::RenderDebugOverlay;
+use crate::rendering::debug_overlay::{DebugLine, RenderDebugOverlay};
 use crate::runtime::{
     GpuConditionInstruction, Projection, RawGpuPhysicsEvent, RenderWorld,
 };
@@ -90,9 +90,15 @@ struct SceneVertex {
 #[derive(BufferContents, Vertex, Clone, Copy)]
 struct DebugVertex {
     #[format(R32G32B32_SFLOAT)]
-    position: [f32; 3],
+    start: [f32; 3],
+    #[format(R32G32B32_SFLOAT)]
+    end: [f32; 3],
     #[format(R32G32B32A32_SFLOAT)]
     color: [f32; 4],
+    #[format(R32G32_SFLOAT)]
+    corner: [f32; 2],
+    #[format(R32_SFLOAT)]
+    thickness: f32,
 }
 
 /// Per-object data read with `gl_InstanceIndex` by the graphics shader.
@@ -108,6 +114,32 @@ struct RenderInstanceUpload {
 #[derive(BufferContents, Clone, Copy)]
 struct CameraUniform {
     view_projection: [[f32; 4]; 4],
+}
+
+#[repr(C)]
+#[derive(BufferContents, Clone, Copy)]
+struct DebugPushConstants {
+    view_projection: [[f32; 4]; 4],
+    viewport_size: [f32; 2],
+    _padding: [f32; 2],
+}
+
+fn debug_line_vertices(line: &DebugLine) -> [DebugVertex; 6] {
+    let vertex = |corner| DebugVertex {
+        start: line.start,
+        end: line.end,
+        color: line.color,
+        corner,
+        thickness: line.thickness,
+    };
+    [
+        vertex([0.0, -1.0]),
+        vertex([1.0, -1.0]),
+        vertex([1.0, 1.0]),
+        vertex([0.0, -1.0]),
+        vertex([1.0, 1.0]),
+        vertex([0.0, 1.0]),
+    ]
 }
 
 #[repr(C)]
@@ -278,6 +310,7 @@ pub struct SceneRenderer {
     render_pass: Arc<RenderPass>,
     pipeline: Arc<GraphicsPipeline>,
     debug_pipeline: Arc<GraphicsPipeline>,
+    debug_on_top_pipeline: Arc<GraphicsPipeline>,
     physics_pipeline: Arc<ComputePipeline>,
     depth: Arc<ImageView>,
     depth_extent: [u32; 2],
@@ -323,7 +356,9 @@ impl SceneRenderer {
         .map_err(|error| SceneRenderError(error.to_string()))?;
         let pipeline = create_pipeline(queue.clone(), render_pass.clone())?;
         let debug_pipeline =
-            create_debug_pipeline(queue.clone(), render_pass.clone())?;
+            create_debug_pipeline(queue.clone(), render_pass.clone(), true)?;
+        let debug_on_top_pipeline =
+            create_debug_pipeline(queue.clone(), render_pass.clone(), false)?;
         let physics_pipeline = create_physics_pipeline(queue.clone())?;
         let depth = create_depth(&memory_allocator, initial_extent)?;
         Ok(Self {
@@ -342,6 +377,7 @@ impl SceneRenderer {
             render_pass,
             pipeline,
             debug_pipeline,
+            debug_on_top_pipeline,
             physics_pipeline,
             depth,
             depth_extent: initial_extent,
@@ -620,51 +656,57 @@ impl SceneRenderer {
         // Debug geometry is submitted in the same render pass, so it uses the
         // exact editor camera and viewport as the scene below it. The optional
         // input is never provided by the game runner.
-        if let Some(overlay) = options
-            .debug_overlay
-            .filter(|overlay| !overlay.lines.is_empty())
-        {
-            let vertices = overlay
-                .lines
-                .iter()
-                .flat_map(|line| {
-                    [
-                        DebugVertex {
-                            position: line.start,
-                            color: line.color,
-                        },
-                        DebugVertex {
-                            position: line.end,
-                            color: line.color,
-                        },
-                    ]
-                })
-                .collect::<Vec<_>>();
-            let vertices = Buffer::from_iter(
-                self.memory_allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::VERTEX_BUFFER,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                vertices,
-            )
-            .map_err(|error| SceneRenderError(error.to_string()))?;
-            commands
-                .bind_pipeline_graphics(self.debug_pipeline.clone())
-                .map_err(|error| SceneRenderError(error.to_string()))?
-                .push_constants(self.debug_pipeline.layout().clone(), 0, camera)
-                .map_err(|error| SceneRenderError(error.to_string()))?
-                .bind_vertex_buffers(0, vertices.clone())
+        if let Some(overlay) = options.debug_overlay {
+            for (on_top, pipeline) in [
+                (false, self.debug_pipeline.clone()),
+                (true, self.debug_on_top_pipeline.clone()),
+            ] {
+                let vertices = overlay
+                    .lines
+                    .iter()
+                    .filter(|line| line.on_top == on_top)
+                    .flat_map(debug_line_vertices)
+                    .collect::<Vec<_>>();
+                if vertices.is_empty() {
+                    continue;
+                }
+                let vertices = Buffer::from_iter(
+                    self.memory_allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::VERTEX_BUFFER,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    vertices,
+                )
                 .map_err(|error| SceneRenderError(error.to_string()))?;
-            unsafe {
                 commands
-                    .draw(vertices.len() as u32, 1, 0, 0)
+                    .bind_pipeline_graphics(pipeline.clone())
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .push_constants(
+                        pipeline.layout().clone(),
+                        0,
+                        DebugPushConstants {
+                            view_projection: camera.view_projection,
+                            viewport_size: [
+                                viewport.extent[0] as f32,
+                                viewport.extent[1] as f32,
+                            ],
+                            _padding: [0.0; 2],
+                        },
+                    )
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .bind_vertex_buffers(0, vertices.clone())
                     .map_err(|error| SceneRenderError(error.to_string()))?;
+                unsafe {
+                    commands
+                        .draw(vertices.len() as u32, 1, 0, 0)
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                }
             }
         }
         commands
@@ -1200,6 +1242,7 @@ fn create_pipeline(
 fn create_debug_pipeline(
     queue: Arc<Queue>,
     render_pass: Arc<RenderPass>,
+    depth_test: bool,
 ) -> Result<Arc<GraphicsPipeline>, SceneRenderError> {
     let vertex = debug_vertex_shader::load(queue.device().clone())
         .map_err(|error| SceneRenderError(error.to_string()))?
@@ -1237,7 +1280,7 @@ fn create_debug_pipeline(
                     .map_err(|error| SceneRenderError(error.to_string()))?,
             ),
             input_assembly_state: Some(InputAssemblyState {
-                topology: PrimitiveTopology::LineList,
+                topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             }),
             viewport_state: Some(ViewportState::default()),
@@ -1246,14 +1289,18 @@ fn create_debug_pipeline(
                 ..Default::default()
             }),
             multisample_state: Some(MultisampleState::default()),
-            depth_stencil_state: Some(DepthStencilState {
-                // Helpers should hide correctly behind scene meshes, but never
-                // change the depth buffer used by the actual rendered scene.
-                depth: Some(DepthState {
-                    write_enable: false,
-                    ..DepthState::simple()
-                }),
-                ..Default::default()
+            depth_stencil_state: Some(if depth_test {
+                DepthStencilState {
+                    // Spatial helpers hide behind meshes without changing the
+                    // scene depth buffer.
+                    depth: Some(DepthState {
+                        write_enable: false,
+                        ..DepthState::simple()
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                DepthStencilState::default()
             }),
             color_blend_state: Some(ColorBlendState::with_attachment_states(
                 1,
@@ -1434,14 +1481,30 @@ mod debug_vertex_shader {
         ty: "vertex",
         src: r"
 #version 450
-layout(location = 0) in vec3 position;
-layout(location = 1) in vec4 color;
+layout(location = 0) in vec3 start;
+layout(location = 1) in vec3 end;
+layout(location = 2) in vec4 color;
+layout(location = 3) in vec2 corner;
+layout(location = 4) in float thickness;
 layout(location = 0) out vec4 v_color;
 layout(push_constant) uniform Camera {
     mat4 view_projection;
+    vec2 viewport_size;
+    vec2 padding;
 } camera;
 void main() {
-    gl_Position = camera.view_projection * vec4(position, 1.0);
+    vec4 start_clip = camera.view_projection * vec4(start, 1.0);
+    vec4 end_clip = camera.view_projection * vec4(end, 1.0);
+    vec2 start_ndc = start_clip.xy / start_clip.w;
+    vec2 end_ndc = end_clip.xy / end_clip.w;
+    vec2 screen_direction = (end_ndc - start_ndc) * camera.viewport_size;
+    float direction_length = length(screen_direction);
+    vec2 normal = direction_length > 0.0001
+        ? vec2(-screen_direction.y, screen_direction.x) / direction_length
+        : vec2(0.0, 1.0);
+    vec4 clip = mix(start_clip, end_clip, corner.x);
+    clip.xy += normal * corner.y * thickness / camera.viewport_size * clip.w;
+    gl_Position = clip;
     v_color = color;
 }
 "

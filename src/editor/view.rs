@@ -2051,22 +2051,39 @@ fn build_scene_debug_overlay(
             if let Some(transform) = world.get::<GlobalTransform>(entity) {
                 let matrix = transform.matrix;
                 let origin = [matrix[3][0], matrix[3][1], matrix[3][2]];
+                let axis_length = world
+                    .get::<MeshRenderer>(entity)
+                    .and_then(|renderer| {
+                        world
+                            .resource::<AssetServer>()
+                            .meshes
+                            .get(renderer.mesh)
+                    })
+                    .and_then(|mesh| {
+                        crate::editor::overlay::mesh_world_radius_from_origin(
+                            mesh, matrix,
+                        )
+                    })
+                    .map_or(1.0, |radius| (radius * 1.2).max(1.0));
                 add_axis(
                     &mut overlay,
                     origin,
                     normalized_axis([matrix[0][0], matrix[0][1], matrix[0][2]]),
+                    axis_length,
                     [0.95, 0.24, 0.24, 1.0],
                 );
                 add_axis(
                     &mut overlay,
                     origin,
                     normalized_axis([matrix[1][0], matrix[1][1], matrix[1][2]]),
+                    axis_length,
                     [0.25, 0.90, 0.35, 1.0],
                 );
                 add_axis(
                     &mut overlay,
                     origin,
                     normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
+                    axis_length,
                     [0.25, 0.52, 1.0, 1.0],
                 );
                 if settings.show_selected_bounds {

@@ -12,20 +12,65 @@ use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window};
 
-use crate::Transform;
+use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
+use crate::{AssetServer, Transform};
 
 use super::{EditorState, EditorWorkspace};
 
 /// Named editor commands that can receive user-configurable shortcuts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EditorShortcutAction {
+pub enum ShortcutAction {
+    SceneView(SceneViewAction),
+}
+
+/// Commands that are meaningful while the Scene View owns keyboard input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SceneViewAction {
     /// Captures or releases the pointer for Scene View FPS navigation.
-    ToggleFlyCamera,
+    ToggleFly,
+    FlyForward,
+    FlyBackward,
+    FlyLeft,
+    FlyRight,
+    FlyDown,
+    FlyUp,
+    FlySprint,
+    FocusObject,
+}
+
+impl SceneViewAction {
+    /// Stable display order used by shortcut settings and tests.
+    pub const ALL: [Self; 9] = [
+        Self::ToggleFly,
+        Self::FlyForward,
+        Self::FlyBackward,
+        Self::FlyLeft,
+        Self::FlyRight,
+        Self::FlyDown,
+        Self::FlyUp,
+        Self::FlySprint,
+        Self::FocusObject,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ToggleFly => "Toggle fly camera",
+            Self::FlyForward => "Fly forward",
+            Self::FlyBackward => "Fly backward",
+            Self::FlyLeft => "Fly left",
+            Self::FlyRight => "Fly right",
+            Self::FlyDown => "Fly down",
+            Self::FlyUp => "Fly up",
+            Self::FlySprint => "Fly faster",
+            Self::FocusObject => "Focus selected object",
+        }
+    }
 }
 
 /// One keyboard binding stored independently from the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EditorShortcut {
+pub struct KeyBinding {
     /// Physical key, so the default works consistently across keyboard layouts.
     pub key: KeyCode,
 }
@@ -36,20 +81,27 @@ pub struct EditorShortcut {
 /// scattering key checks over individual panels and window events.
 #[derive(Resource, Clone, Debug)]
 pub struct EditorShortcuts {
-    bindings: HashMap<EditorShortcutAction, EditorShortcut>,
+    bindings: HashMap<ShortcutAction, KeyBinding>,
 }
 
 impl Default for EditorShortcuts {
     fn default() -> Self {
         let mut bindings = HashMap::new();
-        // Numpad 0 is intentionally used instead of Escape. Escape remains a
-        // normal editor/UI key and will not unexpectedly lock the pointer.
-        bindings.insert(
-            EditorShortcutAction::ToggleFlyCamera,
-            EditorShortcut {
-                key: KeyCode::Numpad0,
-            },
-        );
+        let defaults = [
+            (SceneViewAction::ToggleFly, KeyCode::Numpad0),
+            (SceneViewAction::FlyForward, KeyCode::KeyW),
+            (SceneViewAction::FlyBackward, KeyCode::KeyS),
+            (SceneViewAction::FlyLeft, KeyCode::KeyA),
+            (SceneViewAction::FlyRight, KeyCode::KeyD),
+            (SceneViewAction::FlyDown, KeyCode::ControlLeft),
+            (SceneViewAction::FlyUp, KeyCode::Space),
+            (SceneViewAction::FlySprint, KeyCode::ShiftLeft),
+            (SceneViewAction::FocusObject, KeyCode::KeyF),
+        ];
+        for (action, key) in defaults {
+            bindings
+                .insert(ShortcutAction::SceneView(action), KeyBinding { key });
+        }
         Self { bindings }
     }
 }
@@ -57,21 +109,40 @@ impl Default for EditorShortcuts {
 impl EditorShortcuts {
     /// Returns the current key assigned to an editor action.
     #[must_use]
-    pub fn get(&self, action: EditorShortcutAction) -> Option<EditorShortcut> {
+    pub fn get(&self, action: ShortcutAction) -> Option<KeyBinding> {
         self.bindings.get(&action).copied()
     }
 
     /// Changes an action binding. Settings UI will call this method later.
     pub fn set(
         &mut self,
-        action: EditorShortcutAction,
-        shortcut: EditorShortcut,
-    ) {
+        action: ShortcutAction,
+        shortcut: KeyBinding,
+    ) -> Option<ShortcutAction> {
+        // A context must resolve a key deterministically. Rebinding therefore
+        // unassigns the old action using that key and reports it to Settings.
+        let replaced = self.bindings.iter().find_map(|(candidate, binding)| {
+            (*candidate != action && binding.key == shortcut.key)
+                .then_some(*candidate)
+        });
+        if let Some(replaced) = replaced {
+            self.bindings.remove(&replaced);
+        }
         self.bindings.insert(action, shortcut);
+        replaced
     }
 
-    fn matches(&self, action: EditorShortcutAction, key: KeyCode) -> bool {
-        self.get(action).is_some_and(|shortcut| shortcut.key == key)
+    /// Resolves a physical key in one editor context without panicking when it
+    /// is unbound. Context-specific lookup lets a future Code Editor reuse W,
+    /// F, or any other key without conflicting with Scene View.
+    #[must_use]
+    pub fn scene_view_action(&self, key: KeyCode) -> Option<SceneViewAction> {
+        self.bindings.iter().find_map(|(action, binding)| {
+            (binding.key == key).then_some(*action).map(|action| {
+                let ShortcutAction::SceneView(action) = action;
+                action
+            })
+        })
     }
 }
 
@@ -80,7 +151,7 @@ impl EditorShortcuts {
 pub struct EditorFlyCamera {
     /// True while Scene View owns pointer look and movement keys.
     pub active: bool,
-    pressed_keys: HashSet<KeyCode>,
+    pressed_actions: HashSet<SceneViewAction>,
     pending_mouse_delta: [f32; 2],
     /// Movement speed in world units per second.
     pub speed: f32,
@@ -94,7 +165,7 @@ impl Default for EditorFlyCamera {
     fn default() -> Self {
         Self {
             active: false,
-            pressed_keys: HashSet::new(),
+            pressed_actions: HashSet::new(),
             pending_mouse_delta: [0.0, 0.0],
             speed: 6.0,
             sprint_multiplier: 3.0,
@@ -120,14 +191,28 @@ pub fn handle_keyboard_input(
     let is_fly_active = world.resource::<EditorFlyCamera>().active;
     let scene_view_is_active =
         world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
-    let toggle = world
-        .resource::<EditorShortcuts>()
-        .matches(EditorShortcutAction::ToggleFlyCamera, key);
+    let action = world.resource::<EditorShortcuts>().scene_view_action(key);
     // Releasing fly mode must work even if an old UI text field still has focus.
     let can_toggle =
         is_fly_active || (scene_view_is_active && !ui_wants_keyboard);
-    if toggle && is_pressed && !event.repeat && can_toggle {
+    if action == Some(SceneViewAction::ToggleFly)
+        && is_pressed
+        && !event.repeat
+        && can_toggle
+    {
         set_fly_camera_active(world, window, !is_fly_active);
+        return true;
+    }
+    if !is_fly_active && (!scene_view_is_active || ui_wants_keyboard) {
+        return false;
+    }
+    let Some(action) = action else {
+        return false;
+    };
+    if action == SceneViewAction::FocusObject {
+        if is_pressed && !event.repeat {
+            camera_to_object(world);
+        }
         return true;
     }
     if !is_fly_active {
@@ -135,9 +220,9 @@ pub fn handle_keyboard_input(
     }
     let mut fly = world.resource_mut::<EditorFlyCamera>();
     if is_pressed {
-        fly.pressed_keys.insert(key);
+        fly.pressed_actions.insert(action);
     } else {
-        fly.pressed_keys.remove(&key);
+        fly.pressed_actions.remove(&action);
     }
     true
 }
@@ -151,14 +236,125 @@ pub fn add_mouse_delta(world: &mut World, delta: (f64, f64)) {
     }
 }
 
+pub fn camera_to_object(world: &mut World) {
+    let state = world.resource::<EditorState>();
+    let (Some(selected), Some(camera_entity)) =
+        (state.selected, state.editor_camera)
+    else {
+        return;
+    };
+    let Some(global) = world.get::<GlobalTransform>(selected).copied() else {
+        return;
+    };
+
+    let bounds =
+        world
+            .get::<MeshRenderer>(selected)
+            .copied()
+            .and_then(|renderer| {
+                world
+                    .resource::<AssetServer>()
+                    .meshes
+                    .get(renderer.mesh)
+                    .and_then(crate::editor::overlay::mesh_bounds)
+            });
+    let (target, radius) = world_bounds(global.matrix, bounds);
+
+    let Some(camera_transform) = world.get::<Transform>(camera_entity).copied()
+    else {
+        return;
+    };
+    let projection = world
+        .get::<Camera>(camera_entity)
+        .map(|camera| camera.projection)
+        .unwrap_or_default();
+    let rotation = Rotation3::from_euler_angles(
+        camera_transform.rotation[0],
+        camera_transform.rotation[1],
+        camera_transform.rotation[2],
+    );
+    let forward = rotation * Vector3::new(0.0, 0.0, -1.0);
+    let distance = match projection {
+        Projection::Perspective {
+            vertical_fov_radians,
+            near,
+            ..
+        } => {
+            let half_fov = (vertical_fov_radians * 0.5).clamp(0.05, 1.5);
+            (radius / half_fov.sin() * 1.2).max(near * 2.0)
+        }
+        Projection::Orthographic { near, .. } => radius.max(near * 2.0),
+    };
+    let position = Vector3::from(target) - forward * distance;
+    if let Some(mut camera_transform) =
+        world.get_mut::<Transform>(camera_entity)
+    {
+        camera_transform.position = position.into();
+    }
+}
+
+/// Returns the world-space center and enclosing radius of an optional mesh.
+/// Entities without render geometry still focus as a one-unit point of interest.
+fn world_bounds(
+    matrix: [[f32; 4]; 4],
+    local_bounds: Option<([f32; 3], [f32; 3])>,
+) -> ([f32; 3], f32) {
+    let Some((minimum, maximum)) = local_bounds else {
+        return ([matrix[3][0], matrix[3][1], matrix[3][2]], 1.0);
+    };
+    let local_center = [
+        (minimum[0] + maximum[0]) * 0.5,
+        (minimum[1] + maximum[1]) * 0.5,
+        (minimum[2] + maximum[2]) * 0.5,
+    ];
+    let local_half_extent = [
+        (maximum[0] - minimum[0]) * 0.5,
+        (maximum[1] - minimum[1]) * 0.5,
+        (maximum[2] - minimum[2]) * 0.5,
+    ];
+    let transform_point = |point: [f32; 3]| {
+        [
+            matrix[0][0] * point[0]
+                + matrix[1][0] * point[1]
+                + matrix[2][0] * point[2]
+                + matrix[3][0],
+            matrix[0][1] * point[0]
+                + matrix[1][1] * point[1]
+                + matrix[2][1] * point[2]
+                + matrix[3][1],
+            matrix[0][2] * point[0]
+                + matrix[1][2] * point[1]
+                + matrix[2][2] * point[2]
+                + matrix[3][2],
+        ]
+    };
+    let center = transform_point(local_center);
+    let center_vector = Vector3::from(center);
+    let mut radius: f32 = 0.0;
+    for x in [-1.0, 1.0] {
+        for y in [-1.0, 1.0] {
+            for z in [-1.0, 1.0] {
+                let corner = transform_point([
+                    local_center[0] + local_half_extent[0] * x,
+                    local_center[1] + local_half_extent[1] * y,
+                    local_center[2] + local_half_extent[2] * z,
+                ]);
+                radius = radius
+                    .max(Vector3::from(corner).metric_distance(&center_vector));
+            }
+        }
+    }
+    let radius = radius.max(0.1);
+    (center, radius)
+}
 /// Applies one frame of pointer look and WASD/vertical movement.
 pub fn update_fly_camera(world: &mut World, delta: Duration) {
-    let (active, keys, mouse_delta, speed, sprint_multiplier, sensitivity) = {
+    let (active, actions, mouse_delta, speed, sprint_multiplier, sensitivity) = {
         let mut fly = world.resource_mut::<EditorFlyCamera>();
         let mouse_delta = std::mem::take(&mut fly.pending_mouse_delta);
         (
             fly.active,
-            fly.pressed_keys.clone(),
+            fly.pressed_actions.clone(),
             mouse_delta,
             fly.speed,
             fly.sprint_multiplier,
@@ -189,29 +385,26 @@ pub fn update_fly_camera(world: &mut World, delta: Duration) {
     let forward = rotation * Vector3::new(0.0, 0.0, -1.0);
     let right = rotation * Vector3::new(1.0, 0.0, 0.0);
     let mut movement = Vector3::zeros();
-    if keys.contains(&KeyCode::KeyW) {
+    if actions.contains(&SceneViewAction::FlyForward) {
         movement += forward;
     }
-    if keys.contains(&KeyCode::KeyS) {
+    if actions.contains(&SceneViewAction::FlyBackward) {
         movement -= forward;
     }
-    if keys.contains(&KeyCode::KeyD) {
+    if actions.contains(&SceneViewAction::FlyRight) {
         movement += right;
     }
-    if keys.contains(&KeyCode::KeyA) {
+    if actions.contains(&SceneViewAction::FlyLeft) {
         movement -= right;
     }
-    if keys.contains(&KeyCode::Space) {
+    if actions.contains(&SceneViewAction::FlyUp) {
         movement.y += 1.0;
     }
-    if keys.contains(&KeyCode::ControlLeft)
-        || keys.contains(&KeyCode::ControlRight)
-    {
+    if actions.contains(&SceneViewAction::FlyDown) {
         movement.y -= 1.0;
     }
     if movement.norm_squared() > f32::EPSILON {
-        let sprinting = keys.contains(&KeyCode::ShiftLeft)
-            || keys.contains(&KeyCode::ShiftRight);
+        let sprinting = actions.contains(&SceneViewAction::FlySprint);
         let speed = speed * if sprinting { sprint_multiplier } else { 1.0 };
         let step = movement.normalize() * speed * delta.as_secs_f32();
         transform.position[0] += step.x;
@@ -224,7 +417,7 @@ pub fn update_fly_camera(world: &mut World, delta: Duration) {
 fn set_fly_camera_active(world: &mut World, window: &Window, active: bool) {
     let mut fly = world.resource_mut::<EditorFlyCamera>();
     fly.active = active;
-    fly.pressed_keys.clear();
+    fly.pressed_actions.clear();
     fly.pending_mouse_delta = [0.0, 0.0];
     let _ = window.set_cursor_grab(if active {
         CursorGrabMode::Locked
@@ -242,10 +435,52 @@ mod tests {
     fn numpad_zero_is_the_default_fly_camera_shortcut() {
         let shortcuts = EditorShortcuts::default();
         assert_eq!(
-            shortcuts.get(EditorShortcutAction::ToggleFlyCamera),
-            Some(EditorShortcut {
+            shortcuts
+                .get(ShortcutAction::SceneView(SceneViewAction::ToggleFly)),
+            Some(KeyBinding {
                 key: KeyCode::Numpad0,
             }),
+        );
+    }
+
+    #[test]
+    fn every_scene_view_action_has_a_working_default_binding() {
+        let shortcuts = EditorShortcuts::default();
+        for action in SceneViewAction::ALL {
+            let action = ShortcutAction::SceneView(action);
+            let binding = shortcuts
+                .get(action)
+                .unwrap_or_else(|| panic!("{action:?} has no default binding"));
+            assert_eq!(
+                shortcuts.scene_view_action(binding.key),
+                Some(match action {
+                    ShortcutAction::SceneView(action) => action,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rebinding_moves_a_key_to_only_one_action() {
+        let mut shortcuts = EditorShortcuts::default();
+        let replaced = shortcuts.set(
+            ShortcutAction::SceneView(SceneViewAction::FlyForward),
+            KeyBinding {
+                key: KeyCode::Space,
+            },
+        );
+
+        assert_eq!(
+            replaced,
+            Some(ShortcutAction::SceneView(SceneViewAction::FlyUp))
+        );
+        assert_eq!(
+            shortcuts.scene_view_action(KeyCode::Space),
+            Some(SceneViewAction::FlyForward)
+        );
+        assert_eq!(
+            shortcuts.get(ShortcutAction::SceneView(SceneViewAction::FlyUp)),
+            None
         );
     }
 
@@ -253,19 +488,45 @@ mod tests {
     fn fly_camera_moves_the_editor_camera_only() {
         let mut world = World::new();
         let camera = world.spawn(Transform::default()).id();
-        let mut state = EditorState::default();
-        state.editor_camera = Some(camera);
+        let state = EditorState {
+            editor_camera: Some(camera),
+            ..EditorState::default()
+        };
         world.insert_resource(state);
         let mut fly = EditorFlyCamera {
             active: true,
             ..EditorFlyCamera::default()
         };
-        fly.pressed_keys.insert(KeyCode::KeyW);
+        fly.pressed_actions.insert(SceneViewAction::FlyForward);
         world.insert_resource(fly);
 
         update_fly_camera(&mut world, Duration::from_secs(1));
 
         let transform = world.get::<Transform>(camera).unwrap();
         assert!(transform.position[2] < -5.9);
+    }
+
+    #[test]
+    fn focus_places_selected_object_in_front_of_camera() {
+        let mut world = World::new();
+        let selected = world
+            .spawn(GlobalTransform {
+                matrix: Transform::new([10.0, 2.0, -3.0]).to_matrix(),
+            })
+            .id();
+        let camera =
+            world.spawn((Transform::default(), Camera::default())).id();
+        world.insert_resource(EditorState {
+            selected: Some(selected),
+            editor_camera: Some(camera),
+            ..EditorState::default()
+        });
+
+        camera_to_object(&mut world);
+
+        let camera = world.get::<Transform>(camera).unwrap();
+        assert_eq!(camera.position[0], 10.0);
+        assert_eq!(camera.position[1], 2.0);
+        assert!(camera.position[2] > -3.0);
     }
 }
