@@ -63,6 +63,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let frame_time = *world.resource::<FrameTime>();
     let mut render_settings = world.resource::<RenderSettings>().clone();
     let mut gizmo_settings = *world.resource::<EditorGizmoSettings>();
+    let fly_camera_active = world.resource::<EditorFlyCamera>().active;
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
@@ -610,6 +611,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             "Active game camera | runtime preview"
                         });
                         if workspace == EditorWorkspace::Scene {
+                            ui.small(if fly_camera_active {
+                                "Fly camera active · Numpad 0 releases pointer"
+                            } else {
+                                "Numpad 0 enables FPS fly camera"
+                            });
                             ui.horizontal(|ui| {
                                 ui.checkbox(
                                     &mut gizmo_settings.show_grid,

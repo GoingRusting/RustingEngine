@@ -395,7 +395,9 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add a concise native Rust scene API for common transform operations without hiding the ECS from advanced games.
 - [x] Add a dockable area-tree layout with selectable editor types and project-local persistence.
 - [ ] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass.
-- [ ] Route keyboard and mouse focus correctly between viewport navigation and UI.
+- [x] Add a central editor-shortcut action map; `Numpad 0` toggles Scene View fly-camera pointer capture while Escape remains a normal UI key.
+- [ ] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map.
+- [ ] Route keyboard and mouse focus correctly between all viewport navigation modes and UI.
 - [ ] Add DPI scaling, font configuration, and theme persistence.
 
 ### Core panels
@@ -413,9 +415,12 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 
 ### Scene editing
 
-- [ ] Selection outlines and editor-only overlays.
+- [x] Add editor-only Scene View overlays: XZ grid, selected-object local axes, and real mesh-bounds box.
+- [x] Select the nearest rendered object by clicking Scene View, using an editor ray against transformed mesh bounds instead of requiring a physics collider.
+- [ ] Add a selection outline that remains readable when the object is behind other geometry.
 - [ ] Translate, rotate, and scale gizmos with local/global modes and snapping.
-- [ ] Camera orbit, pan, fly, focus-selection, and framing controls.
+- [x] Add FPS-style Scene View fly camera: Numpad 0 captures/releases the pointer, mouse changes yaw/pitch, WASD moves, Space/Ctrl move vertically, and Shift boosts speed.
+- [ ] Add camera orbit, pan, focus-selection, and framing controls after fly camera input is stable.
 - [x] Create empty, cube, and camera objects; duplicate, rename, delete, and reparent entities.
 - [x] Add/remove/edit registered compiled components through the generic JSON inspector.
 - [ ] Assign meshes, materials, textures, and physics shapes by typed handle.
@@ -564,4 +569,4 @@ Work on one vertical path at a time rather than creating empty crates for every 
 8. Build the vertical slice while filling in editor, rendering, asset, and physics gaps.
 9. Add hot reload, undo/redo, polish, packaging, and performance gating.
 
-The next concrete task is explicit frame contexts and an offscreen scene viewport target. `SceneRenderer` already accepts an arbitrary image target, so this should not require changes to ECS, typed assets, render extraction, or editor selection.
+The next concrete editor task is a Shortcuts settings panel. It must display the central action map, let a user rebind one action at a time, detect duplicate bindings, and persist choices inside project editor settings. Then add focus-selection and interactive translate/rotate/scale handles. Explicit frame contexts and an offscreen scene viewport target remain the next renderer-architecture task.

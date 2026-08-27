@@ -3,7 +3,8 @@ use std::time::Instant;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
-    configure_editor_style, draw_editor_view, EditorDebugOverlay, EditorPlugin,
+    add_mouse_delta, configure_editor_style, draw_editor_view,
+    handle_keyboard_input, update_fly_camera, EditorDebugOverlay, EditorPlugin,
     EditorState, EditorViewport, EditorWorkspace,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
@@ -22,7 +23,7 @@ use vulkano::VulkanError;
 use vulkano_util::context::{VulkanoConfig, VulkanoContext};
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
 
@@ -228,6 +229,15 @@ impl ApplicationHandler for EditorApplication {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. } => {
+                let ui_wants_keyboard = gui.context().wants_keyboard_input();
+                handle_keyboard_input(
+                    self.runtime.world_mut(),
+                    renderer.window(),
+                    &event,
+                    ui_wants_keyboard,
+                );
+            }
             WindowEvent::Resized(_)
             | WindowEvent::ScaleFactorChanged { .. } => {
                 renderer.resize();
@@ -237,6 +247,9 @@ impl ApplicationHandler for EditorApplication {
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
+                // Navigation runs before ECS extraction, so the renderer uses
+                // the new editor-camera transform in this same frame.
+                update_fly_camera(self.runtime.world_mut(), delta);
                 if let Err(error) = self.runtime.update(delta) {
                     eprintln!("editor runtime update failed: {error}");
                     event_loop.exit();
@@ -324,6 +337,17 @@ impl ApplicationHandler for EditorApplication {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            add_mouse_delta(self.runtime.world_mut(), delta);
         }
     }
 

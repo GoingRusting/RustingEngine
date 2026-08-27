@@ -9,6 +9,7 @@ mod hierarchy;
 mod overlay;
 mod picking;
 mod project;
+mod shortcuts;
 pub mod view;
 
 use dock::EditorLayoutFile;
@@ -20,6 +21,10 @@ pub use project::{
     create_project, open_project, OpenProject, ProjectError,
     ProjectManagerState, ProjectManifest, RecentProject,
     PROJECT_FORMAT_VERSION,
+};
+pub use shortcuts::{
+    add_mouse_delta, handle_keyboard_input, update_fly_camera, EditorFlyCamera,
+    EditorShortcut, EditorShortcutAction, EditorShortcuts,
 };
 
 use bevy_ecs::entity::Entity;
@@ -323,6 +328,8 @@ impl Plugin for EditorPlugin {
             .insert_resource(EditorViewport::default())
             .insert_resource(EditorGizmoSettings::default())
             .insert_resource(EditorDebugOverlay::default())
+            .insert_resource(EditorShortcuts::default())
+            .insert_resource(EditorFlyCamera::default())
             .insert_resource(EditorConsole::default())
             .insert_resource(EditorHistory::default())
             .insert_resource(PendingDestructiveAction::default())
