@@ -3,7 +3,10 @@
 //! Keeping the complete frame in this file makes the smaller editor modules
 //! easier to read while this view is gradually divided into panel modules.
 
-use super::picking::pick_entity;
+use egui::Pos2;
+use nalgebra::{Matrix4, Rotation3, Vector3, Vector4};
+
+use super::picking::{pick_entity, project_world_to_screen, scene_ray};
 use super::*;
 use crate::editor::overlay::{add_axis, add_bound_box};
 
@@ -63,6 +66,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let frame_time = *world.resource::<FrameTime>();
     let mut render_settings = world.resource::<RenderSettings>().clone();
     let mut gizmo_settings = *world.resource::<EditorGizmoSettings>();
+    let mut gizmo_drag = world.resource::<EditorGizmoDrag>().clone();
+    let mut transform_mode = *world.resource::<EditorTransformMode>();
+    let editor_shortcuts = world.resource::<EditorShortcuts>().clone();
     let fly_camera_active = world.resource::<EditorFlyCamera>().active;
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
@@ -125,7 +131,23 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     // Buttons set these small requests while drawing. We apply them later,
     // after egui no longer borrows temporary values.
     let mut viewport_rect = None;
-    let mut scene_click_position = None;
+    let mut scene_click_position: Option<Pos2> = None;
+    let mut scene_drag_right_started: Option<Pos2> = None;
+    let mut scene_drag_right_position: Option<Pos2> = None;
+    let mut scene_drag_right_stopped = false;
+    let mut scene_drag_left_started: Option<Pos2> = None;
+    let mut scene_drag_left_position: Option<Pos2> = None;
+    let mut scene_drag_left_stopped = false;
+    let mut scene_hover_position: Option<Pos2> = None;
+    let mut scene_right_clicked = false;
+    let left_pressed = context.input(|input| {
+        input.pointer.button_pressed(egui::PointerButton::Primary)
+    });
+    let right_pressed = context.input(|input| {
+        input.pointer.button_pressed(egui::PointerButton::Secondary)
+    });
+    let escape_pressed =
+        context.input(|input| input.key_pressed(egui::Key::Escape));
     let mut save_clicked = false;
     let mut load_clicked = false;
     let mut component_edits = Vec::new();
@@ -612,10 +634,28 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         });
                         if workspace == EditorWorkspace::Scene {
                             ui.small(if fly_camera_active {
-                                "Fly camera active · Numpad 0 releases pointer"
+                                "Fly camera active · release right mouse or press Numpad 0 to exit"
                             } else {
-                                "Numpad 0 enables FPS fly camera"
+                                "Hold right mouse for FPS fly camera · Numpad 0 toggles"
                             });
+                            draw_transform_controls(
+                                ui,
+                                &mut transform_mode,
+                                &editor_shortcuts,
+                                gizmo_drag.is_active(),
+                                state.selected.is_some(),
+                            );
+                            if transform_mode.active_mode
+                                != TransformModes::Combo
+                            {
+                                ui.small(format!(
+                                    "{} active on {}",
+                                    mode_name(transform_mode.active_mode),
+                                    transform_axis_label(
+                                        transform_mode.axis_mask
+                                    )
+                                ));
+                            }
                             ui.horizontal(|ui| {
                                 ui.checkbox(
                                     &mut gizmo_settings.show_grid,
@@ -647,12 +687,46 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 let response = ui.interact(
                                     rect,
                                     ui.id().with("scene_view_pick_area"),
-                                    egui::Sense::click(),
+                                    egui::Sense::click_and_drag(),
                                 );
+                                scene_hover_position = response.hover_pos();
                                 if response.clicked() {
                                     scene_click_position =
                                         response.interact_pointer_pos();
                                 }
+                                ui.input(|input| {
+                                    if input.pointer.button_pressed(
+                                        egui::PointerButton::Primary,
+                                    ) {
+                                        scene_drag_left_started = input
+                                            .pointer
+                                            .press_origin()
+                                            .or_else(|| input.pointer.latest_pos());
+                                    }
+                                    if input.pointer.button_down(
+                                        egui::PointerButton::Primary,
+                                    ) {
+                                        scene_drag_left_position =
+                                            input.pointer.latest_pos();
+                                    }
+                                    if input.pointer.button_released(
+                                        egui::PointerButton::Primary,
+                                    ) {
+                                        scene_drag_left_stopped = true;
+                                    }
+                                });
+                                if response.drag_started_by(egui::PointerButton::Secondary) {
+                                    scene_drag_right_started =
+                                        response.interact_pointer_pos();
+                                }
+                                if response.dragged_by(egui::PointerButton::Secondary) {
+                                    scene_drag_right_position =
+                                        response.interact_pointer_pos();
+                                }
+                                if response.drag_stopped_by(egui::PointerButton::Secondary) {
+                                    scene_drag_right_stopped = true;
+                                }
+                                scene_right_clicked = response.clicked_by(egui::PointerButton::Secondary);
                             }
                             viewport_rect = Some(rect);
                             rendered_workspace = Some(workspace);
@@ -1006,27 +1080,41 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         state.workspace = workspace;
     }
 
+    let (hovered_gizmo, gizmo_consumed) =
+        if state.workspace == EditorWorkspace::Scene {
+            update_transform_gizmo(
+                world,
+                &mut state,
+                viewport_rect,
+                scene_hover_position,
+                scene_drag_left_started,
+                scene_drag_left_position,
+                scene_drag_left_stopped,
+                &mut gizmo_drag,
+                &mut edited_transform,
+                &mut history,
+                scene_right_clicked || right_pressed,
+                left_pressed,
+                escape_pressed,
+                &mut transform_mode,
+            )
+        } else {
+            (None, false)
+        };
+
     // A Scene View click selects the closest renderable mesh under the editor
     // camera ray. Game View clicks never change editor selection.
     if let (Some(click), Some(viewport), Some(camera)) =
         (scene_click_position, viewport_rect, state.editor_camera)
     {
-        state.selected = pick_entity(world, camera, click, viewport);
-        state.rename_draft = state
-            .selected
-            .and_then(|entity| world.get::<Name>(entity))
-            .map_or_else(String::new, |name| name.0.clone());
+        if !gizmo_consumed {
+            state.selected = pick_entity(world, camera, click, viewport);
+            state.rename_draft = state
+                .selected
+                .and_then(|entity| world.get::<Name>(entity))
+                .map_or_else(String::new, |name| name.0.clone());
+        }
     }
-
-    // Build helpers after the UI has picked the active Scene/Game area and
-    // selection. They live in an editor resource, not in the saved ECS scene.
-    let overlay = if state.workspace == EditorWorkspace::Scene {
-        build_scene_debug_overlay(world, state.selected, gizmo_settings)
-    } else {
-        RenderDebugOverlay::default()
-    };
-    world.resource_mut::<EditorDebugOverlay>().0 = overlay;
-    *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
 
     // Convert egui points into physical pixels used by the Vulkan viewport.
     if let Some(rect) = viewport_rect {
@@ -1207,7 +1295,8 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         }
     }
 
-    let inspector_changed = state.selected == original_selected
+    let inspector_changed = !gizmo_consumed
+        && state.selected == original_selected
         && (edited_transform != original_transform
             || edited_camera != original_camera
             || edited_classes != original_classes
@@ -2017,11 +2106,873 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 Some(format!("Could not start Cargo: {error}"));
         }
     }
+    crate::runtime::propagate_transforms(world);
+    let overlay = if state.workspace == EditorWorkspace::Scene {
+        build_scene_debug_overlay(
+            world,
+            state.selected,
+            gizmo_settings,
+            hovered_gizmo,
+            &gizmo_drag,
+            transform_mode.active_mode,
+        )
+    } else {
+        RenderDebugOverlay::default()
+    };
+    world.resource_mut::<EditorDebugOverlay>().0 = overlay;
+    *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
+    *world.resource_mut::<EditorGizmoDrag>() = gizmo_drag;
+    *world.resource_mut::<EditorTransformMode>() = transform_mode;
     *world.resource_mut::<EditorState>() = state;
     *world.resource_mut::<EditorHistory>() = history;
     *world.resource_mut::<PendingDestructiveAction>() = pending_action;
     *world.resource_mut::<EditorAssetState>() = editor_assets;
     *world.resource_mut::<ProjectManagerState>() = project_manager;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GizmoHandle {
+    mode: TransformModes,
+    axis: GizmoAxis,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_transform_gizmo(
+    world: &mut World,
+    state: &mut EditorState,
+    viewport: Option<egui::Rect>,
+    hover: Option<Pos2>,
+    drag_started: Option<Pos2>,
+    drag_position: Option<Pos2>,
+    drag_stopped: bool,
+    drag: &mut EditorGizmoDrag,
+    edited_transform: &mut Option<Transform>,
+    history: &mut EditorHistory,
+    right_clicked: bool,
+    left_pressed: bool,
+    escape_pressed: bool,
+    transform_mode: &mut EditorTransformMode,
+) -> (Option<GizmoHandle>, bool) {
+    let (Some(entity), Some(camera), Some(viewport)) =
+        (state.selected, state.editor_camera, viewport)
+    else {
+        *drag = EditorGizmoDrag::default();
+        transform_mode.start_requested = false;
+        transform_mode.active_mode = TransformModes::Combo;
+        return (None, false);
+    };
+    let Some(geometry) = gizmo_geometry(world, entity) else {
+        return (None, false);
+    };
+    // Pressing G/S/R during an unfinished operation changes operation type by
+    // cancelling the preview and beginning again from the authored transform.
+    if transform_mode.start_requested && drag.is_active() {
+        *edited_transform = drag.original_transform;
+        *drag = EditorGizmoDrag::default();
+    }
+    if transform_mode.start_requested {
+        if let Some(pointer) = hover {
+            begin_gizmo_drag(
+                world,
+                entity,
+                pointer,
+                transform_mode.active_mode,
+                true,
+                transform_mode.axis_mask,
+                &geometry,
+                camera,
+                viewport,
+                drag,
+                *edited_transform,
+            );
+            transform_mode.start_requested = false;
+        }
+    }
+
+    let hovered =
+        if let (Some(mode), Some(axis)) = (drag.mode, drag.active_axis) {
+            Some(GizmoHandle { mode, axis })
+        } else {
+            hover
+                .and_then(|pointer| {
+                    hit_test_gizmo(world, camera, viewport, pointer, &geometry)
+                })
+                .map(|hit| hit.1)
+        };
+    let mut consumed = drag.is_active();
+    if !drag.is_active() {
+        if let Some(pointer) = drag_started {
+            if let Some((_, handle)) =
+                hit_test_gizmo(world, camera, viewport, pointer, &geometry)
+            {
+                let mut mask = [false; 3];
+                mask[gizmo_axis_index(handle.axis)] = true;
+                begin_gizmo_drag(
+                    world,
+                    entity,
+                    pointer,
+                    handle.mode,
+                    false,
+                    mask,
+                    &geometry,
+                    camera,
+                    viewport,
+                    drag,
+                    *edited_transform,
+                );
+                transform_mode.active_mode = handle.mode;
+                transform_mode.axis_mask = mask;
+                consumed = true;
+            }
+        }
+    }
+
+    if drag.is_active() {
+        drag.axis_mask = transform_mode.axis_mask;
+        drag.active_axis = single_enabled_axis(drag.axis_mask);
+        let pointer = if drag.modal { hover } else { drag_position };
+        if let Some(pointer) = pointer {
+            let move_parameter = if drag.mode == Some(TransformModes::Move)
+                && single_enabled_axis(drag.axis_mask).is_some()
+            {
+                world
+                    .get::<Camera>(camera)
+                    .copied()
+                    .zip(world.get::<GlobalTransform>(camera).copied())
+                    .and_then(|(camera_component, camera_transform)| {
+                        scene_ray(
+                            pointer,
+                            viewport,
+                            camera_component,
+                            camera_transform,
+                        )
+                    })
+                    .and_then(|ray| {
+                        move_axis_parameter(
+                            ray,
+                            drag.move_axis_origin,
+                            drag.move_axis_direction,
+                            drag.move_drag_plane_normal,
+                        )
+                    })
+            } else {
+                None
+            };
+            if let Some(transform) =
+                transformed_from_pointer(drag, pointer, move_parameter)
+            {
+                *edited_transform = Some(transform);
+                state.scene_dirty = true;
+            }
+        }
+    }
+
+    if (right_clicked || escape_pressed) && drag.is_active() {
+        *edited_transform = drag.original_transform;
+        *drag = EditorGizmoDrag::default();
+        finish_transform_mode(transform_mode);
+        return (hovered, true);
+    }
+
+    let confirmed = drag.is_active()
+        && if drag.modal {
+            left_pressed && hover.is_some()
+        } else {
+            drag_stopped
+        };
+    if confirmed {
+        if let Some(snapshot) = drag.undo_snapshot.take() {
+            if drag.original_transform != *edited_transform {
+                history.push_undo(snapshot);
+            }
+        }
+
+        *drag = EditorGizmoDrag::default();
+        finish_transform_mode(transform_mode);
+        return (hovered, true);
+    }
+    (hovered, consumed)
+}
+
+fn finish_transform_mode(transform_mode: &mut EditorTransformMode) {
+    transform_mode.active_mode = TransformModes::Combo;
+    transform_mode.axis_mask = [true; 3];
+    transform_mode.start_requested = false;
+}
+
+const fn transform_axis_label(mask: [bool; 3]) -> &'static str {
+    match mask {
+        [true, false, false] => "X",
+        [false, true, false] => "Y",
+        [false, false, true] => "Z",
+        [true, true, false] => "XY",
+        [true, false, true] => "XZ",
+        [false, true, true] => "YZ",
+        _ => "XYZ",
+    }
+}
+
+fn draw_transform_controls(
+    ui: &mut egui::Ui,
+    transform: &mut EditorTransformMode,
+    shortcuts: &EditorShortcuts,
+    drag_active: bool,
+    has_selection: bool,
+) {
+    ui.horizontal(|ui| {
+        ui.small("Transform");
+        for mode in [
+            TransformModes::Move,
+            TransformModes::Rotate,
+            TransformModes::Scale,
+        ] {
+            let shortcut = transform_shortcut_label(shortcuts, mode);
+            let label = format!("{}  {shortcut}", mode_name(mode));
+            if gui_elements::EditorTheme::toolbar_button(
+                ui,
+                &label,
+                transform.active_mode == mode,
+                has_selection,
+            )
+            .on_hover_text(format!(
+                "Start {} with the mouse or press {}",
+                mode_name(mode),
+                shortcut
+            ))
+            .clicked()
+            {
+                transform.active_mode = mode;
+                transform.axis_mask = [true; 3];
+                transform.start_requested = true;
+            }
+        }
+    });
+
+    if drag_active || transform.start_requested {
+        ui.horizontal(|ui| {
+            ui.small("Direction");
+            for (axis, label) in [
+                (GizmoAxis::X, "X"),
+                (GizmoAxis::Y, "Y"),
+                (GizmoAxis::Z, "Z"),
+            ] {
+                let active = transform.axis_mask[gizmo_axis_index(axis)];
+                let text = egui::RichText::new(label)
+                    .strong()
+                    .color(egui::Color32::WHITE);
+                let mut button =
+                    egui::Button::new(text).min_size(egui::vec2(28.0, 24.0));
+                button = if active {
+                    button.fill(gui_elements::EditorTheme::ACCENT_HOVER).stroke(
+                        egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgb(130, 190, 255),
+                        ),
+                    )
+                } else {
+                    button.frame(false)
+                };
+                if ui
+                    .add(button)
+                    .on_hover_text(format!(
+                        "Toggle {label} direction (shortcut: {label})"
+                    ))
+                    .clicked()
+                {
+                    transform.select_only_or_toggle(axis);
+                }
+            }
+            ui.small("Click Scene View to confirm · Right-click/Esc cancels");
+        });
+    }
+}
+
+const fn mode_name(mode: TransformModes) -> &'static str {
+    match mode {
+        TransformModes::Move => "Move",
+        TransformModes::Rotate => "Rotate",
+        TransformModes::Scale => "Scale",
+        TransformModes::Combo => "Combined Transform",
+    }
+}
+
+fn transform_shortcut_label(
+    shortcuts: &EditorShortcuts,
+    mode: TransformModes,
+) -> String {
+    shortcuts
+        .get(ShortcutAction::SceneView(SceneViewAction::TransformModes(
+            mode,
+        )))
+        .map_or_else(
+            || "Unbound".into(),
+            |binding| {
+                let debug = format!("{:?}", binding.key);
+                debug.strip_prefix("Key").unwrap_or(&debug).to_owned()
+            },
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn begin_gizmo_drag(
+    world: &mut World,
+    entity: Entity,
+    pointer: Pos2,
+    mode: TransformModes,
+    modal: bool,
+    axis_mask: [bool; 3],
+    geometry: &GizmoGeometry,
+    camera: Entity,
+    viewport: egui::Rect,
+    drag: &mut EditorGizmoDrag,
+    original_transform: Option<Transform>,
+) {
+    let Some(origin_screen) =
+        project_world_to_screen(world, camera, geometry.origin, viewport)
+    else {
+        return;
+    };
+    let world_axes = geometry.axes.map(|(_, direction)| direction);
+    let parent_inverse = world
+        .get::<Parent>(entity)
+        .and_then(|parent| world.get::<GlobalTransform>(parent.0))
+        .and_then(|parent| Matrix4::from(parent.matrix).try_inverse());
+    let local_delta_axes = world_axes.map(|axis| {
+        parent_inverse.map_or(axis, |inverse| {
+            let local = inverse * Vector4::new(axis[0], axis[1], axis[2], 0.0);
+            [local.x, local.y, local.z]
+        })
+    });
+    let screen_vectors = world_axes.map(|axis| {
+        let point = [
+            geometry.origin[0] + axis[0],
+            geometry.origin[1] + axis[1],
+            geometry.origin[2] + axis[2],
+        ];
+        project_world_to_screen(world, camera, point, viewport)
+            .map_or([0.0; 2], |screen| {
+                [screen.x - origin_screen.x, screen.y - origin_screen.y]
+            })
+    });
+    let rotation_screen_signs = std::array::from_fn(|normal_axis| {
+        let first = screen_vectors[(normal_axis + 1) % 3];
+        let second = screen_vectors[(normal_axis + 2) % 3];
+        let determinant = first[0] * second[1] - first[1] * second[0];
+        if determinant.abs() > 0.001 {
+            determinant.signum()
+        } else {
+            1.0
+        }
+    });
+    let camera_forward = world.get::<GlobalTransform>(camera).map_or(
+        [0.0, 0.0, -1.0],
+        |camera_transform| {
+            let matrix = camera_transform.matrix;
+            normalized_axis([-matrix[2][0], -matrix[2][1], -matrix[2][2]])
+        },
+    );
+    let view_rotation_axis = parent_inverse.map_or(camera_forward, |inverse| {
+        let local = inverse
+            * Vector4::new(
+                camera_forward[0],
+                camera_forward[1],
+                camera_forward[2],
+                0.0,
+            );
+        normalized_axis([local.x, local.y, local.z])
+    });
+    let move_axis = single_enabled_axis(axis_mask)
+        .map(gizmo_axis_index)
+        .unwrap_or(0);
+    let move_axis_direction = world_axes[move_axis];
+    let camera_position =
+        world
+            .get::<GlobalTransform>(camera)
+            .map_or([0.0; 3], |transform| {
+                [
+                    transform.matrix[3][0],
+                    transform.matrix[3][1],
+                    transform.matrix[3][2],
+                ]
+            });
+    let to_camera =
+        Vector3::from(camera_position) - Vector3::from(geometry.origin);
+    let axis_vector = Vector3::from(move_axis_direction);
+    let plane_normal = to_camera - axis_vector * to_camera.dot(&axis_vector);
+    let move_drag_plane_normal = plane_normal
+        .try_normalize(0.0001)
+        .map_or(camera_forward, Into::into);
+    let move_start_axis_parameter = if mode == TransformModes::Move
+        && single_enabled_axis(axis_mask).is_some()
+    {
+        let camera_component = world.get::<Camera>(camera).copied();
+        let camera_transform = world.get::<GlobalTransform>(camera).copied();
+        camera_component
+            .zip(camera_transform)
+            .and_then(|(camera_component, camera_transform)| {
+                scene_ray(pointer, viewport, camera_component, camera_transform)
+            })
+            .and_then(|ray| {
+                move_axis_parameter(
+                    ray,
+                    geometry.origin,
+                    move_axis_direction,
+                    move_drag_plane_normal,
+                )
+            })
+    } else {
+        None
+    };
+    let active_axis = single_enabled_axis(axis_mask);
+    *drag = EditorGizmoDrag {
+        mode: Some(mode),
+        modal,
+        axis_mask,
+        active_axis,
+        entity: Some(entity),
+        start_pointer: Some(pointer),
+        original_transform,
+        origin_screen: Some(origin_screen),
+        world_axes,
+        local_delta_axes,
+        screen_vectors,
+        rotation_screen_signs,
+        view_rotation_axis,
+        move_axis_origin: geometry.origin,
+        move_axis_direction,
+        move_drag_plane_normal,
+        move_start_axis_parameter,
+        gizmo_axis_length: geometry.axis_length,
+        undo_snapshot: scene_document(world, "Gizmo Undo Snapshot").ok(),
+        ..EditorGizmoDrag::default()
+    };
+}
+
+fn transformed_from_pointer(
+    drag: &EditorGizmoDrag,
+    pointer: Pos2,
+    move_axis_parameter: Option<f32>,
+) -> Option<Transform> {
+    let start = drag.start_pointer?;
+    let original = drag.original_transform?;
+    let delta = pointer - start;
+    let mut transform = original;
+    match drag.mode? {
+        TransformModes::Move => {
+            if let (
+                Some(start_parameter),
+                Some(current_parameter),
+                Some(axis),
+            ) = (
+                drag.move_start_axis_parameter,
+                move_axis_parameter,
+                single_enabled_axis(drag.axis_mask),
+            ) {
+                let distance = current_parameter - start_parameter;
+                let axis = gizmo_axis_index(axis);
+                for component in 0..3 {
+                    transform.position[component] +=
+                        drag.local_delta_axes[axis][component] * distance;
+                }
+                return Some(transform);
+            }
+            let coefficients = screen_axis_coefficients(
+                drag.screen_vectors,
+                drag.axis_mask,
+                [delta.x, delta.y],
+            );
+            for (axis, coefficient) in coefficients.into_iter().enumerate() {
+                for component in 0..3 {
+                    transform.position[component] +=
+                        drag.local_delta_axes[axis][component] * coefficient;
+                }
+            }
+        }
+        TransformModes::Scale => {
+            let factor = if drag.modal {
+                ((delta.x - delta.y) * 0.01).exp()
+            } else {
+                let axis = drag.active_axis?;
+                let vector = drag.screen_vectors[gizmo_axis_index(axis)];
+                let handle = [
+                    vector[0] * drag.gizmo_axis_length * 0.68,
+                    vector[1] * drag.gizmo_axis_length * 0.68,
+                ];
+                let length_squared =
+                    (handle[0] * handle[0] + handle[1] * handle[1]).max(16.0);
+                (1.0 + (delta.x * handle[0] + delta.y * handle[1])
+                    / length_squared)
+                    .max(0.01)
+            };
+            for axis in 0..3 {
+                if drag.axis_mask[axis] {
+                    transform.scale[axis] =
+                        (original.scale[axis] * factor).max(0.001);
+                }
+            }
+        }
+        TransformModes::Rotate => {
+            if drag.modal && drag.axis_mask == [true; 3] {
+                return Some(rotate_transform_in_parent_space(
+                    original,
+                    drag.view_rotation_axis,
+                    raw_screen_rotation_angle(drag, pointer),
+                ));
+            }
+            let mut angles = [0.0; 3];
+            if let Some(axis) = single_enabled_axis(drag.axis_mask) {
+                let index = gizmo_axis_index(axis);
+                angles[index] = screen_rotation_angle(drag, pointer, index);
+            } else if drag.modal {
+                // Free rotation behaves like a small virtual trackball. Mouse
+                // vertical rotates around local X, horizontal around local Y,
+                // and diagonal motion contributes local Z when it is enabled.
+                angles = [
+                    -delta.y * 0.01,
+                    delta.x * 0.01,
+                    (delta.x - delta.y) * 0.005,
+                ];
+            } else {
+                let index = gizmo_axis_index(drag.active_axis?);
+                angles[index] = screen_rotation_angle(drag, pointer, index);
+            }
+            transform =
+                rotate_transform_locally(original, angles, drag.axis_mask);
+        }
+        TransformModes::Combo => return None,
+    }
+    Some(transform)
+}
+
+fn move_axis_parameter(
+    ray: super::picking::Ray,
+    axis_origin: [f32; 3],
+    axis_direction: [f32; 3],
+    plane_normal: [f32; 3],
+) -> Option<f32> {
+    let origin = Vector3::from(axis_origin);
+    let axis = Vector3::from(axis_direction);
+    let normal = Vector3::from(plane_normal);
+    let denominator = ray.direction.dot(&normal);
+    if denominator.abs() <= 0.0001 {
+        return None;
+    }
+    let ray_distance = (origin - ray.origin).dot(&normal) / denominator;
+    let point = ray.origin + ray.direction * ray_distance;
+    Some((point - origin).dot(&axis))
+}
+
+fn screen_rotation_angle(
+    drag: &EditorGizmoDrag,
+    pointer: Pos2,
+    axis: usize,
+) -> f32 {
+    raw_screen_rotation_angle(drag, pointer) * drag.rotation_screen_signs[axis]
+}
+
+fn raw_screen_rotation_angle(drag: &EditorGizmoDrag, pointer: Pos2) -> f32 {
+    let Some(origin) = drag.origin_screen else {
+        return 0.0;
+    };
+    let Some(start) = drag.start_pointer else {
+        return 0.0;
+    };
+    let from = start - origin;
+    let to = pointer - origin;
+    if from.length_sq() <= 4.0 || to.length_sq() <= 4.0 {
+        let delta = pointer - start;
+        return delta.x * 0.01;
+    }
+    (from.x * to.y - from.y * to.x).atan2(from.dot(to))
+}
+
+fn rotate_transform_locally(
+    original: Transform,
+    angles: [f32; 3],
+    mask: [bool; 3],
+) -> Transform {
+    let current = Rotation3::from_euler_angles(
+        original.rotation[0],
+        original.rotation[1],
+        original.rotation[2],
+    );
+    let mut local_delta = Rotation3::identity();
+    if mask[0] {
+        local_delta *=
+            Rotation3::from_axis_angle(&Vector3::x_axis(), angles[0]);
+    }
+    if mask[1] {
+        local_delta *=
+            Rotation3::from_axis_angle(&Vector3::y_axis(), angles[1]);
+    }
+    if mask[2] {
+        local_delta *=
+            Rotation3::from_axis_angle(&Vector3::z_axis(), angles[2]);
+    }
+    let rotation = (current * local_delta).euler_angles();
+    Transform {
+        rotation: [rotation.0, rotation.1, rotation.2],
+        ..original
+    }
+}
+
+fn rotate_transform_in_parent_space(
+    original: Transform,
+    axis: [f32; 3],
+    angle: f32,
+) -> Transform {
+    let current = Rotation3::from_euler_angles(
+        original.rotation[0],
+        original.rotation[1],
+        original.rotation[2],
+    );
+    let axis = nalgebra::Unit::new_normalize(Vector3::from(axis));
+    let rotation =
+        (Rotation3::from_axis_angle(&axis, angle) * current).euler_angles();
+    Transform {
+        rotation: [rotation.0, rotation.1, rotation.2],
+        ..original
+    }
+}
+
+fn screen_axis_coefficients(
+    vectors: [[f32; 2]; 3],
+    mask: [bool; 3],
+    delta: [f32; 2],
+) -> [f32; 3] {
+    // Minimum-norm solution of A*c=delta. It works for one, two, or all three
+    // projected axes and naturally gives free movement in the camera plane.
+    let mut xx = 0.0;
+    let mut xy = 0.0;
+    let mut yy = 0.0;
+    for axis in 0..3 {
+        if mask[axis] {
+            xx += vectors[axis][0] * vectors[axis][0];
+            xy += vectors[axis][0] * vectors[axis][1];
+            yy += vectors[axis][1] * vectors[axis][1];
+        }
+    }
+    let determinant = xx * yy - xy * xy;
+    let mut result = [0.0; 3];
+    if determinant.abs() > 0.001 {
+        let solved = [
+            (yy * delta[0] - xy * delta[1]) / determinant,
+            (-xy * delta[0] + xx * delta[1]) / determinant,
+        ];
+        for axis in 0..3 {
+            if mask[axis] {
+                result[axis] =
+                    vectors[axis][0] * solved[0] + vectors[axis][1] * solved[1];
+            }
+        }
+    } else {
+        for axis in 0..3 {
+            if mask[axis] {
+                let length_squared = vectors[axis][0] * vectors[axis][0]
+                    + vectors[axis][1] * vectors[axis][1];
+                if length_squared > 0.001 {
+                    result[axis] = (vectors[axis][0] * delta[0]
+                        + vectors[axis][1] * delta[1])
+                        / length_squared;
+                }
+            }
+        }
+    }
+    result
+}
+
+fn single_enabled_axis(mask: [bool; 3]) -> Option<GizmoAxis> {
+    if mask.iter().filter(|enabled| **enabled).count() != 1 {
+        return None;
+    }
+    mask.into_iter()
+        .position(|enabled| enabled)
+        .map(gizmo_axis_from_index)
+}
+
+const fn gizmo_axis_index(axis: GizmoAxis) -> usize {
+    match axis {
+        GizmoAxis::X => 0,
+        GizmoAxis::Y => 1,
+        GizmoAxis::Z => 2,
+    }
+}
+
+const fn gizmo_axis_from_index(index: usize) -> GizmoAxis {
+    match index {
+        0 => GizmoAxis::X,
+        1 => GizmoAxis::Y,
+        _ => GizmoAxis::Z,
+    }
+}
+
+struct GizmoGeometry {
+    origin: [f32; 3],
+    axes: [(GizmoAxis, [f32; 3]); 3],
+    axis_length: f32,
+}
+
+fn gizmo_geometry(world: &World, entity: Entity) -> Option<GizmoGeometry> {
+    let matrix = world.get::<GlobalTransform>(entity)?.matrix;
+    let origin = [matrix[3][0], matrix[3][1], matrix[3][2]];
+    let axes = [
+        (
+            GizmoAxis::X,
+            normalized_axis([matrix[0][0], matrix[0][1], matrix[0][2]]),
+        ),
+        (
+            GizmoAxis::Y,
+            normalized_axis([matrix[1][0], matrix[1][1], matrix[1][2]]),
+        ),
+        (
+            GizmoAxis::Z,
+            normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
+        ),
+    ];
+    let axis_length = world
+        .get::<MeshRenderer>(entity)
+        .and_then(|renderer| {
+            world.resource::<AssetServer>().meshes.get(renderer.mesh)
+        })
+        .and_then(|mesh| {
+            crate::editor::overlay::mesh_world_radius_from_origin(mesh, matrix)
+        })
+        .map_or(1.0, |radius| (radius * 1.2).max(1.0));
+    Some(GizmoGeometry {
+        origin,
+        axes,
+        axis_length,
+    })
+}
+
+fn hit_test_gizmo(
+    world: &World,
+    camera: Entity,
+    viewport: egui::Rect,
+    pointer: Pos2,
+    geometry: &GizmoGeometry,
+) -> Option<(f32, GizmoHandle)> {
+    let origin_screen =
+        project_world_to_screen(world, camera, geometry.origin, viewport)?;
+    let mut hits = Vec::new();
+    for (index, (axis, direction)) in geometry.axes.iter().copied().enumerate()
+    {
+        let project_at = |distance: f32| {
+            project_world_to_screen(
+                world,
+                camera,
+                [
+                    geometry.origin[0] + direction[0] * distance,
+                    geometry.origin[1] + direction[1] * distance,
+                    geometry.origin[2] + direction[2] * distance,
+                ],
+                viewport,
+            )
+        };
+
+        if let (Some(start), Some(end)) = (
+            project_at(geometry.axis_length * 0.82),
+            project_at(geometry.axis_length * 1.25),
+        ) {
+            let distance = point_segment_distance(pointer, start, end);
+            if (end - start).length() >= 12.0 && distance <= 8.0 {
+                hits.push((
+                    distance,
+                    GizmoHandle {
+                        mode: TransformModes::Move,
+                        axis,
+                    },
+                ));
+            }
+        }
+
+        if let Some(handle) = project_at(geometry.axis_length * 0.68) {
+            let distance = pointer.distance(handle);
+            if handle.distance(origin_screen) >= 14.0 && distance <= 10.0 {
+                hits.push((
+                    distance,
+                    GizmoHandle {
+                        mode: TransformModes::Scale,
+                        axis,
+                    },
+                ));
+            }
+        }
+
+        let radius = geometry.axis_length * 0.52;
+        let mut previous = None;
+        let mut ring_distance = f32::INFINITY;
+        for step in 0..=48 {
+            let angle = std::f32::consts::TAU * step as f32 / 48.0;
+            let world_point = gizmo_ring_point(geometry, index, radius, angle);
+            let Some(screen) =
+                project_world_to_screen(world, camera, world_point, viewport)
+            else {
+                previous = None;
+                continue;
+            };
+            if let Some(start) = previous {
+                ring_distance = ring_distance
+                    .min(point_segment_distance(pointer, start, screen));
+            }
+            previous = Some(screen);
+        }
+        if ring_distance <= 7.0 {
+            hits.push((
+                ring_distance,
+                GizmoHandle {
+                    mode: TransformModes::Rotate,
+                    axis,
+                },
+            ));
+        }
+    }
+    hits.into_iter()
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+}
+
+fn point_segment_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
+    let segment = end - start;
+    let length_squared = segment.length_sq();
+    if length_squared <= f32::EPSILON {
+        return point.distance(start);
+    }
+    let along = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+    point.distance(start + segment * along)
+}
+
+fn gizmo_ring_point(
+    geometry: &GizmoGeometry,
+    normal_axis: usize,
+    radius: f32,
+    angle: f32,
+) -> [f32; 3] {
+    let first = geometry.axes[(normal_axis + 1) % 3].1;
+    let second = geometry.axes[(normal_axis + 2) % 3].1;
+    let cosine = angle.cos() * radius;
+    let sine = angle.sin() * radius;
+    [
+        geometry.origin[0] + first[0] * cosine + second[0] * sine,
+        geometry.origin[1] + first[1] * cosine + second[1] * sine,
+        geometry.origin[2] + first[2] * cosine + second[2] * sine,
+    ]
+}
+
+fn gizmo_axis_color(
+    mode: TransformModes,
+    axis: GizmoAxis,
+    hovered: Option<GizmoHandle>,
+    drag: &EditorGizmoDrag,
+    normal: [f32; 4],
+) -> [f32; 4] {
+    let handle = GizmoHandle { mode, axis };
+    if drag.mode == Some(mode) && drag.axis_mask[gizmo_axis_index(axis)] {
+        [1.0, 0.9, 0.2, 1.0]
+    } else if hovered == Some(handle) {
+        [1.0, 1.0, 0.65, 1.0]
+    } else {
+        normal
+    }
 }
 
 /// Creates the first editor helpers: a quiet XZ grid and selected-object axes.
@@ -2030,6 +2981,9 @@ fn build_scene_debug_overlay(
     world: &World,
     selected: Option<Entity>,
     settings: EditorGizmoSettings,
+    hovered: Option<GizmoHandle>,
+    drag: &EditorGizmoDrag,
+    selected_mode: TransformModes,
 ) -> RenderDebugOverlay {
     let mut overlay = RenderDebugOverlay::default();
     if settings.show_grid {
@@ -2065,27 +3019,98 @@ fn build_scene_debug_overlay(
                         )
                     })
                     .map_or(1.0, |radius| (radius * 1.2).max(1.0));
-                add_axis(
-                    &mut overlay,
+                let geometry = GizmoGeometry {
                     origin,
-                    normalized_axis([matrix[0][0], matrix[0][1], matrix[0][2]]),
+                    axes: [
+                        (
+                            GizmoAxis::X,
+                            normalized_axis([
+                                matrix[0][0],
+                                matrix[0][1],
+                                matrix[0][2],
+                            ]),
+                        ),
+                        (
+                            GizmoAxis::Y,
+                            normalized_axis([
+                                matrix[1][0],
+                                matrix[1][1],
+                                matrix[1][2],
+                            ]),
+                        ),
+                        (
+                            GizmoAxis::Z,
+                            normalized_axis([
+                                matrix[2][0],
+                                matrix[2][1],
+                                matrix[2][2],
+                            ]),
+                        ),
+                    ],
                     axis_length,
-                    [0.95, 0.24, 0.24, 1.0],
-                );
-                add_axis(
-                    &mut overlay,
-                    origin,
-                    normalized_axis([matrix[1][0], matrix[1][1], matrix[1][2]]),
-                    axis_length,
-                    [0.25, 0.90, 0.35, 1.0],
-                );
-                add_axis(
-                    &mut overlay,
-                    origin,
-                    normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
-                    axis_length,
-                    [0.25, 0.52, 1.0, 1.0],
-                );
+                };
+                let display_mode = drag.mode.unwrap_or(selected_mode);
+                if matches!(
+                    display_mode,
+                    TransformModes::Combo | TransformModes::Move
+                ) {
+                    for (axis, direction) in geometry.axes {
+                        add_axis(
+                            &mut overlay,
+                            origin,
+                            direction,
+                            axis_length * 1.25,
+                            gizmo_axis_color(
+                                TransformModes::Move,
+                                axis,
+                                hovered,
+                                drag,
+                                gizmo_base_color(axis),
+                            ),
+                        );
+                    }
+                }
+                if matches!(
+                    display_mode,
+                    TransformModes::Combo | TransformModes::Scale
+                ) {
+                    for (axis, direction) in geometry.axes {
+                        add_scale_gizmo_handle(
+                            &mut overlay,
+                            origin,
+                            direction,
+                            axis_length * 0.68,
+                            gizmo_axis_color(
+                                TransformModes::Scale,
+                                axis,
+                                hovered,
+                                drag,
+                                gizmo_base_color(axis),
+                            ),
+                        );
+                    }
+                }
+                if matches!(
+                    display_mode,
+                    TransformModes::Combo | TransformModes::Rotate
+                ) {
+                    for index in 0..3 {
+                        let axis = geometry.axes[index].0;
+                        add_rotation_gizmo_ring(
+                            &mut overlay,
+                            &geometry,
+                            index,
+                            axis_length * 0.52,
+                            gizmo_axis_color(
+                                TransformModes::Rotate,
+                                axis,
+                                hovered,
+                                drag,
+                                gizmo_base_color(axis),
+                            ),
+                        );
+                    }
+                }
                 if settings.show_selected_bounds {
                     add_selected_bounds(&mut overlay, world, entity, matrix);
                 }
@@ -2093,6 +3118,77 @@ fn build_scene_debug_overlay(
         }
     }
     overlay
+}
+
+const fn gizmo_base_color(axis: GizmoAxis) -> [f32; 4] {
+    match axis {
+        GizmoAxis::X => [0.95, 0.24, 0.24, 1.0],
+        GizmoAxis::Y => [0.25, 0.90, 0.35, 1.0],
+        GizmoAxis::Z => [0.25, 0.52, 1.0, 1.0],
+    }
+}
+
+fn add_scale_gizmo_handle(
+    overlay: &mut RenderDebugOverlay,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    length: f32,
+    color: [f32; 4],
+) {
+    let end = add3(origin, scale3(direction, length));
+    overlay.line_on_top(origin, end, color, 2.0);
+    let reference = if direction[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let side = normalized_axis(cross3(direction, reference));
+    let other = normalized_axis(cross3(direction, side));
+    let size = length * 0.075;
+    overlay.line_on_top(
+        add3(end, scale3(side, -size)),
+        add3(end, scale3(side, size)),
+        color,
+        5.0,
+    );
+    overlay.line_on_top(
+        add3(end, scale3(other, -size)),
+        add3(end, scale3(other, size)),
+        color,
+        5.0,
+    );
+}
+
+fn add_rotation_gizmo_ring(
+    overlay: &mut RenderDebugOverlay,
+    geometry: &GizmoGeometry,
+    normal_axis: usize,
+    radius: f32,
+    color: [f32; 4],
+) {
+    let mut previous = gizmo_ring_point(geometry, normal_axis, radius, 0.0);
+    for step in 1..=48 {
+        let angle = std::f32::consts::TAU * step as f32 / 48.0;
+        let current = gizmo_ring_point(geometry, normal_axis, radius, angle);
+        overlay.line_on_top(previous, current, color, 2.0);
+        previous = current;
+    }
+}
+
+fn add3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
+}
+
+fn scale3(value: [f32; 3], scale: f32) -> [f32; 3] {
+    [value[0] * scale, value[1] * scale, value[2] * scale]
+}
+
+fn cross3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
+    [
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    ]
 }
 
 /// Finds the selected mesh's local bounds and asks the overlay helper to draw
@@ -2125,5 +3221,170 @@ fn normalized_axis(axis: [f32; 3]) -> [f32; 3] {
         [axis[0] / length, axis[1] / length, axis[2] / length]
     } else {
         [1.0, 0.0, 0.0]
+    }
+}
+
+#[cfg(test)]
+mod gizmo_tests {
+    use super::*;
+
+    #[test]
+    fn projected_two_axis_move_recovers_both_axis_distances() {
+        let coefficients = screen_axis_coefficients(
+            [[10.0, 0.0], [0.0, 20.0], [5.0, 5.0]],
+            [true, true, false],
+            [30.0, 40.0],
+        );
+
+        assert!((coefficients[0] - 3.0).abs() < 0.001);
+        assert!((coefficients[1] - 2.0).abs() < 0.001);
+        assert_eq!(coefficients[2], 0.0);
+    }
+
+    #[test]
+    fn move_line_uses_world_axis_parameter_without_screen_projection_drift() {
+        let ray = super::super::picking::Ray {
+            origin: Vector3::new(5.0, 0.0, 10.0),
+            direction: Vector3::new(0.0, 0.0, -1.0),
+        };
+        let parameter = move_axis_parameter(
+            ray,
+            [0.0; 3],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Move),
+            axis_mask: [true, false, false],
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(Transform::default()),
+            local_delta_axes: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            move_start_axis_parameter: Some(2.0),
+            ..EditorGizmoDrag::default()
+        };
+
+        let transformed =
+            transformed_from_pointer(&drag, Pos2::ZERO, Some(parameter))
+                .unwrap();
+
+        assert!((transformed.position[0] - 3.0).abs() < 0.001);
+        assert_eq!(transformed.position[1], 0.0);
+        assert_eq!(transformed.position[2], 0.0);
+    }
+
+    #[test]
+    fn modal_scale_only_changes_enabled_axes() {
+        let drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Scale),
+            modal: true,
+            axis_mask: [true, false, true],
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(
+                Transform::default().with_scale(1.0, 2.0, 3.0),
+            ),
+            ..EditorGizmoDrag::default()
+        };
+        let pointer = Pos2::new(std::f32::consts::LN_2 / 0.01, 0.0);
+
+        let transformed =
+            transformed_from_pointer(&drag, pointer, None).unwrap();
+
+        assert!((transformed.scale[0] - 2.0).abs() < 0.001);
+        assert_eq!(transformed.scale[1], 2.0);
+        assert!((transformed.scale[2] - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn direct_scale_sensitivity_uses_visible_handle_length() {
+        let make_drag = |axis_length| EditorGizmoDrag {
+            mode: Some(TransformModes::Scale),
+            modal: false,
+            axis_mask: [true, false, false],
+            active_axis: Some(GizmoAxis::X),
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(Transform::default()),
+            screen_vectors: [[5.0, 0.0], [0.0; 2], [0.0; 2]],
+            gizmo_axis_length: axis_length,
+            ..EditorGizmoDrag::default()
+        };
+        let short = transformed_from_pointer(
+            &make_drag(10.0),
+            Pos2::new(34.0, 0.0),
+            None,
+        )
+        .unwrap();
+        let long = transformed_from_pointer(
+            &make_drag(20.0),
+            Pos2::new(68.0, 0.0),
+            None,
+        )
+        .unwrap();
+
+        assert!((short.scale[0] - 2.0).abs() < 0.001);
+        assert!((long.scale[0] - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn projected_ring_direction_is_converted_to_positive_local_rotation() {
+        let drag = EditorGizmoDrag {
+            start_pointer: Some(Pos2::new(10.0, 0.0)),
+            origin_screen: Some(Pos2::ZERO),
+            rotation_screen_signs: [1.0, 1.0, -1.0],
+            ..EditorGizmoDrag::default()
+        };
+
+        let angle = screen_rotation_angle(&drag, Pos2::new(0.0, -10.0), 2);
+
+        assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 0.001);
+    }
+
+    #[test]
+    fn rotation_composes_around_the_objects_local_axis() {
+        let original = Transform::default().with_rotation(0.4, 0.7, -0.2);
+        let angle = 0.3;
+        let transformed = rotate_transform_locally(
+            original,
+            [0.0, 0.0, angle],
+            [false, false, true],
+        );
+        let actual = Matrix4::from(transformed.to_matrix());
+        let expected = Matrix4::from(original.to_matrix())
+            * Rotation3::from_axis_angle(&Vector3::z_axis(), angle)
+                .to_homogeneous();
+
+        for row in 0..3 {
+            for column in 0..3 {
+                assert!(
+                    (actual[(row, column)] - expected[(row, column)]).abs()
+                        < 0.001
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn free_rotation_composes_around_the_camera_facing_axis() {
+        let original = Transform::default().with_rotation(0.4, 0.7, -0.2);
+        let angle = 0.3;
+        let transformed =
+            rotate_transform_in_parent_space(original, [0.0, 0.0, -1.0], angle);
+        let actual = Matrix4::from(transformed.to_matrix());
+        let expected = Rotation3::from_axis_angle(&Vector3::z_axis(), -angle)
+            .to_homogeneous()
+            * Matrix4::from(original.to_matrix());
+
+        for row in 0..3 {
+            for column in 0..3 {
+                assert!(
+                    (actual[(row, column)] - expected[(row, column)]).abs()
+                        < 0.001
+                );
+            }
+        }
     }
 }

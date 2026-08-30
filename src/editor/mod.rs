@@ -23,8 +23,10 @@ pub use project::{
     PROJECT_FORMAT_VERSION,
 };
 pub use shortcuts::{
-    add_mouse_delta, handle_keyboard_input, update_fly_camera, EditorFlyCamera,
-    EditorShortcuts, KeyBinding, SceneViewAction, ShortcutAction,
+    add_mouse_delta, handle_keyboard_input, handle_mouse_button_input,
+    update_fly_camera, EditorFlyCamera, EditorShortcuts, EditorTransformMode,
+    KeyBinding, SceneViewAction, ShortcutAction, ShortcutContext,
+    TransformModes,
 };
 
 use bevy_ecs::entity::Entity;
@@ -39,10 +41,10 @@ use crate::runtime::{
     remove_registered_component, save_scene, scene_document,
     set_registered_component, App, AppError, Camera, Collider, ColliderShape,
     CollisionLayers, FrameTime, GlobalTransform, MeshRenderer, Name,
-    ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver, Plugin,
-    Projection, RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
-    RigidBodyKind, SceneDocument, SceneId, SceneLoadMode, SimulationClass,
-    Visibility,
+    ObjectClasses, Parent, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
+    Plugin, Projection, RenderCameraOverride, RenderSettings, RenderWorld,
+    RigidBody, RigidBodyKind, SceneDocument, SceneId, SceneLoadMode,
+    SimulationClass, Visibility,
 };
 use crate::Transform;
 use crate::{
@@ -176,6 +178,48 @@ pub struct EditorGizmoSettings {
     pub show_selected_axes: bool,
     /// Draw a yellow box around the selected render mesh.
     pub show_selected_bounds: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GizmoAxis {
+    X,
+    Y,
+    Z,
+}
+
+/// Translation drag retained across egui frames.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct EditorGizmoDrag {
+    pub mode: Option<TransformModes>,
+    pub modal: bool,
+    pub axis_mask: [bool; 3],
+    pub active_axis: Option<GizmoAxis>,
+    pub entity: Option<Entity>,
+    pub start_pointer: Option<egui::Pos2>,
+    pub original_transform: Option<Transform>,
+    pub world_axis: [f32; 3],
+    pub local_delta_axis: [f32; 3],
+    pub screen_axis: [f32; 2],
+    pub pixels_per_world_unit: f32,
+    pub gizmo_axis_length: f32,
+    pub origin_screen: Option<egui::Pos2>,
+    pub world_axes: [[f32; 3]; 3],
+    pub local_delta_axes: [[f32; 3]; 3],
+    pub screen_vectors: [[f32; 2]; 3],
+    pub rotation_screen_signs: [f32; 3],
+    pub view_rotation_axis: [f32; 3],
+    pub move_axis_origin: [f32; 3],
+    pub move_axis_direction: [f32; 3],
+    pub move_drag_plane_normal: [f32; 3],
+    pub move_start_axis_parameter: Option<f32>,
+    undo_snapshot: Option<SceneDocument>,
+}
+
+impl EditorGizmoDrag {
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.mode.is_some()
+    }
 }
 
 impl Default for EditorGizmoSettings {
@@ -327,8 +371,10 @@ impl Plugin for EditorPlugin {
         app.insert_resource(EditorState::default())
             .insert_resource(EditorViewport::default())
             .insert_resource(EditorGizmoSettings::default())
+            .insert_resource(EditorGizmoDrag::default())
             .insert_resource(EditorDebugOverlay::default())
             .insert_resource(EditorShortcuts::default())
+            .insert_resource(EditorTransformMode::default())
             .insert_resource(EditorFlyCamera::default())
             .insert_resource(EditorConsole::default())
             .insert_resource(EditorHistory::default())

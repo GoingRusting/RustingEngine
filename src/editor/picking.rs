@@ -14,9 +14,9 @@ use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
 
 /// A world-space ray produced by one Scene View mouse click.
 #[derive(Clone, Copy, Debug)]
-struct Ray {
-    origin: Vector3<f32>,
-    direction: Vector3<f32>,
+pub(super) struct Ray {
+    pub origin: Vector3<f32>,
+    pub direction: Vector3<f32>,
 }
 
 /// Finds the nearest renderable mesh under a Scene View click.
@@ -53,7 +53,7 @@ pub(super) fn pick_entity(
 }
 
 /// Builds a ray by unprojecting Vulkan near and far depth points.
-fn scene_ray(
+pub(super) fn scene_ray(
     click: Pos2,
     viewport: Rect,
     camera: Camera,
@@ -102,6 +102,56 @@ fn scene_ray(
         origin: near,
         direction,
     })
+}
+
+/// Projects a world point into the egui Scene View rectangle.
+pub(super) fn project_world_to_screen(
+    world: &World,
+    camera_entity: Entity,
+    point: [f32; 3],
+    viewport: Rect,
+) -> Option<Pos2> {
+    let camera = *world.get::<Camera>(camera_entity)?;
+    let camera_transform = *world.get::<GlobalTransform>(camera_entity)?;
+    let size = viewport.size();
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return None;
+    }
+    let aspect = size.x / size.y;
+    let projection = match camera.projection {
+        Projection::Perspective {
+            vertical_fov_radians,
+            near,
+            far,
+        } => Perspective3::new(aspect, vertical_fov_radians, near, far)
+            .to_homogeneous(),
+        Projection::Orthographic {
+            vertical_size,
+            near,
+            far,
+        } => Orthographic3::new(
+            -vertical_size * aspect * 0.5,
+            vertical_size * aspect * 0.5,
+            -vertical_size * 0.5,
+            vertical_size * 0.5,
+            near,
+            far,
+        )
+        .to_homogeneous(),
+    };
+    let view = matrix_from_array(camera_transform.matrix).try_inverse()?;
+    let clip = vulkan_clip_correction()
+        * projection
+        * view
+        * Vector4::new(point[0], point[1], point[2], 1.0);
+    if clip.w <= f32::EPSILON {
+        return None;
+    }
+    let ndc = [clip.x / clip.w, clip.y / clip.w];
+    Some(Pos2::new(
+        viewport.left() + (ndc[0] + 1.0) * 0.5 * size.x,
+        viewport.top() + (ndc[1] + 1.0) * 0.5 * size.y,
+    ))
 }
 
 /// Intersects a ray against one mesh's local-space axis-aligned bounds.

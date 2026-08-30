@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.2] - 2026-08-30
+
+### Added
+
+- Interactive axis arrows for every transform, so you can move/scale/rotate object just by holding and moving mouse like in blender and other game engines
+- Also shortcuts for transform, "G" for Move, "S" for scale and "R" for rotate.
+- Axes choice, e.g. When you use Move, Scale or Rotate you can press "X" to use Transformation only for "X" axis, also you can press "Y" to transform only in X and Y axes in same time, no translate will allied to "Z".
+- Added transform cancelation of current transform on "Secondary button"(Mostly right click) and "Escape"
+- Some GUI buttons for Transform modes
+
+### Changed
+
+- Now fly mode active just by holding "Secondary button"(Mostly right click)
+
 ## [1.0.1] - 2026-08-27
 
 ### Added

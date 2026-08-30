@@ -8,14 +8,27 @@ use std::time::Duration;
 
 use bevy_ecs::prelude::{Resource, World};
 use nalgebra::{Rotation3, Vector3};
-use winit::event::{ElementState, KeyEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window};
 
 use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
 use crate::{AssetServer, Transform};
 
-use super::{EditorState, EditorWorkspace};
+use super::{
+    EditorGizmoDrag, EditorState, EditorViewport, EditorWorkspace, GizmoAxis,
+};
+
+/// Input state in which a shortcut is meaningful.
+///
+/// A physical key may be bound once in each context. For example, `S` selects
+/// the scale gizmo in Scene View and moves backward while flying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ShortcutContext {
+    SceneView,
+    TransformModal,
+    FlyCamera,
+}
 
 /// Named editor commands that can receive user-configurable shortcuts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -36,11 +49,13 @@ pub enum SceneViewAction {
     FlyUp,
     FlySprint,
     FocusObject,
+    TransformModes(TransformModes),
+    TransformAxis(GizmoAxis),
 }
 
 impl SceneViewAction {
     /// Stable display order used by shortcut settings and tests.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 15] = [
         Self::ToggleFly,
         Self::FlyForward,
         Self::FlyBackward,
@@ -50,7 +65,30 @@ impl SceneViewAction {
         Self::FlyUp,
         Self::FlySprint,
         Self::FocusObject,
+        Self::TransformModes(TransformModes::Move),
+        Self::TransformModes(TransformModes::Rotate),
+        Self::TransformModes(TransformModes::Scale),
+        Self::TransformAxis(GizmoAxis::X),
+        Self::TransformAxis(GizmoAxis::Y),
+        Self::TransformAxis(GizmoAxis::Z),
     ];
+
+    #[must_use]
+    pub const fn context(self) -> ShortcutContext {
+        match self {
+            Self::FlyForward
+            | Self::FlyBackward
+            | Self::FlyLeft
+            | Self::FlyRight
+            | Self::FlyDown
+            | Self::FlyUp
+            | Self::FlySprint => ShortcutContext::FlyCamera,
+            Self::TransformAxis(_) => ShortcutContext::TransformModal,
+            Self::ToggleFly | Self::FocusObject | Self::TransformModes(_) => {
+                ShortcutContext::SceneView
+            }
+        }
+    }
 
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -64,6 +102,13 @@ impl SceneViewAction {
             Self::FlyUp => "Fly up",
             Self::FlySprint => "Fly faster",
             Self::FocusObject => "Focus selected object",
+            Self::TransformModes(TransformModes::Move) => "Move gizmo",
+            Self::TransformModes(TransformModes::Rotate) => "Rotate gizmo",
+            Self::TransformModes(TransformModes::Scale) => "Scale gizmo",
+            Self::TransformModes(TransformModes::Combo) => "Combined gizmo",
+            Self::TransformAxis(GizmoAxis::X) => "Constrain to X axis",
+            Self::TransformAxis(GizmoAxis::Y) => "Constrain to Y axis",
+            Self::TransformAxis(GizmoAxis::Z) => "Constrain to Z axis",
         }
     }
 }
@@ -97,6 +142,21 @@ impl Default for EditorShortcuts {
             (SceneViewAction::FlyUp, KeyCode::Space),
             (SceneViewAction::FlySprint, KeyCode::ShiftLeft),
             (SceneViewAction::FocusObject, KeyCode::KeyF),
+            (
+                SceneViewAction::TransformModes(TransformModes::Move),
+                KeyCode::KeyG,
+            ),
+            (
+                SceneViewAction::TransformModes(TransformModes::Rotate),
+                KeyCode::KeyR,
+            ),
+            (
+                SceneViewAction::TransformModes(TransformModes::Scale),
+                KeyCode::KeyS,
+            ),
+            (SceneViewAction::TransformAxis(GizmoAxis::X), KeyCode::KeyX),
+            (SceneViewAction::TransformAxis(GizmoAxis::Y), KeyCode::KeyY),
+            (SceneViewAction::TransformAxis(GizmoAxis::Z), KeyCode::KeyZ),
         ];
         for (action, key) in defaults {
             bindings
@@ -119,10 +179,14 @@ impl EditorShortcuts {
         action: ShortcutAction,
         shortcut: KeyBinding,
     ) -> Option<ShortcutAction> {
-        // A context must resolve a key deterministically. Rebinding therefore
-        // unassigns the old action using that key and reports it to Settings.
+        // Only duplicates within the action's context conflict. The same key
+        // remains available in another context.
+        let ShortcutAction::SceneView(new_action) = action;
         let replaced = self.bindings.iter().find_map(|(candidate, binding)| {
-            (*candidate != action && binding.key == shortcut.key)
+            let ShortcutAction::SceneView(candidate_action) = *candidate;
+            (*candidate != action
+                && candidate_action.context() == new_action.context()
+                && binding.key == shortcut.key)
                 .then_some(*candidate)
         });
         if let Some(replaced) = replaced {
@@ -136,13 +200,66 @@ impl EditorShortcuts {
     /// is unbound. Context-specific lookup lets a future Code Editor reuse W,
     /// F, or any other key without conflicting with Scene View.
     #[must_use]
-    pub fn scene_view_action(&self, key: KeyCode) -> Option<SceneViewAction> {
+    pub fn scene_view_action(
+        &self,
+        context: ShortcutContext,
+        key: KeyCode,
+    ) -> Option<SceneViewAction> {
         self.bindings.iter().find_map(|(action, binding)| {
-            (binding.key == key).then_some(*action).map(|action| {
-                let ShortcutAction::SceneView(action) = action;
-                action
-            })
+            let ShortcutAction::SceneView(action) = *action;
+            (binding.key == key && action.context() == context)
+                .then_some(action)
         })
+    }
+}
+
+/// Transform operation selected for the Scene View gizmo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TransformModes {
+    Move,
+    Rotate,
+    Scale,
+    #[default]
+    Combo,
+}
+
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EditorTransformMode {
+    pub active_mode: TransformModes,
+    pub axis_mask: [bool; 3],
+    pub start_requested: bool,
+}
+
+impl Default for EditorTransformMode {
+    fn default() -> Self {
+        Self {
+            active_mode: TransformModes::Combo,
+            axis_mask: [true; 3],
+            start_requested: false,
+        }
+    }
+}
+
+impl EditorTransformMode {
+    pub(crate) fn select_only_or_toggle(&mut self, axis: GizmoAxis) {
+        let index = axis_index(axis);
+        if self.axis_mask == [true; 3] {
+            self.axis_mask = [false; 3];
+            self.axis_mask[index] = true;
+        } else {
+            self.axis_mask[index] = !self.axis_mask[index];
+            if !self.axis_mask.iter().any(|enabled| *enabled) {
+                self.axis_mask = [true; 3];
+            }
+        }
+    }
+}
+
+const fn axis_index(axis: GizmoAxis) -> usize {
+    match axis {
+        GizmoAxis::X => 0,
+        GizmoAxis::Y => 1,
+        GizmoAxis::Z => 2,
     }
 }
 
@@ -191,7 +308,35 @@ pub fn handle_keyboard_input(
     let is_fly_active = world.resource::<EditorFlyCamera>().active;
     let scene_view_is_active =
         world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
-    let action = world.resource::<EditorShortcuts>().scene_view_action(key);
+    let transform_active = world
+        .get_resource::<EditorGizmoDrag>()
+        .is_some_and(EditorGizmoDrag::is_active)
+        || world.resource::<EditorTransformMode>().start_requested;
+    let (scene_action, transform_action, fly_action) = {
+        let shortcuts = world.resource::<EditorShortcuts>();
+        (
+            shortcuts.scene_view_action(ShortcutContext::SceneView, key),
+            shortcuts.scene_view_action(ShortcutContext::TransformModal, key),
+            shortcuts.scene_view_action(ShortcutContext::FlyCamera, key),
+        )
+    };
+    // Fly bindings win while pointer capture is active. ToggleFly is the only
+    // normal Scene View action that remains available as a fallback, allowing
+    // the user to release pointer capture again.
+    let action = if is_fly_active {
+        fly_action.or_else(|| {
+            (scene_action == Some(SceneViewAction::ToggleFly))
+                .then_some(SceneViewAction::ToggleFly)
+        })
+    } else if transform_active {
+        transform_action.or_else(|| {
+            scene_action.filter(|action| {
+                matches!(action, SceneViewAction::TransformModes(_))
+            })
+        })
+    } else {
+        scene_action
+    };
     // Releasing fly mode must work even if an old UI text field still has focus.
     let can_toggle =
         is_fly_active || (scene_view_is_active && !ui_wants_keyboard);
@@ -215,6 +360,23 @@ pub fn handle_keyboard_input(
         }
         return true;
     }
+    if let SceneViewAction::TransformModes(mode) = action {
+        if is_pressed && !event.repeat {
+            let mut transform = world.resource_mut::<EditorTransformMode>();
+            transform.active_mode = mode;
+            transform.axis_mask = [true; 3];
+            transform.start_requested = true;
+        }
+        return true;
+    }
+    if let SceneViewAction::TransformAxis(axis) = action {
+        if is_pressed && !event.repeat {
+            world
+                .resource_mut::<EditorTransformMode>()
+                .select_only_or_toggle(axis);
+        }
+        return true;
+    }
     if !is_fly_active {
         return false;
     }
@@ -225,6 +387,53 @@ pub fn handle_keyboard_input(
         fly.pressed_actions.remove(&action);
     }
     true
+}
+
+/// Holds the fly camera while the secondary mouse button is down in Scene View.
+///
+/// An active transform keeps ownership of the secondary button so right-click
+/// can cancel it instead of unexpectedly entering fly mode.
+pub fn handle_mouse_button_input(
+    world: &mut World,
+    window: &Window,
+    state: ElementState,
+    button: MouseButton,
+    cursor_position: [f64; 2],
+) -> bool {
+    if button != MouseButton::Right {
+        return false;
+    }
+    let fly_active = world.resource::<EditorFlyCamera>().active;
+    if state == ElementState::Released {
+        if fly_active {
+            set_fly_camera_active(world, window, false);
+            return true;
+        }
+        return false;
+    }
+
+    let transform_active = world
+        .get_resource::<EditorGizmoDrag>()
+        .is_some_and(EditorGizmoDrag::is_active)
+        || world.resource::<EditorTransformMode>().start_requested;
+    if transform_active {
+        return false;
+    }
+    let scene_active =
+        world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
+    let viewport = *world.resource::<EditorViewport>();
+    let inside_viewport = viewport.valid
+        && cursor_position[0] >= f64::from(viewport.offset[0])
+        && cursor_position[1] >= f64::from(viewport.offset[1])
+        && cursor_position[0]
+            < f64::from(viewport.offset[0] + viewport.extent[0])
+        && cursor_position[1]
+            < f64::from(viewport.offset[1] + viewport.extent[1]);
+    if scene_active && inside_viewport {
+        set_fly_camera_active(world, window, true);
+        return true;
+    }
+    false
 }
 
 /// Receives raw pointer movement while the editor owns the captured pointer.
@@ -451,11 +660,11 @@ mod tests {
             let binding = shortcuts
                 .get(action)
                 .unwrap_or_else(|| panic!("{action:?} has no default binding"));
+            let ShortcutAction::SceneView(scene_action) = action;
             assert_eq!(
-                shortcuts.scene_view_action(binding.key),
-                Some(match action {
-                    ShortcutAction::SceneView(action) => action,
-                })
+                shortcuts
+                    .scene_view_action(scene_action.context(), binding.key,),
+                Some(scene_action)
             );
         }
     }
@@ -475,13 +684,70 @@ mod tests {
             Some(ShortcutAction::SceneView(SceneViewAction::FlyUp))
         );
         assert_eq!(
-            shortcuts.scene_view_action(KeyCode::Space),
+            shortcuts
+                .scene_view_action(ShortcutContext::FlyCamera, KeyCode::Space,),
             Some(SceneViewAction::FlyForward)
         );
         assert_eq!(
             shortcuts.get(ShortcutAction::SceneView(SceneViewAction::FlyUp)),
             None
         );
+    }
+
+    #[test]
+    fn same_key_resolves_differently_in_scene_and_fly_contexts() {
+        let shortcuts = EditorShortcuts::default();
+
+        assert_eq!(
+            shortcuts
+                .scene_view_action(ShortcutContext::SceneView, KeyCode::KeyS,),
+            Some(SceneViewAction::TransformModes(TransformModes::Scale))
+        );
+        assert_eq!(
+            shortcuts
+                .scene_view_action(ShortcutContext::FlyCamera, KeyCode::KeyS,),
+            Some(SceneViewAction::FlyBackward)
+        );
+    }
+
+    #[test]
+    fn rebinding_only_replaces_an_action_in_the_same_context() {
+        let mut shortcuts = EditorShortcuts::default();
+        let replaced = shortcuts.set(
+            ShortcutAction::SceneView(SceneViewAction::TransformModes(
+                TransformModes::Move,
+            )),
+            KeyBinding { key: KeyCode::KeyS },
+        );
+
+        assert_eq!(
+            replaced,
+            Some(ShortcutAction::SceneView(SceneViewAction::TransformModes(
+                TransformModes::Scale
+            )))
+        );
+        assert_eq!(
+            shortcuts
+                .scene_view_action(ShortcutContext::FlyCamera, KeyCode::KeyS,),
+            Some(SceneViewAction::FlyBackward)
+        );
+    }
+
+    #[test]
+    fn axis_constraints_start_single_then_build_a_plane() {
+        let mut transform = EditorTransformMode::default();
+
+        transform.select_only_or_toggle(GizmoAxis::X);
+        assert_eq!(transform.axis_mask, [true, false, false]);
+
+        transform.select_only_or_toggle(GizmoAxis::Y);
+        assert_eq!(transform.axis_mask, [true, true, false]);
+
+        transform.select_only_or_toggle(GizmoAxis::X);
+        assert_eq!(transform.axis_mask, [false, true, false]);
+
+        transform.select_only_or_toggle(GizmoAxis::Y);
+        assert_eq!(transform.axis_mask, [true; 3]);
     }
 
     #[test]

@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "rusting_engine"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "bevy_ecs",
  "bincode",

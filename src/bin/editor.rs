@@ -4,16 +4,17 @@ use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
     add_mouse_delta, configure_editor_style, draw_editor_view,
-    handle_keyboard_input, update_fly_camera, EditorDebugOverlay, EditorPlugin,
-    EditorState, EditorViewport, EditorWorkspace,
+    handle_keyboard_input, handle_mouse_button_input, update_fly_camera,
+    EditorDebugOverlay, EditorPlugin, EditorState, EditorViewport,
+    EditorWorkspace,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{
     SceneRenderOptions, SceneRenderer, SceneViewport,
 };
 use rusting_engine::runtime::{
-    load_scene, Camera, MeshRenderer, Name, RenderExtractPlugin, RenderWorld,
-    SceneLoadMode, TimeControl,
+    extract_render_world, load_scene, Camera, MeshRenderer, Name,
+    RenderExtractPlugin, RenderWorld, SceneLoadMode, TimeControl,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
@@ -44,6 +45,8 @@ struct EditorApplication {
     frame_pacer: FramePacer,
     /// VSync value currently used by the swapchain.
     applied_vsync: Option<bool>,
+    /// Latest physical cursor coordinates used to enter fly mode from Scene View.
+    cursor_position: [f64; 2],
 }
 
 impl EditorApplication {
@@ -150,6 +153,7 @@ impl EditorApplication {
             previous_frame: Instant::now(),
             frame_pacer: FramePacer::default(),
             applied_vsync: None,
+            cursor_position: [0.0; 2],
         }
     }
 }
@@ -238,6 +242,18 @@ impl ApplicationHandler for EditorApplication {
                     ui_wants_keyboard,
                 );
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = [position.x, position.y];
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                handle_mouse_button_input(
+                    self.runtime.world_mut(),
+                    renderer.window(),
+                    state,
+                    button,
+                    self.cursor_position,
+                );
+            }
             WindowEvent::Resized(_)
             | WindowEvent::ScaleFactorChanged { .. } => {
                 renderer.resize();
@@ -260,6 +276,7 @@ impl ApplicationHandler for EditorApplication {
                 gui.immediate_ui(|gui| {
                     draw_editor_view(self.runtime.world_mut(), &gui.context());
                 });
+                extract_render_world(self.runtime.world_mut());
                 let vsync = self
                     .runtime
                     .world()
