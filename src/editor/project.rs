@@ -419,6 +419,9 @@ fn default_scene(name: &str) -> SceneDocument {
                 collision_layers: None,
                 gpu_physics_watch: None,
                 components: BTreeMap::new(),
+                directional_light: None,
+                point_light: None,
+                spot_light: None,
             },
             SceneEntity {
                 id: camera,
@@ -447,6 +450,9 @@ fn default_scene(name: &str) -> SceneDocument {
                 collision_layers: None,
                 gpu_physics_watch: None,
                 components: BTreeMap::new(),
+                directional_light: None,
+                point_light: None,
+                spot_light: None,
             },
         ],
     }

@@ -63,13 +63,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let frame_time = *world.resource::<FrameTime>();
     let mut render_settings = world.resource::<RenderSettings>().clone();
     let mut gizmo_settings = *world.resource::<EditorGizmoSettings>();
     let mut gizmo_drag = world.resource::<EditorGizmoDrag>().clone();
     let mut transform_mode = *world.resource::<EditorTransformMode>();
     let editor_shortcuts = world.resource::<EditorShortcuts>().clone();
-    let fly_camera_active = world.resource::<EditorFlyCamera>().active;
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
@@ -88,6 +86,15 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut edited_camera = state
         .selected
         .and_then(|entity| world.get::<Camera>(entity).copied());
+    let mut edited_directional_light = state
+        .selected
+        .and_then(|entity| world.get::<DirectionalLight>(entity).copied());
+    let mut edited_point_light = state
+        .selected
+        .and_then(|entity| world.get::<PointLight>(entity).copied());
+    let mut edited_spot_light = state
+        .selected
+        .and_then(|entity| world.get::<SpotLight>(entity).copied());
     let mut edited_classes = state.selected.map(|entity| {
         world
             .get::<ObjectClasses>(entity)
@@ -106,6 +113,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let original_selected = state.selected;
     let original_transform = edited_transform;
     let original_camera = edited_camera;
+    let original_directional_light = edited_directional_light;
+    let original_point_light = edited_point_light;
+    let original_spot_light = edited_spot_light;
     let original_classes = edited_classes.clone();
     let original_physics = edited_physics.clone();
     let original_rigid_body = edited_rigid_body;
@@ -411,12 +421,6 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             },
                         );
                         ui.separator();
-                        ui.label(format!(
-                            "Frame {} | {:.2} ms",
-                            frame_time.frame,
-                            frame_time.real_delta.as_secs_f64() * 1_000.0
-                        ));
-                        ui.separator();
                         ui.label(if build_running {
                             "GAME TASK RUNNING"
                         } else {
@@ -610,6 +614,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         physics_backends,
                         &mut edited_transform,
                         &mut edited_camera,
+                        &mut edited_directional_light,
+                        &mut edited_point_light,
+                        &mut edited_spot_light,
                         &mut edited_classes,
                         &mut edited_physics,
                         &mut edited_rigid_body,
@@ -627,60 +634,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         } else {
                             EditorWorkspace::Game
                         };
-                        ui.small(if workspace == EditorWorkspace::Scene {
-                            "Editor camera | selection and authoring"
-                        } else {
-                            "Active game camera | runtime preview"
-                        });
-                        if workspace == EditorWorkspace::Scene {
-                            ui.small(if fly_camera_active {
-                                "Fly camera active · release right mouse or press Numpad 0 to exit"
-                            } else {
-                                "Hold right mouse for FPS fly camera · Numpad 0 toggles"
-                            });
-                            draw_transform_controls(
-                                ui,
-                                &mut transform_mode,
-                                &editor_shortcuts,
-                                gizmo_drag.is_active(),
-                                state.selected.is_some(),
-                            );
-                            if transform_mode.active_mode
-                                != TransformModes::Combo
-                            {
-                                ui.small(format!(
-                                    "{} active on {}",
-                                    mode_name(transform_mode.active_mode),
-                                    transform_axis_label(
-                                        transform_mode.axis_mask
-                                    )
-                                ));
-                            }
-                            ui.horizontal(|ui| {
-                                ui.checkbox(
-                                    &mut gizmo_settings.show_grid,
-                                    "Grid",
-                                )
-                                .on_hover_text(
-                                    "Show the editor-only XZ ground grid",
-                                );
-                                ui.checkbox(
-                                    &mut gizmo_settings.show_selected_axes,
-                                    "Axes",
-                                )
-                                .on_hover_text(
-                                    "Show X/Y/Z arrows on the selected object",
-                                );
-                                ui.checkbox(
-                                    &mut gizmo_settings.show_selected_bounds,
-                                    "Bounds",
-                                )
-                                .on_hover_text(
-                                    "Show a yellow box around the selected mesh",
-                                );
-                            });
+                        if workspace == EditorWorkspace::Game {
+                            ui.small("Active game camera | runtime preview");
+                            ui.separator();
                         }
-                        ui.separator();
                         if viewport_rect.is_none() {
                             let rect = ui.available_rect_before_wrap();
                             if workspace == EditorWorkspace::Scene {
@@ -727,6 +684,34 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     scene_drag_right_stopped = true;
                                 }
                                 scene_right_clicked = response.clicked_by(egui::PointerButton::Secondary);
+                                let transform_toolbar_hovered =
+                                    draw_viewport_transform_toolbar(
+                                        ui,
+                                        rect,
+                                        &mut transform_mode,
+                                        &editor_shortcuts,
+                                        gizmo_drag.is_active(),
+                                        state.selected.is_some(),
+                                    );
+                                let settings_hovered =
+                                    draw_viewport_render_settings(
+                                        ui,
+                                        rect,
+                                        &mut gizmo_settings,
+                                    );
+                                if transform_toolbar_hovered || settings_hovered {
+                                    // The toolbar floats over the viewport, so its
+                                    // clicks must not also reach picking or a gizmo.
+                                    scene_hover_position = None;
+                                    scene_click_position = None;
+                                    scene_drag_left_started = None;
+                                    scene_drag_left_position = None;
+                                    scene_drag_left_stopped = false;
+                                    scene_drag_right_started = None;
+                                    scene_drag_right_position = None;
+                                    scene_drag_right_stopped = false;
+                                    scene_right_clicked = false;
+                                }
                             }
                             viewport_rect = Some(rect);
                             rendered_workspace = Some(workspace);
@@ -1036,6 +1021,17 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     state.dock_layout = dock_layout;
     state.active_area = active_area;
     apply_dock_actions(&mut state, dock_actions);
+    let add_object_parent = state.add_object_parent;
+    draw_add_object_modal(
+        context,
+        &mut state.add_object_modal_open,
+        add_object_parent,
+        world,
+        &mut entity_request,
+    );
+    if !state.add_object_modal_open {
+        state.add_object_parent = None;
+    }
     let layout_path =
         std::path::Path::new(&state.project_root).join("editor_layout.json");
     if save_layout {
@@ -1299,6 +1295,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         && state.selected == original_selected
         && (edited_transform != original_transform
             || edited_camera != original_camera
+            || edited_directional_light != original_directional_light
+            || edited_point_light != original_point_light
+            || edited_spot_light != original_spot_light
             || edited_classes != original_classes
             || edited_physics != original_physics
             || edited_rigid_body != original_rigid_body
@@ -1339,6 +1338,29 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(camera);
+        }
+    }
+    if let (true, Some(entity), Some(light)) = (
+        unchanged_selection,
+        state.selected,
+        edited_directional_light,
+    ) {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert(light);
+        }
+    }
+    if let (true, Some(entity), Some(light)) =
+        (unchanged_selection, state.selected, edited_point_light)
+    {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert(light);
+        }
+    }
+    if let (true, Some(entity), Some(light)) =
+        (unchanged_selection, state.selected, edited_spot_light)
+    {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert(light);
         }
     }
     if let (true, Some(entity), Some(classes)) =
@@ -1627,7 +1649,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         } else {
             let result = (|| -> Result<Option<Entity>, String> {
                 match request {
-                    EntityRequest::CreateEmpty => {
+                    EntityRequest::CreateEmpty(parent) => {
                         let name = unique_object_name(world, "Empty");
                         let entity = world
                             .spawn((
@@ -1636,13 +1658,19 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 Transform::default(),
                             ))
                             .id();
+                        if let Some(parent) = parent {
+                            world.entity_mut(entity).insert(Parent(parent));
+                        }
                         Ok(Some(entity))
                     }
-                    EntityRequest::CreateCube => {
-                        let name = unique_object_name(world, "Cube");
+                    EntityRequest::CreatePrimitive(shape, parent) => {
+                        let name = unique_object_name(world, shape.label());
                         let (mesh, material) = {
                             let assets = world.resource::<AssetServer>();
-                            (assets.fallback_mesh, assets.fallback_material)
+                            (
+                                assets.builtin_primitive(shape),
+                                assets.fallback_material,
+                            )
                         };
                         let entity = world
                             .spawn((
@@ -1658,31 +1686,12 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 Visibility::default(),
                             ))
                             .id();
+                        if let Some(parent) = parent {
+                            world.entity_mut(entity).insert(Parent(parent));
+                        }
                         Ok(Some(entity))
                     }
-                    EntityRequest::CreateSphere => {
-                        let name = unique_object_name(world, "Sphere");
-                        let (mesh, material) = {
-                            let assets = world.resource::<AssetServer>();
-                            (assets.builtin_sphere, assets.fallback_material)
-                        };
-                        let entity = world
-                            .spawn((
-                                SceneId::new(),
-                                Name(name),
-                                Transform::default(),
-                                MeshRenderer {
-                                    mesh,
-                                    material,
-                                    cast_shadows: true,
-                                    receive_shadows: true,
-                                },
-                                Visibility::default(),
-                            ))
-                            .id();
-                        Ok(Some(entity))
-                    }
-                    EntityRequest::CreateCamera => {
+                    EntityRequest::CreateCamera(parent) => {
                         let name = unique_object_name(world, "Camera");
                         let entity = world
                             .spawn((
@@ -1695,6 +1704,51 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 },
                             ))
                             .id();
+                        if let Some(parent) = parent {
+                            world.entity_mut(entity).insert(Parent(parent));
+                        }
+                        Ok(Some(entity))
+                    }
+                    EntityRequest::CreateLight(kind, parent) => {
+                        let name = unique_object_name(world, kind.label());
+                        let mut transform = Transform::default();
+                        match kind {
+                            EditorLightType::Directional => {
+                                transform.rotation = [
+                                    -45.0_f32.to_radians(),
+                                    -30.0_f32.to_radians(),
+                                    0.0,
+                                ];
+                            }
+                            EditorLightType::Point => {
+                                transform.position = [0.0, 3.0, 0.0];
+                            }
+                            EditorLightType::Spot => {
+                                transform.position = [0.0, 3.0, 0.0];
+                                transform.rotation =
+                                    [-90.0_f32.to_radians(), 0.0, 0.0];
+                            }
+                        }
+                        let mut entity = world.spawn((
+                            SceneId::new(),
+                            Name(name),
+                            transform,
+                        ));
+                        match kind {
+                            EditorLightType::Directional => {
+                                entity.insert(DirectionalLight::default());
+                            }
+                            EditorLightType::Point => {
+                                entity.insert(PointLight::default());
+                            }
+                            EditorLightType::Spot => {
+                                entity.insert(SpotLight::default());
+                            }
+                        }
+                        let entity = entity.id();
+                        if let Some(parent) = parent {
+                            world.entity_mut(entity).insert(Parent(parent));
+                        }
                         Ok(Some(entity))
                     }
                     EntityRequest::Rename(entity, name) => {
@@ -1717,6 +1771,21 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         Ok(Some(entity.id()))
                     }
                     EntityRequest::Reparent(entity, parent) => {
+                        let reparented_transform = world
+                            .get::<GlobalTransform>(entity)
+                            .map(|child| Matrix4::from(child.matrix))
+                            .map(|child| {
+                                parent
+                                    .and_then(|parent| {
+                                        world.get::<GlobalTransform>(parent)
+                                    })
+                                    .and_then(|parent| {
+                                        Matrix4::from(parent.matrix)
+                                            .try_inverse()
+                                    })
+                                    .map_or(child, |inverse| inverse * child)
+                            })
+                            .map(Transform::from_matrix);
                         let child_id = world
                             .get::<SceneId>(entity)
                             .copied()
@@ -1763,6 +1832,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     .to_owned()
                             })?;
                         child.parent = parent_id;
+                        if let Some(transform) = reparented_transform {
+                            child.transform = Some(transform.into());
+                        }
                         crate::runtime::load_scene_document(
                             world,
                             &document,
@@ -2300,91 +2372,344 @@ fn finish_transform_mode(transform_mode: &mut EditorTransformMode) {
     transform_mode.start_requested = false;
 }
 
-const fn transform_axis_label(mask: [bool; 3]) -> &'static str {
-    match mask {
-        [true, false, false] => "X",
-        [false, true, false] => "Y",
-        [false, false, true] => "Z",
-        [true, true, false] => "XY",
-        [true, false, true] => "XZ",
-        [false, true, true] => "YZ",
-        _ => "XYZ",
+fn draw_add_object_modal(
+    context: &egui::Context,
+    open: &mut bool,
+    parent: Option<Entity>,
+    world: &World,
+    request: &mut Option<EntityRequest>,
+) {
+    if !*open {
+        return;
+    }
+
+    let screen = context.screen_rect();
+    let modal_size = egui::vec2(screen.width() * 0.6, screen.height() * 0.7);
+    let parent_name = parent
+        .and_then(|entity| world.get::<Name>(entity))
+        .map(|name| name.0.as_str());
+    let mut close_requested = false;
+    let response = egui::Modal::new(egui::Id::new("add_object_modal"))
+        .frame(
+            egui::Frame::popup(&context.style())
+                .fill(gui_elements::EditorTheme::PANEL)
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    gui_elements::EditorTheme::BORDER,
+                ))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::same(14)),
+        )
+        .show(context, |ui| {
+            ui.set_min_size(modal_size);
+            ui.set_max_size(modal_size);
+            ui.horizontal(|ui| {
+                ui.heading(parent_name.map_or_else(
+                    || "Add Object".to_owned(),
+                    |name| format!("Add Child to {name}"),
+                ));
+                ui.add_space((ui.available_width() - 28.0).max(0.0));
+                if gui_elements::icon_button_sized(
+                    ui,
+                    EditorIcon::Close,
+                    false,
+                    true,
+                    egui::vec2(26.0, 24.0),
+                )
+                .on_hover_text("Close")
+                .clicked()
+                {
+                    close_requested = true;
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Choose a scene object. Categories stay compact until you open them.",
+                )
+                .color(gui_elements::EditorTheme::TEXT_MUTED),
+            );
+            ui.separator();
+
+            let content_height = (ui.available_height() - 8.0).max(80.0);
+            egui::ScrollArea::vertical()
+                .max_height(content_height)
+                .show(ui, |ui| {
+                    egui::CollapsingHeader::new("Meshes")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for shape in PrimitiveShape::ALL {
+                                    if ui
+                                        .add_sized(
+                                            egui::vec2(142.0, 38.0),
+                                            egui::Button::new(shape.label()),
+                                        )
+                                        .clicked()
+                                    {
+                                        *request = Some(
+                                            EntityRequest::CreatePrimitive(
+                                                shape, parent,
+                                            ),
+                                        );
+                                        close_requested = true;
+                                    }
+                                }
+                            });
+                        });
+                    egui::CollapsingHeader::new("Scene Objects")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            if ui
+                                .add_sized(
+                                    egui::vec2(142.0, 38.0),
+                                    egui::Button::new("Empty Object"),
+                                )
+                                .clicked()
+                            {
+                                *request =
+                                    Some(EntityRequest::CreateEmpty(parent));
+                                close_requested = true;
+                            }
+                        });
+                    egui::CollapsingHeader::new("Cameras")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            if ui
+                                .add_sized(
+                                    egui::vec2(142.0, 38.0),
+                                    egui::Button::new("Perspective Camera"),
+                                )
+                                .clicked()
+                            {
+                                *request =
+                                    Some(EntityRequest::CreateCamera(parent));
+                                close_requested = true;
+                            }
+                        });
+                    egui::CollapsingHeader::new("Lights")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for light in EditorLightType::ALL {
+                                    if ui
+                                        .add_sized(
+                                            egui::vec2(142.0, 38.0),
+                                            egui::Button::new(light.label()),
+                                        )
+                                        .clicked()
+                                    {
+                                        *request = Some(
+                                            EntityRequest::CreateLight(
+                                                light, parent,
+                                            ),
+                                        );
+                                        close_requested = true;
+                                    }
+                                }
+                            });
+                        });
+                });
+        });
+
+    if close_requested || response.should_close() {
+        *open = false;
     }
 }
 
-fn draw_transform_controls(
+fn draw_viewport_transform_toolbar(
     ui: &mut egui::Ui,
+    viewport: egui::Rect,
     transform: &mut EditorTransformMode,
     shortcuts: &EditorShortcuts,
     drag_active: bool,
     has_selection: bool,
-) {
-    ui.horizontal(|ui| {
-        ui.small("Transform");
-        for mode in [
-            TransformModes::Move,
-            TransformModes::Rotate,
-            TransformModes::Scale,
-        ] {
-            let shortcut = transform_shortcut_label(shortcuts, mode);
-            let label = format!("{}  {shortcut}", mode_name(mode));
-            if gui_elements::EditorTheme::toolbar_button(
-                ui,
-                &label,
-                transform.active_mode == mode,
-                has_selection,
-            )
-            .on_hover_text(format!(
-                "Start {} with the mouse or press {}",
-                mode_name(mode),
-                shortcut
-            ))
-            .clicked()
-            {
-                transform.active_mode = mode;
-                transform.axis_mask = [true; 3];
-                transform.start_requested = true;
-            }
-        }
-    });
+) -> bool {
+    let transform_active = drag_active || transform.start_requested;
+    let toolbar_size =
+        egui::vec2(if transform_active { 218.0 } else { 110.0 }, 36.0);
+    let toolbar_rect = egui::Rect::from_min_size(
+        viewport.min + egui::vec2(8.0, 8.0),
+        toolbar_size,
+    )
+    .intersect(viewport);
 
-    if drag_active || transform.start_requested {
-        ui.horizontal(|ui| {
-            ui.small("Direction");
-            for (axis, label) in [
-                (GizmoAxis::X, "X"),
-                (GizmoAxis::Y, "Y"),
-                (GizmoAxis::Z, "Z"),
-            ] {
-                let active = transform.axis_mask[gizmo_axis_index(axis)];
-                let text = egui::RichText::new(label)
-                    .strong()
-                    .color(egui::Color32::WHITE);
-                let mut button =
-                    egui::Button::new(text).min_size(egui::vec2(28.0, 24.0));
-                button = if active {
-                    button.fill(gui_elements::EditorTheme::ACCENT_HOVER).stroke(
-                        egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgb(130, 190, 255),
-                        ),
-                    )
-                } else {
-                    button.frame(false)
-                };
-                if ui
-                    .add(button)
-                    .on_hover_text(format!(
-                        "Toggle {label} direction (shortcut: {label})"
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id_salt("viewport_transform_toolbar")
+            .max_rect(toolbar_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(viewport));
+            egui::Frame::NONE
+                .fill(gui_elements::EditorTheme::PANEL)
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    gui_elements::EditorTheme::BORDER,
+                ))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(4))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    for (mode, icon) in [
+                        (TransformModes::Move, EditorIcon::Move),
+                        (TransformModes::Rotate, EditorIcon::Rotate),
+                        (TransformModes::Scale, EditorIcon::Scale),
+                    ] {
+                        let shortcut =
+                            transform_shortcut_label(shortcuts, mode);
+                        if gui_elements::icon_button(
+                            ui,
+                            icon,
+                            transform.active_mode == mode,
+                            has_selection,
+                        )
+                        .on_hover_text(format!(
+                            "{} ({shortcut})",
+                            mode_name(mode)
+                        ))
+                        .clicked()
+                        {
+                            transform.active_mode = mode;
+                            transform.axis_mask = [true; 3];
+                            transform.start_requested = true;
+                        }
+                    }
+
+                    if transform_active {
+                        ui.separator();
+                        for (axis, label) in [
+                            (GizmoAxis::X, "X"),
+                            (GizmoAxis::Y, "Y"),
+                            (GizmoAxis::Z, "Z"),
+                        ] {
+                            let active =
+                                transform.axis_mask[gizmo_axis_index(axis)];
+                            let text = egui::RichText::new(label)
+                                .strong()
+                                .color(egui::Color32::WHITE);
+                            let mut button = egui::Button::new(text)
+                                .min_size(egui::vec2(24.0, 24.0));
+                            button = if active {
+                                button
+                                    .fill(
+                                        gui_elements::EditorTheme::ACCENT_HOVER,
+                                    )
+                                    .stroke(egui::Stroke::new(
+                                        1.0_f32,
+                                        egui::Color32::from_rgb(130, 190, 255),
+                                    ))
+                            } else {
+                                button.frame(false)
+                            };
+                            if ui
+                                .add(button)
+                                .on_hover_text(format!(
+                                    "Toggle {label} direction ({label})"
+                                ))
+                                .clicked()
+                            {
+                                transform.select_only_or_toggle(axis);
+                            }
+                        }
+                    }
+                });
+        },
+    );
+
+    ui.input(|input| {
+        input
+            .pointer
+            .latest_pos()
+            .is_some_and(|position| toolbar_rect.contains(position))
+    })
+}
+
+fn draw_viewport_render_settings(
+    ui: &mut egui::Ui,
+    viewport: egui::Rect,
+    settings: &mut EditorGizmoSettings,
+) -> bool {
+    let toolbar_rect = egui::Rect::from_min_size(
+        egui::pos2(viewport.right() - 44.0, viewport.top() + 8.0),
+        egui::vec2(36.0, 36.0),
+    )
+    .intersect(viewport);
+    let popup_id = ui.make_persistent_id("viewport_render_settings_popup");
+    let open = ui.memory(|memory| memory.is_popup_open(popup_id));
+
+    let (button_rect, popup_rect) = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .id_salt("viewport_render_settings")
+                .max_rect(toolbar_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(viewport));
+                let button_response = egui::Frame::NONE
+                    .fill(gui_elements::EditorTheme::PANEL)
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        gui_elements::EditorTheme::BORDER,
                     ))
-                    .clicked()
-                {
-                    transform.select_only_or_toggle(axis);
-                }
-            }
-            ui.small("Click Scene View to confirm · Right-click/Esc cancels");
-        });
-    }
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(4))
+                    .show(ui, |ui| {
+                        let response = gui_elements::icon_button(
+                            ui,
+                            EditorIcon::ViewOptions,
+                            open,
+                            true,
+                        )
+                        .on_hover_text("Viewport render settings");
+                        if response.clicked() {
+                            ui.memory_mut(|memory| {
+                                memory.toggle_popup(popup_id)
+                            });
+                        }
+                        response
+                    })
+                    .inner;
+
+                let popup_rect = egui::popup::popup_below_widget(
+                    ui,
+                    popup_id,
+                    &button_response,
+                    egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(190.0);
+                        gui_elements::EditorTheme::menu_section(
+                            ui,
+                            "VIEWPORT OVERLAYS",
+                        );
+                        ui.checkbox(&mut settings.show_grid, "Grid")
+                            .on_hover_text(
+                                "Show the editor-only XZ ground grid",
+                            );
+                        ui.checkbox(&mut settings.show_selected_axes, "Axes")
+                            .on_hover_text(
+                                "Show X/Y/Z arrows on the selected object",
+                            );
+                        ui.checkbox(
+                            &mut settings.show_selected_bounds,
+                            "Bounds",
+                        )
+                        .on_hover_text(
+                            "Show a yellow box around the selected mesh",
+                        );
+                        ui.min_rect()
+                    },
+                );
+                (button_response.rect, popup_rect)
+            },
+        )
+        .inner;
+
+    ui.input(|input| {
+        input.pointer.latest_pos().is_some_and(|position| {
+            button_rect.contains(position)
+                || popup_rect.is_some_and(|rect| rect.contains(position))
+        })
+    })
 }
 
 const fn mode_name(mode: TransformModes) -> &'static str {

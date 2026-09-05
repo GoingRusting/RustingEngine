@@ -13,17 +13,18 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::assets::{
-    AssetServer, Handle, MaterialAsset, MaterialModel, TextureAsset,
+    AssetServer, Handle, MaterialAsset, MaterialModel, PrimitiveShape,
+    TextureAsset,
 };
 use crate::Transform;
 
 use super::{
-    Camera, Collider, CollisionLayers, GpuPhysicsWatch, MeshRenderer, Name,
-    ObjectClasses, Parent, PhysicsBody, Projection, RigidBody, SceneId,
-    Visibility,
+    Camera, Collider, CollisionLayers, DirectionalLight, GpuPhysicsWatch,
+    MeshRenderer, Name, ObjectClasses, Parent, PhysicsBody, PointLight,
+    Projection, RigidBody, SceneId, SpotLight, Visibility,
 };
 
-pub const SCENE_FORMAT_VERSION: u32 = 3;
+pub const SCENE_FORMAT_VERSION: u32 = 4;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -176,6 +177,70 @@ pub struct SceneEntity {
     pub gpu_physics_watch: Option<GpuPhysicsWatch>,
     #[serde(default)]
     pub components: BTreeMap<String, String>,
+    #[serde(default)]
+    pub directional_light: Option<DirectionalLight>,
+    #[serde(default)]
+    pub point_light: Option<PointLight>,
+    #[serde(default)]
+    pub spot_light: Option<SpotLight>,
+}
+
+/// Version 3 stored classes and GPU watches, but no authored lights.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct LegacySceneDocumentV3 {
+    format_version: u32,
+    name: String,
+    entities: Vec<LegacySceneEntityV3>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct LegacySceneEntityV3 {
+    id: Uuid,
+    parent: Option<Uuid>,
+    name: Option<String>,
+    classes: Vec<String>,
+    transform: Option<SceneTransform>,
+    mesh_renderer: Option<SceneMeshRenderer>,
+    camera: Option<SceneCamera>,
+    visible: Option<bool>,
+    physics_body: Option<PhysicsBody>,
+    rigid_body: Option<RigidBody>,
+    collider: Option<Collider>,
+    collision_layers: Option<CollisionLayers>,
+    gpu_physics_watch: Option<GpuPhysicsWatch>,
+    components: BTreeMap<String, String>,
+}
+
+impl From<LegacySceneDocumentV3> for SceneDocument {
+    fn from(document: LegacySceneDocumentV3) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document
+                .entities
+                .into_iter()
+                .map(|entity| SceneEntity {
+                    id: entity.id,
+                    parent: entity.parent,
+                    name: entity.name,
+                    classes: entity.classes,
+                    transform: entity.transform,
+                    mesh_renderer: entity.mesh_renderer,
+                    camera: entity.camera,
+                    visible: entity.visible,
+                    physics_body: entity.physics_body,
+                    rigid_body: entity.rigid_body,
+                    collider: entity.collider,
+                    collision_layers: entity.collision_layers,
+                    gpu_physics_watch: entity.gpu_physics_watch,
+                    components: entity.components,
+                    directional_light: None,
+                    point_light: None,
+                    spot_light: None,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Cooked version 1 did not store programmable GPU physics watches.
@@ -225,6 +290,9 @@ impl From<LegacySceneDocumentV1> for SceneDocument {
                     collision_layers: entity.collision_layers,
                     gpu_physics_watch: None,
                     components: entity.components,
+                    directional_light: None,
+                    point_light: None,
+                    spot_light: None,
                 })
                 .collect(),
         }
@@ -279,6 +347,9 @@ impl From<LegacySceneDocumentV2> for SceneDocument {
                     collision_layers: entity.collision_layers,
                     gpu_physics_watch: entity.gpu_physics_watch,
                     components: entity.components,
+                    directional_light: None,
+                    point_light: None,
+                    spot_light: None,
                 })
                 .collect(),
         }
@@ -317,6 +388,9 @@ pub enum SceneMesh {
     BuiltinCube,
     BuiltinSphere,
     AssetPath(PathBuf),
+    // Keep new variants after the original three so old bincode discriminants
+    // remain valid.
+    BuiltinPrimitive(PrimitiveShape),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -558,6 +632,27 @@ pub fn scene_document(
         .resource::<SceneComponentRegistry>()
         .registrations
         .clone();
+    let directional_lights = {
+        let mut query = world.query::<(Entity, &DirectionalLight)>();
+        query
+            .iter(world)
+            .map(|(entity, light)| (entity, *light))
+            .collect::<HashMap<_, _>>()
+    };
+    let point_lights = {
+        let mut query = world.query::<(Entity, &PointLight)>();
+        query
+            .iter(world)
+            .map(|(entity, light)| (entity, *light))
+            .collect::<HashMap<_, _>>()
+    };
+    let spot_lights = {
+        let mut query = world.query::<(Entity, &SpotLight)>();
+        query
+            .iter(world)
+            .map(|(entity, light)| (entity, *light))
+            .collect::<HashMap<_, _>>()
+    };
     let mut query = world.query::<(
         Entity,
         &SceneId,
@@ -668,6 +763,9 @@ pub fn scene_document(
             collision_layers,
             gpu_physics_watch,
             components,
+            directional_light: directional_lights.get(&entity).copied(),
+            point_light: point_lights.get(&entity).copied(),
+            spot_light: spot_lights.get(&entity).copied(),
         });
     }
     entities.sort_by_key(|entity| entity.id);
@@ -914,6 +1012,15 @@ pub fn load_scene_document(
         if let Some(gpu_physics_watch) = &scene_entity.gpu_physics_watch {
             entity.insert(gpu_physics_watch.clone());
         }
+        if let Some(light) = scene_entity.directional_light {
+            entity.insert(light);
+        }
+        if let Some(light) = scene_entity.point_light {
+            entity.insert(light);
+        }
+        if let Some(light) = scene_entity.spot_light {
+            entity.insert(light);
+        }
         spawned.insert(scene_entity.id, entity.id());
     }
 
@@ -976,6 +1083,10 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
             Ok(document) => document,
             Err(current_error) => {
                 if let Ok(legacy) =
+                    bincode::deserialize::<LegacySceneDocumentV3>(compiled)
+                {
+                    legacy.into()
+                } else if let Ok(legacy) =
                     bincode::deserialize::<LegacySceneDocumentV2>(compiled)
                 {
                     legacy.into()
@@ -1000,7 +1111,7 @@ fn migrate_scene_document(
     document: &mut SceneDocument,
 ) -> Result<(), SceneIoError> {
     match document.format_version {
-        0..=2 => {
+        0..=3 => {
             // Versions before programmable GPU watches use safe defaults for
             // the fields that were added later.
             document.format_version = SCENE_FORMAT_VERSION;
@@ -1023,10 +1134,12 @@ fn scene_renderer(
     renderer: MeshRenderer,
     assets: &AssetServer,
 ) -> Result<SceneMeshRenderer, SceneIoError> {
-    let mesh = if renderer.mesh == assets.fallback_mesh {
-        SceneMesh::BuiltinCube
-    } else if renderer.mesh == assets.builtin_sphere {
-        SceneMesh::BuiltinSphere
+    let mesh = if let Some(shape) = assets.primitive_for_handle(renderer.mesh) {
+        match shape {
+            PrimitiveShape::Cube => SceneMesh::BuiltinCube,
+            PrimitiveShape::Sphere => SceneMesh::BuiltinSphere,
+            shape => SceneMesh::BuiltinPrimitive(shape),
+        }
     } else if let Some(path) = assets.meshes.path(renderer.mesh) {
         SceneMesh::AssetPath(path.to_path_buf())
     } else {
@@ -1100,6 +1213,9 @@ fn prepare_assets(
             let mesh = match &renderer.mesh {
                 SceneMesh::BuiltinCube => assets.fallback_mesh,
                 SceneMesh::BuiltinSphere => assets.builtin_sphere,
+                SceneMesh::BuiltinPrimitive(shape) => {
+                    assets.builtin_primitive(*shape)
+                }
                 SceneMesh::AssetPath(path) => {
                     if let Some(handle) = assets.meshes.handle_for_path(path) {
                         handle
@@ -1364,6 +1480,118 @@ mod tests {
     }
 
     #[test]
+    fn builtin_primitive_round_trips_without_an_asset_file() {
+        let mut app = scene_app();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (
+                assets.builtin_primitive(PrimitiveShape::Torus),
+                assets.fallback_material,
+            )
+        };
+        app.spawn((
+            Name("Torus".into()),
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ));
+        let document = scene_document(app.world_mut(), "Primitives").unwrap();
+        assert_eq!(
+            document.entities[0].mesh_renderer.as_ref().unwrap().mesh,
+            SceneMesh::BuiltinPrimitive(PrimitiveShape::Torus)
+        );
+
+        load_scene_document(app.world_mut(), &document, SceneLoadMode::Replace)
+            .unwrap();
+        let expected = app
+            .world()
+            .resource::<AssetServer>()
+            .builtin_primitive(PrimitiveShape::Torus);
+        let renderer = app
+            .world_mut()
+            .query::<&MeshRenderer>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(renderer.mesh, expected);
+    }
+
+    #[test]
+    fn all_authored_light_types_round_trip_together() {
+        let mut app = scene_app();
+        app.spawn((
+            Name("Sun".into()),
+            Transform::default(),
+            DirectionalLight {
+                color: [1.0, 0.8, 0.6],
+                illuminance: 50_000.0,
+                shadows: false,
+            },
+        ));
+        app.spawn((
+            Name("Lamp".into()),
+            Transform::new([2.0, 3.0, 4.0]),
+            PointLight {
+                color: [0.4, 0.7, 1.0],
+                intensity: 750.0,
+                range: 12.0,
+            },
+        ));
+        app.spawn((
+            Name("Spot".into()),
+            Transform::default(),
+            SpotLight::default(),
+        ));
+        let document = scene_document(app.world_mut(), "Lights").unwrap();
+        assert_eq!(
+            document
+                .entities
+                .iter()
+                .filter(|entity| entity.directional_light.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            document
+                .entities
+                .iter()
+                .filter(|entity| entity.point_light.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            document
+                .entities
+                .iter()
+                .filter(|entity| entity.spot_light.is_some())
+                .count(),
+            1
+        );
+
+        load_scene_document(app.world_mut(), &document, SceneLoadMode::Replace)
+            .unwrap();
+        let directional = app
+            .world_mut()
+            .query::<&DirectionalLight>()
+            .iter(app.world())
+            .count();
+        let points = app
+            .world_mut()
+            .query::<&PointLight>()
+            .iter(app.world())
+            .count();
+        let spots = app
+            .world_mut()
+            .query::<&SpotLight>()
+            .iter(app.world())
+            .count();
+        assert_eq!((directional, points, spots), (1, 1, 1));
+    }
+
+    #[test]
     fn source_and_compiled_scene_decode_to_same_document() {
         let mut app = scene_app();
         app.spawn((
@@ -1409,6 +1637,46 @@ mod tests {
 
         assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
         assert_eq!(migrated.name, "Scene Before Classes");
+    }
+
+    #[test]
+    fn version_three_cooked_scene_migrates_without_authored_lights() {
+        let entity_id = Uuid::new_v4();
+        let legacy = LegacySceneDocumentV3 {
+            format_version: 3,
+            name: "Scene Before Lights".into(),
+            entities: vec![LegacySceneEntityV3 {
+                id: entity_id,
+                parent: None,
+                name: Some("Unlit Entity".into()),
+                classes: Vec::new(),
+                transform: Some(SceneTransform {
+                    position: [0.0; 3],
+                    rotation: [0.0; 3],
+                    scale: [1.0; 3],
+                }),
+                mesh_renderer: None,
+                camera: None,
+                visible: Some(true),
+                physics_body: None,
+                rigid_body: None,
+                collider: None,
+                collision_layers: None,
+                gpu_physics_watch: None,
+                components: BTreeMap::new(),
+            }],
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+
+        let migrated = decode_scene(&bytes).unwrap();
+
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        assert_eq!(migrated.name, "Scene Before Lights");
+        assert_eq!(migrated.entities[0].id, entity_id);
+        assert_eq!(migrated.entities[0].directional_light, None);
+        assert_eq!(migrated.entities[0].point_light, None);
+        assert_eq!(migrated.entities[0].spot_light, None);
     }
 
     #[test]

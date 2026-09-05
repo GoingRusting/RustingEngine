@@ -6,6 +6,7 @@
 mod dock;
 pub mod gui_elements;
 mod hierarchy;
+mod icons;
 mod overlay;
 mod picking;
 mod project;
@@ -15,6 +16,7 @@ pub mod view;
 use dock::EditorLayoutFile;
 pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
 use hierarchy::{collect_entities, draw_hierarchy_area};
+pub use icons::EditorIcon;
 pub use view::draw_editor_view;
 
 pub use project::{
@@ -40,16 +42,16 @@ use crate::runtime::{
     registered_component_names, registered_component_values,
     remove_registered_component, save_scene, scene_document,
     set_registered_component, App, AppError, Camera, Collider, ColliderShape,
-    CollisionLayers, FrameTime, GlobalTransform, MeshRenderer, Name,
+    CollisionLayers, DirectionalLight, GlobalTransform, MeshRenderer, Name,
     ObjectClasses, Parent, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
-    Plugin, Projection, RenderCameraOverride, RenderSettings, RenderWorld,
-    RigidBody, RigidBodyKind, SceneDocument, SceneId, SceneLoadMode,
-    SimulationClass, Visibility,
+    Plugin, PointLight, Projection, RenderCameraOverride, RenderSettings,
+    RenderWorld, RigidBody, RigidBodyKind, SceneDocument, SceneId,
+    SceneLoadMode, SimulationClass, SpotLight, Visibility,
 };
 use crate::Transform;
 use crate::{
     AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset, MeshAsset,
-    TextureAsset,
+    PrimitiveShape, TextureAsset,
 };
 
 /// Applies the editor's compact dark workspace theme to an egui context.
@@ -126,6 +128,10 @@ pub struct EditorState {
     pub rename_draft: String,
     /// Object currently showing an inline rename field in Hierarchy.
     pub rename_target: Option<Entity>,
+    /// Whether the centered Add Object catalog is visible.
+    pub add_object_modal_open: bool,
+    /// Parent assigned to the next object created through the catalog.
+    pub add_object_parent: Option<Entity>,
     /// New class name being typed in the Inspector.
     pub class_draft: String,
     /// Text being edited for custom serialized components.
@@ -274,6 +280,8 @@ impl Default for EditorState {
             scene_dirty: false,
             rename_draft: String::new(),
             rename_target: None,
+            add_object_modal_open: false,
+            add_object_parent: None,
             class_draft: String::new(),
             component_drafts: std::collections::HashMap::new(),
             workspace: EditorWorkspace::Scene,
@@ -917,13 +925,13 @@ enum AssetRequest {
 /// Scene-object operation requested by the Hierarchy area.
 enum EntityRequest {
     /// Adds an object that only has a name and transform.
-    CreateEmpty,
-    /// Adds a visible cube using the project's fallback assets.
-    CreateCube,
-    /// Adds a visible sphere using the project's fallback assets.
-    CreateSphere,
+    CreateEmpty(Option<Entity>),
+    /// Adds one of the engine's built-in procedural meshes.
+    CreatePrimitive(PrimitiveShape, Option<Entity>),
     /// Adds an inactive perspective camera.
-    CreateCamera,
+    CreateCamera(Option<Entity>),
+    /// Adds an authored light used by editor and game rendering.
+    CreateLight(EditorLightType, Option<Entity>),
     /// Copies every serialized component of one object.
     Duplicate(Entity),
     /// Removes one object and all of its children.
@@ -932,6 +940,25 @@ enum EntityRequest {
     Rename(Entity, String),
     /// Moves one object below another object, or back to the scene root.
     Reparent(Entity, Option<Entity>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorLightType {
+    Directional,
+    Point,
+    Spot,
+}
+
+impl EditorLightType {
+    const ALL: [Self; 3] = [Self::Directional, Self::Point, Self::Spot];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Directional => "Directional Light",
+            Self::Point => "Point Light",
+            Self::Spot => "Spot Light",
+        }
+    }
 }
 
 /// Stores the current scene before an editor command changes it.
@@ -1174,14 +1201,21 @@ fn edit_vector(
 
 /// Draws one fixed-size button in an editor area header.
 ///
-/// The rectangle and symbol are painted separately. Different symbol sizes can
+/// The rectangle and icon are painted separately. Different icon sizes can
 /// therefore never change the size or vertical position of the button.
 fn dock_header_button(
     ui: &mut egui::Ui,
-    symbol: &str,
+    icon: EditorIcon,
     hover_text: &str,
 ) -> egui::Response {
-    gui_elements::EditorTheme::dock_button(ui, symbol, hover_text)
+    gui_elements::icon_button_sized(
+        ui,
+        icon,
+        false,
+        true,
+        egui::vec2(22.0, 20.0),
+    )
+    .on_hover_text(hover_text)
 }
 
 #[derive(Clone, Copy)]
@@ -1297,7 +1331,7 @@ fn show_dock_node(
                                 );
                                 if dock_header_button(
                                     ui,
-                                    "<>",
+                                    EditorIcon::SplitColumns,
                                     "Split into left/right areas",
                                 )
                                 .clicked()
@@ -1309,7 +1343,7 @@ fn show_dock_node(
                                 }
                                 if dock_header_button(
                                     ui,
-                                    "||",
+                                    EditorIcon::SplitRows,
                                     "Split into top/bottom areas",
                                 )
                                 .clicked()
@@ -1321,7 +1355,7 @@ fn show_dock_node(
                                 }
                                 if dock_header_button(
                                     ui,
-                                    "x",
+                                    EditorIcon::Close,
                                     "Close this area",
                                 )
                                 .clicked()
@@ -1508,6 +1542,9 @@ fn draw_inspector_area(
     physics_backends: PhysicsBackendStatus,
     edited_transform: &mut Option<Transform>,
     edited_camera: &mut Option<Camera>,
+    edited_directional_light: &mut Option<DirectionalLight>,
+    edited_point_light: &mut Option<PointLight>,
+    edited_spot_light: &mut Option<SpotLight>,
     edited_classes: &mut Option<ObjectClasses>,
     edited_physics: &mut Option<PhysicsBody>,
     edited_rigid_body: &mut Option<RigidBody>,
@@ -1606,6 +1643,66 @@ fn draw_inspector_area(
                         projection_planes(ui, near, far);
                     }
                 }
+            });
+        }
+        if let Some(light) = edited_directional_light {
+            ui.collapsing("Directional Light", |ui| {
+                edit_vector(ui, "Color", &mut light.color, 0.01);
+                ui.add(
+                    DragValue::new(&mut light.illuminance)
+                        .prefix("Illuminance ")
+                        .range(0.0..=1_000_000.0)
+                        .speed(100.0),
+                );
+                ui.checkbox(&mut light.shadows, "Cast shadows");
+            });
+        }
+        if let Some(light) = edited_point_light {
+            ui.collapsing("Point Light", |ui| {
+                edit_vector(ui, "Color", &mut light.color, 0.01);
+                ui.add(
+                    DragValue::new(&mut light.intensity)
+                        .prefix("Intensity ")
+                        .range(0.0..=1_000_000.0)
+                        .speed(10.0),
+                );
+                ui.add(
+                    DragValue::new(&mut light.range)
+                        .prefix("Range ")
+                        .range(0.01..=100_000.0)
+                        .speed(0.1),
+                );
+            });
+        }
+        if let Some(light) = edited_spot_light {
+            ui.collapsing("Spot Light", |ui| {
+                edit_vector(ui, "Color", &mut light.color, 0.01);
+                ui.add(
+                    DragValue::new(&mut light.intensity)
+                        .prefix("Intensity ")
+                        .range(0.0..=1_000_000.0)
+                        .speed(10.0),
+                );
+                ui.add(
+                    DragValue::new(&mut light.range)
+                        .prefix("Range ")
+                        .range(0.01..=100_000.0)
+                        .speed(0.1),
+                );
+                let mut inner = light.inner_angle.to_degrees();
+                let mut outer = light.outer_angle.to_degrees();
+                ui.add(
+                    egui::Slider::new(&mut inner, 0.1..=179.0)
+                        .text("Inner angle")
+                        .suffix(" deg"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut outer, inner..=179.0)
+                        .text("Outer angle")
+                        .suffix(" deg"),
+                );
+                light.inner_angle = inner.to_radians();
+                light.outer_angle = outer.max(inner).to_radians();
             });
         }
         ui.separator();

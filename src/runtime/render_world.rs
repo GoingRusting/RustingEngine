@@ -11,7 +11,8 @@ use crate::assets::{Handle, MaterialAsset, MeshAsset};
 
 use super::{
     AmbientLight, App, AppError, Camera, DirectionalLight, GlobalTransform,
-    MeshRenderer, Plugin, PointLight, Projection, ScheduleStage, Visibility,
+    MeshRenderer, Plugin, PointLight, Projection, ScheduleStage, SpotLight,
+    Visibility,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,6 +55,13 @@ pub struct ExtractedPointLight {
     pub light: PointLight,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExtractedSpotLight {
+    pub entity: Entity,
+    pub transform: GlobalTransform,
+    pub light: SpotLight,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExtractionReport {
     pub added: usize,
@@ -72,7 +80,9 @@ pub struct RenderWorld {
     pub active_camera: Option<ExtractedCamera>,
     pub directional_lights: Vec<ExtractedDirectionalLight>,
     pub point_lights: Vec<ExtractedPointLight>,
+    pub spot_lights: Vec<ExtractedSpotLight>,
     pub ambient_light: Option<AmbientLight>,
+    pub lights_revision: u64,
     pub dirty_ranges: Vec<Range<usize>>,
     pub report: ExtractionReport,
     /// Bodies whose newest runtime transforms will be owned by GPU compute.
@@ -117,6 +127,7 @@ pub fn extract_render_world(world: &mut World) {
     let active_camera = collect_active_camera(world);
     let directional_lights = collect_directional_lights(world);
     let point_lights = collect_point_lights(world);
+    let spot_lights = collect_spot_lights(world);
     let ambient_light = collect_ambient_light(world);
     let has_gpu_physics_resources = world
         .contains_resource::<super::PhysicsIdRegistry>()
@@ -216,9 +227,18 @@ pub fn extract_render_world(world: &mut World) {
     }
     render_world.renderables_signature = Some(renderables_signature);
     render_world.active_camera = active_camera;
-    render_world.directional_lights = directional_lights;
-    render_world.point_lights = point_lights;
-    render_world.ambient_light = ambient_light;
+    if render_world.directional_lights != directional_lights
+        || render_world.point_lights != point_lights
+        || render_world.spot_lights != spot_lights
+        || render_world.ambient_light != ambient_light
+    {
+        render_world.lights_revision =
+            render_world.lights_revision.wrapping_add(1);
+        render_world.directional_lights = directional_lights;
+        render_world.point_lights = point_lights;
+        render_world.spot_lights = spot_lights;
+        render_world.ambient_light = ambient_light;
+    }
     if let Some(gpu_physics) = gpu_physics {
         render_world.gpu_physics = gpu_physics;
         render_world.gpu_physics_revision =
@@ -343,6 +363,20 @@ fn collect_point_lights(world: &mut World) -> Vec<ExtractedPointLight> {
     let mut lights = query
         .iter(world)
         .map(|(entity, transform, light)| ExtractedPointLight {
+            entity,
+            transform: *transform,
+            light: *light,
+        })
+        .collect::<Vec<_>>();
+    lights.sort_by_key(|light| light.entity.to_bits());
+    lights
+}
+
+fn collect_spot_lights(world: &mut World) -> Vec<ExtractedSpotLight> {
+    let mut query = world.query::<(Entity, &GlobalTransform, &SpotLight)>();
+    let mut lights = query
+        .iter(world)
+        .map(|(entity, transform, light)| ExtractedSpotLight {
             entity,
             transform: *transform,
             light: *light,

@@ -2,6 +2,7 @@
 
 use std::hash::Hash;
 
+use super::super::icons::{paint_editor_icon, EditorIcon};
 use super::{button, ButtonProps, ElementStyle};
 
 /// Text, identity, and style used by one ComboBox.
@@ -18,6 +19,8 @@ pub struct ComboBoxProps<'a> {
     pub style: ElementStyle,
     /// Smallest width used by the opened list.
     pub popup_min_width: f32,
+    /// Optional code-drawn icon placed before the selected text.
+    pub leading_icon: Option<EditorIcon>,
 }
 
 impl<'a> ComboBoxProps<'a> {
@@ -31,6 +34,7 @@ impl<'a> ComboBoxProps<'a> {
             enabled: true,
             style: ElementStyle::default(),
             popup_min_width: 0.0,
+            leading_icon: None,
         }
     }
 }
@@ -56,23 +60,53 @@ pub fn combo_box<R>(
         enabled,
         style,
         popup_min_width,
+        leading_icon,
     } = props;
     // Resolve the local salt through this Ui. Two dock areas may use the same
     // component code, but each area has its own Ui ID and therefore its own
     // popup. Creating an Id directly from the salt would ignore that scope.
     let popup_id = ui.make_persistent_id(id_salt).with("popup");
-    // Keep this ASCII-only because the default editor font may not contain
-    // decorative arrow glyphs on every operating system.
-    let button_text = format!("{selected_text}  v");
+    let open = ui.memory(|memory| memory.is_popup_open(popup_id));
+    let mut button_style = style;
+    if leading_icon.is_some() {
+        button_style.padding.left += 18.0;
+    }
+    button_style.padding.right += 14.0;
     let response = button(
         ui,
         ButtonProps {
-            text: &button_text,
+            text: selected_text,
             tooltip,
             enabled,
-            style,
+            style: button_style,
         },
     );
+    let arrow_rect = egui::Rect::from_center_size(
+        egui::pos2(response.rect.right() - 10.0, response.rect.center().y),
+        egui::vec2(12.0, 12.0),
+    );
+    paint_editor_icon(
+        ui.painter(),
+        if open {
+            EditorIcon::ChevronUp
+        } else {
+            EditorIcon::ChevronDown
+        },
+        arrow_rect,
+        ui.style().interact(&response).text_color(),
+    );
+    if let Some(icon) = leading_icon {
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(response.rect.left() + 12.0, response.rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        paint_editor_icon(
+            ui.painter(),
+            icon,
+            icon_rect,
+            ui.style().interact(&response).text_color(),
+        );
+    }
 
     if enabled && response.clicked() {
         ui.memory_mut(|memory| memory.toggle_popup(popup_id));

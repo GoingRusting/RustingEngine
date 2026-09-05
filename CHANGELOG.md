@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.0] - 2026-08-31
+
+### Added
+
+- Added new shapes and light to "Add Object"
+- Now creating multiple light sources is possible
+
+### Reworked
+
+- Massive GUI update
+- Custom icons
+- Smaller everything to get more space
+- Floating buttons on scene view
+- Moved scene view setting to dropdown
+- Recreated "Add Object", now its a modal window with categories
+- Now every Object in Hierarchy is draggable to drag to other object and make it child of it
+- And few other little changes
+
+### Removed
+
+- Frame count from Header
+
 ## [1.0.2] - 2026-08-30
 
 ### Added

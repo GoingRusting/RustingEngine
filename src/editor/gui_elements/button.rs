@@ -25,6 +25,14 @@ impl<'a> ButtonProps<'a> {
 
 /// Draws a button whose box follows [`ElementStyle`] values.
 pub fn button(ui: &mut egui::Ui, props: ButtonProps<'_>) -> egui::Response {
+    button_with_sense(ui, props, egui::Sense::click())
+}
+
+pub(crate) fn button_with_sense(
+    ui: &mut egui::Ui,
+    props: ButtonProps<'_>,
+    enabled_sense: egui::Sense,
+) -> egui::Response {
     let ButtonProps {
         text,
         tooltip,
@@ -61,7 +69,7 @@ pub fn button(ui: &mut egui::Ui, props: ButtonProps<'_>) -> egui::Response {
         outer_rect.max - egui::vec2(style.margin.right, style.margin.bottom),
     );
     let sense = if enabled {
-        egui::Sense::click()
+        enabled_sense
     } else {
         egui::Sense::hover()
     };

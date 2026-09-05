@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 
-use nalgebra::{Matrix4, Orthographic3, Perspective3};
+use nalgebra::{Matrix4, Orthographic3, Perspective3, Vector4};
 use vulkano::buffer::{
     Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
 };
@@ -114,6 +114,17 @@ struct RenderInstanceUpload {
 #[derive(BufferContents, Clone, Copy)]
 struct CameraUniform {
     view_projection: [[f32; 4]; 4],
+    ambient: [f32; 4],
+    light_info: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(BufferContents, Clone, Copy, Debug, Default, PartialEq)]
+struct LightUpload {
+    position_kind: [f32; 4],
+    direction_range: [f32; 4],
+    color_intensity: [f32; 4],
+    spot_angles: [f32; 4],
 }
 
 #[repr(C)]
@@ -231,12 +242,20 @@ struct PreparedGpuPhysics {
     rules: Subbuffer<[GpuRuleState]>,
 }
 
+struct PreparedLights {
+    revision: u64,
+    buffer: Subbuffer<[LightUpload]>,
+    count: u32,
+    ambient: [f32; 4],
+}
+
 /// Resources reused when one swapchain image comes around again.
 struct PreparedFrame {
     graphics_set: Arc<DescriptorSet>,
     framebuffer: Arc<Framebuffer>,
     renderables_revision: u64,
     physics_revision: u64,
+    lights_revision: u64,
 }
 
 type PhysicsFence = Arc<FenceSignalFuture<Box<dyn GpuFuture>>>;
@@ -319,6 +338,7 @@ pub struct SceneRenderer {
     visible_meshes: Vec<Handle<MeshAsset>>,
     prepared_instances: Option<PreparedRenderInstances>,
     prepared_physics: Option<PreparedGpuPhysics>,
+    prepared_lights: Option<PreparedLights>,
     prepared_frames: HashMap<usize, PreparedFrame>,
     pending_physics: Vec<PendingPhysicsReadback>,
     completed_physics_events: Vec<RawGpuPhysicsEvent>,
@@ -386,6 +406,7 @@ impl SceneRenderer {
             visible_meshes: Vec::new(),
             prepared_instances: None,
             prepared_physics: None,
+            prepared_lights: None,
             prepared_frames: HashMap::new(),
             pending_physics: Vec::new(),
             completed_physics_events: Vec::new(),
@@ -413,9 +434,11 @@ impl SceneRenderer {
         self.ensure_depth(extent)?;
         self.prepare_visible_meshes(render_world, assets)?;
         self.prepare_gpu_physics(render_world)?;
+        self.prepare_lights(render_world)?;
         self.prepare_render_instances(render_world, assets)?;
 
         let physics = self.prepared_physics.as_ref().unwrap();
+        let lights = self.prepared_lights.as_ref().unwrap();
         let new_ticks = render_world
             .physics_tick
             .saturating_sub(self.last_physics_tick);
@@ -435,6 +458,7 @@ impl SceneRenderer {
                         1,
                         render_instances.instances.clone(),
                     ),
+                    WriteDescriptorSet::buffer(2, lights.buffer.clone()),
                 ],
                 [],
             )
@@ -454,6 +478,7 @@ impl SceneRenderer {
                     framebuffer,
                     renderables_revision: render_world.renderables_revision,
                     physics_revision: render_world.gpu_physics_revision,
+                    lights_revision: render_world.lights_revision,
                 },
             );
         }
@@ -461,6 +486,7 @@ impl SceneRenderer {
         let frame = self.prepared_frames.get_mut(&frame_key).unwrap();
         if frame.renderables_revision != render_world.renderables_revision
             || frame.physics_revision != render_world.gpu_physics_revision
+            || frame.lights_revision != render_world.lights_revision
         {
             frame.graphics_set = DescriptorSet::new(
                 self.descriptor_allocator.clone(),
@@ -471,18 +497,22 @@ impl SceneRenderer {
                         1,
                         render_instances.instances.clone(),
                     ),
+                    WriteDescriptorSet::buffer(2, lights.buffer.clone()),
                 ],
                 [],
             )
             .map_err(|error| SceneRenderError(error.to_string()))?;
             frame.renderables_revision = render_world.renderables_revision;
             frame.physics_revision = render_world.gpu_physics_revision;
+            frame.lights_revision = render_world.lights_revision;
         }
         let graphics_set = frame.graphics_set.clone();
         let framebuffer = frame.framebuffer.clone();
         let camera = CameraUniform {
             view_projection: view_projection(render_world, viewport.extent)
                 .into(),
+            ambient: lights.ambient,
+            light_info: [lights.count, 0, 0, 0],
         };
 
         // Physics runs at the fixed rate, which is commonly much lower than
@@ -770,6 +800,128 @@ impl SceneRenderer {
             self.prepared_meshes
                 .insert(key, self.prepare_mesh(mesh, revision)?);
         }
+        Ok(())
+    }
+
+    fn prepare_lights(
+        &mut self,
+        render_world: &RenderWorld,
+    ) -> Result<(), SceneRenderError> {
+        const MAX_LIGHTS: usize = 64;
+        if self.prepared_lights.as_ref().is_some_and(|prepared| {
+            prepared.revision == render_world.lights_revision
+        }) {
+            return Ok(());
+        }
+
+        let mut uploads = Vec::with_capacity(MAX_LIGHTS);
+        for extracted in &render_world.directional_lights {
+            if uploads.len() == MAX_LIGHTS {
+                break;
+            }
+            let direction = light_direction(extracted.transform.matrix);
+            uploads.push(LightUpload {
+                position_kind: [0.0, 0.0, 0.0, 0.0],
+                direction_range: [
+                    direction[0],
+                    direction[1],
+                    direction[2],
+                    0.0,
+                ],
+                color_intensity: [
+                    extracted.light.color[0],
+                    extracted.light.color[1],
+                    extracted.light.color[2],
+                    extracted.light.illuminance / 100_000.0,
+                ],
+                spot_angles: [0.0; 4],
+            });
+        }
+        for extracted in &render_world.point_lights {
+            if uploads.len() == MAX_LIGHTS {
+                break;
+            }
+            let position = light_position(extracted.transform.matrix);
+            uploads.push(LightUpload {
+                position_kind: [position[0], position[1], position[2], 1.0],
+                direction_range: [
+                    0.0,
+                    0.0,
+                    0.0,
+                    extracted.light.range.max(0.01),
+                ],
+                color_intensity: [
+                    extracted.light.color[0],
+                    extracted.light.color[1],
+                    extracted.light.color[2],
+                    extracted.light.intensity / 1_000.0,
+                ],
+                spot_angles: [0.0; 4],
+            });
+        }
+        for extracted in &render_world.spot_lights {
+            if uploads.len() == MAX_LIGHTS {
+                break;
+            }
+            let position = light_position(extracted.transform.matrix);
+            let direction = light_direction(extracted.transform.matrix);
+            uploads.push(LightUpload {
+                position_kind: [position[0], position[1], position[2], 2.0],
+                direction_range: [
+                    direction[0],
+                    direction[1],
+                    direction[2],
+                    extracted.light.range.max(0.01),
+                ],
+                color_intensity: [
+                    extracted.light.color[0],
+                    extracted.light.color[1],
+                    extracted.light.color[2],
+                    extracted.light.intensity / 1_000.0,
+                ],
+                spot_angles: [
+                    extracted.light.inner_angle.cos(),
+                    extracted.light.outer_angle.cos(),
+                    0.0,
+                    0.0,
+                ],
+            });
+        }
+        let count = uploads.len() as u32;
+        if uploads.is_empty() {
+            uploads.push(LightUpload::default());
+        }
+        let buffer = Buffer::from_iter(
+            self.memory_allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            uploads,
+        )
+        .map_err(|error| SceneRenderError(error.to_string()))?;
+        let ambient = render_world.ambient_light.map_or(
+            [0.12, 0.12, 0.12, 1.0],
+            |light| {
+                [
+                    light.color[0] * light.intensity,
+                    light.color[1] * light.intensity,
+                    light.color[2] * light.intensity,
+                    1.0,
+                ]
+            },
+        );
+        self.prepared_lights = Some(PreparedLights {
+            revision: render_world.lights_revision,
+            buffer,
+            count,
+            ambient,
+        });
         Ok(())
     }
 
@@ -1396,6 +1548,29 @@ fn matrix_from_array(matrix: [[f32; 4]; 4]) -> Matrix4<f32> {
     Matrix4::from_column_slice(&matrix.concat())
 }
 
+fn light_position(matrix: [[f32; 4]; 4]) -> [f32; 3] {
+    let matrix = matrix_from_array(matrix);
+    [matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]]
+}
+
+fn light_direction(matrix: [[f32; 4]; 4]) -> [f32; 3] {
+    let direction =
+        matrix_from_array(matrix) * Vector4::new(0.0, 0.0, -1.0, 0.0);
+    let length = (direction.x * direction.x
+        + direction.y * direction.y
+        + direction.z * direction.z)
+        .sqrt();
+    if length > f32::EPSILON {
+        [
+            direction.x / length,
+            direction.y / length,
+            direction.z / length,
+        ]
+    } else {
+        [0.0, 0.0, -1.0]
+    }
+}
+
 #[cfg(test)]
 fn normal_columns(model: Matrix4<f32>) -> [[f32; 4]; 3] {
     let linear = model.fixed_view::<3, 3>(0, 0).into_owned();
@@ -1422,6 +1597,8 @@ layout(location = 1) in vec3 normal;
 layout(location = 0) out vec3 v_normal;
 layout(push_constant) uniform Camera {
     mat4 view_projection;
+    vec4 ambient;
+    uvec4 light_info;
 } camera;
 struct PhysicsState {
     mat4 model;
@@ -1443,15 +1620,18 @@ layout(set = 0, binding = 1) readonly buffer RenderInstances {
     RenderInstance data[];
 } render_instances;
 layout(location = 1) out vec4 v_color;
+layout(location = 2) out vec3 v_world_position;
 void main() {
     RenderInstance instance = render_instances.data[gl_InstanceIndex];
     mat4 model = instance.physics.x == 0xffffffffu
         ? instance.model
         : physics_states.data[instance.physics.x].model;
-    gl_Position = camera.view_projection * model * vec4(position, 1.0);
+    vec4 world_position = model * vec4(position, 1.0);
+    gl_Position = camera.view_projection * world_position;
     mat3 normal_matrix = transpose(inverse(mat3(model)));
     v_normal = normal_matrix * normal;
     v_color = instance.color;
+    v_world_position = world_position.xyz;
 }
 "
                         }
@@ -1465,11 +1645,62 @@ mod fragment_shader {
 #version 450
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec4 v_color;
+layout(location = 2) in vec3 v_world_position;
 layout(location = 0) out vec4 f_color;
+layout(push_constant) uniform Camera {
+    mat4 view_projection;
+    vec4 ambient;
+    uvec4 light_info;
+} camera;
+struct Light {
+    vec4 position_kind;
+    vec4 direction_range;
+    vec4 color_intensity;
+    vec4 spot_angles;
+};
+layout(set = 0, binding = 2) readonly buffer Lights {
+    Light data[];
+} lights;
 void main() {
-    vec3 n = normalize(v_normal);
-    float diffuse = max(dot(n, normalize(vec3(0.4, 0.8, 0.5))), 0.0);
-    f_color = vec4(v_color.rgb * (0.22 + diffuse * 0.78), v_color.a);
+    vec3 normal = normalize(v_normal);
+    vec3 result = v_color.rgb * camera.ambient.rgb;
+    for (uint index = 0; index < camera.light_info.x; ++index) {
+        Light light = lights.data[index];
+        float kind = light.position_kind.w;
+        vec3 to_light;
+        float attenuation = 1.0;
+        if (kind < 0.5) {
+            to_light = normalize(-light.direction_range.xyz);
+        } else {
+            vec3 delta = light.position_kind.xyz - v_world_position;
+            float distance_to_light = length(delta);
+            to_light = distance_to_light > 0.0001
+                ? delta / distance_to_light
+                : vec3(0.0, 1.0, 0.0);
+            float range_fade = clamp(
+                1.0 - distance_to_light / light.direction_range.w,
+                0.0,
+                1.0
+            );
+            attenuation = range_fade * range_fade;
+            if (kind > 1.5) {
+                float cone = dot(
+                    -to_light,
+                    normalize(light.direction_range.xyz)
+                );
+                attenuation *= smoothstep(
+                    light.spot_angles.y,
+                    light.spot_angles.x,
+                    cone
+                );
+            }
+        }
+        float diffuse = max(dot(normal, to_light), 0.0);
+        vec3 radiance = light.color_intensity.rgb
+            * light.color_intensity.w * attenuation;
+        result += v_color.rgb * radiance * diffuse;
+    }
+    f_color = vec4(result, v_color.a);
 }
 "
                         }
@@ -1790,6 +2021,19 @@ mod tests {
         assert_eq!(size_of::<RenderInstanceUpload>(), 96);
         assert_eq!(offset_of!(RenderInstanceUpload, color), 64);
         assert_eq!(offset_of!(RenderInstanceUpload, physics), 80);
+    }
+
+    #[test]
+    fn light_gpu_layouts_match_shader_structs() {
+        use std::mem::{offset_of, size_of};
+
+        assert_eq!(size_of::<CameraUniform>(), 96);
+        assert_eq!(offset_of!(CameraUniform, ambient), 64);
+        assert_eq!(offset_of!(CameraUniform, light_info), 80);
+        assert_eq!(size_of::<LightUpload>(), 64);
+        assert_eq!(offset_of!(LightUpload, direction_range), 16);
+        assert_eq!(offset_of!(LightUpload, color_intensity), 32);
+        assert_eq!(offset_of!(LightUpload, spot_angles), 48);
     }
 
     #[test]

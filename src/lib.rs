@@ -18,7 +18,7 @@ pub mod tests;
 
 pub use assets::{
     AssetPlugin, AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset,
-    MaterialModel, MeshAsset, SceneAsset, TextureAsset,
+    MaterialModel, MeshAsset, PrimitiveShape, SceneAsset, TextureAsset,
 };
 pub use core::collisions::CollisionType;
 pub use core::{Material, MaterialBuilder, Physics, ShaderType, Transform};

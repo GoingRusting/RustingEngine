@@ -185,8 +185,12 @@ fn dock_header_buttons_have_the_same_size_and_height() {
     let _ = context.run(input, |context| {
         CentralPanel::default().show(context, |ui| {
             ui.horizontal(|ui| {
-                for symbol in ["<>", "||", "x"] {
-                    rects.push(dock_header_button(ui, symbol, "test").rect);
+                for icon in [
+                    EditorIcon::SplitColumns,
+                    EditorIcon::SplitRows,
+                    EditorIcon::Close,
+                ] {
+                    rects.push(dock_header_button(ui, icon, "test").rect);
                 }
             });
         });

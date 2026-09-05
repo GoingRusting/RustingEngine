@@ -428,6 +428,58 @@ pub struct MeshAsset {
     pub indices: Vec<u32>,
 }
 
+/// Procedural meshes shipped with the engine and available in Add Object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PrimitiveShape {
+    Cube,
+    Sphere,
+    Triangle,
+    Plane,
+    Tetrahedron,
+    Octahedron,
+    Dodecahedron,
+    Icosahedron,
+    Pyramid,
+    Cylinder,
+    Cone,
+    Torus,
+}
+
+impl PrimitiveShape {
+    pub const ALL: [Self; 12] = [
+        Self::Cube,
+        Self::Sphere,
+        Self::Triangle,
+        Self::Plane,
+        Self::Tetrahedron,
+        Self::Octahedron,
+        Self::Dodecahedron,
+        Self::Icosahedron,
+        Self::Pyramid,
+        Self::Cylinder,
+        Self::Cone,
+        Self::Torus,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cube => "Cube",
+            Self::Sphere => "Sphere",
+            Self::Triangle => "Triangle",
+            Self::Plane => "Plane",
+            Self::Tetrahedron => "Tetrahedron",
+            Self::Octahedron => "Octahedron",
+            Self::Dodecahedron => "Dodecahedron",
+            Self::Icosahedron => "Icosahedron",
+            Self::Pyramid => "Pyramid",
+            Self::Cylinder => "Cylinder",
+            Self::Cone => "Cone",
+            Self::Torus => "Torus",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureColorSpace {
     Srgb,
@@ -494,6 +546,8 @@ pub struct AssetServer {
     pub fallback_mesh: Handle<MeshAsset>,
     /// Shared smooth sphere used by the editor's Add Sphere action.
     pub builtin_sphere: Handle<MeshAsset>,
+    /// Every procedural primitive, keyed by its stable serialized identity.
+    pub builtin_primitives: HashMap<PrimitiveShape, Handle<MeshAsset>>,
     pub fallback_texture: Handle<TextureAsset>,
     pub fallback_material: Handle<MaterialAsset>,
 }
@@ -510,6 +564,26 @@ pub struct ImportedGltfPrimitive {
 }
 
 impl AssetServer {
+    #[must_use]
+    pub fn builtin_primitive(
+        &self,
+        shape: PrimitiveShape,
+    ) -> Handle<MeshAsset> {
+        self.builtin_primitives[&shape]
+    }
+
+    #[must_use]
+    pub fn primitive_for_handle(
+        &self,
+        handle: Handle<MeshAsset>,
+    ) -> Option<PrimitiveShape> {
+        self.builtin_primitives
+            .iter()
+            .find_map(|(shape, candidate)| {
+                (*candidate == handle).then_some(*shape)
+            })
+    }
+
     /// Loads an engine-native mesh created by the glTF importer.
     pub fn load_mesh(
         &mut self,
@@ -679,8 +753,13 @@ impl AssetServer {
 impl Default for AssetServer {
     fn default() -> Self {
         let mut meshes = Assets::default();
-        let fallback_mesh = meshes.insert(fallback_cube());
-        let builtin_sphere = meshes.insert(procedural_sphere_mesh(16));
+        let mut builtin_primitives = HashMap::new();
+        for shape in PrimitiveShape::ALL {
+            builtin_primitives
+                .insert(shape, meshes.insert(procedural_primitive_mesh(shape)));
+        }
+        let fallback_mesh = builtin_primitives[&PrimitiveShape::Cube];
+        let builtin_sphere = builtin_primitives[&PrimitiveShape::Sphere];
         let mut textures = Assets::default();
         let fallback_texture = textures.insert(TextureAsset {
             size: [1, 1],
@@ -700,6 +779,7 @@ impl Default for AssetServer {
             scenes: Assets::default(),
             fallback_mesh,
             builtin_sphere,
+            builtin_primitives,
             fallback_texture,
             fallback_material,
         }
@@ -753,6 +833,363 @@ pub fn procedural_sphere_mesh(subdivisions: u32) -> MeshAsset {
         }
     }
     MeshAsset { vertices, indices }
+}
+
+/// Builds the CPU mesh used for one built-in editor primitive.
+#[must_use]
+pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
+    match shape {
+        PrimitiveShape::Cube => fallback_cube(),
+        PrimitiveShape::Sphere => procedural_sphere_mesh(16),
+        PrimitiveShape::Triangle => mesh_from_triangles(&[[
+            [-0.5, -0.5, 0.0],
+            [0.5, -0.5, 0.0],
+            [0.0, 0.5, 0.0],
+        ]]),
+        PrimitiveShape::Plane => mesh_from_triangles(&[
+            [[-0.5, 0.0, -0.5], [-0.5, 0.0, 0.5], [0.5, 0.0, 0.5]],
+            [[-0.5, 0.0, -0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5]],
+        ]),
+        PrimitiveShape::Tetrahedron => polyhedron_mesh(
+            &[
+                [0.5, 0.5, 0.5],
+                [-0.5, -0.5, 0.5],
+                [-0.5, 0.5, -0.5],
+                [0.5, -0.5, -0.5],
+            ],
+            &[[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
+        ),
+        PrimitiveShape::Octahedron => polyhedron_mesh(
+            &[
+                [0.5, 0.0, 0.0],
+                [-0.5, 0.0, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.0, -0.5, 0.0],
+                [0.0, 0.0, 0.5],
+                [0.0, 0.0, -0.5],
+            ],
+            &[
+                [0, 2, 4],
+                [4, 2, 1],
+                [1, 2, 5],
+                [5, 2, 0],
+                [4, 3, 0],
+                [1, 3, 4],
+                [5, 3, 1],
+                [0, 3, 5],
+            ],
+        ),
+        PrimitiveShape::Dodecahedron => dodecahedron_mesh(),
+        PrimitiveShape::Icosahedron => icosahedron_mesh(),
+        PrimitiveShape::Pyramid => pyramid_mesh(),
+        PrimitiveShape::Cylinder => cylinder_mesh(32),
+        PrimitiveShape::Cone => cone_mesh(32),
+        PrimitiveShape::Torus => torus_mesh(32, 12),
+    }
+}
+
+fn mesh_from_triangles(triangles: &[[[f32; 3]; 3]]) -> MeshAsset {
+    let mut vertices = Vec::with_capacity(triangles.len() * 3);
+    let mut indices = Vec::with_capacity(triangles.len() * 3);
+    for triangle in triangles {
+        let edge_a = subtract(triangle[1], triangle[0]);
+        let edge_b = subtract(triangle[2], triangle[0]);
+        let normal = normalize3(cross(edge_a, edge_b));
+        let base = vertices.len() as u32;
+        for (position, uv) in
+            triangle
+                .iter()
+                .copied()
+                .zip([[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]])
+        {
+            vertices.push(MeshVertex {
+                position,
+                normal,
+                uv,
+                tangent: [1.0, 0.0, 0.0, 1.0],
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+    MeshAsset { vertices, indices }
+}
+
+fn polyhedron_mesh(points: &[[f32; 3]], faces: &[[usize; 3]]) -> MeshAsset {
+    let triangles = faces
+        .iter()
+        .map(|face| {
+            let mut triangle =
+                [points[face[0]], points[face[1]], points[face[2]]];
+            let normal = cross(
+                subtract(triangle[1], triangle[0]),
+                subtract(triangle[2], triangle[0]),
+            );
+            let center = [
+                (triangle[0][0] + triangle[1][0] + triangle[2][0]) / 3.0,
+                (triangle[0][1] + triangle[1][1] + triangle[2][1]) / 3.0,
+                (triangle[0][2] + triangle[1][2] + triangle[2][2]) / 3.0,
+            ];
+            if dot(normal, center) < 0.0 {
+                triangle.swap(1, 2);
+            }
+            triangle
+        })
+        .collect::<Vec<_>>();
+    mesh_from_triangles(&triangles)
+}
+
+fn icosahedron_mesh() -> MeshAsset {
+    let golden = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let raw = [
+        [-1.0, golden, 0.0],
+        [1.0, golden, 0.0],
+        [-1.0, -golden, 0.0],
+        [1.0, -golden, 0.0],
+        [0.0, -1.0, golden],
+        [0.0, 1.0, golden],
+        [0.0, -1.0, -golden],
+        [0.0, 1.0, -golden],
+        [golden, 0.0, -1.0],
+        [golden, 0.0, 1.0],
+        [-golden, 0.0, -1.0],
+        [-golden, 0.0, 1.0],
+    ];
+    let points = raw.map(|point| {
+        let normal = normalize3(point);
+        [normal[0] * 0.5, normal[1] * 0.5, normal[2] * 0.5]
+    });
+    polyhedron_mesh(
+        &points,
+        &[
+            [0, 11, 5],
+            [0, 5, 1],
+            [0, 1, 7],
+            [0, 7, 10],
+            [0, 10, 11],
+            [1, 5, 9],
+            [5, 11, 4],
+            [11, 10, 2],
+            [10, 7, 6],
+            [7, 1, 8],
+            [3, 9, 4],
+            [3, 4, 2],
+            [3, 2, 6],
+            [3, 6, 8],
+            [3, 8, 9],
+            [4, 9, 5],
+            [2, 4, 11],
+            [6, 2, 10],
+            [8, 6, 7],
+            [9, 8, 1],
+        ],
+    )
+}
+
+fn dodecahedron_mesh() -> MeshAsset {
+    let golden = (1.0 + 5.0_f32.sqrt()) * 0.5;
+    let inverse = 1.0 / golden;
+    let raw = [
+        [-1.0, -1.0, -1.0],
+        [-1.0, -1.0, 1.0],
+        [-1.0, 1.0, -1.0],
+        [-1.0, 1.0, 1.0],
+        [1.0, -1.0, -1.0],
+        [1.0, -1.0, 1.0],
+        [1.0, 1.0, -1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, -inverse, -golden],
+        [0.0, -inverse, golden],
+        [0.0, inverse, -golden],
+        [0.0, inverse, golden],
+        [-inverse, -golden, 0.0],
+        [-inverse, golden, 0.0],
+        [inverse, -golden, 0.0],
+        [inverse, golden, 0.0],
+        [-golden, 0.0, -inverse],
+        [golden, 0.0, -inverse],
+        [-golden, 0.0, inverse],
+        [golden, 0.0, inverse],
+    ];
+    let scale = 0.5 / 3.0_f32.sqrt();
+    let points =
+        raw.map(|point| [point[0] * scale, point[1] * scale, point[2] * scale]);
+    let mut face_sets = Vec::<Vec<usize>>::new();
+    for first in 0..points.len() - 2 {
+        for second in first + 1..points.len() - 1 {
+            for third in second + 1..points.len() {
+                let mut normal = cross(
+                    subtract(points[second], points[first]),
+                    subtract(points[third], points[first]),
+                );
+                if dot(normal, normal) < 1.0e-8 {
+                    continue;
+                }
+                normal = normalize3(normal);
+                let plane = dot(normal, points[first]);
+                let distances = points.map(|point| dot(normal, point) - plane);
+                let supports_hull = distances
+                    .iter()
+                    .all(|distance| *distance <= 1.0e-4)
+                    || distances.iter().all(|distance| *distance >= -1.0e-4);
+                if !supports_hull {
+                    continue;
+                }
+                let face = distances
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, distance)| {
+                        (distance.abs() <= 1.0e-4).then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if face.len() == 5 && !face_sets.contains(&face) {
+                    face_sets.push(face);
+                }
+            }
+        }
+    }
+
+    let mut triangles = Vec::with_capacity(36);
+    for mut face in face_sets {
+        let center = face.iter().fold([0.0; 3], |mut sum, index| {
+            for axis in 0..3 {
+                sum[axis] += points[*index][axis] / 5.0;
+            }
+            sum
+        });
+        let normal = normalize3(center);
+        let basis_x = normalize3(subtract(points[face[0]], center));
+        let basis_y = cross(normal, basis_x);
+        face.sort_by(|left, right| {
+            let left_delta = subtract(points[*left], center);
+            let right_delta = subtract(points[*right], center);
+            let left_angle =
+                dot(left_delta, basis_y).atan2(dot(left_delta, basis_x));
+            let right_angle =
+                dot(right_delta, basis_y).atan2(dot(right_delta, basis_x));
+            left_angle.total_cmp(&right_angle)
+        });
+        for corner in 1..face.len() - 1 {
+            triangles.push([
+                points[face[0]],
+                points[face[corner]],
+                points[face[corner + 1]],
+            ]);
+        }
+    }
+    mesh_from_triangles(&triangles)
+}
+
+fn pyramid_mesh() -> MeshAsset {
+    polyhedron_mesh(
+        &[
+            [-0.5, -0.5, -0.5],
+            [0.5, -0.5, -0.5],
+            [0.5, -0.5, 0.5],
+            [-0.5, -0.5, 0.5],
+            [0.0, 0.5, 0.0],
+        ],
+        &[
+            [0, 1, 2],
+            [0, 2, 3],
+            [0, 4, 1],
+            [1, 4, 2],
+            [2, 4, 3],
+            [3, 4, 0],
+        ],
+    )
+}
+
+fn cylinder_mesh(segments: u32) -> MeshAsset {
+    let mut triangles = Vec::with_capacity((segments * 4) as usize);
+    for step in 0..segments {
+        let a = std::f32::consts::TAU * step as f32 / segments as f32;
+        let b = std::f32::consts::TAU * (step + 1) as f32 / segments as f32;
+        let bottom_a = [0.5 * a.cos(), -0.5, 0.5 * a.sin()];
+        let bottom_b = [0.5 * b.cos(), -0.5, 0.5 * b.sin()];
+        let top_a = [bottom_a[0], 0.5, bottom_a[2]];
+        let top_b = [bottom_b[0], 0.5, bottom_b[2]];
+        triangles.extend_from_slice(&[
+            [bottom_a, top_b, bottom_b],
+            [bottom_a, top_a, top_b],
+            [[0.0, 0.5, 0.0], top_b, top_a],
+            [[0.0, -0.5, 0.0], bottom_a, bottom_b],
+        ]);
+    }
+    mesh_from_triangles(&triangles)
+}
+
+fn cone_mesh(segments: u32) -> MeshAsset {
+    let mut triangles = Vec::with_capacity((segments * 2) as usize);
+    for step in 0..segments {
+        let a = std::f32::consts::TAU * step as f32 / segments as f32;
+        let b = std::f32::consts::TAU * (step + 1) as f32 / segments as f32;
+        let point_a = [0.5 * a.cos(), -0.5, 0.5 * a.sin()];
+        let point_b = [0.5 * b.cos(), -0.5, 0.5 * b.sin()];
+        triangles.push([point_a, [0.0, 0.5, 0.0], point_b]);
+        triangles.push([[0.0, -0.5, 0.0], point_a, point_b]);
+    }
+    mesh_from_triangles(&triangles)
+}
+
+fn torus_mesh(major_segments: u32, minor_segments: u32) -> MeshAsset {
+    let mut vertices =
+        Vec::with_capacity((major_segments * minor_segments) as usize);
+    for major in 0..major_segments {
+        let u = std::f32::consts::TAU * major as f32 / major_segments as f32;
+        for minor in 0..minor_segments {
+            let v =
+                std::f32::consts::TAU * minor as f32 / minor_segments as f32;
+            let normal = [u.cos() * v.cos(), v.sin(), u.sin() * v.cos()];
+            let ring = 0.36 + 0.14 * v.cos();
+            vertices.push(MeshVertex {
+                position: [ring * u.cos(), 0.14 * v.sin(), ring * u.sin()],
+                normal,
+                uv: [
+                    major as f32 / major_segments as f32,
+                    minor as f32 / minor_segments as f32,
+                ],
+                tangent: [-u.sin(), 0.0, u.cos(), 1.0],
+            });
+        }
+    }
+    let mut indices =
+        Vec::with_capacity((major_segments * minor_segments * 6) as usize);
+    for major in 0..major_segments {
+        for minor in 0..minor_segments {
+            let a = major * minor_segments + minor;
+            let b = ((major + 1) % major_segments) * minor_segments + minor;
+            let c = major * minor_segments + (minor + 1) % minor_segments;
+            let d = ((major + 1) % major_segments) * minor_segments
+                + (minor + 1) % minor_segments;
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+    MeshAsset { vertices, indices }
+}
+
+fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn normalize3(value: [f32; 3]) -> [f32; 3] {
+    let length = dot(value, value).sqrt();
+    if length > f32::EPSILON {
+        [value[0] / length, value[1] / length, value[2] / length]
+    } else {
+        [0.0, 1.0, 0.0]
+    }
 }
 
 fn fallback_cube() -> MeshAsset {
@@ -954,5 +1391,33 @@ mod tests {
         assert_eq!(server.meshes.get(handle), Some(&mesh));
         assert_eq!(server.load_mesh(&path).unwrap(), handle);
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn every_builtin_primitive_has_valid_triangle_geometry() {
+        let server = AssetServer::default();
+        for shape in PrimitiveShape::ALL {
+            let handle = server.builtin_primitive(shape);
+            let mesh = server.meshes.get(handle).unwrap();
+            assert!(
+                !mesh.vertices.is_empty(),
+                "{} has no vertices",
+                shape.label()
+            );
+            assert_eq!(
+                mesh.indices.len() % 3,
+                0,
+                "{} is not triangulated",
+                shape.label()
+            );
+            assert!(
+                mesh.indices
+                    .iter()
+                    .all(|index| (*index as usize) < mesh.vertices.len()),
+                "{} contains an invalid index",
+                shape.label()
+            );
+            assert_eq!(server.primitive_for_handle(handle), Some(shape));
+        }
     }
 }

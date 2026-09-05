@@ -125,7 +125,7 @@ impl ObjectClasses {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DirectionalLight {
     pub color: [f32; 3],
     pub illuminance: f32,
@@ -142,11 +142,34 @@ impl Default for DirectionalLight {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PointLight {
     pub color: [f32; 3],
     pub intensity: f32,
     pub range: f32,
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpotLight {
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub range: f32,
+    /// Fully illuminated cone angle in radians.
+    pub inner_angle: f32,
+    /// Outer cone angle in radians where illumination reaches zero.
+    pub outer_angle: f32,
+}
+
+impl Default for SpotLight {
+    fn default() -> Self {
+        Self {
+            color: [1.0; 3],
+            intensity: 1_000.0,
+            range: 10.0,
+            inner_angle: 20.0_f32.to_radians(),
+            outer_angle: 35.0_f32.to_radians(),
+        }
+    }
 }
 
 impl Default for PointLight {
@@ -159,7 +182,7 @@ impl Default for PointLight {
     }
 }
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AmbientLight {
     pub color: [f32; 3],
     pub intensity: f32,

@@ -9,6 +9,9 @@ use crate::Transform;
 
 use super::{gui_elements, EditorState, EntityRequest};
 
+#[derive(Clone, Copy)]
+struct HierarchyDrag(Entity);
+
 /// One visible row in the expanded Hierarchy tree.
 pub(super) struct HierarchyItem {
     pub(super) entity: Entity,
@@ -137,81 +140,18 @@ pub(super) fn draw_hierarchy_area(
     }) {
         state.rename_target = None;
     }
-    gui_elements::EditorTheme::toolbar_combo_box_with_popup(
+    if gui_elements::EditorTheme::toolbar_icon_button(
         ui,
-        "hierarchy_add_object",
         "Add Object",
+        super::EditorIcon::AddObject,
         120.0,
-        240.0,
-        |ui| {
-            gui_elements::EditorTheme::menu_section(ui, "OBJECT TYPE");
-            if gui_elements::EditorTheme::menu_action(ui, "Empty Object", true)
-                .clicked()
-            {
-                *entity_request = Some(EntityRequest::CreateEmpty);
-            }
-            if gui_elements::EditorTheme::menu_action(ui, "Cube", true)
-                .clicked()
-            {
-                *entity_request = Some(EntityRequest::CreateCube);
-            }
-            if gui_elements::EditorTheme::menu_action(ui, "Sphere", true)
-                .clicked()
-            {
-                *entity_request = Some(EntityRequest::CreateSphere);
-            }
-            if gui_elements::EditorTheme::menu_action(ui, "Camera", true)
-                .clicked()
-            {
-                *entity_request = Some(EntityRequest::CreateCamera);
-            }
-        },
-    );
-    if let Some(selected) = state.selected {
-        let current_parent =
-            world.get::<Parent>(selected).map(|parent| parent.0);
-        let parent_name = current_parent
-            .and_then(|entity| world.get::<Name>(entity))
-            .map_or("Scene Root", |name| name.0.as_str());
-        ui.label("Parent");
-        let parent_control_width = ui.available_width().clamp(100.0, 220.0);
-        gui_elements::EditorTheme::toolbar_combo_box_with_popup(
-            ui,
-            "hierarchy_parent_selector",
-            parent_name,
-            parent_control_width,
-            240.0,
-            |ui| {
-                gui_elements::EditorTheme::menu_section(ui, "MOVE BELOW");
-                if gui_elements::EditorTheme::menu_choice(
-                    ui,
-                    "Scene Root",
-                    current_parent.is_none(),
-                    true,
-                )
-                .clicked()
-                {
-                    *entity_request =
-                        Some(EntityRequest::Reparent(selected, None));
-                }
-                for item in entities {
-                    if item.entity != selected
-                        && gui_elements::EditorTheme::menu_choice(
-                            ui,
-                            &item.name,
-                            current_parent == Some(item.entity),
-                            true,
-                        )
-                        .clicked()
-                    {
-                        *entity_request = Some(EntityRequest::Reparent(
-                            selected,
-                            Some(item.entity),
-                        ));
-                    }
-                }
-            },
-        );
+        true,
+    )
+    .on_hover_text("Open the object catalog")
+    .clicked()
+    {
+        state.add_object_parent = None;
+        state.add_object_modal_open = true;
     }
     ui.separator();
     egui::ScrollArea::both()
@@ -232,6 +172,35 @@ pub(super) fn draw_hierarchy_area(
                     item.depth,
                     state.selected == Some(item.entity),
                 );
+                response.dnd_set_drag_payload(HierarchyDrag(item.entity));
+                if let Some(payload) =
+                    response.dnd_hover_payload::<HierarchyDrag>()
+                {
+                    let valid = can_reparent(world, payload.0, item.entity);
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        5.0,
+                        egui::Stroke::new(
+                            2.0_f32,
+                            if valid {
+                                gui_elements::EditorTheme::ACCENT_HOVER
+                            } else {
+                                egui::Color32::LIGHT_RED
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if let Some(payload) =
+                    response.dnd_release_payload::<HierarchyDrag>()
+                {
+                    if can_reparent(world, payload.0, item.entity) {
+                        *entity_request = Some(EntityRequest::Reparent(
+                            payload.0,
+                            Some(item.entity),
+                        ));
+                    }
+                }
                 if response.clicked() || response.secondary_clicked() {
                     select_item(
                         world,
@@ -247,6 +216,16 @@ pub(super) fn draw_hierarchy_area(
                 response.context_menu(|ui| {
                     ui.set_min_width(220.0);
                     gui_elements::EditorTheme::menu_section(ui, "OBJECT");
+                    if gui_elements::EditorTheme::menu_action(
+                        ui,
+                        "Add Child Object...",
+                        true,
+                    )
+                    .clicked()
+                    {
+                        state.add_object_parent = Some(item.entity);
+                        state.add_object_modal_open = true;
+                    }
                     if gui_elements::EditorTheme::menu_action(
                         ui, "Rename", true,
                     )
@@ -266,6 +245,17 @@ pub(super) fn draw_hierarchy_area(
                         *entity_request =
                             Some(EntityRequest::Duplicate(item.entity));
                     }
+                    if world.get::<Parent>(item.entity).is_some()
+                        && gui_elements::EditorTheme::menu_action(
+                            ui,
+                            "Move to Scene Root",
+                            true,
+                        )
+                        .clicked()
+                    {
+                        *entity_request =
+                            Some(EntityRequest::Reparent(item.entity, None));
+                    }
                     gui_elements::EditorTheme::menu_section(ui, "DANGER");
                     if gui_elements::EditorTheme::menu_action(
                         ui, "Delete", true,
@@ -278,6 +268,24 @@ pub(super) fn draw_hierarchy_area(
                 });
             }
         });
+}
+
+fn can_reparent(world: &World, child: Entity, parent: Entity) -> bool {
+    if child == parent
+        || world.get_entity(child).is_err()
+        || world.get_entity(parent).is_err()
+    {
+        return false;
+    }
+    let mut ancestor = Some(parent);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(entity) = ancestor {
+        if entity == child || !visited.insert(entity) {
+            return false;
+        }
+        ancestor = world.get::<Parent>(entity).map(|parent| parent.0);
+    }
+    true
 }
 
 /// Copies one clicked tree row into editor selection and Inspector drafts.
@@ -376,6 +384,19 @@ mod tests {
                 (second_root, 0)
             ]
         );
+    }
+
+    #[test]
+    fn drag_parenting_rejects_self_and_descendant_cycles() {
+        let mut world = World::new();
+        let root = world.spawn(Name("Root".into())).id();
+        let child = world.spawn((Name("Child".into()), Parent(root))).id();
+        let grandchild =
+            world.spawn((Name("Grandchild".into()), Parent(child))).id();
+
+        assert!(!can_reparent(&world, root, grandchild));
+        assert!(!can_reparent(&world, child, child));
+        assert!(can_reparent(&world, grandchild, root));
     }
 
     #[test]

@@ -1,9 +1,11 @@
 //! Shared modern editor palette and component styles.
 
 use super::{
-    button, combo_box, BorderStyle, ButtonProps, ComboBoxProps,
-    ComboBoxResponse, Edges, ElementStyle, ShadowStyle,
+    button, button_with_sense, combo_box, BorderStyle, ButtonProps,
+    ComboBoxProps, ComboBoxResponse, Edges, ElementStyle, ShadowStyle,
 };
+use crate::editor::icons::paint_editor_icon;
+use crate::editor::EditorIcon;
 
 /// Colors and ready-to-use styles for the RustingEngine editor.
 pub struct EditorTheme;
@@ -133,6 +135,40 @@ impl EditorTheme {
         )
     }
 
+    /// Toolbar button with a code-drawn icon before its text.
+    pub fn toolbar_icon_button(
+        ui: &mut egui::Ui,
+        text: &str,
+        icon: EditorIcon,
+        width: f32,
+        enabled: bool,
+    ) -> egui::Response {
+        let label = format!("    {text}");
+        let response = button(
+            ui,
+            ButtonProps {
+                text: &label,
+                tooltip: None,
+                enabled,
+                style: ElementStyle {
+                    width: super::Length::Px(width),
+                    ..Self::toolbar_control_style(false)
+                },
+            },
+        );
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(response.rect.left() + 14.0, response.rect.center().y),
+            egui::vec2(15.0, 15.0),
+        );
+        paint_editor_icon(
+            ui.painter(),
+            icon,
+            icon_rect,
+            ui.style().interact(&response).text_color(),
+        );
+        response
+    }
+
     /// ComboBox that aligns exactly with buttons in the main toolbar.
     pub fn toolbar_combo_box<R>(
         ui: &mut egui::Ui,
@@ -167,6 +203,31 @@ impl EditorTheme {
         combo_box(
             ui,
             ComboBoxProps {
+                style: ElementStyle {
+                    width: super::Length::Px(control_width),
+                    ..Self::toolbar_control_style(false)
+                },
+                popup_min_width: popup_width,
+                ..ComboBoxProps::new(id_salt, selected_text)
+            },
+            add_contents,
+        )
+    }
+
+    /// Toolbar ComboBox with a code-drawn icon before its label.
+    pub fn toolbar_icon_combo_box_with_popup<R>(
+        ui: &mut egui::Ui,
+        id_salt: impl std::hash::Hash,
+        selected_text: &str,
+        icon: super::super::EditorIcon,
+        control_width: f32,
+        popup_width: f32,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> ComboBoxResponse<R> {
+        combo_box(
+            ui,
+            ComboBoxProps {
+                leading_icon: Some(icon),
                 style: ElementStyle {
                     width: super::Length::Px(control_width),
                     ..Self::toolbar_control_style(false)
@@ -235,7 +296,23 @@ impl EditorTheme {
         selected: bool,
         enabled: bool,
     ) -> egui::Response {
-        button(
+        Self::menu_item_with_sense(
+            ui,
+            text,
+            selected,
+            enabled,
+            egui::Sense::click(),
+        )
+    }
+
+    fn menu_item_with_sense(
+        ui: &mut egui::Ui,
+        text: &str,
+        selected: bool,
+        enabled: bool,
+        sense: egui::Sense,
+    ) -> egui::Response {
+        button_with_sense(
             ui,
             ButtonProps {
                 text,
@@ -267,6 +344,7 @@ impl EditorTheme {
                     ..ElementStyle::default()
                 },
             },
+            sense,
         )
     }
 
@@ -282,7 +360,13 @@ impl EditorTheme {
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(depth as f32 * INDENT);
-                Self::menu_choice(ui, text, selected, true)
+                Self::menu_item_with_sense(
+                    ui,
+                    text,
+                    selected,
+                    true,
+                    egui::Sense::click_and_drag(),
+                )
             })
             .inner;
 
