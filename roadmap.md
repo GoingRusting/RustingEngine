@@ -8,6 +8,49 @@ This document is the implementation source of truth. Tasks should be completed i
 
 Long-lived ownership boundaries and dependency rules are recorded in [`architecture.md`](architecture.md). Roadmap work must preserve those boundaries or document a migration before changing them.
 
+## Working agreement for implementation sessions
+
+This roadmap lists outcomes, not tasks. Turning an outcome into a task is part of the work, not a reason to stop.
+
+### How to pick an item
+
+Pick the lowest-numbered unchecked item whose dependencies are satisfied. Milestones 2, 3, 4, and 5 are parallel tracks and may be interleaved. If an item is too large for one session, split it, implement the first part, and record the split in this file as sub-items.
+
+### What counts as verification
+
+Not every item is provable the same way. Match the proof to the item instead of treating "I cannot run the game" as a universal blocker.
+
+| Kind of item | Required proof |
+| --- | --- |
+| Types, APIs, error handling, identity mapping | Unit test |
+| ECS, assets, serialization, scene round-trip | Unit test, no GPU |
+| Extraction, dirty ranges, ordering, capacity policy | Unit test on data structures, no GPU |
+| Buffer layout, push constants, vertex formats | Generated/reflected layout assertion, no GPU |
+| Shader source changes | Shader compiles in the build, plus a layout assertion |
+| Compute dispatch behaviour, readback, physics results | Headless Vulkan test, software device acceptable |
+| Rendered output correctness | Headless offscreen render plus golden-image comparison |
+| Frame pacing, throughput, memory growth | Hardware GPU run, cannot be verified in software |
+| Determinism across vendors | Two different Vulkan implementations |
+
+Only the last two rows genuinely require hardware. Everything above them is verifiable on a headless machine once Milestone 0.5 exists. Until Milestone 0.5 exists, GPU-behaviour items are blocked by missing tooling, not by the roadmap.
+
+### When blocked
+
+Do not stop with nothing delivered. In order:
+
+1. Implement the part that is verifiable now, behind a compiling intermediate state.
+2. Write the unverified part as a test marked `#[ignore]` with the reason, so the proof is ready when hardware is.
+3. Add the blocker as a new unchecked item in this file, naming what is missing.
+4. Move to the next item.
+
+### Constraints must live in the repository
+
+Any file or subsystem an implementation session must not touch belongs in `AGENTS.md` at the repository root, with the reason. A constraint that exists only in one session's context cannot be respected by the next session and must not be invented.
+
+### Performance numbers
+
+Performance targets are acceptance gates for a milestone, never individual tasks. Never treat a frame-rate number as an item to implement.
+
 ## Product target
 
 The first major release should provide:
@@ -97,8 +140,10 @@ Goal: establish a trustworthy baseline before adding architecture or features.
 
 ### Remaining
 
-- [ ] Move compatibility-facade window and surface creation into `ApplicationHandler::resumed`, removing the last deprecated winit call.
+- [ ] Move compatibility-facade window and surface creation into `ApplicationHandler::resumed`, removing the last deprecated winit call. Split: the legacy `Engine` facade builds its Vulkan device, swapchain, and GPU-backed scene state eagerly inside `Engine::new`/`with_render_settings`, before the event loop runs, and callers (`add_cube`, `add_gltf`, etc.) depend on that state existing immediately after construction. Deferring creation into `resumed()` needs a two-phase builder rewrite of that whole public facade, which roadmap Milestone 1 already plans to replace outright — blocked pending that replacement rather than attempted as a patch here.
 - [ ] Replace public initialization and asset-loading panics with typed errors and `Result` APIs.
+  - [x] `geometry::gltf_loader::load_gltf_scene` and `Engine::add_gltf` return `Result<_, GltfLoadError>` instead of panicking on a missing/corrupt glTF file or a primitive without positions.
+  - [ ] Remaining production `.unwrap()`/`.expect()`/`panic!` call sites outside tests (~220 across `scene/mod.rs`, `engine/mod.rs`, `rendering/*`, `project_runner.rs`) still need auditing and converting where the failure is caller-recoverable rather than an internal invariant.
 - [ ] Add Vulkan debug names and scoped command-buffer labels.
 - [ ] Validate rendering, resizing, minimizing, restoring, and shutdown on Linux and Windows.
 - [ ] Replace fixed grid limits with explicit capacity tracking and overflow reporting. Never silently omit bodies.
@@ -110,6 +155,52 @@ Goal: establish a trustworthy baseline before adding architecture or features.
 - Linux and Windows smoke tests render at least 1,000 frames.
 - No known CPU/GPU layout mismatch remains.
 - Formatting, strict clippy, tests, shader compilation, and all-target checking pass in CI.
+
+## Milestone 0.5: Verifiable development environment
+
+Goal: make GPU-touching work provable on a machine with no display and no second GPU. This milestone precedes all remaining GPU work. Without it, most of Milestones 3, 4, 5, 8, 10, and 11 cannot be verified by anyone, including CI.
+
+### Software Vulkan device
+
+- [ ] Document Mesa lavapipe as the supported software Vulkan implementation. On Arch the package is `vulkan-swrast`; on Debian/Ubuntu it is `mesa-vulkan-drivers`.
+- [ ] Document the invocation: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`.
+- [ ] Verify `vulkaninfo --summary` reports a second device with `vendorID = 0x10005` when the variable is set.
+- [ ] Record required Vulkan features and extensions, and which of them lavapipe does not provide.
+
+### Device selection
+
+- [ ] Add `RUSTING_VULKAN_DEVICE` to select a physical device by index or by name substring.
+- [ ] Log the selected device name, vendor ID, driver version, and API version at startup.
+- [ ] Fail with a typed error naming every available device when the selection matches nothing. Never fall back silently.
+
+### Headless mode
+
+- [ ] Create instance, physical device, and logical device without a surface, a swapchain, or a winit window.
+- [ ] Add offscreen render targets with the same formats used by the windowed path.
+- [ ] Add a fenced image readback returning CPU pixel data.
+- [ ] Add a fenced storage-buffer readback returning CPU data after a compute dispatch.
+- [ ] Add `--headless` to the game binary, running a fixed number of ticks and exiting with a status code.
+
+### Test harness
+
+- [ ] Add a `gpu-tests` feature. GPU tests compile always and run only under that feature.
+- [ ] Add a shared test fixture that creates a headless device once per test binary.
+- [ ] Skip with an explicit message, not a failure, when no Vulkan device is present.
+- [ ] Add golden-image comparison with a per-pixel tolerance, writing actual/expected/difference images to an artifact directory on mismatch.
+- [ ] Add a compute-dispatch fixture: upload known input, dispatch, read back, assert.
+- [ ] Mark every test whose result depends on real hardware timing `#[ignore]`, with the reason in the attribute.
+
+### Repository constraints
+
+- [ ] Add `AGENTS.md` recording files that implementation sessions must not modify, and why.
+- [ ] Record the verification tier table from the working agreement above, or link to it.
+
+### Exit gate
+
+- A headless compute test and a headless offscreen render test both pass under lavapipe on a machine with no display.
+- The same two tests pass on the NVIDIA device.
+- CI runs the `gpu-tests` feature under lavapipe on every pull request.
+- `RUSTING_VULKAN_DEVICE` selects between lavapipe and hardware on a machine where both are present.
 
 ## Milestone 1: Workspace and runtime foundation
 
@@ -927,7 +1018,7 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 
 ### CI matrix
 
-- [ ] Linux software Vulkan runner for deterministic smoke tests where supported.
+- [ ] Linux software Vulkan runner (lavapipe) running the `gpu-tests` feature on every pull request. This is the primary GPU verification path; hardware runners confirm it, they do not replace it.
 - [ ] Linux hardware runner.
 - [ ] Windows hardware runner.
 - [x] Formatting, strict clippy, unit tests, and docs on Linux and Windows for every pull request.

@@ -23,7 +23,7 @@
 //! ```
 
 use crate::core::{Material, Physics, Transform};
-use crate::geometry::gltf_loader::load_gltf_scene;
+use crate::geometry::gltf_loader::{load_gltf_scene, GltfLoadError};
 use crate::geometry::shapes::{create_cube, create_sphere_subdivided};
 use crate::rendering::camera::create_projection_matrix;
 use crate::rendering::compute_registry::{
@@ -513,16 +513,20 @@ impl Engine {
     /// * `mat` - Material properties to apply to all meshes
     /// * `phys` - Physics properties for collision simulation
     /// * `path` - Path to the .gltf or .glb file
+    ///
+    /// # Errors
+    /// Returns [`GltfLoadError`] if the file cannot be imported or a
+    /// primitive is missing required vertex data, instead of panicking.
     pub fn add_gltf(
         &mut self,
         transform: Transform,
         mat: &Material,
         phys: &Physics,
         path: &str,
-    ) {
+    ) -> Result<(), GltfLoadError> {
         if !self.gltf_cache.contains_key(path) {
             let (mut objects, textures) =
-                load_gltf_scene(&self.memory_allocator, path);
+                load_gltf_scene(&self.memory_allocator, path)?;
             let base_texture_count =
                 self.scene.lock().unwrap().texture_views.len();
             let pipeline = self.registry.default_pipeline();
@@ -579,6 +583,8 @@ impl Engine {
                 &self.memory_allocator,
             );
         }
+
+        Ok(())
     }
 
     /// Sets a scene-wide graphics shader override.

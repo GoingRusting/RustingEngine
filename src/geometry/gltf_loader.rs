@@ -1,15 +1,56 @@
 use crate::geometry::Mesh;
 use crate::scene::object::Instance;
 use crate::scene::object::Texture;
+use std::fmt;
 use std::sync::Arc;
 use vulkano::memory::allocator::StandardMemoryAllocator;
+
+/// Errors that can occur while importing a glTF/GLB file for the legacy
+/// `Engine::add_gltf` compatibility path.
+#[derive(Debug)]
+pub enum GltfLoadError {
+    Import(gltf::Error),
+    MissingPositions,
+}
+
+impl fmt::Display for GltfLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GltfLoadError::Import(err) => {
+                write!(f, "failed to import glTF file: {err}")
+            }
+            GltfLoadError::MissingPositions => {
+                write!(f, "glTF primitive has no POSITION attribute")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GltfLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            GltfLoadError::Import(err) => Some(err),
+            GltfLoadError::MissingPositions => None,
+        }
+    }
+}
+
+impl From<gltf::Error> for GltfLoadError {
+    fn from(err: gltf::Error) -> Self {
+        GltfLoadError::Import(err)
+    }
+}
+
+/// Meshes paired with their base instance data, plus every texture the
+/// glTF file referenced.
+pub type GltfScene = (Vec<(Mesh, Instance)>, Vec<Texture>);
 
 pub fn load_gltf_scene(
     allocator: &Arc<StandardMemoryAllocator>,
     path: &str,
-) -> (Vec<(Mesh, Instance)>, Vec<Texture>) {
+) -> Result<GltfScene, GltfLoadError> {
     let mut textures: Vec<Texture> = Vec::new();
-    let (document, buffers, images) = gltf::import(path).unwrap();
+    let (document, buffers, images) = gltf::import(path)?;
 
     let mut result = Vec::new();
 
@@ -23,11 +64,11 @@ pub fn load_gltf_scene(
                 &mut result,
                 &node,
                 nalgebra::Matrix4::identity(),
-            );
+            )?;
         }
     }
 
-    (result, textures)
+    Ok((result, textures))
 }
 
 use crate::Transform;
@@ -40,14 +81,14 @@ fn process_node(
     result: &mut Vec<(Mesh, Instance)>,
     node: &gltf::Node,
     parent_transform: nalgebra::Matrix4<f32>,
-) {
+) -> Result<(), GltfLoadError> {
     let local_transform = nalgebra::Matrix4::from(node.transform().matrix());
     let global_transform = parent_transform * local_transform;
 
     // If node has a mesh → extract it
     if let Some(mesh) = node.mesh() {
         for primitive in mesh.primitives() {
-            let (vertices, indices) = extract_primitive(&primitive, buffers);
+            let (vertices, indices) = extract_primitive(&primitive, buffers)?;
 
             let mesh = if let Some(ref idx) = indices {
                 Mesh::new_indexed(allocator, &vertices, idx)
@@ -121,8 +162,10 @@ fn process_node(
             result,
             &child,
             global_transform,
-        );
+        )?;
     }
+
+    Ok(())
 }
 
 use crate::geometry::VertexPosColorUv;
@@ -130,10 +173,13 @@ use crate::geometry::VertexPosColorUv;
 fn extract_primitive(
     primitive: &gltf::Primitive,
     buffers: &[gltf::buffer::Data],
-) -> (Vec<VertexPosColorUv>, Option<Vec<u32>>) {
+) -> Result<(Vec<VertexPosColorUv>, Option<Vec<u32>>), GltfLoadError> {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
-    let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .ok_or(GltfLoadError::MissingPositions)?
+        .collect();
 
     let normals: Vec<[f32; 3]> = reader
         .read_normals()
@@ -159,5 +205,26 @@ fn extract_primitive(
         });
     }
 
-    (vertices, indices)
+    Ok((vertices, indices))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_converts_to_typed_import_error() {
+        let err = gltf::import("./does-not-exist.gltf").unwrap_err();
+        let load_err = GltfLoadError::from(err);
+        assert!(matches!(load_err, GltfLoadError::Import(_)));
+        assert!(load_err.to_string().contains("failed to import glTF file"));
+    }
+
+    #[test]
+    fn missing_positions_error_has_a_readable_message() {
+        assert_eq!(
+            GltfLoadError::MissingPositions.to_string(),
+            "glTF primitive has no POSITION attribute"
+        );
+    }
 }
