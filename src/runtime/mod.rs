@@ -3,20 +3,29 @@
 //! This module is deliberately independent of Vulkan. Rendering and editor
 //! integrations consume the ECS state through the `RenderExtract` schedule.
 
+mod actions;
+mod click;
+mod collision;
 mod components;
 mod events;
 mod hierarchy;
 mod hybrid_physics;
+mod input;
+pub mod picking;
 mod render_world;
 mod scene_file;
 #[cfg(test)]
 mod tests;
 mod time;
 
+pub use actions::{ActionMap, InputBinding};
+pub use click::ClickEvent;
+pub use collision::CollisionEvent;
 pub use components::*;
 pub use events::EventQueue;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
+pub use input::{KeyCode, MouseButton, RuntimeInput};
 pub use render_world::*;
 pub use scene_file::*;
 pub use time::{FrameTime, TimeControl};
@@ -158,11 +167,13 @@ impl Default for App {
         world.insert_resource(PhysicsSettings::default());
         world.insert_resource(PhysicsBackendStatus::default());
         world.insert_resource(SceneComponentRegistry::default());
+        input::install(&mut world);
+        actions::install(&mut world);
 
         let mut post_update = Schedule::default();
         post_update.add_systems(propagate_transforms);
 
-        Self {
+        let mut app = Self {
             world,
             startup: Schedule::default(),
             fixed_update: Schedule::default(),
@@ -172,7 +183,15 @@ impl Default for App {
             startup_complete: false,
             event_maintenance: Vec::new(),
             plugins: Vec::new(),
-        }
+        };
+        app.add_event::<ClickEvent>();
+        app.add_system(ScheduleStage::Update, click::route_click_events);
+        app.add_event::<CollisionEvent>();
+        app.add_system(
+            ScheduleStage::FixedUpdate,
+            collision::detect_collisions,
+        );
+        app
     }
 }
 

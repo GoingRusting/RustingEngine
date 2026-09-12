@@ -331,3 +331,58 @@ fn raw_gpu_events_reach_the_live_ecs_entity() {
     assert_eq!(event.tick, tick);
     assert_eq!(event.payload[1], -101.0);
 }
+
+#[test]
+fn clicking_a_rendered_cube_fires_a_click_event() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.add_plugin(RenderExtractPlugin).unwrap();
+    let (mesh, material) = {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        (assets.fallback_mesh, assets.fallback_material)
+    };
+    app.spawn((
+        Transform::default().with_position(0.0, 0.0, 5.0),
+        Camera {
+            projection: Projection::Perspective {
+                vertical_fov_radians: 1.0,
+                near: 0.1,
+                far: 100.0,
+            },
+            active: true,
+            priority: 0,
+        },
+    ));
+    let cube = app.spawn((
+        Transform::default(),
+        MeshRenderer {
+            mesh,
+            material,
+            cast_shadows: true,
+            receive_shadows: true,
+        },
+    ));
+
+    // Frame 1 only extracts the active camera into `RenderWorld`; click
+    // routing reads that extraction, so the click itself is set up for the
+    // next frame.
+    app.update(Duration::ZERO).unwrap();
+
+    {
+        let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+        input.record_viewport_size([800.0, 600.0]);
+        input.record_cursor_position([400.0, 300.0]);
+        input.record_mouse_button(MouseButton::Left, true);
+    }
+    // Frame 2 runs `route_click_events`, which enqueues the event as
+    // `pending`. `EventQueue::begin_frame` swaps `pending` into `current` at
+    // the *start* of a frame, so the event only becomes readable in the
+    // frame after it was sent.
+    app.update(Duration::ZERO).unwrap();
+    app.update(Duration::ZERO).unwrap();
+
+    let events = app.world().resource::<EventQueue<ClickEvent>>();
+    let event = events.iter().next().expect("a click event was fired");
+    assert_eq!(event.entity, cube);
+    assert_eq!(event.button, MouseButton::Left);
+}

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Game events: `ClickEvent` (mouse-click picking against the active camera) and `CollisionEvent` (bounding-sphere overlap), both wired into every `App` by default
+- `RuntimeInput` resource for raw keyboard/mouse/cursor state, fed from real window events during Play
+- `ActionMap` resource for named input actions bound to keyboard/mouse (gamepad-ready)
+- Shared `runtime::picking` ray-casting module used by gameplay click picking
+- `unload_scene` runtime API to despawn a loaded scene without loading a replacement
+- glTF import now pulls in base-color, normal, metallic-roughness, occlusion, and emissive textures with correct sRGB/linear color space
+
 ## [1.1.0] - 2026-08-31
 
 ### Added

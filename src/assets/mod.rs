@@ -383,6 +383,92 @@ impl<T> Assets<T> {
     }
 }
 
+/// Converts a decoded glTF image into tightly packed RGBA8, expanding
+/// whichever channel layout the source used. 16-bit and float glTF image
+/// formats are rare (most exporters emit 8-bit PNG/JPEG); they are
+/// downsampled to 8 bits rather than rejected.
+fn gltf_image_to_rgba8(image: &gltf::image::Data) -> Vec<u8> {
+    use gltf::image::Format;
+    let pixel_count = (image.width as usize) * (image.height as usize);
+    let mut rgba8 = Vec::with_capacity(pixel_count * 4);
+    match image.format {
+        Format::R8 => {
+            for &r in &image.pixels {
+                rgba8.extend_from_slice(&[r, r, r, 255]);
+            }
+        }
+        Format::R8G8 => {
+            for chunk in image.pixels.chunks_exact(2) {
+                rgba8.extend_from_slice(&[chunk[0], chunk[1], 0, 255]);
+            }
+        }
+        Format::R8G8B8 => {
+            for chunk in image.pixels.chunks_exact(3) {
+                rgba8.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+            }
+        }
+        Format::R8G8B8A8 => rgba8.extend_from_slice(&image.pixels),
+        Format::R16 => {
+            for chunk in image.pixels.chunks_exact(2) {
+                let v = chunk[1];
+                rgba8.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        Format::R16G16 => {
+            for chunk in image.pixels.chunks_exact(4) {
+                rgba8.extend_from_slice(&[chunk[1], chunk[3], 0, 255]);
+            }
+        }
+        Format::R16G16B16 => {
+            for chunk in image.pixels.chunks_exact(6) {
+                rgba8.extend_from_slice(&[chunk[1], chunk[3], chunk[5], 255]);
+            }
+        }
+        Format::R16G16B16A16 => {
+            for chunk in image.pixels.chunks_exact(8) {
+                rgba8.extend_from_slice(&[
+                    chunk[1], chunk[3], chunk[5], chunk[7],
+                ]);
+            }
+        }
+        Format::R32G32B32FLOAT => {
+            for chunk in image.pixels.chunks_exact(12) {
+                let channel = |bytes: &[u8]| {
+                    (f32::from_le_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                    ])
+                    .clamp(0.0, 1.0)
+                        * 255.0) as u8
+                };
+                rgba8.extend_from_slice(&[
+                    channel(&chunk[0..4]),
+                    channel(&chunk[4..8]),
+                    channel(&chunk[8..12]),
+                    255,
+                ]);
+            }
+        }
+        Format::R32G32B32A32FLOAT => {
+            for chunk in image.pixels.chunks_exact(16) {
+                let channel = |bytes: &[u8]| {
+                    (f32::from_le_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                    ])
+                    .clamp(0.0, 1.0)
+                        * 255.0) as u8
+                };
+                rgba8.extend_from_slice(&[
+                    channel(&chunk[0..4]),
+                    channel(&chunk[4..8]),
+                    channel(&chunk[8..12]),
+                    channel(&chunk[12..16]),
+                ]);
+            }
+        }
+    }
+    rgba8
+}
+
 fn normalize_path(path: &Path) -> Result<PathBuf, AssetError> {
     if path.as_os_str().is_empty() {
         return Err(AssetError::EmptyPath);
@@ -622,6 +708,34 @@ impl AssetServer {
         })
     }
 
+    /// Imports one glTF texture slot as an sRGB or linear [`TextureAsset`],
+    /// deduplicating repeated references to the same image/color-space pair
+    /// by their synthesized asset path.
+    fn import_gltf_texture(
+        &mut self,
+        source: &Path,
+        images: &[gltf::image::Data],
+        texture: &gltf::texture::Texture,
+        color_space: TextureColorSpace,
+    ) -> Result<Handle<TextureAsset>, AssetError> {
+        let image = &images[texture.source().index()];
+        let suffix = match color_space {
+            TextureColorSpace::Srgb => "srgb",
+            TextureColorSpace::Linear => "linear",
+        };
+        let texture_key = source.with_extension(format!(
+            "gltf-image-{}-{suffix}.rtexture",
+            texture.source().index()
+        ));
+        self.textures.get_or_insert_with(texture_key, |_| {
+            Ok(TextureAsset {
+                size: [image.width, image.height],
+                rgba8: gltf_image_to_rgba8(image),
+                color_space,
+            })
+        })
+    }
+
     /// Imports every triangle primitive from a glTF or GLB file as typed CPU
     /// mesh and material assets. Rendering uploads them later as usual.
     pub fn import_gltf(
@@ -629,7 +743,7 @@ impl AssetServer {
         path: impl AsRef<Path>,
     ) -> Result<Vec<ImportedGltfPrimitive>, AssetError> {
         let source = normalize_path(path.as_ref())?;
-        let (document, buffers, _) =
+        let (document, buffers, images) =
             gltf::import(&source).map_err(|error| AssetError::Load {
                 path: source.clone(),
                 message: error.to_string(),
@@ -721,18 +835,80 @@ impl AssetServer {
                 })?;
                 let mesh_handle =
                     self.meshes.insert_with_path(mesh_key, mesh_asset)?;
-                let pbr = primitive.material().pbr_metallic_roughness();
+                let gltf_material = primitive.material();
+                let pbr = gltf_material.pbr_metallic_roughness();
+                let base_color_texture = pbr
+                    .base_color_texture()
+                    .map(|info| {
+                        self.import_gltf_texture(
+                            &source,
+                            &images,
+                            &info.texture(),
+                            TextureColorSpace::Srgb,
+                        )
+                    })
+                    .transpose()?;
+                let metallic_roughness_texture = pbr
+                    .metallic_roughness_texture()
+                    .map(|info| {
+                        self.import_gltf_texture(
+                            &source,
+                            &images,
+                            &info.texture(),
+                            TextureColorSpace::Linear,
+                        )
+                    })
+                    .transpose()?;
+                let normal_texture = gltf_material
+                    .normal_texture()
+                    .map(|info| {
+                        self.import_gltf_texture(
+                            &source,
+                            &images,
+                            &info.texture(),
+                            TextureColorSpace::Linear,
+                        )
+                    })
+                    .transpose()?;
+                let occlusion_texture = gltf_material
+                    .occlusion_texture()
+                    .map(|info| {
+                        self.import_gltf_texture(
+                            &source,
+                            &images,
+                            &info.texture(),
+                            TextureColorSpace::Linear,
+                        )
+                    })
+                    .transpose()?;
+                let emissive_texture = gltf_material
+                    .emissive_texture()
+                    .map(|info| {
+                        self.import_gltf_texture(
+                            &source,
+                            &images,
+                            &info.texture(),
+                            TextureColorSpace::Srgb,
+                        )
+                    })
+                    .transpose()?;
                 let material_key = source.with_extension(format!(
                     "gltf-material-{}",
-                    primitive.material().index().unwrap_or(usize::MAX)
+                    gltf_material.index().unwrap_or(usize::MAX)
                 ));
                 let material = self.materials.insert_with_path(
                     material_key,
                     MaterialAsset {
+                        model: MaterialModel::Pbr,
                         base_color: pbr.base_color_factor(),
+                        emissive: gltf_material.emissive_factor(),
                         metallic: pbr.metallic_factor(),
                         roughness: pbr.roughness_factor(),
-                        ..MaterialAsset::default()
+                        base_color_texture,
+                        normal_texture,
+                        metallic_roughness_texture,
+                        occlusion_texture,
+                        emissive_texture,
                     },
                 )?;
                 imported.push(ImportedGltfPrimitive {
@@ -1291,6 +1467,53 @@ impl Plugin for AssetPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gltf_image(
+        format: gltf::image::Format,
+        pixels: Vec<u8>,
+    ) -> gltf::image::Data {
+        gltf::image::Data {
+            pixels,
+            format,
+            width: 1,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn gltf_image_conversion_expands_every_supported_channel_layout() {
+        assert_eq!(
+            gltf_image_to_rgba8(&gltf_image(
+                gltf::image::Format::R8,
+                vec![200]
+            )),
+            vec![200, 200, 200, 255]
+        );
+        assert_eq!(
+            gltf_image_to_rgba8(&gltf_image(
+                gltf::image::Format::R8G8B8,
+                vec![10, 20, 30]
+            )),
+            vec![10, 20, 30, 255]
+        );
+        assert_eq!(
+            gltf_image_to_rgba8(&gltf_image(
+                gltf::image::Format::R8G8B8A8,
+                vec![10, 20, 30, 40]
+            )),
+            vec![10, 20, 30, 40]
+        );
+        assert_eq!(
+            gltf_image_to_rgba8(&gltf_image(
+                gltf::image::Format::R32G32B32FLOAT,
+                [1.0f32, 0.5, 0.0]
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect(),
+            )),
+            vec![255, 127, 0, 255]
+        );
+    }
 
     #[test]
     fn stale_handle_does_not_resolve_reused_slot() {

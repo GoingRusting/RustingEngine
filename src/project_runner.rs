@@ -14,6 +14,7 @@ use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
 
 use crate::rendering::frame_pacer::{select_present_mode, FramePacer};
@@ -22,8 +23,8 @@ use crate::runtime::{
     load_scene, route_gpu_physics_events, AppError, EventQueue, FrameTime,
     GpuEventRegistry, GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule,
     GpuPhysicsWatch, HybridPhysicsPlugin, Name, PhysicsBackendStatus, Plugin,
-    RenderExtractPlugin, RenderSettings, RenderWorld, SceneLoadMode,
-    ScheduleStage,
+    RenderExtractPlugin, RenderSettings, RenderWorld, RuntimeInput,
+    SceneLoadMode, ScheduleStage,
 };
 use crate::{App, AssetPlugin, AssetServer, Transform};
 
@@ -689,6 +690,14 @@ impl ApplicationHandler for ProjectApplication {
             settings.vsync,
         ));
         self.applied_vsync = Some(settings.vsync);
+        let initial_size = renderer.window().inner_size();
+        self.runtime
+            .world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_viewport_size([
+                initial_size.width as f32,
+                initial_size.height as f32,
+            ]);
         self.scene_renderer = Some(
             SceneRenderer::new(
                 renderer.graphics_queue(),
@@ -709,8 +718,40 @@ impl ApplicationHandler for ProjectApplication {
         let renderer = self.windows.get_renderer_mut(window_id).unwrap();
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(_)
-            | WindowEvent::ScaleFactorChanged { .. } => renderer.resize(),
+            WindowEvent::Resized(size) => {
+                renderer.resize();
+                self.runtime
+                    .world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .record_viewport_size([
+                        size.width as f32,
+                        size.height as f32,
+                    ]);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => renderer.resize(),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    self.runtime
+                        .world_mut()
+                        .resource_mut::<RuntimeInput>()
+                        .record_key(code, event.state.is_pressed());
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.runtime
+                    .world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .record_mouse_button(button, state.is_pressed());
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.runtime
+                    .world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .record_cursor_position([
+                        position.x as f32,
+                        position.y as f32,
+                    ]);
+            }
             WindowEvent::RedrawRequested => {
                 // Completed GPU events enter ECS before this frame starts, so
                 // Rust update systems can read them from the normal event API.
@@ -734,6 +775,10 @@ impl ApplicationHandler for ProjectApplication {
                     event_loop.exit();
                     return;
                 }
+                self.runtime
+                    .world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .clear_frame_edges();
                 let vsync =
                     self.runtime.world().resource::<RenderSettings>().vsync;
                 if self.applied_vsync != Some(vsync) {

@@ -807,6 +807,21 @@ pub fn load_scene(
     load_scene_document(world, &document, mode)
 }
 
+/// Despawns every entity spawned by a loaded scene (anything carrying
+/// [`SceneId`]), leaving non-scene resources and entities untouched.
+///
+/// Returns the number of entities removed.
+pub fn unload_scene(world: &mut World) -> usize {
+    let mut query =
+        world.query_filtered::<Entity, bevy_ecs::query::With<SceneId>>();
+    let entities = query.iter(world).collect::<Vec<_>>();
+    let count = entities.len();
+    for entity in entities {
+        world.despawn(entity);
+    }
+    count
+}
+
 pub fn cook_scene(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -1517,6 +1532,29 @@ mod tests {
             .single(app.world())
             .unwrap();
         assert_eq!(renderer.mesh, expected);
+    }
+
+    #[test]
+    fn unloading_a_scene_despawns_only_scene_entities() {
+        let mut app = scene_app();
+        app.spawn((Name("Cube".into()), Transform::default()));
+        let document = scene_document(app.world_mut(), "Scene").unwrap();
+        load_scene_document(app.world_mut(), &document, SceneLoadMode::Replace)
+            .unwrap();
+        let non_scene_entity =
+            app.world_mut().spawn(Name("Global".into())).id();
+
+        let removed = unload_scene(app.world_mut());
+
+        assert_eq!(removed, 1);
+        assert_eq!(
+            app.world_mut()
+                .query::<&SceneId>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(app.world().get_entity(non_scene_entity).is_ok());
     }
 
     #[test]
