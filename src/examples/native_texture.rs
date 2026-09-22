@@ -8,7 +8,9 @@ pub fn main() {
     engine.set_light([10.0, 50.0, 20.0], [1.0, 1.0, 1.0], 500.0);
 
     // Load the texture into the global registry and get its ID
-    let rust_tex = engine.load_texture("./testModels/RustSphere.png");
+    let rust_tex = engine
+        .load_texture("./testModels/RustSphere.png")
+        .expect("failed to load RustSphere.png");
 
     // Spawn 10 textured native cubes
     for i in 0..10 {

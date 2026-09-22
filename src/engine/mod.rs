@@ -188,6 +188,26 @@ impl PerspectiveCamera {
     }
 }
 
+/// Error returned by [`Engine::load_texture`] when an image file cannot be
+/// read or decoded.
+#[derive(Debug)]
+pub struct TextureLoadError {
+    pub path: String,
+    pub source: image::ImageError,
+}
+
+impl std::fmt::Display for TextureLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "failed to load texture {}: {}", self.path, self.source)
+    }
+}
+
+impl std::error::Error for TextureLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// High-level engine structure for building and rendering scenes.
 ///
 /// Handles Vulkan context, swapchain, render pass, rendering pipeline, inputs,
@@ -458,26 +478,30 @@ impl Engine {
         );
     }
 
-    /// Adds a GLTF model to the scene.
+    /// Loads an image file as a texture and returns its index.
     ///
-    /// Loads a 3D model from a GLTF file and adds all its meshes as instances.
-    /// Textures from the model are automatically uploaded and assigned indices.
+    /// Repeated calls with the same path return the cached index instead of
+    /// reloading the file.
     ///
     /// # Arguments
-    /// * `transform` - Position, rotation, scale of the model
-    /// * `mat` - Material properties to apply to all meshes
-    /// * `phys` - Physics properties for collision simulation
-    /// * `path` - Path to the .gltf or .glb file
-    pub fn load_texture(&mut self, path: &str) -> usize {
+    /// * `path` - Path to the image file (PNG, JPEG, BMP, or TGA)
+    ///
+    /// # Errors
+    /// Returns [`TextureLoadError`] if the file cannot be read or decoded,
+    /// instead of panicking.
+    pub fn load_texture(
+        &mut self,
+        path: &str,
+    ) -> Result<usize, TextureLoadError> {
         if let Some(&id) = self.textures_cache.get(path) {
-            return id;
+            return Ok(id);
         }
 
-        // Load image using the image crate
         let img = image::open(path)
-            .unwrap_or_else(|e| {
-                panic!("Failed to load texture {}: {}", path, e)
-            })
+            .map_err(|error| TextureLoadError {
+                path: path.to_string(),
+                source: error,
+            })?
             .into_rgba8();
         let width = img.width();
         let height = img.height();
@@ -500,7 +524,7 @@ impl Engine {
 
         self.textures_cache
             .insert(path.to_string(), base_texture_count);
-        base_texture_count
+        Ok(base_texture_count)
     }
 
     /// Adds a GLTF model to the scene.

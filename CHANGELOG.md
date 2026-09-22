@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `Engine::add_gltf` and `geometry::gltf_loader::load_gltf_scene` now return `Result<_, GltfLoadError>` instead of panicking on a missing/corrupt glTF file or a primitive without positions
+- `Engine::load_texture` now returns `Result<usize, TextureLoadError>` instead of panicking on a missing/corrupt image file
+- Render/physics GPU layout tests now assert against `vulkano_shaders`-reflected struct types instead of hardcoded offsets, so a shader-layout change fails the matching test instead of silently drifting
+
+### Added
+
+- `RUSTING_VULKAN_DEVICE` env var to select the physical Vulkan device by index or case-insensitive name substring; startup now logs the selected device's name, vendor ID, driver version, and API version, and fails with a typed error listing every available device when the selector matches nothing
+- `rendering::init_vulkan_headless` creates a Vulkan instance, physical device, and logical device without a surface, swapchain, or window, for offscreen/compute work and tests on machines with no display
+- `swapchain::create_offscreen_target` creates a color+depth render target and framebuffer with no surface or swapchain, using the same formats as the windowed path
+- `readback::read_back_image` performs a fenced GPU image readback to CPU pixel bytes
+- `readback::read_back_buffer` performs a fenced GPU storage-buffer readback to CPU data, e.g. after a compute dispatch
+- `project_runner::run_project_headless` runs a cooked scene for a fixed number of ticks with no window or Vulkan device; `game` binary's new `--headless` flag uses it
+- `gpu-tests` cargo feature gates every GPU-dependent test behind an explicit opt-in (`cargo test --features gpu-tests`); a shared `rendering::test_support::headless_device()` fixture creates the headless device once per test binary instead of once per test
+- `rendering::test_support::dispatch_and_read_back` fixture covers upload-dispatch-readback-assert compute tests generically
+- `rendering::test_support::assert_matches_golden_image` compares a rendered image against a golden PNG with a per-channel tolerance, writing actual/expected/diff PNGs to an artifact directory on mismatch
+- Vulkan debug names (main queue) and a scoped command-buffer debug-utils label around `SceneRenderer::render`, active whenever `ext_debug_utils` is enabled
+- New `rusting-core` workspace crate; `Transform` and `CollisionType` now live there (re-exported at their original `crate::core::...` paths so no caller needs to change)
+
 ## [1.1.1] - 2026-09-12
 
 ### Added

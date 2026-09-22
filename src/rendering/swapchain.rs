@@ -76,11 +76,22 @@ pub fn create_render_pass(
     device: Arc<Device>,
     swapchain: &Arc<Swapchain>,
 ) -> std::sync::Arc<RenderPass> {
+    create_render_pass_for_format(device, swapchain.image_format())
+}
+
+/// Color format used by offscreen render targets — the same choice the
+/// windowed swapchain path prefers when a surface offers it.
+pub const OFFSCREEN_COLOR_FORMAT: Format = Format::B8G8R8A8_SRGB;
+
+pub fn create_render_pass_for_format(
+    device: Arc<Device>,
+    color_format: Format,
+) -> std::sync::Arc<RenderPass> {
     vulkano::ordered_passes_renderpass!(
         device.clone(),
         attachments: {
             color: {
-                format: swapchain.image_format(),
+                format: color_format,
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,
@@ -99,6 +110,70 @@ pub fn create_render_pass(
         } ],
     )
     .unwrap()
+}
+
+/// Color and depth images plus a matching framebuffer for rendering with no
+/// surface or swapchain — same formats as the windowed path
+/// ([`OFFSCREEN_COLOR_FORMAT`], `Format::D16_UNORM`). The color image is
+/// transfer-source capable so it can be read back after rendering.
+pub struct OffscreenTarget {
+    pub color_image: Arc<Image>,
+    pub depth_image: Arc<Image>,
+    pub framebuffer: Arc<Framebuffer>,
+}
+
+pub fn create_offscreen_target(
+    memory_allocator: &Arc<StandardMemoryAllocator>,
+    render_pass: &Arc<RenderPass>,
+    extent: [u32; 2],
+) -> OffscreenTarget {
+    let color_image = Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            format: OFFSCREEN_COLOR_FORMAT,
+            extent: [extent[0], extent[1], 1],
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let color_view = ImageView::new_default(color_image.clone()).unwrap();
+
+    let depth_image = Image::new(
+        memory_allocator.clone(),
+        ImageCreateInfo {
+            format: Format::D16_UNORM,
+            extent: [extent[0], extent[1], 1],
+            usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT
+                | ImageUsage::TRANSIENT_ATTACHMENT,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let depth_view = ImageView::new_default(depth_image.clone()).unwrap();
+
+    let framebuffer = Framebuffer::new(
+        render_pass.clone(),
+        FramebufferCreateInfo {
+            attachments: vec![color_view, depth_view],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    OffscreenTarget {
+        color_image,
+        depth_image,
+        framebuffer,
+    }
 }
 
 pub fn create_framebuffers(
@@ -141,4 +216,35 @@ pub fn create_framebuffers(
             .unwrap()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vulkano::VulkanLibrary;
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn offscreen_target_renders_with_no_surface_or_window() {
+        if VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let base = crate::rendering::test_support::headless_device();
+        let memory_allocator =
+            Arc::new(StandardMemoryAllocator::new_default(base.device.clone()));
+        let render_pass = create_render_pass_for_format(
+            base.device.clone(),
+            OFFSCREEN_COLOR_FORMAT,
+        );
+        let target =
+            create_offscreen_target(&memory_allocator, &render_pass, [64, 64]);
+
+        assert_eq!(target.color_image.extent(), [64, 64, 1]);
+        assert_eq!(target.color_image.format(), OFFSCREEN_COLOR_FORMAT);
+        assert_eq!(target.depth_image.format(), Format::D16_UNORM);
+    }
 }

@@ -1,0 +1,10 @@
+[package]
+name = "rusting-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy_ecs = "0.19.1"
+nalgebra = "0.34.2"
+serde = { version = "1.0.228", features = ["derive"] }
+uuid = { version = "1.25.0", features = ["v4"] }

@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "1.1.1"
+version = "1.1.2"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
@@ -20,7 +20,7 @@ homepage = "https://github.com/GoingRusting/RustingEngine"
 documentation = "https://docs.rs/rusting_engine"
 
 [workspace]
-members = ["testGame"]
+members = ["testGame", "crates/rusting-core"]
 default-members = ["."]
 resolver = "2"
 
@@ -58,8 +58,10 @@ editor = [
 ]
 validation = []
 experimental-gpu-physics = []
+gpu-tests = []
 
 [dependencies]
+rusting-core = { version = "0.1.0", path = "crates/rusting-core" }
 bytemuck = "1.25.0"
 nalgebra = "0.34.2"
 rand = "0.10.0"

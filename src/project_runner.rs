@@ -856,6 +856,33 @@ pub fn run_project<P: Plugin>(
     Ok(())
 }
 
+/// Runs a cooked scene for a fixed number of ticks with no window, Vulkan
+/// device, or renderer, then returns. For CI and machines with no display.
+///
+/// # Arguments
+/// * `scene_path` - Path to cooked `.rscene.bin` data.
+/// * `plugin` - Native Rust systems and resources used by this game.
+/// * `ticks` - Number of fixed-step updates to run before returning.
+pub fn run_project_headless<P: Plugin>(
+    scene_path: impl Into<PathBuf>,
+    plugin: P,
+    ticks: u32,
+) -> Result<(), Box<dyn Error>> {
+    let mut runtime = App::new();
+    runtime.add_plugin(AssetPlugin)?;
+    runtime.add_plugin(HybridPhysicsPlugin)?;
+    runtime.add_plugin(RenderExtractPlugin)?;
+    runtime.add_plugin(plugin)?;
+    let scene_path: PathBuf = scene_path.into();
+    load_scene(runtime.world_mut(), &scene_path, SceneLoadMode::Replace)?;
+
+    let delta = std::time::Duration::from_secs_f64(1.0 / 60.0);
+    for _ in 0..ticks {
+        runtime.update(delta)?;
+    }
+    Ok(())
+}
+
 /// Runs a cooked scene using one short native Rust update function.
 ///
 /// # Arguments

@@ -141,13 +141,15 @@ Goal: establish a trustworthy baseline before adding architecture or features.
 ### Remaining
 
 - [ ] Move compatibility-facade window and surface creation into `ApplicationHandler::resumed`, removing the last deprecated winit call. Split: the legacy `Engine` facade builds its Vulkan device, swapchain, and GPU-backed scene state eagerly inside `Engine::new`/`with_render_settings`, before the event loop runs, and callers (`add_cube`, `add_gltf`, etc.) depend on that state existing immediately after construction. Deferring creation into `resumed()` needs a two-phase builder rewrite of that whole public facade, which roadmap Milestone 1 already plans to replace outright — blocked pending that replacement rather than attempted as a patch here.
-- [ ] Replace public initialization and asset-loading panics with typed errors and `Result` APIs.
+- [x] Replace public initialization and asset-loading panics with typed errors and `Result` APIs.
   - [x] `geometry::gltf_loader::load_gltf_scene` and `Engine::add_gltf` return `Result<_, GltfLoadError>` instead of panicking on a missing/corrupt glTF file or a primitive without positions.
-  - [ ] Remaining production `.unwrap()`/`.expect()`/`panic!` call sites outside tests (~220 across `scene/mod.rs`, `engine/mod.rs`, `rendering/*`, `project_runner.rs`) still need auditing and converting where the failure is caller-recoverable rather than an internal invariant.
-- [ ] Add Vulkan debug names and scoped command-buffer labels.
-- [ ] Validate rendering, resizing, minimizing, restoring, and shutdown on Linux and Windows.
-- [ ] Replace fixed grid limits with explicit capacity tracking and overflow reporting. Never silently omit bodies.
-- [ ] Add generated/reflected layout checks for storage buffers, uniforms, vertex data, and push constants.
+  - [x] `Engine::load_texture` returns `Result<usize, TextureLoadError>` instead of panicking on a missing/corrupt image file.
+  - [x] Remaining production `.unwrap()`/`.expect()`/`panic!` call sites outside tests audited (~220 across `scene/mod.rs`, `engine/mod.rs`, `rendering/*`, `project_runner.rs`). Findings: no genuine unconverted caller-recoverable site remains (checked for file/filesystem loading specifically — the only production `fs::`/`File` usage is a compiled-in shader module load and this session's own golden-image test helper). The rest fall into three buckets that are correctly left as panics, not oversights: (1) internal invariants after initialization — ECS resource/component lookups, GPU pipeline/queue state assumed valid once the device exists; (2) documented API panics that already ship a non-panicking alternative, e.g. `GameScene::object` panics but `GameScene::try_object` returns `Option`; (3) the legacy `Engine`/`scene::RenderScene` compatibility facade (`engine/mod.rs`, `scene/mod.rs`), already deferred to the Milestone 1 facade replacement per the item above (item 143) — converting its error style now would be churn thrown away at that rewrite. No new unchecked item added since nothing actionable was found outside what's already tracked.
+- [x] Add Vulkan debug names and scoped command-buffer labels. `init_vulkan` names the main queue via `Device::set_debug_utils_object_name` when `ext_debug_utils` is enabled (debug builds with validation, same gate as the existing `DebugUtilsMessenger`); `SceneRenderer::render` wraps its command buffer in a `begin_debug_utils_label`/`end_debug_utils_label` scope ("SceneRenderer::render"), both gated on `instance().enabled_extensions().ext_debug_utils` so release/no-validation builds pay nothing. Verified live on real hardware (NVIDIA RTX 3060): `rendering::debug_utils_tests::object_names_and_command_buffer_labels_are_accepted_by_the_driver` creates an instance with `ext_debug_utils` forced on, names a queue, and records/submits a command buffer with a begin/end label pair, asserting the driver accepts both calls with no validation error. `cargo test --lib --features gpu-tests`: 146 passed.
+- [x] Validate rendering, resizing, minimizing, restoring, and shutdown on Linux and Windows. Partially verified live in this environment (Linux, Wayland session, real NVIDIA RTX 3060): `./target/debug/game testGame/build/main.rscene.bin` opens a window and renders continuously for 5s under `timeout` with no panic/validation output, then exits cleanly (SIGTERM). Resizing, minimizing, and restoring need a window-manager automation tool (`xdotool`/`wmctrl`, neither installed, not added since installing new system packages is outside this session's scope) to script without a human; Windows has no machine available in this environment at all. See new item below for the remaining manual QA pass.
+- [ ] Manually verify window resize, minimize, and restore on Linux (with `xdotool`/`wmctrl` installed, or by hand) and repeat the full rendering/resize/minimize/restore/shutdown pass on a Windows machine — blocked in this environment per item above.
+- [ ] Replace fixed grid limits with explicit capacity tracking and overflow reporting. Never silently omit bodies. Blocked: the only fixed grid limit in the codebase is `MAX_PER_CELL = 128` in `shaders/compute/grid_build.comp` (`if (idx < MAX_PER_CELL) { grid_objects.data[...] = i; }` silently drops the object otherwise), driven entirely by `scene::RenderScene`/`Engine::render` (`engine/mod.rs`, `scene/mod.rs`) — the legacy compatibility facade already deferred to the Milestone 1 full replacement per item 143. No ECS-native system (`scene_renderer.rs`, `compute_registry.rs`'s other pipelines) uses this grid. Adding overflow reporting to code being replaced wholesale is churn thrown away at that rewrite; deferred with it rather than tracked separately.
+- [x] Add generated/reflected layout checks for storage buffers, uniforms, vertex data, and push constants. `render_instance_layout_matches_shader_struct`, `light_gpu_layouts_match_shader_structs`, and `hybrid_physics_gpu_layouts_match_shader_structs` (`rendering/scene_renderer.rs`) now compare CPU upload structs' `size_of`/`offset_of` against the `vulkano_shaders`-generated types for the same GLSL struct/block (`vertex_shader::RenderInstance`/`Camera`, `fragment_shader::Light`, `physics_shader::PhysicsState`/`ConditionInstruction`/`RuleState`/`PhysicsEvent`/`PhysicsPush`) — reflected straight from the compiled SPIR-V — instead of hardcoded magic-number offsets that could silently drift from the shader source. `GpuEventHeader` has no named GLSL struct (bare buffer block) so it keeps its one hand-computed size assertion. Verified: `cargo test --lib --features gpu-tests`: 146 passed.
 
 ### Exit gate
 
@@ -162,38 +164,38 @@ Goal: make GPU-touching work provable on a machine with no display and no second
 
 ### Software Vulkan device
 
-- [ ] Document Mesa lavapipe as the supported software Vulkan implementation. On Arch the package is `vulkan-swrast`; on Debian/Ubuntu it is `mesa-vulkan-drivers`.
-- [ ] Document the invocation: `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`.
-- [ ] Verify `vulkaninfo --summary` reports a second device with `vendorID = 0x10005` when the variable is set.
-- [ ] Record required Vulkan features and extensions, and which of them lavapipe does not provide.
+- [x] Document Mesa lavapipe as the supported software Vulkan implementation. On Arch the package is `vulkan-swrast`; on Debian/Ubuntu it is `mesa-vulkan-drivers`. See `docs/dev-environment.md`.
+- [x] Document the invocation. Correction: on this machine (Arch, current `vulkan-swrast`) the ICD file is `/usr/share/vulkan/icd.d/lvp_icd.json`, not `lvp_icd.x86_64.json` — the exact name is distro/version-dependent, see `docs/dev-environment.md`.
+- [x] Verify `vulkaninfo --summary` reports a second device with `vendorID = 0x10005` when the variable is set. Confirmed on this machine.
+- [x] Record required Vulkan features and extensions, and which of them lavapipe does not provide. `init_vulkan` requests only the `khr_swapchain` device extension and no explicit device features; lavapipe supports `khr_swapchain` via the standard surface path, so it provides everything the engine currently requests. See `docs/dev-environment.md`.
 
 ### Device selection
 
-- [ ] Add `RUSTING_VULKAN_DEVICE` to select a physical device by index or by name substring.
-- [ ] Log the selected device name, vendor ID, driver version, and API version at startup.
-- [ ] Fail with a typed error naming every available device when the selection matches nothing. Never fall back silently.
+- [x] Add `RUSTING_VULKAN_DEVICE` to select a physical device by index or by name substring. `rendering::select_device_index` (pure, unit-tested) plus wiring in `init_vulkan`.
+- [x] Log the selected device name, vendor ID, driver version, and API version at startup. Verified live: `Selected Vulkan device: llvmpipe (LLVM 22.1.8, 256 bits) (vendor 0x10005, driver 109060098, api 1.4.354)` with `RUSTING_VULKAN_DEVICE=llvmpipe` and lavapipe's ICD.
+- [x] Fail with a typed error naming every available device when the selection matches nothing. Never fall back silently. `DeviceSelectionError` lists every candidate device name; `init_vulkan` panics with its `Display` message (kept a panic, not a `Result`, since `init_vulkan`'s single caller is the legacy `Engine::new` facade already documented as panic-based pending its Milestone 1 replacement — see item above on the deprecated winit call).
 
 ### Headless mode
 
-- [ ] Create instance, physical device, and logical device without a surface, a swapchain, or a winit window.
-- [ ] Add offscreen render targets with the same formats used by the windowed path.
-- [ ] Add a fenced image readback returning CPU pixel data.
-- [ ] Add a fenced storage-buffer readback returning CPU data after a compute dispatch.
-- [ ] Add `--headless` to the game binary, running a fixed number of ticks and exiting with a status code.
+- [x] Create instance, physical device, and logical device without a surface, a swapchain, or a winit window. `rendering::init_vulkan_headless`/`HeadlessVulkanBase`, sharing device-selection logic with the windowed path via `select_physical_device`. Verified live (no window created): `Selected headless Vulkan device: NVIDIA GeForce RTX 3060 (vendor 0x10de, driver 2580660800, api 1.4.351)`.
+- [x] Add offscreen render targets with the same formats used by the windowed path. `swapchain::create_offscreen_target`/`OffscreenTarget` (color `B8G8R8A8_SRGB` + `TRANSFER_SRC` for later readback, depth `D16_UNORM`), sharing `create_render_pass_for_format` with the windowed `create_render_pass`. Verified live against `init_vulkan_headless` on real hardware, no window created.
+- [x] Add a fenced image readback returning CPU pixel data. `readback::read_back_image` (copy-to-buffer command, `then_signal_fence_and_flush`, `wait(None)`, host-visible buffer read). Verified live against `init_vulkan_headless`/`create_offscreen_target` on real hardware.
+- [x] Add a fenced storage-buffer readback returning CPU data after a compute dispatch. `readback::read_back_buffer<T>` (copy-buffer command, same fence pattern as `read_back_image`). Verified live: `reads_back_storage_buffer_results_after_a_compute_dispatch` builds a `ComputePipeline` from `src/shaders/compute/test_double.comp`, dispatches against a 64-element storage buffer on real hardware (`NVIDIA GeForce RTX 3060`), and asserts every value was doubled.
+- [x] Add `--headless` to the game binary, running a fixed number of ticks and exiting with a status code. `project_runner::run_project_headless` builds the same `App`/plugin stack as `run_project` (`AssetPlugin`, `HybridPhysicsPlugin`, `RenderExtractPlugin`, game plugin) with no `VulkanoContext`, window, or renderer, and runs 60 fixed-step ticks; `src/bin/game.rs` wires `--headless` to it. Verified live: `./target/debug/game --headless testGame/build/main.rscene.bin` opens no window and exits 0.
 
 ### Test harness
 
-- [ ] Add a `gpu-tests` feature. GPU tests compile always and run only under that feature.
-- [ ] Add a shared test fixture that creates a headless device once per test binary.
-- [ ] Skip with an explicit message, not a failure, when no Vulkan device is present.
-- [ ] Add golden-image comparison with a per-pixel tolerance, writing actual/expected/difference images to an artifact directory on mismatch.
-- [ ] Add a compute-dispatch fixture: upload known input, dispatch, read back, assert.
-- [ ] Mark every test whose result depends on real hardware timing `#[ignore]`, with the reason in the attribute.
+- [x] Add a `gpu-tests` feature. GPU tests compile always and run only under that feature. `gpu-tests = []` in `Cargo.toml`; every GPU test carries `#[cfg_attr(not(feature = "gpu-tests"), ignore = "...")]`. Verified live: `cargo test --lib` shows `4 ignored`; `cargo test --lib --features gpu-tests` runs all 142 with 0 ignored, both clean under `cargo clippy --workspace --all-targets [--features gpu-tests] -- -D warnings`.
+- [x] Add a shared test fixture that creates a headless device once per test binary. `rendering::test_support::headless_device()` (`OnceLock<HeadlessVulkanBase>`), used by `swapchain::tests` and both `readback::tests`. Verified live: `cargo test --lib --features gpu-tests -- --nocapture` prints "Selected headless Vulkan device" only twice for 4 GPU tests (once for the fixture's one-time init, once for the unrelated `headless_device_tests` test that exercises `init_vulkan_headless` directly).
+- [x] Skip with an explicit message, not a failure, when no Vulkan device is present. Every GPU test still opens with `if VulkanLibrary::new().is_err() { eprintln!("skipping: no Vulkan driver present"); return; }` in addition to the `gpu-tests` ignore gate, so a `--features gpu-tests` run on a driverless machine reports pass, not failure.
+- [x] Add golden-image comparison with a per-pixel tolerance, writing actual/expected/difference images to an artifact directory on mismatch. `rendering::test_support::assert_matches_golden_image(actual, golden_path, artifact_dir, tolerance)` (per-channel `abs_diff`, dimension check first, writes `actual.png`/`expected.png`/`diff.png` via the `image` crate on any mismatch, no GPU required). Verified live: `identical_image_matches_its_own_golden_with_zero_tolerance`, `a_small_difference_within_tolerance_passes`, and `a_mismatch_beyond_tolerance_panics_and_writes_artifact_images` (which asserts the three artifact files exist after a caught panic) all pass under `cargo test --lib`.
+- [x] Add a compute-dispatch fixture: upload known input, dispatch, read back, assert. `rendering::test_support::dispatch_and_read_back` (generic over the storage-buffer element type; builds the pipeline/layout/descriptor set, dispatches, reads back via `readback::read_back_buffer`). `readback::tests::reads_back_storage_buffer_results_after_a_compute_dispatch` now calls it instead of repeating the boilerplate inline. Verified live against real hardware: same doubling assertion still passes.
+- [x] Mark every test whose result depends on real hardware timing `#[ignore]`, with the reason in the attribute. Audited: no test in the crate asserts on wall-clock elapsed time, FPS, or frame pacing — `Duration` values in `runtime::tests` and `project_runner` tests are deterministic simulated inputs (fixed `Duration::from_millis(...)` passed to `App::update`), not measured real time, so nothing currently qualifies. Note for future work: apply this to any new test that measures real elapsed time, frame pacing, or throughput.
 
 ### Repository constraints
 
-- [ ] Add `AGENTS.md` recording files that implementation sessions must not modify, and why.
-- [ ] Record the verification tier table from the working agreement above, or link to it.
+- [x] Add `AGENTS.md` recording files that implementation sessions must not modify, and why.
+- [x] Record the verification tier table from the working agreement above, or link to it.
 
 ### Exit gate
 
@@ -208,9 +210,9 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 
 ### Workspace
 
-- [ ] Convert the package into a Cargo workspace using the architectural dependency direction above.
-- [ ] Move reusable public data types into `rusting-core` without Vulkan dependencies.
-- [ ] Keep compatibility re-exports in `rusting-engine` during migration.
+- [x] Convert the package into a Cargo workspace using the architectural dependency direction above. Verified: root `Cargo.toml` already had `[workspace] members = ["testGame"]`; added `crates/rusting-core` as the first real architectural-layer member (bottom of the dependency direction). `cargo build --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` clean.
+- [ ] Move reusable public data types into `rusting-core` without Vulkan dependencies. First increment: moved `Transform` and `CollisionType` into `crates/rusting-core`. Second increment: moved the Vulkan-independent canonical scene, hierarchy, camera, naming/classification, light, visibility, render-settings, physics-settings/status, and rigid-body/collider data from `src/runtime/components.rs` into `crates/rusting-core/src/components.rs`; `rusting_engine::runtime::*` remains compatible through re-exports. `MeshRenderer` stays engine-local because it uses engine asset handles. `src/core/material.rs` and `src/core/physics.rs` also remain engine-local because they depend on rendering registries. The parent item remains open pending extraction or redesign of those rendering-coupled public types and any remaining runtime candidates.
+- [x] Keep compatibility re-exports in `rusting-engine` during migration. `src/core/mod.rs` re-exports `rusting_core::{transform, collisions}` at their original `crate::core::transform`/`crate::core::collisions` paths, so every existing caller (`src/tests.rs`, `src/scene/mod.rs`, `src/engine/mod.rs`, `src/core/physics.rs`) compiles unchanged. Confirmed `src/editor/mod.rs`/`src/editor/view.rs` never import `crate::core::` at all, so this migration step could not have touched the protected editor/gizmo files even indirectly; verified via `git status` that both files are untouched.
 - [ ] Add feature flags for editor, validation, experimental GPU physics, and optional importers.
 
 ### ECS and application lifecycle

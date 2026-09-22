@@ -579,6 +579,20 @@ impl SceneRenderer {
             CommandBufferUsage::OneTimeSubmit,
         )
         .map_err(|error| SceneRenderError(error.to_string()))?;
+        let debug_labels_enabled = self
+            .queue
+            .device()
+            .instance()
+            .enabled_extensions()
+            .ext_debug_utils;
+        if debug_labels_enabled {
+            let _ = commands.begin_debug_utils_label(
+                vulkano::instance::debug::DebugUtilsLabel {
+                    label_name: "SceneRenderer::render".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
         if physics_ran {
             let dt = render_world.fixed_delta_seconds * new_ticks as f32;
             commands
@@ -742,6 +756,9 @@ impl SceneRenderer {
         commands
             .end_render_pass(Default::default())
             .map_err(|error| SceneRenderError(error.to_string()))?;
+        if debug_labels_enabled {
+            let _ = unsafe { commands.end_debug_utils_label() };
+        }
         let command_buffer = commands
             .build()
             .map_err(|error| SceneRenderError(error.to_string()))?;
@@ -2014,26 +2031,55 @@ mod tests {
         assert_eq!(matrix_from_array(uploaded), matrix);
     }
 
+    /// These compare our hand-written CPU upload structs against the
+    /// `vulkano_shaders`-generated types for the same GLSL struct/block,
+    /// reflected straight from the compiled SPIR-V, instead of hardcoded
+    /// magic-number offsets that can drift silently from the shader source.
     #[test]
     fn render_instance_layout_matches_shader_struct() {
         use std::mem::{offset_of, size_of};
 
-        assert_eq!(size_of::<RenderInstanceUpload>(), 96);
-        assert_eq!(offset_of!(RenderInstanceUpload, color), 64);
-        assert_eq!(offset_of!(RenderInstanceUpload, physics), 80);
+        type Reflected = super::vertex_shader::RenderInstance;
+        assert_eq!(size_of::<RenderInstanceUpload>(), size_of::<Reflected>());
+        assert_eq!(
+            offset_of!(RenderInstanceUpload, color),
+            offset_of!(Reflected, color)
+        );
+        assert_eq!(
+            offset_of!(RenderInstanceUpload, physics),
+            offset_of!(Reflected, physics)
+        );
     }
 
     #[test]
     fn light_gpu_layouts_match_shader_structs() {
         use std::mem::{offset_of, size_of};
 
-        assert_eq!(size_of::<CameraUniform>(), 96);
-        assert_eq!(offset_of!(CameraUniform, ambient), 64);
-        assert_eq!(offset_of!(CameraUniform, light_info), 80);
-        assert_eq!(size_of::<LightUpload>(), 64);
-        assert_eq!(offset_of!(LightUpload, direction_range), 16);
-        assert_eq!(offset_of!(LightUpload, color_intensity), 32);
-        assert_eq!(offset_of!(LightUpload, spot_angles), 48);
+        type ReflectedCamera = super::vertex_shader::Camera;
+        assert_eq!(size_of::<CameraUniform>(), size_of::<ReflectedCamera>());
+        assert_eq!(
+            offset_of!(CameraUniform, ambient),
+            offset_of!(ReflectedCamera, ambient)
+        );
+        assert_eq!(
+            offset_of!(CameraUniform, light_info),
+            offset_of!(ReflectedCamera, light_info)
+        );
+
+        type ReflectedLight = super::fragment_shader::Light;
+        assert_eq!(size_of::<LightUpload>(), size_of::<ReflectedLight>());
+        assert_eq!(
+            offset_of!(LightUpload, direction_range),
+            offset_of!(ReflectedLight, direction_range)
+        );
+        assert_eq!(
+            offset_of!(LightUpload, color_intensity),
+            offset_of!(ReflectedLight, color_intensity)
+        );
+        assert_eq!(
+            offset_of!(LightUpload, spot_angles),
+            offset_of!(ReflectedLight, spot_angles)
+        );
     }
 
     #[test]
@@ -2062,13 +2108,34 @@ mod tests {
     fn hybrid_physics_gpu_layouts_match_shader_structs() {
         use std::mem::{offset_of, size_of};
 
-        assert_eq!(size_of::<GpuBodyState>(), 144);
-        assert_eq!(offset_of!(GpuBodyState, metadata), 128);
-        assert_eq!(size_of::<GpuConditionUpload>(), 32);
-        assert_eq!(size_of::<GpuRuleState>(), 48);
+        type ReflectedBody = super::physics_shader::PhysicsState;
+        assert_eq!(size_of::<GpuBodyState>(), size_of::<ReflectedBody>());
+        assert_eq!(
+            offset_of!(GpuBodyState, metadata),
+            offset_of!(ReflectedBody, metadata)
+        );
+
+        assert_eq!(
+            size_of::<GpuConditionUpload>(),
+            size_of::<super::physics_shader::ConditionInstruction>()
+        );
+        assert_eq!(
+            size_of::<GpuRuleState>(),
+            size_of::<super::physics_shader::RuleState>()
+        );
+        assert_eq!(
+            size_of::<GpuEventUpload>(),
+            size_of::<super::physics_shader::PhysicsEvent>()
+        );
+        assert_eq!(
+            size_of::<PhysicsPushConstants>(),
+            size_of::<super::physics_shader::PhysicsPush>()
+        );
+
+        // `EventHeader` is a bare buffer block (no named GLSL struct), so
+        // there is no generated reflected type to compare against — its
+        // hand-computed layout is checked directly instead.
         assert_eq!(size_of::<GpuEventHeader>(), 16);
-        assert_eq!(size_of::<GpuEventUpload>(), 48);
-        assert_eq!(size_of::<PhysicsPushConstants>(), 48);
     }
 
     #[test]

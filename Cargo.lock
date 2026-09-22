@@ -2401,8 +2401,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusting-core"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "nalgebra",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "rusting_engine"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "bevy_ecs",
  "bincode",
@@ -2417,6 +2427,7 @@ dependencies = [
  "rand",
  "rayon",
  "rfd",
+ "rusting-core",
  "serde",
  "serde_json",
  "smallvec",
