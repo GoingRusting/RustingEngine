@@ -2,6 +2,7 @@
 
 //! This is a test file, where I test the user-friendliness of my library
 mod examples;
+#[cfg(feature = "gltf")]
 use crate::examples::gltf_test::main as gltf_main;
 use crate::examples::shaders::main as shaders_main;
 use crate::examples::stress_pbr::main as pbr_main;

@@ -32,6 +32,80 @@ fn extract(mut counts: ResMut<Counts>) {
 }
 
 #[test]
+fn schedule_types_are_exact_core_reexports() {
+    fn core_stage_to_runtime(
+        stage: rusting_core::schedule::ScheduleStage,
+    ) -> ScheduleStage {
+        stage
+    }
+    fn runtime_stage_to_core(
+        stage: ScheduleStage,
+    ) -> rusting_core::schedule::ScheduleStage {
+        stage
+    }
+    fn core_report_to_runtime(
+        report: rusting_core::schedule::FrameReport,
+    ) -> FrameReport {
+        report
+    }
+    fn runtime_report_to_core(
+        report: FrameReport,
+    ) -> rusting_core::schedule::FrameReport {
+        report
+    }
+
+    let _stage = runtime_stage_to_core(core_stage_to_runtime(
+        rusting_core::schedule::ScheduleStage::Update,
+    ));
+    let _report = runtime_report_to_core(core_report_to_runtime(
+        rusting_core::schedule::FrameReport::default(),
+    ));
+}
+
+#[test]
+fn time_types_are_exact_core_reexports() {
+    fn core_frame_to_runtime(time: rusting_core::time::FrameTime) -> FrameTime {
+        time
+    }
+    fn runtime_frame_to_core(time: FrameTime) -> rusting_core::time::FrameTime {
+        time
+    }
+    fn core_control_to_runtime(
+        control: rusting_core::time::TimeControl,
+    ) -> TimeControl {
+        control
+    }
+    fn runtime_control_to_core(
+        control: TimeControl,
+    ) -> rusting_core::time::TimeControl {
+        control
+    }
+
+    let _time =
+        runtime_frame_to_core(core_frame_to_runtime(FrameTime::default()));
+    let _control = runtime_control_to_core(core_control_to_runtime(
+        TimeControl::default(),
+    ));
+}
+
+#[test]
+fn zero_fixed_delta_after_build_maps_to_app_error_without_advancing_time() {
+    let mut app = EngineBuilder::new().build().unwrap();
+    app.world_mut().resource_mut::<TimeControl>().fixed_delta = Duration::ZERO;
+
+    assert_eq!(
+        app.update(Duration::from_secs(1)),
+        Err(AppError::InvalidFixedDelta)
+    );
+    let time = app.world().resource::<FrameTime>();
+    assert_eq!(time.frame, 0);
+    assert_eq!(time.real_delta, Duration::ZERO);
+    assert_eq!(time.delta, Duration::ZERO);
+    assert_eq!(time.elapsed, Duration::ZERO);
+    assert_eq!(time.fixed_tick, 0);
+}
+
+#[test]
 fn schedules_and_fixed_catch_up_are_deterministic() {
     let mut app = EngineBuilder::new()
         .fixed_delta(Duration::from_millis(10))
@@ -101,6 +175,19 @@ fn typed_events_are_visible_for_one_frame() {
     app.update(Duration::ZERO).unwrap();
 
     assert_eq!(app.world().resource::<Counts>().events_seen, 1);
+}
+
+#[test]
+fn adding_an_event_type_twice_does_not_duplicate_maintenance() {
+    let mut app = App::new();
+    app.add_event::<TestEvent>().add_event::<TestEvent>();
+    app.send_event(TestEvent);
+
+    app.update(Duration::ZERO).unwrap();
+    assert_eq!(app.world().resource::<EventQueue<TestEvent>>().len(), 1);
+
+    app.update(Duration::ZERO).unwrap();
+    assert!(app.world().resource::<EventQueue<TestEvent>>().is_empty());
 }
 
 #[derive(bevy_ecs::component::Component)]

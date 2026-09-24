@@ -4,9 +4,9 @@ use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
     add_mouse_delta, configure_editor_style, draw_editor_view,
-    handle_keyboard_input, handle_mouse_button_input, update_fly_camera,
-    EditorDebugOverlay, EditorPlugin, EditorState, EditorViewport,
-    EditorWorkspace,
+    handle_keyboard_input, handle_mouse_button_input, handle_mouse_wheel,
+    update_fly_camera, EditorDebugOverlay, EditorPlugin, EditorState,
+    EditorViewport, EditorWorkspace,
 };
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{
@@ -24,7 +24,7 @@ use vulkano::VulkanError;
 use vulkano_util::context::{VulkanoConfig, VulkanoContext};
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, WindowEvent};
+use winit::event::{DeviceEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
 
@@ -251,6 +251,20 @@ impl ApplicationHandler for EditorApplication {
                     renderer.window(),
                     state,
                     button,
+                    self.cursor_position,
+                    gui.context().input(|input| input.modifiers.shift),
+                );
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(position) => {
+                        position.y as f32 / 40.0
+                    }
+                };
+                handle_mouse_wheel(
+                    self.runtime.world_mut(),
+                    lines,
                     self.cursor_position,
                 );
             }

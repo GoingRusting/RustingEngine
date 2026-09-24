@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "1.1.2"
+version = "1.1.3"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
@@ -46,16 +46,18 @@ path = "src/bin/cook_scene.rs"
 path = "src/lib.rs"
 
 [features]
-default = ["editor"]
+default = ["editor", "gltf"]
 window = ["dep:vulkano-util"]
 editor = [
     "window",
+    "gltf",
     "dep:egui",
     "dep:egui-winit",
     "dep:egui_winit_vulkano",
     "dep:rfd",
     "dep:vulkano-util",
 ]
+gltf = ["dep:gltf"]
 validation = []
 experimental-gpu-physics = []
 gpu-tests = []
@@ -69,7 +71,7 @@ vulkano = "0.35.2"
 vulkano-shaders = "0.35.0"
 winit = "0.30.12"
 rayon = "1.10"
-gltf = "1.4.1"
+gltf = { version = "1.4.1", optional = true, features = ["KHR_lights_punctual"] }
 smallvec = "1.15.1"
 cgmath = "0.18.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga"] }
@@ -93,6 +95,7 @@ panic = "abort"
 [[example]]
 name = "gltf_test"
 path = "src/examples/gltf_test.rs"
+required-features = ["gltf"]
 
 [[example]]
 name = "native_texture"

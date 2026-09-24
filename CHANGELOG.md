@@ -1,6 +1,25 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.3] - 2026-09-24
+
+### Changed
+
+- Time, input, hierarchy, events, and schedule stages moved from `src/runtime/` into the `rusting-core` crate; `runtime` re-exports them
+- `gltf` is now an optional cargo feature (default, implied by `editor`) that gates the glTF loader, `Engine::add_gltf`, `AssetServer::import_gltf`, and the `gltf_test` example; `validation` now forces the Khronos validation layer on in release builds too
+- Legacy `Engine` owns its camera and scene state directly instead of through `Arc<Mutex<_>>`
+- Roadmap and architecture rewritten around a Godot-class engine with physics as the flagship subsystem; Sundering moved to Milestones 24-29
+
+### Added
+
+- Asset worker loading: `LoadState::Loading`, `Assets::load_async`, and `Assets::poll_loads`
+- Asset hot reload: file watching (`Assets::changed`), worker decode, and swap at safe frame boundaries; a failed reload keeps the last good value
+- glTF import: node hierarchy, cameras, lights (`KHR_lights_punctual`), sampler filtering/wrapping, tangents (imported or generated), alpha opaque/mask/blend, and preserved materials, deduplicated by synthesized asset path
+- Scene files serialize hierarchy, transforms, renderers, all light types, physics, and editor metadata
+- Renderer: explicit `FrameContext`s with per-frame fences, deferred GPU-resource destruction, no CPU `wait()` in the normal frame path, demand-based buffer growth with capacity diagnostics, capability detection with fallbacks, and `QualityProfile::{Auto, Eco, Balanced, High}`
+- Editor overhaul, wave 1 (Blender + Godot direction): new dark `EditorTheme` palette and compact area headers with editor-type icons; new Inspector module with property rows, axis-colored vec3, color, angle, and typed editing of custom JSON components; Hierarchy search, per-type icons, visibility toggle, inline rename, multi-select, and context menu; persisted UI scale; Blender-style viewport orbit/pan/dolly and focus
+- `docs/editor-overhaul.md` with the editor design and backlog
+
+## [1.1.2] - 2026-09-15
 
 ### Changed
 

@@ -229,7 +229,7 @@ fn dock_area_clips_panel_content_to_its_own_rectangle() {
                 egui::vec2(120.0, 100.0),
             );
             expected_clip =
-                Some(ui.clip_rect().intersect(area_rect.shrink(2.0)));
+                Some(ui.clip_rect().intersect(area_rect.shrink(1.0)));
             show_dock_node(
                 ui,
                 &mut layout,

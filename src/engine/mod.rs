@@ -23,6 +23,7 @@
 //! ```
 
 use crate::core::{Material, Physics, Transform};
+#[cfg(feature = "gltf")]
 use crate::geometry::gltf_loader::{load_gltf_scene, GltfLoadError};
 use crate::geometry::shapes::{create_cube, create_sphere_subdivided};
 use crate::rendering::camera::create_projection_matrix;
@@ -38,13 +39,16 @@ use crate::rendering::VulkanBase;
 use crate::runtime::RenderSettings;
 use crate::scene::object::Instance;
 use crate::scene::{
-    begin_render_pass_only, record_compute_physics_multi, RenderScene,
+    begin_render_pass_only, record_compute_physics_multi,
+    record_reset_instance_count, RenderScene,
 };
+#[cfg(feature = "gltf")]
 use nalgebra::Matrix4;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::GpuFuture;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -210,15 +214,18 @@ impl std::error::Error for TextureLoadError {
 
 /// High-level engine structure for building and rendering scenes.
 ///
+/// Submitted legacy frame, retained until its frame slot is reused.
+type FrameFence = FenceSignalFuture<Box<dyn GpuFuture + Send + Sync>>;
+
 /// Handles Vulkan context, swapchain, render pass, rendering pipeline, inputs,
 /// and the physics simulation loop.
 pub struct Engine {
     /// Rendering and frame-rate options used by the legacy engine facade.
     pub render_settings: RenderSettings,
     /// The camera - controls view matrix and receives input
-    pub camera: Arc<Mutex<PerspectiveCamera>>,
+    pub camera: PerspectiveCamera,
     /// The render scene - holds all objects, batches, and GPU resources
-    scene: Arc<Mutex<RenderScene>>,
+    scene: RenderScene,
     /// Winit event loop - takes ownership when run() is called
     event_loop: Option<EventLoop<()>>,
     /// Base Vulkan resources (device, queue, window, surface)
@@ -370,13 +377,13 @@ impl Engine {
             memory_allocator: mem_allocator,
             descriptor_set_allocator: ds_allocator,
             command_buffer_allocator: cb_allocator,
-            scene: Arc::new(Mutex::new(scene)),
-            camera: Arc::new(Mutex::new(PerspectiveCamera::new(
+            scene,
+            camera: PerspectiveCamera::new(
                 45.0,
                 dims.width as f32 / dims.height as f32,
                 0.1,
                 1000.0,
-            ))),
+            ),
             cached_cube_mesh: None,
             cached_sphere_meshes: HashMap::new(),
             textures_cache: HashMap::new(),
@@ -398,7 +405,7 @@ impl Engine {
         color: [f32; 3],
         intensity: f32,
     ) {
-        self.scene.lock().unwrap().set_light(pos, color, intensity);
+        self.scene.set_light(pos, color, intensity);
     }
 
     /// Adds a cube to the scene.
@@ -431,11 +438,7 @@ impl Engine {
             ..Default::default()
         };
         inst.apply_material(mat);
-        self.scene.lock().unwrap().add_instance(
-            mesh,
-            inst,
-            &self.memory_allocator,
-        );
+        self.scene.add_instance(mesh, inst, &self.memory_allocator);
     }
 
     /// Adds a sphere to the scene.
@@ -471,11 +474,7 @@ impl Engine {
             ..Default::default()
         };
         inst.apply_material(mat);
-        self.scene.lock().unwrap().add_instance(
-            mesh,
-            inst,
-            &self.memory_allocator,
-        );
+        self.scene.add_instance(mesh, inst, &self.memory_allocator);
     }
 
     /// Loads an image file as a texture and returns its index.
@@ -512,10 +511,10 @@ impl Engine {
             pixels: img.into_raw(),
         };
 
-        let base_texture_count = self.scene.lock().unwrap().texture_views.len();
+        let base_texture_count = self.scene.texture_views.len();
         let pipeline = self.registry.default_pipeline();
 
-        self.scene.lock().unwrap().set_textures(
+        self.scene.set_textures(
             pipeline,
             &[tex],
             &self.base.queue,
@@ -541,6 +540,7 @@ impl Engine {
     /// # Errors
     /// Returns [`GltfLoadError`] if the file cannot be imported or a
     /// primitive is missing required vertex data, instead of panicking.
+    #[cfg(feature = "gltf")]
     pub fn add_gltf(
         &mut self,
         transform: Transform,
@@ -551,12 +551,11 @@ impl Engine {
         if !self.gltf_cache.contains_key(path) {
             let (mut objects, textures) =
                 load_gltf_scene(&self.memory_allocator, path)?;
-            let base_texture_count =
-                self.scene.lock().unwrap().texture_views.len();
+            let base_texture_count = self.scene.texture_views.len();
             let pipeline = self.registry.default_pipeline();
 
             if !textures.is_empty() {
-                self.scene.lock().unwrap().set_textures(
+                self.scene.set_textures(
                     pipeline,
                     &textures,
                     &self.base.queue,
@@ -601,7 +600,7 @@ impl Engine {
                     mat.metallic_roughness_texture;
             }
 
-            self.scene.lock().unwrap().add_instance(
+            self.scene.add_instance(
                 mesh.clone(),
                 instance,
                 &self.memory_allocator,
@@ -685,7 +684,7 @@ impl Engine {
             dispatches,
             visible_indices_buffer,
         ) = {
-            let mut s = self.scene.lock().unwrap();
+            let s = &mut self.scene;
             let d = s.upload_to_gpu(
                 &self.memory_allocator,
                 &self.base.queue,
@@ -732,7 +731,7 @@ impl Engine {
                 .clone();
 
             let bindings = shader.needs_bindings();
-            let scene = self.scene.lock().unwrap();
+            let scene = &self.scene;
 
             let mut writes_0: Vec<WriteDescriptorSet> = vec![];
             let mut writes_1: Vec<WriteDescriptorSet> = vec![];
@@ -801,7 +800,7 @@ impl Engine {
         eprintln!("[DBG] compute_sets done");
 
         let grid_build_sets = {
-            let scene = self.scene.lock().unwrap();
+            let scene = &self.scene;
             let grid_layout = self
                 .compute_registry
                 .get_pipeline(ComputeShaderType::GridBuild)
@@ -854,8 +853,12 @@ impl Engine {
         let mut next_frame = Instant::now();
         // Retain the submitted frame so swapchain images and per-frame GPU
         // resources are not reused while the device is still reading them.
-        let mut previous_frame_end: Option<Box<dyn GpuFuture>> =
-            Some(sync::now(self.base.device.clone()).boxed());
+        let mut previous_frame_end: Option<Box<dyn GpuFuture + Send + Sync>> =
+            Some(sync::now(self.base.device.clone()).boxed_send_sync());
+        // One fence per frame slot: a slot's uniform buffer and descriptor
+        // sets are rewritten only after the GPU finished the frame that last
+        // used that slot. Waits happen only when the GPU is 3 frames behind.
+        let mut frame_fences: [Option<Arc<FrameFence>>; 3] = [None, None, None];
 
         let event_loop = self.event_loop.take().unwrap();
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -873,7 +876,7 @@ impl Engine {
                     EngineEvent::Device(DeviceEvent::MouseMotion { delta })
                         if inputs.mouse_captured =>
                     {
-                        let mut cam = self.camera.lock().unwrap();
+                        let cam = &mut self.camera;
                         cam.yaw -= delta.0 as f32 * 0.001;
                         cam.pitch += delta.1 as f32 * 0.001;
                         cam.pitch = cam.pitch.clamp(-1.5, 1.5);
@@ -971,9 +974,8 @@ impl Engine {
                                     &self.render_pass,
                                     &self.memory_allocator,
                                 );
-                                self.camera.lock().unwrap().aspect =
-                                    new_size.width as f32
-                                        / new_size.height as f32;
+                                self.camera.aspect = new_size.width as f32
+                                    / new_size.height as f32;
                             }
                             recreate_swapchain = false;
                         }
@@ -997,7 +999,7 @@ impl Engine {
                         }
 
                         let (proj, view, cam_pos) = {
-                            let mut cam = self.camera.lock().unwrap();
+                            let cam = &mut self.camera;
                             let sprint =
                                 if inputs.keys.contains(&KeyCode::ShiftLeft) {
                                     2.0
@@ -1017,8 +1019,16 @@ impl Engine {
                             (proj, view, cam_pos)
                         };
 
+                        if let Some(fence) = frame_fences[frame_index].take() {
+                            if let Err(e) = fence.wait(None) {
+                                eprintln!(
+                                    "[DBG] Frame fence wait error: {e:?}"
+                                );
+                            }
+                        }
+
                         {
-                            let mut s = self.scene.lock().unwrap();
+                            let s = &mut self.scene;
                             s.prepare_frame_ubo(
                                 frame_index,
                                 view,
@@ -1039,7 +1049,7 @@ impl Engine {
                         let mut physics_ran = false;
 
                         while accumulator >= fixed_dt {
-                            let scene = self.scene.lock().unwrap();
+                            let scene = &self.scene;
                             let cell_size = scene.max_object_radius * 2.0 + 0.2;
                             record_compute_physics_multi(
                                 &mut comp_builder,
@@ -1064,17 +1074,24 @@ impl Engine {
 
                         if physics_ran {
                             let comp_cb = comp_builder.build().unwrap();
-                            let comp_future =
-                                sync::now(self.base.device.clone())
-                                    .then_execute(
-                                        self.base.queue.clone(),
-                                        comp_cb,
-                                    )
-                                    .unwrap()
-                                    .then_signal_fence_and_flush()
-                                    .unwrap();
+                            // Chained after the previous frame, which still
+                            // reads the physics buffers this pass writes.
+                            // ponytail: this waits for the previous frame, so
+                            // CPU and GPU do not overlap on physics frames;
+                            // per-frame-slot buffers would restore overlap.
+                            let comp_future = previous_frame_end
+                                .take()
+                                .unwrap()
+                                .then_execute(self.base.queue.clone(), comp_cb)
+                                .unwrap()
+                                .then_signal_fence_and_flush()
+                                .unwrap();
 
                             comp_future.wait(None).unwrap();
+                            previous_frame_end = Some(
+                                sync::now(self.base.device.clone())
+                                    .boxed_send_sync(),
+                            );
                         }
 
                         let mut comp_builder = create_builder(
@@ -1098,7 +1115,7 @@ impl Engine {
                                 physics_write.clone()
                             };
 
-                            let mut s = self.scene.lock().unwrap();
+                            let s = &mut self.scene;
                             let mut current_physics_offset = 0u32;
 
                             for batch in &mut s.batches {
@@ -1107,11 +1124,13 @@ impl Engine {
                                     continue;
                                 }
 
-                                {
-                                    let mut guard =
-                                        batch.indirect_buffer.write().unwrap();
-                                    guard[0].instance_count = 0;
-                                }
+                                // Reset instance_count on the GPU: the
+                                // previous frame may still draw from this
+                                // buffer, so a host write could race it.
+                                record_reset_instance_count(
+                                    &mut comp_builder,
+                                    &batch.indirect_buffer,
+                                );
 
                                 let cull_pipeline = self
                                     .compute_registry
@@ -1177,17 +1196,21 @@ impl Engine {
 
                             let cull_cb = comp_builder.build().unwrap();
 
-                            let cull_future =
-                                sync::now(self.base.device.clone())
-                                    .then_execute(
-                                        self.base.queue.clone(),
-                                        cull_cb,
-                                    )
-                                    .unwrap()
-                                    .then_signal_fence_and_flush()
-                                    .unwrap();
+                            // Chained after the previous frame, which still
+                            // draws from the indirect buffers culling writes.
+                            let cull_future = previous_frame_end
+                                .take()
+                                .unwrap()
+                                .then_execute(self.base.queue.clone(), cull_cb)
+                                .unwrap()
+                                .then_signal_fence_and_flush()
+                                .unwrap();
 
                             cull_future.wait(None).unwrap();
+                            previous_frame_end = Some(
+                                sync::now(self.base.device.clone())
+                                    .boxed_send_sync(),
+                            );
 
                             if frame_count <= 3 {
                                 let visible: u32 = s
@@ -1206,8 +1229,6 @@ impl Engine {
                                 solid_obj_count,
                             );
                             }
-
-                            drop(s);
                         }
 
                         let mut render_builder = create_builder(
@@ -1215,7 +1236,7 @@ impl Engine {
                             &self.base.queue,
                         );
                         {
-                            let mut s = self.scene.lock().unwrap();
+                            let s = &mut self.scene;
                             begin_render_pass_only(
                                 &mut render_builder,
                                 &framebuffers,
@@ -1251,11 +1272,16 @@ impl Engine {
                                     img_index,
                                 ),
                             )
+                            .boxed_send_sync()
                             .then_signal_fence_and_flush();
 
                         match future {
                             Ok(future) => {
-                                previous_frame_end = Some(future.boxed());
+                                let future = Arc::new(future);
+                                frame_fences[frame_index] =
+                                    Some(future.clone());
+                                previous_frame_end =
+                                    Some(future.boxed_send_sync());
                                 frame_count += 1;
                                 if fps_timer.elapsed().as_secs_f32() >= 2.0 {
                                     println!(
@@ -1278,13 +1304,15 @@ impl Engine {
                             )) => {
                                 recreate_swapchain = true;
                                 previous_frame_end = Some(
-                                    sync::now(self.base.device.clone()).boxed(),
+                                    sync::now(self.base.device.clone())
+                                        .boxed_send_sync(),
                                 );
                             }
                             Err(e) => {
                                 eprintln!("[DBG] Flush error: {:?}", e);
                                 previous_frame_end = Some(
-                                    sync::now(self.base.device.clone()).boxed(),
+                                    sync::now(self.base.device.clone())
+                                        .boxed_send_sync(),
                                 );
                             }
                         }

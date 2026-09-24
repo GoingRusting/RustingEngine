@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::runtime::{
-    SceneCamera, SceneDocument, SceneEntity, SceneMaterial, SceneMaterialData,
-    SceneMaterialModel, SceneMesh, SceneMeshRenderer, SceneProjection,
-    SceneTransform, SCENE_FORMAT_VERSION,
+    SceneAlphaMode, SceneCamera, SceneDocument, SceneEntity, SceneMaterial,
+    SceneMaterialData, SceneMaterialModel, SceneMesh, SceneMeshRenderer,
+    SceneProjection, SceneTransform, SCENE_FORMAT_VERSION,
 };
 
 /// Current version of `project.json` written by the editor.
@@ -398,6 +398,7 @@ fn default_scene(name: &str) -> SceneDocument {
                     mesh: SceneMesh::BuiltinCube,
                     material: SceneMaterial::Inline(SceneMaterialData {
                         model: SceneMaterialModel::Pbr,
+                        alpha_mode: SceneAlphaMode::Opaque,
                         base_color: [0.1, 0.45, 0.95, 1.0],
                         emissive: [0.0; 3],
                         metallic: 0.0,
@@ -463,7 +464,8 @@ fn default_project_parent() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn recent_projects_path() -> PathBuf {
+/// Per-user editor configuration folder.
+fn user_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(not(target_os = "windows"))]
@@ -475,7 +477,63 @@ fn recent_projects_path() -> PathBuf {
                 .map(|home| home.join(".config"))
         });
     base.unwrap_or_else(default_project_parent)
-        .join("rusting_engine/recent_projects.json")
+        .join("rusting_engine")
+}
+
+fn recent_projects_path() -> PathBuf {
+    user_config_dir().join("recent_projects.json")
+}
+
+/// Editor settings that belong to the user, not to a project.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct EditorPreferences {
+    /// Whole-interface zoom (egui zoom factor); 1.0 is 100%.
+    pub ui_scale: f32,
+}
+
+impl Default for EditorPreferences {
+    fn default() -> Self {
+        Self { ui_scale: 1.0 }
+    }
+}
+
+impl EditorPreferences {
+    /// UI scales offered in the View menu.
+    pub const UI_SCALES: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
+
+    fn path() -> PathBuf {
+        user_config_dir().join("editor_preferences.json")
+    }
+
+    /// Reads the user's preferences; a missing or broken file gives defaults.
+    #[must_use]
+    pub fn load() -> Self {
+        Self::load_from(&Self::path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .map(|mut preferences| {
+                preferences.ui_scale = preferences.ui_scale.clamp(0.5, 3.0);
+                preferences
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), ProjectError> {
+        self.save_to(&Self::path())
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), ProjectError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        Ok(())
+    }
 }
 
 fn load_recent_projects() -> Result<Vec<RecentProject>, ProjectError> {
@@ -575,5 +633,29 @@ mod tests {
                 .unwrap();
         assert_eq!(stored, migrated.manifest);
         std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn editor_preferences_round_trip_and_fall_back_to_defaults() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting_prefs_{}", Uuid::new_v4()));
+        let path = folder.join("editor_preferences.json");
+        assert_eq!(
+            EditorPreferences::load_from(&path),
+            EditorPreferences::default()
+        );
+
+        let preferences = EditorPreferences { ui_scale: 1.25 };
+        preferences.save_to(&path).unwrap();
+        assert_eq!(EditorPreferences::load_from(&path), preferences);
+
+        std::fs::write(&path, "{\"ui_scale\": 40.0}").unwrap();
+        assert_eq!(EditorPreferences::load_from(&path).ui_scale, 3.0);
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(
+            EditorPreferences::load_from(&path),
+            EditorPreferences::default()
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

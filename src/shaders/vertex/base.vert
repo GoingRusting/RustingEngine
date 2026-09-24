@@ -69,7 +69,7 @@ void main() {
     uint actual_id;
     if (mesh_pc.v_use_culling == 1) {
         // Read instance index from the culling output buffer
-        actual_id = data[gl_InstanceIndex];
+        actual_id = data[mesh_pc.v_visible_list_offset + gl_InstanceIndex];
     } else {
         // Direct instance indexing (no culling)
         actual_id = gl_InstanceIndex;

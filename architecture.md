@@ -26,21 +26,26 @@ Each layer may depend only on layers below it. Crates sharing a layer are siblin
 
 ```text
  0  rusting-math      deterministic scalar/vector math, fixed-point, seeded RNG streams
- 1  rusting-core      ECS components, schedules, time, input, hierarchy, events
- 2  rusting-assets    typed handles, cache, importers, serialization, hot reload
- 3  rusting-physics   CPU physics, GPU compute simulation, synchronization, queries
- 4  rusting-terrain   volumetric chunks, fracture, structural load, Scar persistence
- 5  rusting-nav       navigation volumes, flow fields, crowd agents
- 6  rusting-render    Vulkan context, extraction, frame graph, materials, profiling
-    rusting-net       authority, wire protocol, replication, interest mechanism
-    rusting-audio     device management, mixing, buses, spatialization
+ 1  rusting-core      ECS components, schedules, time, input, hierarchy, events, reflection
+ 2  rusting-assets    typed handles, cache, importers, serialization, prefabs, hot reload
+ 3  rusting-physics   2D/3D CPU physics, GPU compute simulation, deformables, fluids, synchronization, queries
+ 4  rusting-terrain   heightmap and volumetric terrain, fracture, structural load, Scar persistence
+ 5  rusting-nav       navigation meshes/volumes, flow fields, agents, avoidance
+    rusting-anim      skeletal and property animation, state machines, IK, physics-driven animation
+ 6  rusting-render    Vulkan context, extraction, frame graph, 2D/3D passes, materials, shaders, particles, profiling
+    rusting-net       transport, wire protocol, RPC, replication, rollback, interest mechanism
+    rusting-audio     device management, mixing, buses, effects, spatialization
+    rusting-ui        runtime UI layout, themes, text shaping, localization, accessibility
  7  rusting-gameplay  teams, match state, abilities as forces, vision, bots
- 8  rusting-editor    egui panels, viewport, inspector, gizmos, play controls
- 9  rusting-engine    plugins, application facade, compatibility API
-10  game projects     vertical slice, Sundering
+ 8  rusting-editor    egui panels, viewport, inspector, gizmos, play controls, editor plugins
+    rusting-script    optional sandboxed WASM scripting host
+ 9  rusting-engine    plugins, application facade, compatibility API, export
+10  game projects     vertical slice, demo projects, Sundering
 ```
 
 `rusting-math` sits below everything because both the CPU solver and the generated shader math must use one implementation. Splitting it later means rewriting every solver.
+
+Physics is the engine's flagship subsystem and sits low in the stack on purpose: animation, navigation, rendering, audio, UI, and networking all consume physics state and events, and none of them may own a parallel simulation. Runtime UI and particles reach the screen through render extraction, never by calling `rusting-render` directly.
 
 Game-specific content — heroes, ability definitions, map layouts — belongs in the game project at layer 10, not in `rusting-gameplay`. Layer 7 owns the machinery; layer 10 owns the content.
 
@@ -221,7 +226,7 @@ This is the boundary that makes deterministic networked play possible, and the e
 
 ## Sundering architecture sequence
 
-This sequence begins once the hybrid physics bridge above is complete. It corresponds to roadmap Milestones 8-15.
+This sequence begins once the hybrid physics bridge above is complete. Steps 1-3 correspond to roadmap Milestone 8, which is now an engine milestone available to every game; step 4 builds on the general networking of Milestone 19; the remaining steps correspond to Sundering Milestones 24-29 and reuse the engine's fracture (Milestone 11), navigation (Milestone 18), animation (Milestone 14), and audio (Milestone 15) systems rather than forking them.
 
 1. Extract `rusting-math` and move both the CPU solver and every physics shader onto it. Add the per-tick world-state hash and headless mode.
 2. Prove or disprove cross-vendor determinism. Record the result in this document, because it decides the networking model for everything that follows.
@@ -238,4 +243,4 @@ Decisions that later work must not silently reverse. Add to this list rather tha
 
 - *(pending)* Simulation number format: fixed-point or constrained IEEE-754. Decided by Milestone 8.
 - *(pending)* Networking model: lockstep with rollback, or server-authoritative without. Decided by the Milestone 8 determinism result.
-- *(pending)* Terrain chunk size and volume representation. Decided by Milestone 10.
+- *(pending)* Terrain chunk size and volume representation. Decided by Milestone 25.

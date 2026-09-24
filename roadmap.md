@@ -1,8 +1,11 @@
 # RustingEngine Roadmap
 
-RustingEngine is currently a functional Vulkan renderer prototype. The goal of this roadmap is to evolve it into a playable Windows/Linux game engine with an integrated egui editor, stable runtime architecture, and a self-written hybrid physics system that can divide work between the CPU and GPU without making GPU state invisible to gameplay.
+RustingEngine is currently a functional Vulkan renderer prototype with a native Rust ECS runtime, an egui editor, and a GPU-accelerated hybrid physics bridge. The goal of this roadmap is to turn it into a complete, general-purpose Windows/Linux game engine in the same class as Godot — covering 3D and 2D rendering, animation, audio, UI, navigation, networking, a full editor, and export — whose defining strength is physics. RustingEngine should be the engine people pick *because* of its physics.
 
-This roadmap now covers two products: the general-purpose engine (Milestones 0-7) and *Sundering*, a deterministic, networked, destructible competitive game built on it (Milestones 8-15).
+The roadmap covers two products:
+
+- **The engine** (Milestones 0-23): Godot-class feature breadth, with physics as the flagship subsystem. Milestones 0-7 build the foundation and a vertical slice; Milestone 8 makes simulation deterministic; Milestones 9-23 reach feature parity with Godot while taking physics well beyond it.
+- ***Sundering*** (Milestones 24-29): a deterministic, networked, destructible 5v5 competitive game built on the engine. It is the engine's hardest physics customer and its proof that the physics claims are real.
 
 This document is the implementation source of truth. Tasks should be completed in dependency order, kept behind compiling intermediate states, and verified against the acceptance gates at the end of each milestone.
 
@@ -14,7 +17,7 @@ This roadmap lists outcomes, not tasks. Turning an outcome into a task is part o
 
 ### How to pick an item
 
-Pick the lowest-numbered unchecked item whose dependencies are satisfied. Milestones 2, 3, 4, and 5 are parallel tracks and may be interleaved. If an item is too large for one session, split it, implement the first part, and record the split in this file as sub-items.
+Pick the lowest-numbered unchecked item whose dependencies are satisfied. Milestones 2, 3, 4, and 5 are parallel tracks and may be interleaved. After Milestone 9, Milestones 10-22 are parallel tracks and may be interleaved, subject to the dependencies stated at the top of each milestone; physics milestones (10-12) take priority when two items are otherwise equally ready. If an item is too large for one session, split it, implement the first part, and record the split in this file as sub-items.
 
 ### What counts as verification
 
@@ -29,6 +32,9 @@ Not every item is provable the same way. Match the proof to the item instead of 
 | Shader source changes | Shader compiles in the build, plus a layout assertion |
 | Compute dispatch behaviour, readback, physics results | Headless Vulkan test, software device acceptable |
 | Rendered output correctness | Headless offscreen render plus golden-image comparison |
+| CPU physics behaviour (stacking, joints, CCD, queries) | Deterministic headless unit/scenario test, no GPU |
+| Editor panel behaviour | Unit test on editor state/commands; golden image for compositing |
+| Audio mixing and DSP | Offline render to buffer plus sample comparison, no device |
 | Frame pacing, throughput, memory growth | Hardware GPU run, cannot be verified in software |
 | Determinism across vendors | Two different Vulkan implementations |
 
@@ -53,31 +59,84 @@ Performance targets are acceptance gates for a milestone, never individual tasks
 
 ## Product target
 
-The first major release should provide:
+The engine's 1.0 release (Milestone 23) should provide everything a team expects from Godot, plus physics no general-purpose engine offers:
 
-- A real application runtime with ECS entities, components, resources, schedules, events, input, and fixed updates.
-- A Vulkan renderer with explicit frames in flight, forward PBR, shadows, transparency, HDR tone mapping, culling, LOD, and profiling.
-- Typed, deduplicated assets with glTF import, scene serialization, and hot reload.
-- Self-written hybrid physics with per-object CPU/GPU allocation, asynchronous GPU events, selective state readback, and custom compute shaders.
-- An in-engine egui editor with a viewport, hierarchy, inspector, asset browser, console, profiler, gizmos, and play controls.
-- A representative vertical-slice game and a repeatable 1080p performance benchmark.
+- A real application runtime with ECS entities, components, resources, schedules, events, observers, reflection, input, and fixed updates.
+- Reusable scene composition: prefabs/instanced scenes with nested overrides, groups, signals, and data resources.
+- A Vulkan renderer with explicit frames in flight, forward PBR, shadows, transparency, HDR, global illumination, reflection probes, screen-space effects, volumetric fog, post-processing, decals, GPU particles, culling, LOD, and profiling.
+- A first-class 2D pipeline: sprites, tilemaps, 2D lights, 2D particles, and 2D physics.
+- Custom shaders through a stable engine shader language and a visual shader graph.
+- Skeletal and property animation, animation state machines, blend spaces, IK, retargeting, and tweens.
+- An audio engine with buses, effects, streaming, and 3D spatialization.
+- A runtime UI toolkit with layout containers, themes, rich text, localization, and accessibility.
+- Navigation meshes, agents, and avoidance for 2D and 3D.
+- High-level multiplayer: RPCs, replicated spawning/synchronization, and deterministic rollback.
+- Typed, deduplicated assets with glTF import, per-asset import settings, texture compression, scene serialization, and hot reload.
+- An in-engine egui editor at Godot parity: viewport, hierarchy, inspector, asset browser, console, debugger, profiler, gizmos, animation/shader/tilemap editors, project settings, export, and an editor plugin API.
+- Fast iteration: Rust game-code hot reload and an optional sandboxed scripting layer.
+- Export to Windows, Linux, and macOS, then Android.
+- Documentation, tutorials, templates, and demo projects for every major feature.
+- **Best-in-class physics** — see the next section.
 
-Primary platforms are Windows and Linux desktop. Native Rust systems are the gameplay API, and games remain normal Cargo projects that can use external libraries. A versioned custom physics-compute ABI is part of the hybrid milestone; Lua/WASM, deferred rendering, and an unrestricted custom render-shader ABI remain deferred.
+Primary platforms are Windows and Linux desktop. Native Rust systems are the gameplay API, and games remain normal Cargo projects that can use external libraries. A versioned custom physics-compute ABI is part of the hybrid milestone. Deferred rendering, web export, iOS, and consoles remain out of scope until after 1.0.
+
+## Physics is the flagship
+
+Godot ships a capable general-purpose physics engine (Godot Physics or Jolt). RustingEngine must be measurably better, not merely equivalent. "Best physics" is defined by the following pillars, each owned by a milestone and each proven by a benchmark or test rather than asserted:
+
+| Pillar | What it means | Owner |
+| --- | --- | --- |
+| Scale | Hundreds of thousands to millions of simultaneously simulated bodies through GPU solvers, with per-body CPU/GPU allocation | M5, M11 |
+| Gameplay connection | GPU simulation is never a black box: typed conditions, asynchronous events, commands, and selective readback reach normal Rust gameplay code | M5 |
+| Determinism | Bit-identical simulation across runs, builds, thread counts, and (where proven) GPU vendors; replay and rollback built in | M8 |
+| Breadth | Rigid, articulated, character, vehicle, ragdoll, soft-body, cloth, rope, fluid, granular, and fracture simulation in one world with two-way coupling | M10, M11 |
+| Correctness | Stable stacking, continuous collision, robust contacts, and conservation behaviour verified by a regression scenario suite | M5, M10 |
+| Tooling | A physics debugger with recording, timeline scrubbing, per-body inspection, and authoring tools in the editor | M12 |
+| Integration | Animation, particles, audio, navigation, and networking consume physics through the same bridge instead of parallel ad-hoc systems | M13-M19 |
+| Evidence | A published, repeatable benchmark suite comparing RustingEngine against Jolt, PhysX, Rapier, and Godot Physics on identical scenes | M12 |
+
+Every other subsystem is judged against Godot parity. Physics is judged against the best standalone physics engines.
+
+## Godot parity map
+
+Each Godot feature area has an owning milestone. A feature area is at parity when its milestone's exit gate passes.
+
+| Godot area | RustingEngine equivalent | Milestone |
+| --- | --- | --- |
+| Node tree, scenes, `PackedScene` instancing, inheritance | ECS hierarchy, prefabs with nested overrides | M1, M9 |
+| Signals, groups | Typed events, observers, entity groups | M1, M9 |
+| Resources (`.tres`) | Typed data assets with reflection | M2, M9 |
+| GDScript / C# / GDExtension | Native Rust, Rust hot reload, optional WASM scripting | M9 |
+| Godot Physics / Jolt 3D | Hybrid CPU/GPU physics | M5, M10-M12 |
+| Soft bodies, cloth | XPBD deformables | M11 |
+| Forward+/Mobile/Compatibility renderers | Forward PBR with quality profiles and capability fallback | M3, M4 |
+| SDFGI/VoxelGI/LightmapGI, probes, SSAO/SSR/SSIL, fog, glow | Advanced rendering | M13 |
+| Shading language, visual shaders | Engine shader language and shader graph | M13 |
+| GPUParticles, decals, MultiMesh, CSG, GridMap | Advanced rendering and editor tools | M13, M20 |
+| AnimationPlayer, AnimationTree, IK, tweens | Animation system | M14 |
+| Audio buses, effects, 3D audio | Audio engine | M15 |
+| Control nodes, themes, RichTextLabel, translations | Runtime UI and localization | M16 |
+| 2D renderer, TileMap, 2D physics, 2D lights | 2D engine | M17 |
+| NavigationServer, agents, avoidance | Navigation | M18 |
+| High-level multiplayer, ENet, WebSocket, HTTP | Networking | M19 |
+| Editor docks, debugger, profilers, editor plugins, asset library | Editor parity | M20 |
+| Export templates, platforms | Platforms and export | M21 |
+| Documentation, demo projects | Documentation and ecosystem | M22 |
 
 ## Second product target: Sundering
 
-Milestones 0-7 build an engine. Milestones 8-15 build what *Sundering* needs on top of it: a 5v5 competitive game whose terrain is made of millions of simulated chunks that come apart permanently. Its design document lives at `~/Sundering/README.md`.
+*Sundering* is a 5v5 competitive game whose terrain is made of millions of simulated chunks that come apart permanently. Its design document lives at `~/Sundering/README.md`. It is built after the engine's physics pillars exist and consumes them harder than any other project will.
 
-Sundering demands four things a general-purpose engine does not:
+Sundering demands four things a general-purpose engine does not provide by default:
 
-- **Determinism.** Competitive play requires the simulation to produce identical results for every participant. This constrains the physics solver, the GPU reduction strategy, and the ordering of every simulation operation.
-- **Authoritative networking.** A server owns the simulation; clients must stay consistent with it under real latency and loss.
-- **Destructible terrain as simulation state.** Terrain is not authored geometry. It is a first-class simulated entity that feeds collision, navigation, and vision.
-- **Navigation over geometry that changes every tick.** Nav meshes assume a static world. Sundering has no static world.
+- **Determinism.** Competitive play requires the simulation to produce identical results for every participant. This constrains the physics solver, the GPU reduction strategy, and the ordering of every simulation operation. The engine provides it in Milestone 8.
+- **Authoritative networking.** A server owns the simulation; clients must stay consistent with it under real latency and loss. The engine provides general networking in Milestone 19; Sundering adds competitive authority in Milestone 24.
+- **Destructible terrain as simulation state.** Terrain is not authored geometry. It is a first-class simulated entity that feeds collision, navigation, and vision. It builds on the engine's fracture support from Milestone 11.
+- **Navigation over geometry that changes every tick.** Nav meshes assume a static world. Sundering has no static world. It builds on the engine's navigation from Milestone 18.
 
 **Determinism cannot be retrofitted.** Milestone 8 defines the full requirements and their acceptance gate, but three of its ordering rules must be respected while Milestone 5 is implemented, or that work will need rewriting. They are restated at the top of Milestone 5.
 
-Milestones 8-15 depend on Milestone 5 being complete. Milestone 8 must precede Milestone 9, because the determinism result decides which networking model is available.
+Milestones 24-29 depend on Milestones 8, 10, 11, 18, and 19. Milestone 8 must precede any networking milestone, because the determinism result decides which networking model is available.
 
 ## Architectural direction
 
@@ -86,30 +145,33 @@ The project should become a Cargo workspace with one-way dependencies:
 ```text
 rusting-math       deterministic math, fixed-point, seeded RNG streams
       ↑
-rusting-core       ECS components, schedules, time, input, hierarchy, events
+rusting-core       ECS components, schedules, time, input, hierarchy, events, reflection
       ↑
-rusting-assets     typed handles, cache, importers, serialization, hot reload
+rusting-assets     typed handles, cache, importers, serialization, prefabs, hot reload
       ↑
-rusting-physics    CPU physics, GPU compute simulation, synchronization, queries
+rusting-physics    2D/3D CPU physics, GPU compute simulation, deformables, fluids, synchronization, queries
       ↑
-rusting-terrain    volumetric chunks, fracture, structural load, Scar persistence
+rusting-terrain    heightmap and volumetric terrain, fracture, structural load, Scar persistence
       ↑
-rusting-nav        navigation volumes, flow fields, crowd agents
+rusting-nav        navigation meshes/volumes, flow fields, agents, avoidance
+rusting-anim       skeletal and property animation, state machines, IK, physics-driven animation
       ↑
-rusting-render     Vulkan context, extraction, frame graph, materials, profiling
-rusting-net        authority, wire protocol, replication, interest mechanism
-rusting-audio      device management, mixing, buses, spatialization
+rusting-render     Vulkan context, extraction, frame graph, 2D/3D passes, materials, shaders, particles, profiling
+rusting-net        transport, wire protocol, RPC, replication, rollback, interest mechanism
+rusting-audio      device management, mixing, buses, effects, spatialization
+rusting-ui         runtime UI layout, themes, text shaping, localization, accessibility
       ↑
 rusting-gameplay   teams, match state, abilities as forces, vision, bots
       ↑
-rusting-editor     egui panels, viewport, inspector, gizmos, play controls
+rusting-editor     egui panels, viewport, inspector, gizmos, play controls, editor plugins
+rusting-script     optional sandboxed WASM scripting host
       ↑
-rusting-engine     plugins, application facade, compatibility API
+rusting-engine     plugins, application facade, compatibility API, export
       ↑
-game projects      vertical slice, Sundering
+game projects      vertical slice, demo projects, Sundering
 ```
 
-`rusting-render`, `rusting-net`, and `rusting-audio` are siblings at one level and must not depend on each other. Full layer definitions are in [`architecture.md`](architecture.md).
+`rusting-nav` and `rusting-anim` are siblings. `rusting-render`, `rusting-net`, `rusting-audio`, and `rusting-ui` are siblings at one level and must not depend on each other; UI and particles reach the screen through render extraction, not by calling the renderer. `rusting-editor` and `rusting-script` are siblings. Full layer definitions are in [`architecture.md`](architecture.md).
 
 Dependency cycles between runtime, renderer, physics, assets, and editor are not allowed. ECS entities are the canonical identity and authored scene state. A GPU-owned body's newest runtime transform may live on the GPU; ECS keeps its stable ID, settings, last synchronized state, and pending events. Render batches, physics arrays, indirect buffers, and other GPU representations are derived data.
 
@@ -144,11 +206,11 @@ Goal: establish a trustworthy baseline before adding architecture or features.
 - [x] Replace public initialization and asset-loading panics with typed errors and `Result` APIs.
   - [x] `geometry::gltf_loader::load_gltf_scene` and `Engine::add_gltf` return `Result<_, GltfLoadError>` instead of panicking on a missing/corrupt glTF file or a primitive without positions.
   - [x] `Engine::load_texture` returns `Result<usize, TextureLoadError>` instead of panicking on a missing/corrupt image file.
-  - [x] Remaining production `.unwrap()`/`.expect()`/`panic!` call sites outside tests audited (~220 across `scene/mod.rs`, `engine/mod.rs`, `rendering/*`, `project_runner.rs`). Findings: no genuine unconverted caller-recoverable site remains (checked for file/filesystem loading specifically — the only production `fs::`/`File` usage is a compiled-in shader module load and this session's own golden-image test helper). The rest fall into three buckets that are correctly left as panics, not oversights: (1) internal invariants after initialization — ECS resource/component lookups, GPU pipeline/queue state assumed valid once the device exists; (2) documented API panics that already ship a non-panicking alternative, e.g. `GameScene::object` panics but `GameScene::try_object` returns `Option`; (3) the legacy `Engine`/`scene::RenderScene` compatibility facade (`engine/mod.rs`, `scene/mod.rs`), already deferred to the Milestone 1 facade replacement per the item above (item 143) — converting its error style now would be churn thrown away at that rewrite. No new unchecked item added since nothing actionable was found outside what's already tracked.
+  - [x] Remaining production `.unwrap()`/`.expect()`/`panic!` call sites outside tests audited (~220 across `scene/mod.rs`, `engine/mod.rs`, `rendering/*`, `project_runner.rs`). Findings: no genuine unconverted caller-recoverable site remains (checked for file/filesystem loading specifically — the only production `fs::`/`File` usage is a compiled-in shader module load and this session's own golden-image test helper). The rest fall into three buckets that are correctly left as panics, not oversights: (1) internal invariants after initialization — ECS resource/component lookups, GPU pipeline/queue state assumed valid once the device exists; (2) documented API panics that already ship a non-panicking alternative, e.g. `GameScene::object` panics but `GameScene::try_object` returns `Option`; (3) the legacy `Engine`/`scene::RenderScene` compatibility facade (`engine/mod.rs`, `scene/mod.rs`), already deferred to the Milestone 1 facade replacement per the compatibility-facade item above — converting its error style now would be churn thrown away at that rewrite. No new unchecked item added since nothing actionable was found outside what's already tracked.
 - [x] Add Vulkan debug names and scoped command-buffer labels. `init_vulkan` names the main queue via `Device::set_debug_utils_object_name` when `ext_debug_utils` is enabled (debug builds with validation, same gate as the existing `DebugUtilsMessenger`); `SceneRenderer::render` wraps its command buffer in a `begin_debug_utils_label`/`end_debug_utils_label` scope ("SceneRenderer::render"), both gated on `instance().enabled_extensions().ext_debug_utils` so release/no-validation builds pay nothing. Verified live on real hardware (NVIDIA RTX 3060): `rendering::debug_utils_tests::object_names_and_command_buffer_labels_are_accepted_by_the_driver` creates an instance with `ext_debug_utils` forced on, names a queue, and records/submits a command buffer with a begin/end label pair, asserting the driver accepts both calls with no validation error. `cargo test --lib --features gpu-tests`: 146 passed.
 - [x] Validate rendering, resizing, minimizing, restoring, and shutdown on Linux and Windows. Partially verified live in this environment (Linux, Wayland session, real NVIDIA RTX 3060): `./target/debug/game testGame/build/main.rscene.bin` opens a window and renders continuously for 5s under `timeout` with no panic/validation output, then exits cleanly (SIGTERM). Resizing, minimizing, and restoring need a window-manager automation tool (`xdotool`/`wmctrl`, neither installed, not added since installing new system packages is outside this session's scope) to script without a human; Windows has no machine available in this environment at all. See new item below for the remaining manual QA pass.
 - [ ] Manually verify window resize, minimize, and restore on Linux (with `xdotool`/`wmctrl` installed, or by hand) and repeat the full rendering/resize/minimize/restore/shutdown pass on a Windows machine — blocked in this environment per item above.
-- [ ] Replace fixed grid limits with explicit capacity tracking and overflow reporting. Never silently omit bodies. Blocked: the only fixed grid limit in the codebase is `MAX_PER_CELL = 128` in `shaders/compute/grid_build.comp` (`if (idx < MAX_PER_CELL) { grid_objects.data[...] = i; }` silently drops the object otherwise), driven entirely by `scene::RenderScene`/`Engine::render` (`engine/mod.rs`, `scene/mod.rs`) — the legacy compatibility facade already deferred to the Milestone 1 full replacement per item 143. No ECS-native system (`scene_renderer.rs`, `compute_registry.rs`'s other pipelines) uses this grid. Adding overflow reporting to code being replaced wholesale is churn thrown away at that rewrite; deferred with it rather than tracked separately.
+- [ ] Replace fixed grid limits with explicit capacity tracking and overflow reporting. Never silently omit bodies. Blocked: the only fixed grid limit in the codebase is `MAX_PER_CELL = 128` in `shaders/compute/grid_build.comp` (`if (idx < MAX_PER_CELL) { grid_objects.data[...] = i; }` silently drops the object otherwise), driven entirely by `scene::RenderScene`/`Engine::render` (`engine/mod.rs`, `scene/mod.rs`) — the legacy compatibility facade already deferred to the Milestone 1 full replacement per the compatibility-facade item above. No ECS-native system (`scene_renderer.rs`, `compute_registry.rs`'s other pipelines) uses this grid. Adding overflow reporting to code being replaced wholesale is churn thrown away at that rewrite; deferred with it rather than tracked separately.
 - [x] Add generated/reflected layout checks for storage buffers, uniforms, vertex data, and push constants. `render_instance_layout_matches_shader_struct`, `light_gpu_layouts_match_shader_structs`, and `hybrid_physics_gpu_layouts_match_shader_structs` (`rendering/scene_renderer.rs`) now compare CPU upload structs' `size_of`/`offset_of` against the `vulkano_shaders`-generated types for the same GLSL struct/block (`vertex_shader::RenderInstance`/`Camera`, `fragment_shader::Light`, `physics_shader::PhysicsState`/`ConditionInstruction`/`RuleState`/`PhysicsEvent`/`PhysicsPush`) — reflected straight from the compiled SPIR-V — instead of hardcoded magic-number offsets that could silently drift from the shader source. `GpuEventHeader` has no named GLSL struct (bare buffer block) so it keeps its one hand-computed size assertion. Verified: `cargo test --lib --features gpu-tests`: 146 passed.
 
 ### Exit gate
@@ -160,7 +222,7 @@ Goal: establish a trustworthy baseline before adding architecture or features.
 
 ## Milestone 0.5: Verifiable development environment
 
-Goal: make GPU-touching work provable on a machine with no display and no second GPU. This milestone precedes all remaining GPU work. Without it, most of Milestones 3, 4, 5, 8, 10, and 11 cannot be verified by anyone, including CI.
+Goal: make GPU-touching work provable on a machine with no display and no second GPU. This milestone precedes all remaining GPU work. Without it, most of Milestones 3, 4, 5, 8, 11, 13, 25, and 26 cannot be verified by anyone, including CI.
 
 ### Software Vulkan device
 
@@ -211,9 +273,9 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 ### Workspace
 
 - [x] Convert the package into a Cargo workspace using the architectural dependency direction above. Verified: root `Cargo.toml` already had `[workspace] members = ["testGame"]`; added `crates/rusting-core` as the first real architectural-layer member (bottom of the dependency direction). `cargo build --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` clean.
-- [ ] Move reusable public data types into `rusting-core` without Vulkan dependencies. First increment: moved `Transform` and `CollisionType` into `crates/rusting-core`. Second increment: moved the Vulkan-independent canonical scene, hierarchy, camera, naming/classification, light, visibility, render-settings, physics-settings/status, and rigid-body/collider data from `src/runtime/components.rs` into `crates/rusting-core/src/components.rs`; `rusting_engine::runtime::*` remains compatible through re-exports. `MeshRenderer` stays engine-local because it uses engine asset handles. `src/core/material.rs` and `src/core/physics.rs` also remain engine-local because they depend on rendering registries. The parent item remains open pending extraction or redesign of those rendering-coupled public types and any remaining runtime candidates.
+- [ ] Move reusable public data types into `rusting-core` without Vulkan dependencies. First increment: moved `Transform` and `CollisionType` into `crates/rusting-core`. Second increment: moved the Vulkan-independent canonical scene, hierarchy, camera, naming/classification, light, visibility, render-settings, physics-settings/status, and rigid-body/collider data from `src/runtime/components.rs` into `crates/rusting-core/src/components.rs`; `rusting_engine::runtime::*` remains compatible through re-exports. Third increment: moved the generic `EventQueue<T>` and its frame-buffer semantics into `crates/rusting-core/src/events.rs`; the engine retains only the `World` adapter and its public runtime path remains an exact re-export of the core type. Fourth increment: moved the Vulkan-independent `FrameTime` resource and its duration accessors into `crates/rusting-core/src/time.rs`; the engine retains time control and advancement policy while its public runtime path remains an exact re-export of the core type. Fifth increment: moved hierarchy mutation, transform propagation, malformed-hierarchy diagnostics, and the typed `HierarchyError` into `crates/rusting-core/src/hierarchy.rs`; the engine adapter preserves the existing `AppError` variants and public diagnostics/propagation paths. Sixth increment: moved the public `ScheduleStage` and `FrameReport` scheduler data types into `crates/rusting-core/src/schedule.rs`; schedule storage and execution remain engine-local while the existing runtime paths are exact re-exports. Seventh increment: moved `TimeControl`, its private accumulator/queued-step state, the deterministic advancement algorithm, and typed `TimeAdvanceError` into `crates/rusting-core/src/time.rs`; the engine retains only the `World`/`AppError` compatibility adapter and its public time resource paths remain exact re-exports. Eighth increment: moved `RuntimeInput`, `ActionMap`, `InputBinding`, and the `KeyCode`/`MouseButton` re-exports into `crates/rusting-core/src/input.rs` (adds a `winit` dependency to core for the key/button types only; no Vulkan); `src/runtime/input.rs`/`actions.rs` keep only the `World` install adapters and exact re-exports. Built-in `ClickEvent` and `CollisionEvent` remain engine-local. `MeshRenderer` stays engine-local because it uses engine asset handles. `src/core/material.rs` and `src/core/physics.rs` also remain engine-local because they depend on rendering registries. The parent item remains open pending extraction or redesign of those rendering-coupled public types and any remaining runtime candidates.
 - [x] Keep compatibility re-exports in `rusting-engine` during migration. `src/core/mod.rs` re-exports `rusting_core::{transform, collisions}` at their original `crate::core::transform`/`crate::core::collisions` paths, so every existing caller (`src/tests.rs`, `src/scene/mod.rs`, `src/engine/mod.rs`, `src/core/physics.rs`) compiles unchanged. Confirmed `src/editor/mod.rs`/`src/editor/view.rs` never import `crate::core::` at all, so this migration step could not have touched the protected editor/gizmo files even indirectly; verified via `git status` that both files are untouched.
-- [ ] Add feature flags for editor, validation, experimental GPU physics, and optional importers.
+- [x] Add feature flags for editor, validation, experimental GPU physics, and optional importers. `editor` and `window` already gated their modules. `validation` now force-enables the Khronos validation layer (when installed) in non-debug builds too (`init_vulkan`: `cfg!(debug_assertions) || cfg!(feature = "validation")`). New `gltf` feature (default, implied by `editor` because `src/editor/view.rs` calls `AssetServer::import_gltf`) makes the `gltf` crate optional and gates `geometry::gltf_loader`, `Engine::add_gltf`, `AssetServer::import_gltf`, and the `gltf_test` example. `experimental-gpu-physics` exists but gates nothing yet: all current GPU physics is the shipped hybrid path, so the flag is reserved for Milestone 5 GPU solvers. Verified: strict clippy over `--workspace --all-targets` clean for default, `--no-default-features`, `--no-default-features --features window`, `--no-default-features --features gltf,validation`, and `--features gpu-tests`; `cargo test --workspace` passes with default and `--no-default-features`.
 
 ### ECS and application lifecycle
 
@@ -242,10 +304,23 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 ### Runtime ownership
 
 - [ ] Split the monolithic loop into `WindowRunner`, `Renderer`, `PhysicsWorld`, `AssetServer`, and optional `EditorState`.
-- [ ] Keep the window, ECS world, and rendering submission main-thread owned.
-- [ ] Remove unnecessary `Arc<Mutex<_>>` usage from camera and scene state.
-- [ ] Use worker tasks only for safe asset decoding and preparation.
+- [x] Keep the window, ECS world, and rendering submission main-thread owned.
+  Evidence: thread audit (2026-09-23) found only `std::thread::yield_now()` in
+  `App::run` and editor cargo-build/stdout worker threads in `src/editor/mod.rs`;
+  no thread touches the window, `World`, or Vulkan submission.
+- [x] Remove unnecessary `Arc<Mutex<_>>` usage from camera and scene state.
+  Evidence: legacy `Engine` now owns `camera: PerspectiveCamera` and
+  `scene: RenderScene` directly. Same change fixed a pre-existing
+  `AccessConflict(DeviceRead)` panic in `prepare_frame_ubo` by keeping one
+  fence per frame slot and waiting only before reusing that slot. Clippy/tests
+  clean; `user_main` stress_pbr ran 8 s at ~1000-1300 FPS without panic.
+- [x] Use worker tasks only for safe asset decoding and preparation.
+  Evidence: `Assets::load_async` runs only the CPU loader on a worker; results
+  are published on the main thread by `poll_loads` (see Milestone 2).
 - [ ] Execute animations as ECS systems instead of passive data.
+  Note: legacy `AnimationType` on `SceneObject` is never read or executed.
+  Real ECS animation is owned by Milestone 14. Deleting the public field is a
+  breaking API change for the owner to decide.
 
 ### Exit gate
 
@@ -265,20 +340,73 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
 - [x] Canonicalize asset paths and deduplicate repeated loads.
 - [x] Separate CPU mesh/material assets from renderer-owned prepared GPU mesh buffers.
 - [x] Add synchronous loading state inspection and structured asset errors.
-- [ ] Add worker-backed asynchronous loading states.
+- [x] Add worker-backed asynchronous loading states.
+  Evidence: `LoadState::Loading`, `Assets::load_async` (path dedup, panic
+  capture, failed-path retry, cancel via `remove`) and `Assets::poll_loads`,
+  polled each `Update` by `AssetPlugin`. Unit test
+  `async_loads_publish_success_failure_panic_and_discard_cancelled`.
 - [x] Add default/fallback mesh, material, and texture assets.
 
 ### Import pipeline
 
-- [x] Deduplicate glTF meshes, images, and materials by synthesized asset path (samplers still unhandled).
+- [x] Deduplicate glTF meshes, images, and materials by synthesized asset path, including sampler identity.
 - [x] Import base-color textures with sRGB formats.
 - [x] Import normal, metallic-roughness, occlusion, and emissive textures with correct linear/sRGB treatment.
-- [ ] Import sampler filtering and wrapping modes.
-- [ ] Generate or import tangents.
-- [ ] Support alpha opaque, mask, and blend modes.
-- [ ] Import node hierarchy and cameras/lights where available.
+- [x] Import sampler filtering and wrapping modes.
+  Evidence: `TextureAsset::sampler` (`TextureSampler` with mag/min/mipmap
+  `TextureFilter` and U/V `TextureWrap`) is filled from glTF samplers; the
+  sampler index is part of the synthesized texture path. Unit test
+  `gltf_import_carries_sampler_filtering_and_wrapping`. API note: adds a public
+  field to `TextureAsset`. The renderer still uses one shared linear/repeat
+  sampler; per-texture samplers land when the ECS renderer uploads
+  `TextureAsset`s (GPU tier).
+- [x] Generate or import tangents.
+  Evidence: glTF `TANGENT` is imported when present; otherwise
+  `assets::generate_tangents` derives tangents and handedness from triangle UV
+  gradients, with a perpendicular fallback for degenerate UVs. Unit test
+  `generated_tangents_follow_uvs_handedness_and_degenerate_fallback`.
+- [x] Support alpha opaque, mask, and blend modes. First increment (data):
+  `AlphaMode::{Opaque, Mask { cutoff }, Blend}` on `MaterialAsset`, imported
+  from glTF `alphaMode`/`alphaCutoff`, saved as `SceneAlphaMode` in scene
+  format 5. Cooked v1-v4 scenes migrate to `Opaque` (v4 is dispatched on its
+  leading `format_version` because a v4 material can also parse as v5).
+  Tests: `gltf_import_carries_sampler_state_and_alpha_mode`,
+  `material_alpha_mode_survives_scene_round_trip`,
+  `version_four_cooked_scene_migrates_materials_to_opaque_alpha`; cooked v3
+  `testGame` scene still runs. Second increment (renderer): the ECS
+  `SceneRenderer` discards masked fragments below the cutoff, writes alpha 1
+  for opaque/mask, and draws blended instances last through a second pipeline
+  (alpha blend, depth test without depth write), sorted back to front along
+  the camera view each frame. GPU test
+  `alpha_modes_render_opaque_mask_and_sorted_blend` (RTX 3060, headless
+  readback) fails when sorting is disabled; unit test
+  `blended_objects_render_last_unbatched_and_back_to_front`. Known ceiling:
+  blended GPU-physics bodies sort by their last CPU transform.
+- [x] Import node hierarchy and cameras/lights where available.
+  `AssetServer::import_gltf_scene` returns one `ImportedGltfNode` per glTF
+  node (name, parent index, local `Transform` from the decomposed TRS,
+  mesh primitives, `Camera`, `KHR_lights_punctual` light); `spawn_gltf_nodes`
+  spawns them with `Parent` links, extra primitives as child entities.
+  Evidence: unit test
+  `gltf_scene_import_spawns_hierarchy_cameras_and_lights` (parent/child
+  links, quaternion to Euler, orthographic camera, spot light, spawned
+  components). Light intensities keep glTF physical units. The editor's
+  flat `import_gltf` path is unchanged (AGENTS.md); wiring the editor to the
+  node import is the owner's call.
 - [ ] Add skins and animation after the static scene path is stable.
-- [ ] Preserve glTF materials unless the caller explicitly supplies an override.
+  Blocked: needs the skeleton/clip/pose runtime from Milestone 14; import
+  lands together with that runtime rather than as data nothing consumes.
+- [x] Preserve glTF materials unless the caller explicitly supplies an override.
+  `spawn_gltf_nodes(app, nodes, material_override)` keeps each primitive's
+  imported material when the override is `None`. Fixed a real loss: glTF
+  textures used synthesized `.rtexture` keys that never existed on disk, so a
+  saved scene with a glTF material failed to load in a fresh process. The
+  importer now writes `.rtexture` (bincode, carrying color space and sampler)
+  next to the source like `.rmesh`, and `load_texture` decodes it. Evidence:
+  unit test `gltf_materials_survive_save_and_fresh_load_unless_overridden`
+  (factors, alpha mode, linear normal map, sampler survive save plus fresh
+  load; override replaces material); fails with the `.rtexture` write
+  removed.
 
 ### Scene serialization
 
@@ -286,18 +414,64 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
 - [x] Assign stable UUIDs to serialized scene objects.
 - [x] Store asset paths/UUIDs rather than runtime handles or ECS entity IDs.
 - [x] Add an allowlisted component serialization registry.
-- [ ] Serialize hierarchy, transforms, renderers, lights, physics, and editor metadata.
+- [x] Serialize hierarchy, transforms, renderers, lights, physics, and editor metadata.
+  Hierarchy, transforms, renderers, cameras, visibility, classes,
+  directional/point/spot lights, and physics were already typed scene fields.
+  The missing `AmbientLight` component is now built into the default
+  `SceneComponentRegistry` as `rusting.ambient_light`, so the scene binary
+  layout is unchanged and the editor can add it like other registered
+  components. Evidence: `all_authored_light_types_round_trip_together` now
+  round-trips an ambient light through cooked bytes and fails with the
+  registration removed. Editor metadata is split out below.
+- [ ] Serialize per-scene editor metadata (editor camera pose, selection).
+  Blocked on owner: the state lives in `EditorState` in `src/editor/mod.rs`,
+  which AGENTS.md forbids automated sessions from changing.
 - [x] Reject unsupported scene versions with a clear structured error.
 - [x] Add explicit migration for legacy unversioned project and text-scene files.
 - [x] Add scene save, load, additive load, and unload operations.
 
 ### Hot reload
 
-- [ ] Watch source assets and scenes for changes.
-- [ ] Decode changed assets in worker tasks.
-- [ ] Swap prepared resources at safe frame boundaries.
-- [ ] Keep old GPU resources alive until every referencing frame completes.
+- [x] Watch source assets and scenes for changes.
+  `Assets::changed()` compares each path-backed slot's file modification
+  time with the one recorded at load (stdlib polling, no new dependency);
+  missing files are ignored so save-by-rename never drops a value. It works
+  for every asset type, including `scenes`. `AssetPlugin` scans every
+  `HOT_RELOAD_SCAN_INTERVAL` (500 ms). Known ceilings: one `stat` per
+  watched file per scan; editing a source `.gltf` does not re-import it
+  (only rewritten `.rmesh`/`.rtexture` reload).
+- [x] Decode changed assets in worker tasks.
+  `Assets::reload_async` decodes on a worker while the old value stays
+  visible; `poll_loads` publishes the new value and bumps the revision, and a
+  failed decode keeps the last good value and lands in
+  `take_reload_failures`. `AssetServer::reload_changed` wires meshes and
+  textures. Evidence: unit test
+  `changed_files_reload_on_workers_and_failures_keep_last_value` (unchanged
+  file skipped, old value visible mid-decode, new value published with a
+  higher revision, corrupt rewrite keeps the old value and reports one
+  failure, deleted file ignored).
+- [x] Swap prepared resources at safe frame boundaries.
+  Reloads publish in `poll_loads` during the ECS `Update` stage, so assets
+  never change mid-render; `SceneRenderer::prepare_visible_meshes` sees the
+  new revision at the start of the next frame and uploads fresh buffers
+  instead of writing into in-use ones. Evidence: GPU test
+  `hot_reloaded_mesh_swaps_next_frame_and_old_buffers_outlive_in_flight_frame`
+  (frame 2 shows the reloaded mesh while frame 1 is still unwaited; a
+  control run without the reload reads white, so the black result proves the
+  swap).
+- [x] Keep old GPU resources alive until every referencing frame completes.
+  Old buffers are released by ownership: each submitted command buffer holds
+  `Arc`s to the buffers it binds, and the frame future keeps the command
+  buffer until its fence completes. Evidence: the same GPU test holds a
+  `Weak` to the replaced vertex buffer; it stays alive while frame 1 is in
+  flight and is freed once frame 1 is dropped after completion. Textures are
+  not yet uploaded by the ECS renderer; they follow the same pattern when
+  PBR texture binding lands.
 - [ ] Surface reload success and failure in the editor console.
+  Blocked on owner: the console lives in `src/editor/mod.rs`, which AGENTS.md
+  forbids automated sessions from changing. The data is ready:
+  `Assets::take_reload_failures()` drains failures, and `poll_loads` returns
+  the published count.
 
 ### Exit gate
 
@@ -317,27 +491,218 @@ Goal: eliminate frame-loop stalls and host/GPU races while making rendering deri
 - [x] Diff extracted state so unchanged render data produces no dirty uploads.
 - [x] Build deterministic render keys and stable ordering from typed handles and entity identity.
 - [x] Track contiguous dirty upload ranges and full-range reorder/removal updates.
-- [ ] Grow GPU buffers based on demand and device memory budgets.
-- [ ] Add explicit errors or fallback paths for allocation/capacity failures.
+- [x] Grow GPU buffers based on demand and device memory budgets.
+  Render-instance uploads (rebuilt whenever anything moves) used a dedicated
+  allocation per change; they now come from a vulkano `SubbufferAllocator`
+  whose arenas start at 256 KiB, double when an upload outgrows them, and
+  are reused once no in-flight frame references them. One upload is capped
+  at half the largest device-local heap (`transient_upload_budget`); going
+  over returns a `SceneRenderError` instead of allocating. Mesh buffers stay
+  exact-size per revision. Evidence: unit test
+  `transient_budget_is_half_the_largest_device_local_heap`; GPU test
+  `instance_uploads_reuse_arenas_grow_on_demand_and_respect_budget` (two
+  small uploads share one arena buffer, 5,000 instances grow it and still
+  render, a budget one byte short fails with an explicit error). Known
+  ceiling: the budget uses static heap size, not live usage
+  (`VK_EXT_memory_budget` is not exposed by vulkano 0.35).
+- [x] Add explicit errors or fallback paths for allocation/capacity failures.
+  Audit of `SceneRenderer`: every Vulkan buffer/descriptor/command
+  allocation already maps to `SceneRenderError`; instance uploads over
+  budget are an explicit error; missing meshes fall back to the cube and
+  missing materials render magenta. The two silent paths now report:
+  lights past `MAX_LIGHTS` (64) keep the first 64 and count the rest in
+  `RenderCapacityDiagnostics::dropped_lights`; GPU physics event-buffer
+  overflow accumulates into `physics_events_dropped` (still logged). Both
+  are read through `SceneRenderer::capacity_diagnostics()`. Evidence: GPU
+  test `lights_over_capacity_render_first_max_lights_and_report_the_rest`
+  (67 point lights upload 64 and report 3 dropped; back to 1 light reports
+  0). Physics overflow counting has no dedicated test; it sits on the same
+  readback path as the existing GPU physics event tests.
 
 ### Frames in flight
 
-- [ ] Create two or three explicit `FrameContext` objects.
-- [ ] Give each context its own fence, command allocator/pool state, uniform allocations, indirect buffers, visible lists, and transient descriptors.
-- [ ] Wait only when reusing a frame context whose fence has not completed.
-- [ ] Chain acquire, transfer/compute, render, and present without CPU `wait()` calls in the normal frame path.
-- [ ] Retain every submitted future/fence until completion.
-- [ ] Add deferred GPU-resource destruction queues per frame context.
-- [ ] Clear culling counters and indirect commands using queued GPU operations.
-- [ ] Remove host writes to buffers that may still be in GPU use.
+- [x] Create two or three explicit `FrameContext` objects.
+  `SceneRenderer` owns `[FrameContext; FRAMES_IN_FLIGHT]` (2), used
+  round-robin by `render`. Each context holds the fence of its last
+  submission, which also keeps that submission's resources alive. Every
+  frame now ends in a fence signal before the caller's present, not only
+  physics frames. Physics readbacks share that fence. Evidence: GPU test
+  `frame_contexts_bound_frames_in_flight_and_wait_only_on_reuse`.
+- [x] Give each context its own fence, command allocator/pool state, uniform allocations, indirect buffers, visible lists, and transient descriptors.
+  Each `SceneRenderer` `FrameContext` owns its fence and a host-visible
+  `SubbufferAllocator` (64 KiB first arena). Debug-overlay vertices and GPU
+  physics readback buffers now come from that arena instead of a dedicated
+  allocation per frame. The physics descriptor set that references them is
+  per-frame and pooled. The rest of the list maps as follows:
+  command buffers come from vulkano's `StandardCommandBufferAllocator`,
+  which pools per thread and recycles a buffer when its frame drops it.
+  `SceneRenderer` has no uniform buffers (the camera is a push constant)
+  and no indirect buffers. Visible lists are CPU-only. Evidence: GPU tests
+  `transient_uploads_come_from_per_context_arenas_across_reuse` (the debug
+  line renders in each of 4 frames, two full laps, and the two contexts
+  never share an arena) and
+  `physics_events_read_back_from_transient_arenas_every_tick` (one
+  `WhileTrue` event per tick for 4 ticks, tick numbers match, no overflow).
+  Before this test, no test covered the readback path through
+  `SceneRenderer`. The legacy `Engine` still shares one indirect buffer per
+  batch across frames; see the next two items.
+- [x] Wait only when reusing a frame context whose fence has not completed.
+  At the start of `render`, contexts whose fence already signaled are
+  released without waiting. The one context being reused is waited on only
+  if its fence has not signaled; that wait bounds CPU run-ahead to
+  `FRAMES_IN_FLIGHT` frames. Evidence: the same GPU test hands back two
+  frames unflushed. The third `render` submits and waits for frame 1 only;
+  frame 2's fence stays unsignaled. With the wait removed, the test fails
+  ("reusing context 0 first submitted and waited for its frame"). Frame
+  pacing on real hardware is not verified here (hardware tier).
+- [x] Chain acquire, transfer/compute, render, and present without CPU `wait()` calls in the normal frame path.
+  In the product path (`project_runner` + `SceneRenderer`), one future
+  chain runs from acquire to present: the acquire future is `render`'s
+  `before`, physics compute and drawing share one command buffer, then come
+  the frame fence and `present(.., false)`, which does not wait. Physics
+  events are collected with `is_signaled` plus a zero-timeout cleanup, so
+  that never blocks either. The only CPU block left is the bounded
+  context-reuse wait from the item above. Evidence: the frame-context test
+  shows a context that is not being reused is never waited on. Out of
+  scope: the legacy `Engine` facade still waits on its separate compute and
+  cull submissions. It follows the Milestone 0 precedent: that facade is
+  deferred to its Milestone 1 replacement, not patched.
+- [x] Retain every submitted future/fence until completion.
+  Frame fences stay in their `FrameContext` until they signal or their
+  context is reused after a wait. The present future is retained by
+  `vulkano_util` (`previous_frame_end`), and physics readbacks by
+  `pending_physics`. Evidence: the frame-context test asserts no
+  unfinished fence is released. The hot-reload test shows old mesh buffers
+  live until the frame that used them completed and the next frame
+  released its fence.
+- [x] Add deferred GPU-resource destruction queues per frame context.
+  No separate queue was added; ownership already provides the deferral.
+  A vulkano command buffer holds an `Arc` to every buffer, image, descriptor
+  set and framebuffer it uses. Each `FrameContext` fence holds that command
+  buffer until the GPU finishes. So anything the renderer replaces (mesh
+  and instance buffers, lights, the depth target and framebuffers on
+  resize) is freed only after its last frame completes. It is freed on the
+  next `render` after that, with no wait. Evidence: GPU tests
+  `hot_reloaded_mesh_swaps_next_frame_and_old_buffers_outlive_in_flight_frame`
+  (mesh buffers) and
+  `resize_defers_old_depth_destruction_until_its_frame_completes` (the
+  depth target is replaced while frame 1 is pending, stays alive until
+  frame 1 completes, then is released).
+- [x] Clear culling counters and indirect commands using queued GPU operations.
+  The legacy `Engine` reset `instance_count` with a host write every frame
+  while the previous frame could still draw from that buffer. This made
+  `user_main` panic in 2 of 10 runs with `AccessConflict(DeviceRead)`. The
+  reset is now `record_reset_instance_count` (`src/scene/mod.rs`), a
+  `fill_buffer` of that one field recorded before the cull dispatch. The
+  cull and physics submissions are now chained after the previous frame
+  instead of starting from `sync::now`. Evidence: GPU test
+  `instance_count_reset_is_a_queued_gpu_fill_of_that_field_only`, and
+  `user_main` ran to the timeout in 25 of 25 runs, about 3000 FPS as before.
+  Known ceiling (`ponytail:` comment): on frames that run physics or
+  culling, the CPU now waits for the previous frame, so CPU and GPU do not
+  overlap there. Per-slot buffers would restore the overlap.
+- [x] Remove host writes to buffers that may still be in GPU use.
+  Audit of every `.write()` in the render paths: the legacy per-slot UBO is
+  written only after that slot's fence wait. `SceneRenderer` writes only
+  fresh suballocations: instance and transient arenas are reused only once
+  no frame holds them, and vulkano's host-access lock rejects any
+  conflicting write with an error, never a race. The one racing write, the
+  indirect reset in the legacy `Engine`, was removed in the item above.
 
 ### Capabilities and fallback policy
 
-- [ ] Define a low-end Vulkan baseline suitable for Intel UHD 620-class hardware.
-- [ ] Detect optional capabilities and expose them through renderer capabilities.
-- [ ] Provide fallbacks for bindless descriptors, indirect-count drawing, and other advanced features.
-- [ ] Implement `QualityProfile::{Auto, Eco, Balanced, High}`.
-- [ ] Remove shader variants as user-facing performance controls; choose implementation variants automatically.
+- [x] Define a low-end Vulkan baseline suitable for Intel UHD 620-class hardware.
+  `LOW_END_BASELINE` (`src/rendering/scene_renderer.rs`) requires:
+  - Vulkan 1.1
+  - `maxComputeWorkGroupInvocations` and `maxComputeWorkGroupSize[0]` of
+    at least 256, which the physics shader's `local_size_x` needs
+  - `maxPushConstantsSize` of at least 128 (the largest block used is 96
+    bytes)
+  - `maxStorageBufferRange` of at least 128 MiB
+  - `D32_SFLOAT` usable as a depth attachment
+  Every limit except compute invocations is the Vulkan-required minimum.
+  No optional features or extensions are required. `SceneRenderer::new`
+  reads `DeviceLimits` from the physical device and refuses a device
+  below the baseline with an error that names the device and every
+  shortfall. The instance upload budget is now also clamped to
+  `maxStorageBufferRange`, because half of a large heap could exceed the
+  range one storage binding may cover. Evidence: unit test
+  `baseline_shortfalls_name_every_missing_property`, and GPU test
+  `test_device_meets_the_low_end_baseline` on the headless test device.
+  Not verified on a real UHD 620 (hardware tier). Its limits are expected,
+  not measured, to meet the baseline.
+- [x] Detect optional capabilities and expose them through renderer capabilities.
+  `SceneRenderer::capabilities()` returns `RendererCapabilities`
+  (`src/rendering/scene_renderer.rs`), detected once in `SceneRenderer::new`:
+  - device name, integrated-GPU flag, and largest device-local heap size
+  - multi-draw indirect, indirect-count drawing (core feature or
+    `VK_KHR_draw_indirect_count`), bindless textures (all four descriptor
+    indexing bits), and `VK_EXT_memory_budget`, each reported as
+    `supported` by the GPU and `enabled` on the device
+  - timestamp queries on graphics and compute queues
+
+  A pass may use a feature only when `Capability::usable()` holds. No optional
+  feature is enabled on the device yet, because no pass uses one.
+  Evidence:
+  - Unit test
+    `optional_features_need_every_bindless_bit_and_accept_either_indirect_count_source`.
+  - GPU test
+    `renderer_reports_detected_capabilities_and_enables_none_it_does_not_use`.
+    On the RTX 3060 it reports all four as supported and none as enabled.
+- [x] Provide fallbacks for bindless descriptors, indirect-count drawing, and other advanced features.
+  Audit of every draw call and shader: `SceneRenderer` uses only direct
+  `draw`/`draw_indexed` and fixed descriptor sets, so its current path is
+  already the baseline fallback. No shader declares a GLSL extension or a
+  descriptor array. The GPU suite runs on a device with no optional feature
+  enabled, which the capabilities test asserts. A pass that adopts an
+  advanced feature later must branch on `Capability::usable()` and keep this
+  path tested.
+  The audit found one path that silently depended on an optional feature:
+  the legacy `Engine` culling path wrote each batch's offset into the
+  indirect command's `firstInstance`, which needs
+  `drawIndirectFirstInstance`. That feature is never enabled, so the result
+  was undefined. Now `firstInstance` is 0 and `base.vert` adds the batch
+  offset from the push constant it already receives
+  (`data[v_visible_list_offset + gl_InstanceIndex]`). A dead, unused
+  indirect staging buffer next to it was deleted.
+  Evidence: the shader compiles and the smoke runs pass. The culled image
+  itself is not checked by a test; the exit gate's culling-equivalence check
+  covers that.
+- [x] Implement `QualityProfile::{Auto, Eco, Balanced, High}`.
+  `RenderSettings::quality` is now extracted into `RenderWorld::quality`
+  every frame. `resolve_quality` (`src/rendering/scene_renderer.rs`) turns
+  `Auto` into a concrete profile from `RendererCapabilities`:
+  - `Eco` on integrated GPUs
+  - `Balanced` below 4 GiB of device-local memory
+  - `High` otherwise
+  Concrete profiles pass through unchanged. Today the resolved profile sets
+  the per-frame light budget: 16, 32 or 64 lights (`light_budget`). Lights
+  past the budget are dropped and counted in
+  `RenderCapacityDiagnostics::dropped_lights`. A profile change rebuilds the
+  light list even when the lights did not change. Later budgets (shadows,
+  culling mode, substeps) plug into the same resolved profile.
+  Evidence:
+  - Unit test
+    `auto_quality_resolves_from_device_class_and_concrete_profiles_pass_through`.
+  - GPU test `lights_over_capacity_render_first_max_lights_and_report_the_rest`
+    now switches High to Eco with unchanged lights and checks the 16-light
+    upload. It fails (3 dropped instead of 51) without the rebuild on profile
+    change.
+  The `Auto` heuristic is static, marked with a `ponytail:` comment. Whether
+  it picks the right profile on a real UHD 620 is hardware tier.
+- [x] Remove shader variants as user-facing performance controls; choose implementation variants automatically.
+  The ECS/editor path (`SceneRenderer`) exposes no performance variant:
+  - It builds one scene pipeline.
+  - Materials choose appearance through `MaterialModel::{Pbr, Unlit}`, never cost.
+  - Cost is set only through `QualityProfile`, which `Auto` resolves from
+    capabilities (item above).
+  The remaining user-facing variants are the public `ShaderType` (including
+  the benchmark-only `Heavy`) on the legacy `Engine` path. By roadmap
+  precedent that path is replaced in Milestone 1, not patched. The
+  Milestone 4 item "Replace public `ShaderType` with `MaterialModel`..."
+  owns its removal. Solver selection (`PhysicsSolver`) is a semantic
+  choice, and "Keep manual CPU/GPU and solver selection available" keeps it
+  manual on purpose. Evidence: code audit only; no code changed.
 
 ### Exit gate
 
@@ -593,7 +958,7 @@ Goal: prove that the engine architecture works as a usable game-development stac
 
 ### Performance target
 
-Milestone 7 and Milestone 15 have deliberately different hardware targets. The engine vertical slice must run on low-end integrated graphics. Sundering must not: continuous destruction with thousands of debris bodies and GPU navigation has a hardware floor, and pretending otherwise would distort the engine's quality profiles. Neither target is allowed to weaken the other.
+Milestone 7 and Milestone 29 have deliberately different hardware targets. The engine vertical slice must run on low-end integrated graphics. Sundering must not: continuous destruction with thousands of debris bodies and GPU navigation has a hardware floor, and pretending otherwise would distort the engine's quality profiles. Neither target is allowed to weaken the other.
 
 - [ ] Define a fixed benchmark scene and camera path.
 - [ ] Target 1920×1080 at 60 FPS on approximately Intel UHD 620-class hardware using Eco/Auto settings.
@@ -610,7 +975,12 @@ Milestone 7 and Milestone 15 have deliberately different hardware targets. The e
 
 ## Milestone 8: Deterministic simulation and replay
 
-Goal: make the simulation produce bit-identical results from the same inputs on every supported device, and make any divergence detectable and locatable.
+Goal: make the simulation produce bit-identical results from the same inputs on every supported device, and make any divergence detectable and locatable. Determinism is an engine feature available to every game, not only to Sundering, and it is one of the physics pillars.
+
+### Engine-level opt-in
+
+- [ ] Expose `DeterminismMode::{Off, Local, CrossPlatform}` per project, so games that do not need determinism do not pay for fixed-point math or fixed-order reductions. `Local` guarantees identical results on one machine and build; `CrossPlatform` enforces every rule in this milestone.
+- [ ] Validate at startup that every registered solver, system, and custom compute shader supports the selected mode, and fail with a structured error naming the offender otherwise.
 
 ### Deterministic math
 
@@ -649,11 +1019,498 @@ Goal: make the simulation produce bit-identical results from the same inputs on 
 - 10,000 GPU bodies simulated for 10,000 ticks produce identical per-tick world-state hashes on at least two GPU vendors, and on both debug and release builds.
 - A recorded replay reproduces its original hash sequence exactly.
 - A deliberately introduced divergence is reported with its first divergent tick and body.
-- If bit-identical cross-vendor results prove unachievable, that result is documented with evidence, and Milestone 9 proceeds with server-authoritative networking without rollback.
+- If bit-identical cross-vendor results prove unachievable, that result is documented with evidence, and Milestones 19 and 24 proceed with server-authoritative networking without cross-vendor rollback.
 
-## Milestone 9: Networked authority
+## Milestone 9: Scene composition, reflection, and iteration speed
+
+Goal: give the engine Godot's authoring model — reusable scenes, signals, groups, data resources, and fast code iteration — expressed through ECS instead of a node tree.
+
+Depends on: Milestones 1, 2, and 6.
+
+### Reflection
+
+- [ ] Add a reflection registry for components, resources, and asset types: field names, types, ranges, defaults, and editor hints, derived from Rust types rather than hand-maintained tables.
+- [ ] Drive scene serialization, the Inspector, undo/redo, and animation property tracks from the same registry. Replace the generic JSON inspector path once parity is reached.
+- [ ] Support reflected enums, nested structs, collections, typed handles, and entity references.
+- [ ] Reject or migrate renamed/removed reflected fields with a structured, versioned error instead of silently dropping data.
+
+### Prefabs and scene instancing
+
+- [ ] Instance a saved scene as a child subtree of another scene, keeping a link to its source asset.
+- [ ] Store per-instance overrides as property diffs against the source, so source edits propagate to every instance that did not override that property.
+- [ ] Support nested prefabs and prefab variants (inheritance), with cycle rejection.
+- [ ] Revert, apply-to-source, and unpack-instance operations with undo.
+- [ ] Instance prefabs at runtime from gameplay code through typed handles.
+
+### Signals, groups, and observers
+
+- [ ] Add entity-targeted observers that react to component insertion/removal and to typed events, as the ECS equivalent of Godot signals.
+- [ ] Allow scene files to store event-to-handler connections between entities by `SceneId`, with registered Rust handler names, validated at load time.
+- [ ] Add entity groups/tags with fast membership queries and editor assignment.
+- [ ] Add a typed scene-tree query API for common "find child / find in group / find by name" operations without hiding ECS queries.
+
+### Data resources
+
+- [ ] Add user-defined typed data assets (the equivalent of Godot `Resource`/`.tres`), serialized through reflection and editable in the Inspector.
+- [ ] Support shared versus per-instance-unique resource references.
+- [ ] Hot reload data assets into running play sessions.
+
+### Iteration speed
+
+- [ ] Hot reload game Rust code during play through a dynamic-library game module, preserving ECS state through the reflection registry. Fall back to a clean restart with a clear message when the change is layout-incompatible.
+- [ ] Measure and report edit-to-running-game latency for a representative project; keep incremental Debug builds under a documented target.
+- [ ] Define an optional sandboxed WASM scripting host (`rusting-script`) exposing the reflected ECS API, for modding and designer-level logic. Native Rust remains the primary gameplay API.
+- [ ] Deliver project templates for 3D first-person, 3D third-person, 2D platformer, and physics sandbox games.
+
+### Exit gate
+
+- A prefab edited in the editor updates every instance that did not override the edited property, and overrides survive save and reload.
+- An observer connected in a scene file fires the registered Rust handler at runtime.
+- A reflected component added in game code appears in the Inspector, serializes, and animates without editor changes.
+- Changing a gameplay system during play reloads it without losing scene state.
+
+## Milestone 10: Advanced rigid-body physics
+
+Goal: exceed Godot's built-in 3D physics feature set on the CPU path while keeping every feature available to hybrid CPU/GPU scenes.
+
+Depends on: Milestones 5 and 8 (all new solver work follows the determinism rules).
+
+### Constraints and articulations
+
+- [ ] Joints: fixed, hinge, slider, ball-socket, cone-twist, distance, spring, and a generic 6-DOF joint with per-axis limits, springs, and motors.
+- [ ] Breakable joints with force/torque thresholds that emit typed events.
+- [ ] Reduced-coordinate articulations (Featherstone) for robots, chains, and ragdolls that need exact joint limits without drift.
+- [ ] Stable long joint chains and high mass ratios verified by regression scenes.
+
+### Bodies and characters
+
+- [ ] Kinematic character controller with slopes, steps, ground snapping, moving platforms, and push interaction with dynamic bodies.
+- [ ] Physics-based (dynamic) character option for games that want fully simulated movement.
+- [ ] Raycast and wheel-collider vehicle models with suspension, tire friction curves, differential, and drivetrain.
+- [ ] Ragdolls generated from skeletons, with a handoff API to and from animation (consumed by Milestone 14).
+- [ ] Compound shapes, convex hulls, heightfields, and triangle meshes with per-triangle materials.
+
+### Materials, forces, and fields
+
+- [ ] Physics materials with friction, restitution, combine modes, and per-material contact events.
+- [ ] Force fields: directional, radial, vortex, wind with turbulence, and custom field functions; usable by CPU and GPU bodies alike.
+- [ ] Buoyancy and drag against water volumes.
+- [ ] Gravity volumes and per-body gravity scale (planetary gravity, zero-g zones).
+
+### Solver quality
+
+- [ ] Simulation islands with sleeping and wake propagation.
+- [ ] Speculative contacts plus swept CCD for fast bodies; bullets through thin walls never tunnel in regression scenes.
+- [ ] Substepping with a documented stability/cost trade-off per quality profile.
+- [ ] Contact caching and warm starting for stable stacks.
+- [ ] Multithreaded CPU solver whose results are identical for any worker count.
+
+### 2D physics
+
+- [ ] 2D rigid bodies, shapes (circle, capsule, box, convex polygon, segment chain), joints, and queries, sharing the solver architecture and determinism rules with 3D.
+- [ ] Hybrid 2D GPU bodies with the same condition/event/command bridge as 3D.
+
+### Exit gate
+
+- A regression scenario suite (pyramid stacks, joint chains, high mass ratios, CCD bullets, ragdoll piles, vehicles on uneven terrain) runs headless in CI with recorded expected results.
+- Every joint type, character controller behaviour, and vehicle model has a test and a demo scene.
+- CPU results are identical across worker-thread counts.
+- 2D and 3D physics run in the same project without interference.
+
+## Milestone 11: Deformable, continuum, and large-scale GPU physics
+
+Goal: provide physics Godot does not have — deformables, fluids, granular media, runtime fracture, and million-body scale — all coupled in one world.
+
+Depends on: Milestones 5, 8, and 10.
+
+### Deformables
+
+- [ ] XPBD soft bodies from tetrahedral meshes with volume preservation, attachment to rigid bodies, and tearing.
+- [ ] Cloth with self-collision, wind interaction, attachment/pinning, and tearing.
+- [ ] Ropes and cables with rigid-body attachment and correct tension transfer.
+- [ ] GPU execution path for deformables with the same event and readback bridge as rigid GPU bodies.
+
+### Fluids and granular media
+
+- [ ] Particle-based fluid (PBF or SPH) with two-way rigid-body coupling and buoyancy.
+- [ ] Grid-based or hybrid (FLIP/APIC) option for large water volumes, chosen by the simulation class.
+- [ ] Granular material (sand, gravel, rubble) with piling and angle-of-repose behaviour.
+- [ ] Fluid surface extraction for rendering through extraction, never by rendering reading solver buffers directly.
+
+### Fracture and destruction
+
+- [ ] Pre-fractured assets authored in the editor (Voronoi and slicing) with connectivity graphs.
+- [ ] Runtime fracture from impact energy and stress, deterministic under the seeded tick RNG.
+- [ ] Debris lifetime, budget, sleeping, and merge policies. Never drop bodies arbitrarily at the cap.
+- [ ] Destruction events consumable by audio, particles, navigation, and gameplay.
+
+### Scale
+
+- [ ] One unified GPU broad phase shared by rigid, deformable, particle, and fluid solvers.
+- [ ] Multi-GPU-queue scheduling: async compute for physics overlapping graphics where supported, with a fallback on single-queue devices.
+- [ ] GPU simulation LOD: distant or unobserved regions step at reduced rates or freeze, with explicit, deterministic policies.
+- [ ] Streaming simulation regions in and out of GPU memory within a device budget.
+
+### Coupling
+
+- [ ] Two-way coupling between rigid, articulated, deformable, fluid, and granular simulation in one scene.
+- [ ] Mixed CPU/GPU ownership for coupled objects with defined latency and state age.
+
+### Exit gate
+
+- A demo scene combines cloth, soft bodies, fluid, granular media, and runtime fracture interacting with rigid bodies, with correct events delivered to Rust gameplay.
+- Deformable, fluid, and fracture scenarios have headless GPU tests under lavapipe.
+- A 1,000,000-body GPU scene runs within the hardware budget recorded for the benchmark machine.
+- Fracture is deterministic across runs.
+
+## Milestone 12: Physics tooling, authoring, and evidence
+
+Goal: make physics the best-understood part of the engine — visible, debuggable, authorable, and benchmarked against competitors.
+
+Depends on: Milestones 5, 6, and 10. Deformable and fluid tooling follows Milestone 11.
+
+### Physics debugger
+
+- [ ] Debug draw for shapes, contacts, normals, impulses, joints, islands, sleeping state, broad-phase cells, and GPU ownership.
+- [ ] Record physics sessions (from play mode or a running game) and scrub a timeline tick by tick, using Milestone 8 replay.
+- [ ] Per-body inspector showing state history, contacts, applied forces, owning solver, sync mode, and readback age.
+- [ ] Remote physics debugging of a running game process from the editor.
+- [ ] Heatmaps for solver cost, contact density, and overflow by region.
+
+### Authoring tools
+
+- [ ] Collider editing gizmos, automatic collider generation, and convex decomposition (V-HACD-class) for imported meshes.
+- [ ] Joint placement and limit-editing gizmos with live preview.
+- [ ] Ragdoll creation wizard from a skeleton.
+- [ ] Physics material library, collision-layer matrix editor, and force-field visualization.
+- [ ] Simulate-in-editor: run physics on selected objects without entering play mode, then keep or discard the result (for placing props naturally).
+- [ ] Fracture authoring preview.
+
+### Profiling
+
+- [ ] Physics profiler panel: CPU/GPU solver time per stage, body/contact/constraint counts, command/event/readback bytes, overflow, and synchronization latency.
+- [ ] Automatic-allocation diagnostics explaining why each body was placed on CPU or GPU.
+
+### Benchmarks and evidence
+
+- [ ] Standard benchmark scenes: stacking stability, 100K pile, ragdoll count, joint-chain stability, CCD bullets, vehicle stress, cloth, fluid, and fracture.
+- [ ] Reference implementations of the same scenes on Jolt, PhysX, Rapier, and Godot Physics, run by the same harness.
+- [ ] Publish results with hardware, driver, and settings; regressions against stored baselines fail CI.
+
+### Exit gate
+
+- A physics bug in a recorded session can be located by scrubbing to the tick and inspecting the body in the editor.
+- Colliders, joints, ragdolls, and materials can be authored entirely in the editor.
+- The comparative benchmark report is generated reproducibly and checked into the repository.
+
+## Milestone 13: Advanced rendering
+
+Goal: reach Godot's Forward+ visual feature set and give users programmable shading.
+
+Depends on: Milestones 3 and 4.
+
+### Global illumination and reflections
+
+- [ ] Reflection probes with box projection and blending.
+- [ ] Baked lightmaps with a GPU lightmapper and light probes for dynamic objects.
+- [ ] One real-time GI technique (probe-based DDGI or voxel/SDF GI) with a quality-profile fallback to ambient probes.
+- [ ] Sky system: procedural physical sky, HDRI skies, and sky-derived ambient/specular.
+
+### Screen-space and post effects
+
+- [ ] SSAO, SSR, and screen-space indirect lighting, each independently toggled by quality profile.
+- [ ] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
+- [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
+- [ ] Volumetric fog with light scattering and fog volumes.
+
+### Lighting and shadows
+
+- [ ] Cascaded shadow maps for directional lights; shadows for point and spot lights.
+- [ ] Clustered lighting for many point and spot lights.
+- [ ] Area-light approximation and light cookies.
+
+### Geometry and effects
+
+- [ ] GPU particle system reusing the physics compute infrastructure, with collision against physics shapes, attractors, sub-emitters, and trails.
+- [ ] Particle emission driven by physics events: impacts, fracture, debris settling.
+- [ ] Decals, including decals that survive or are invalidated by fracture.
+- [ ] Instanced multi-mesh rendering and foliage scattering with wind driven by physics force fields.
+- [ ] Heightmap terrain rendering with texture splatting and LOD.
+- [ ] Automatic mesh LOD generation at import.
+- [ ] Rendering of deformables, fluid surfaces, and debris produced by Milestone 11.
+- [ ] Effect budget and quality-profile scaling for particles and decals.
+
+### Programmable shading
+
+- [ ] A versioned engine shader language (GLSL-based with engine includes) for surface, unlit, sky, particle, fog, and post-process shaders, with stable uniforms/built-ins.
+- [ ] A visual shader graph that compiles to the same language.
+- [ ] Shader hot reload with error reporting in the editor.
+- [ ] Material instancing with per-instance parameter overrides.
+
+### Frame structure
+
+- [ ] A render graph that schedules passes, transient resources, and barriers automatically.
+- [ ] Frame pacing that holds a stable presentation cadence under variable GPU load.
+- [ ] Measure and report end-to-end input latency.
+
+### Exit gate
+
+- Golden images cover probes, GI fallback, SSAO/SSR, fog, bloom, tone mapping, particles, decals, and custom shaders.
+- A user-written surface shader and a visual-graph shader render correctly without engine changes.
+- Every effect degrades gracefully on the low-end baseline defined in Milestone 3.
+
+## Milestone 14: Animation
+
+Goal: match Godot's animation system and make physics-driven animation a first-class feature.
+
+Depends on: Milestones 2, 9 (reflection), and 10 (ragdolls).
+
+### Core animation
+
+- [ ] Skeletal animation with GPU skinning and blend shapes (morph targets).
+- [ ] glTF skin, morph target, and animation import, completing the Milestone 2 deferral.
+- [ ] Property animation of any reflected field (the equivalent of `AnimationPlayer`), including method-call and event tracks.
+- [ ] Tweens for scripted interpolation with easing curves.
+
+### Blending and control
+
+- [ ] Animation state machine with transitions, conditions, and sync groups.
+- [ ] 1D/2D blend spaces, additive layers, and bone masks.
+- [ ] Root motion with an explicit policy that never feeds back into deterministic simulation unless routed through the physics command bridge.
+- [ ] Two-bone, FABRIK, look-at, and foot-placement IK.
+- [ ] Skeleton retargeting between humanoid rigs.
+
+### Physics-driven animation
+
+- [ ] Ragdoll handoff between animation and physics on physics events, with blend-back.
+- [ ] Active ragdolls: powered articulations that track animation targets while reacting physically to hits.
+- [ ] Procedural secondary motion (jiggle bones, tails, hair) through the physics solver rather than a separate spring system.
+- [ ] Cloth attached to skinned characters (from Milestone 11).
+
+### Exit gate
+
+- An imported, skinned character blends through a state machine, uses IK on uneven ground, and hands off to an active ragdoll when hit.
+- A property track animates a custom reflected component.
+- Animation playback results are identical across runs.
+
+## Milestone 15: Audio
+
+Goal: provide Godot-equivalent audio, driven naturally by physics.
+
+Depends on: Milestone 1. Physics-driven audio depends on Milestones 5 and 10.
+
+- [ ] Audio device management with hot-plug, output selection, and a no-device fallback.
+- [ ] Mixer with buses, sends, volume/mute/solo, and bus effects (reverb, delay, EQ, compressor, limiter, filters).
+- [ ] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets.
+- [ ] 3D spatial audio with attenuation curves, doppler, and an occlusion approximation using physics raycasts.
+- [ ] Reverb zones tied to physics volumes.
+- [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
+- [ ] Physics-driven impact, scrape, and roll sounds parameterized by contact impulse, relative velocity, and physics material.
+- [ ] Voice limiting and priority so large destruction events do not exhaust the mixer.
+- [ ] Offline render path for deterministic audio tests.
+- [ ] Audio state is presentation only and never affects simulation or replay hashes.
+
+### Exit gate
+
+- An offline-rendered mix matches a reference buffer within tolerance.
+- A physics scene with thousands of contacts produces voice-limited impact audio without dropouts.
+- Disabling all audio does not change replay hashes.
+
+## Milestone 16: Runtime UI, text, and localization
+
+Goal: give games a runtime UI toolkit equivalent to Godot's Control system.
+
+Depends on: Milestones 1, 3, and 9.
+
+- [ ] Runtime UI layer independent of the editor's egui usage, rendered through extraction.
+- [ ] Layout containers: box, grid, margin, scroll, split, tab, and anchors/offsets for free placement.
+- [ ] Widgets: label, button, toggle, slider, text input, dropdown, list, tree, progress bar, image, and panel.
+- [ ] Text shaping with Unicode, bidirectional text, font fallback, SDF font rendering, and rich text markup.
+- [ ] Themes and styles editable as data assets.
+- [ ] Focus navigation for keyboard and gamepad, and input routing between UI and gameplay.
+- [ ] Data-bound HUD elements and world-space indicators.
+- [ ] Scaling across resolutions, aspect ratios, and DPI settings.
+- [ ] Localization: translation tables, pluralization, locale switching at runtime, and extraction of translatable strings.
+- [ ] Accessibility: screen-reader metadata, scalable text, and color-blind-safe defaults.
+- [ ] Input remapping UI component built on the action map.
+- [ ] Decouple input sampling rate from the simulation tick without introducing nondeterminism.
+
+### Exit gate
+
+- A menu, settings screen with rebinding, and HUD can be built from data assets and work with mouse, keyboard, and gamepad.
+- Golden images cover layout, text shaping (including right-to-left), and theming.
+- Switching locale at runtime updates every translated string.
+
+## Milestone 17: 2D engine
+
+Goal: make RustingEngine a complete 2D engine, not a 3D engine with a flat camera.
+
+Depends on: Milestones 3, 4, and 10 (2D physics).
+
+- [ ] 2D renderer with sprites, sprite batching, z-ordering, and canvas layers.
+- [ ] Sprite sheets and sprite animation.
+- [ ] Tilemaps with multiple layers, autotiling rules, tile collision shapes, and tile navigation data.
+- [ ] 2D lights, shadows from occluder polygons, and normal-mapped sprites.
+- [ ] 2D GPU particles with physics-event emission.
+- [ ] 2D camera with smoothing, limits, and pixel-perfect mode.
+- [ ] 2D hybrid GPU physics showcases (thousands of physics sprites with events to Rust gameplay).
+- [ ] Mixing 2D layers over or inside 3D scenes.
+
+### Exit gate
+
+- A 2D platformer template with tilemap, lights, particles, and physics is playable and editable in the editor.
+- Golden images cover sprites, tilemaps, and 2D lighting.
+
+## Milestone 18: Navigation
+
+Goal: provide Godot-equivalent navigation for 2D and 3D, with runtime updates that respond to physics.
+
+Depends on: Milestones 5 and 10.
+
+- [ ] Navigation mesh baking from collision geometry for 3D, and from tilemaps/polygons for 2D.
+- [ ] Runtime incremental re-baking of changed tiles within a per-tick budget.
+- [ ] Path queries, off-mesh links (jumps, ladders, doors), and area costs.
+- [ ] Navigation agents with path following and velocity-obstacle avoidance.
+- [ ] Obstacles derived from physics bodies, including moving and sleeping bodies.
+- [ ] Navigation debug visualization and profiler counters.
+- [ ] Deterministic query and avoidance results for deterministic projects.
+
+### Exit gate
+
+- Agents route around physics bodies that are knocked into their path at runtime.
+- Re-baking stays within its per-tick budget and reports overruns.
+- Navigation results are identical across runs.
+
+## Milestone 19: Networking and multiplayer
+
+Goal: provide Godot-equivalent high-level multiplayer, plus deterministic rollback that Godot cannot offer.
+
+Depends on: Milestones 8 and 9. The Milestone 8 result decides whether rollback is offered across vendors.
+
+- [ ] Transport abstraction with UDP (reliable and unreliable channels), WebSocket, and loopback for tests.
+- [ ] Versioned wire protocol with compatibility rejection at connect time.
+- [ ] Remote procedure calls on entities with authority checks and reliability modes.
+- [ ] Replicated spawning and component synchronization, configured through reflection, with delta compression and quantization.
+- [ ] Client-server and listen-server topologies; headless dedicated-server builds.
+- [ ] Client-side prediction and reconciliation for player-controlled entities.
+- [ ] Deterministic rollback netcode for physics-heavy games, using Milestone 8 snapshots and input streams.
+- [ ] Physics-aware replication: replicate commands and events instead of full body state wherever determinism allows.
+- [ ] Network simulation (latency, jitter, loss) for testing, and a network profiler.
+- [ ] HTTP client for services and downloads.
+
+### Exit gate
+
+- A physics sandbox runs with four clients under simulated 150 ms latency and 2% loss without visible desync.
+- Rollback reproduces identical simulation state on every peer in a deterministic test.
+- RPC, spawning, and synchronization have loopback tests.
+
+## Milestone 20: Editor parity
+
+Goal: bring the editor to Godot-level completeness on top of the Milestone 6 foundation.
+
+Depends on: Milestone 6, and the milestone that owns each edited subsystem.
+
+### Workflow
+
+- [ ] Remote scene tree and inspector for a running game process.
+- [ ] Runtime debugger panel: errors with stack traces, monitors (FPS, memory, physics, rendering counters), and custom monitors.
+- [ ] Unified profiler with CPU spans, GPU pass timings, physics stages, network traffic, and memory.
+- [ ] Project settings editor, input map editor, and per-asset import settings dock with re-import.
+- [ ] Multiple scene tabs and multiple viewports (split views, orthographic views).
+- [ ] 2D viewport with snapping and pixel grid.
+- [ ] Search across the project: files, entities, components, and settings.
+- [ ] Version-control integration showing changed files and scene diffs.
+
+### Specialized editors
+
+- [ ] Animation editor with timeline, curves, onion skinning, and state-machine graph.
+- [ ] Shader editor and visual shader graph editor.
+- [ ] Tilemap and tile-set editor.
+- [ ] Grid/modular level editing and constructive solid geometry blocking tools.
+- [ ] Particle system editor with live preview.
+- [ ] Theme and UI layout editor.
+- [ ] Audio bus editor.
+- [ ] Navigation baking controls and visualization.
+
+### Extensibility
+
+- [ ] Editor plugin API for custom panels, inspectors, gizmos, importers, and tools, loaded from project crates.
+- [ ] Asset library browser for installing templates, plugins, and assets into a project.
+- [ ] In-editor API documentation for engine and reflected project types.
+
+### Exit gate
+
+- Every subsystem milestone's authoring tasks can be completed without leaving the editor.
+- A third-party editor plugin adds a panel, a custom inspector, and an importer without engine changes.
+- Editor state, layouts, and settings persist across sessions.
+
+## Milestone 21: Platforms, export, and distribution
+
+Goal: ship games to every supported platform from the editor.
+
+Depends on: Milestones 3 and 6.
+
+- [ ] Export presets per platform with feature flags, asset filters, and encryption of packed data.
+- [ ] Packed asset archives with compression and streaming.
+- [ ] Texture compression per platform (BCn desktop, ASTC/ETC2 mobile) through KTX2.
+- [ ] Windows and Linux release polish: installers/archives, icons, and code-signing hooks.
+- [ ] Steam Deck/Proton verification.
+- [ ] macOS through MoltenVK, with capability fallbacks for missing Vulkan features.
+- [ ] Android export with touch input, lifecycle handling, and mobile quality profiles.
+- [ ] Platform services abstraction for save paths, achievements, and storefront SDK hooks.
+- [ ] Crash reporting with symbolicated stack traces.
+- [ ] Record web, iOS, and console export as post-1.0 decisions with the blocking technical reasons.
+
+### Exit gate
+
+- A demo project exports and runs from the editor on Windows, Linux, and macOS.
+- An Android build runs the physics sandbox template on a mid-range device.
+- Crash reports from exported builds resolve to source locations.
+
+## Milestone 22: Documentation, samples, and ecosystem
+
+Goal: make the engine learnable and adoptable the way Godot is.
+
+Depends on: the features being documented. Documentation for each feature lands with that feature; this milestone covers the structure and the gaps.
+
+- [ ] User manual covering every subsystem, with a dedicated physics guide that explains ownership, synchronization, determinism, and solver choice.
+- [ ] Generated API reference for engine crates and reflected types.
+- [ ] Step-by-step tutorials: first 3D game, first 2D game, physics sandbox, multiplayer physics game.
+- [ ] Demo projects per feature area, with a physics showcase gallery (destruction, fluids, cloth, vehicles, ragdolls, million-body scenes).
+- [ ] Migration guide for Godot users mapping nodes, signals, resources, and scripts to RustingEngine concepts.
+- [ ] Contribution guide, plugin authoring guide, and release notes process.
+
+### Exit gate
+
+- A new user can build and export the first-game tutorial from a clean install using only the documentation.
+- Every demo project builds and runs in CI.
+
+## Milestone 23: Engine 1.0 release
+
+Goal: declare Godot-class parity with physics leadership, backed by evidence.
+
+Depends on: Milestones 9-22.
+
+- [ ] Every row in the Godot parity map has a passing exit gate.
+- [ ] Every physics pillar has its test or benchmark evidence checked in.
+- [ ] Reference games built entirely with the engine: a 3D action game, a 2D platformer, a vehicle/physics sandbox, and a multiplayer physics game.
+- [ ] Public API stability policy, semantic versioning, and a deprecation process.
+- [ ] Performance baselines recorded for the low-end, mid-range, and high-end reference machines.
+
+### Exit gate
+
+- All reference games are playable from a clean checkout, editable in the editor, and exportable to every supported platform.
+- The comparative physics benchmark report shows where RustingEngine leads, and any area where it does not is documented with a follow-up item.
+
+## Sundering track
+
+Milestones 24-29 build *Sundering* on top of the engine. They consume the determinism, fracture, GPU-scale, navigation, and networking milestones and must not fork parallel versions of those systems; gaps found here become engine items in the owning milestone.
+
+## Milestone 24: Competitive networked authority
 
 Goal: run the authoritative simulation on a server and keep many clients consistent with it under real network conditions.
+
+Depends on: Milestones 8 and 19. Milestone 19 provides the general transport, protocol, RPC, replication, and rollback machinery; this milestone adds the competitive-authority, anti-cheat, and destruction-scale requirements Sundering needs on top of it.
 
 The networking model depends on the Milestone 8 result. Bit-identical determinism permits lockstep and rollback. Without it, the server simulates and clients render, predicting only their own hero.
 
@@ -666,8 +1523,7 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
 
 ### Transport and protocol
 
-- [ ] Unreliable-ordered channel for state and a reliable channel for match events, over UDP.
-- [ ] Versioned wire protocol with explicit compatibility rejection at connect time.
+- [ ] Reuse the Milestone 19 transport and versioned protocol; do not fork a second networking stack.
 - [ ] Clock synchronization and per-client tick-offset estimation.
 - [ ] Input buffering with configurable delay and jitter absorption.
 
@@ -675,7 +1531,7 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
 
 - [ ] Snapshot encoding with delta compression against the last client-acknowledged snapshot.
 - [ ] Quantize replicated values with documented precision per field.
-- [ ] Interest management: replicate only what a client's team can currently see, using the vision system from Milestone 13.
+- [ ] Interest management: replicate only what a client's team can currently see, using the vision system from Milestone 27.
 - [ ] Per-client bandwidth budget with measured usage and an enforced cap.
 - [ ] Replicate terrain modification events, not individual debris transforms. Clients re-simulate debris locally from the same events. This is the only approach that keeps bandwidth bounded during heavy destruction, and it depends on Milestone 8.
 
@@ -694,9 +1550,11 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
 - A client disconnects mid-match, reconnects, and resynchronizes correctly.
 - Server tick-budget usage and desync events are observable in operations tooling.
 
-## Milestone 10: Destructible terrain and Scar
+## Milestone 25: Destructible terrain and Scar
 
 Goal: make terrain a first-class simulated, modifiable, and permanently scarred entity rather than authored static geometry.
+
+Depends on: Milestones 8, 11 (fracture, debris, GPU scale), and 13 (terrain rendering).
 
 ### Terrain representation
 
@@ -740,9 +1598,11 @@ Goal: make terrain a first-class simulated, modifiable, and permanently scarred 
 - Frame time and memory stay within budget after a one-hour continuous-destruction soak test.
 - Terrain state round-trips correctly through save, replay, and network resynchronization.
 
-## Milestone 11: Dynamic navigation and crowds
+## Milestone 26: Dynamic navigation and crowds
 
 Goal: let thousands of agents move sensibly over geometry that changes every tick.
+
+Depends on: Milestones 18 (engine navigation) and 25. The engine navigation handles incremental re-baking of ordinary scenes; this milestone handles terrain that changes every tick at crowd scale.
 
 ### Navigation representation
 
@@ -767,52 +1627,7 @@ Goal: let thousands of agents move sensibly over geometry that changes every tic
 - Agent behaviour is bit-identical across runs and across vendors.
 - Blocking every route is detected and reported rather than producing stuck agents.
 
-## Milestone 12: Runtime presentation
-
-Goal: supply the non-simulation systems a shipped game needs, while guaranteeing none of them can influence simulation state.
-
-### Animation
-
-- [ ] Skeletal animation with GPU skinning.
-- [ ] glTF skin and animation import, completing the Milestone 2 deferral.
-- [ ] Animation state machine with blending, layers, and events.
-- [ ] Root-motion policy that never feeds back into deterministic simulation.
-- [ ] Ragdoll handoff between animation and physics.
-
-### Audio
-
-- [ ] Audio device management, mixer, buses, and volume control.
-- [ ] 3D spatial audio with attenuation and an occlusion approximation.
-- [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
-- [ ] Voice limiting and priority so large destruction events do not exhaust the mixer.
-- [ ] Audio state is presentation only and never affects simulation or replay hashes.
-
-### Visual effects
-
-- [ ] GPU particle system reusing the existing physics compute infrastructure.
-- [ ] Emission driven by physics events: impacts, fracture, debris settling.
-- [ ] Decals that either survive terrain modification or are invalidated with it.
-- [ ] Effect budget and quality-profile scaling.
-
-### Runtime UI
-
-- [ ] Runtime UI layer independent of the editor's egui usage.
-- [ ] Data-bound HUD elements, world-space indicators, and input routing.
-- [ ] Scaling across resolutions and DPI settings.
-
-### Input and frame pacing
-
-- [ ] Measure and report end-to-end input latency.
-- [ ] Decouple input sampling rate from the simulation tick without introducing nondeterminism.
-- [ ] Frame pacing that holds a stable presentation cadence under variable GPU load.
-
-### Exit gate
-
-- Disabling all audio and visual effects does not change replay hashes.
-- Animated, skinned characters render and hand off to ragdoll on physics events.
-- End-to-end input latency is measured and reported.
-
-## Milestone 13: Competitive gameplay framework
+## Milestone 27: Competitive gameplay framework
 
 Goal: provide the game-specific systems Sundering needs, built entirely on deterministic simulation.
 
@@ -835,7 +1650,7 @@ Goal: provide the game-specific systems Sundering needs, built entirely on deter
 
 - [ ] Per-team visibility computed on the GPU from actual terrain geometry, not from authored vision blockers.
 - [ ] Recompute visibility when terrain changes, within a bounded per-tick budget.
-- [ ] Feed visibility into network interest management from Milestone 9.
+- [ ] Feed visibility into network interest management from Milestone 24.
 - [ ] Derive presentation-side fog rendering from the same data.
 - [ ] Keep visibility deterministic and identical between server and every client.
 
@@ -852,7 +1667,7 @@ Goal: provide the game-specific systems Sundering needs, built entirely on deter
 - Vision is computed from destroyed geometry and matches exactly between server and clients.
 - Every ability is expressible as a deterministic physical effect and replays identically.
 
-## Milestone 14: Balance and operations tooling
+## Milestone 28: Balance and operations tooling
 
 Goal: make a game whose map differs every match tunable with evidence rather than intuition.
 
@@ -886,7 +1701,7 @@ Goal: make a game whose map differs every match tunable with evidence rather tha
 - Any reported degenerate state reproduces exactly from its recorded seed.
 - A match replay can be inspected tick by tick alongside its terrain timeline.
 
-## Milestone 15: Sundering vertical slice
+## Milestone 29: Sundering vertical slice
 
 Goal: prove the whole stack with the smallest piece of the real game. Each slice answers exactly one question and adds nothing beyond it.
 
@@ -988,6 +1803,28 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - [ ] Asynchronous selected-state readback reports its source tick and frame age.
 - [ ] Explicit CPU/GPU simulation ownership and synchronization modes.
 
+### Physics scenario and benchmark suite
+
+- [ ] Joint, articulation, character-controller, vehicle, and ragdoll regression scenes with recorded expected results.
+- [ ] Soft-body, cloth, rope, fluid, granular, and fracture scenarios under lavapipe.
+- [ ] Two-way coupling scenarios between rigid, deformable, and fluid simulation.
+- [ ] 2D physics scenarios mirroring the 3D suite.
+- [ ] Comparative benchmark harness against Jolt, PhysX, Rapier, and Godot Physics with stored baselines.
+
+### Engine feature tests
+
+- [ ] Reflection round trip for every registered component and data asset.
+- [ ] Prefab override propagation, nesting, variants, and cycle rejection.
+- [ ] Observers and scene-file event connections fire the registered handlers.
+- [ ] Animation sampling, blending, IK, and ragdoll handoff are deterministic.
+- [ ] Offline audio render compared against reference buffers.
+- [ ] UI layout, text shaping, theming, and localization golden images.
+- [ ] 2D sprite, tilemap, and 2D lighting golden images.
+- [ ] Navigation baking, re-baking budget, and agent avoidance.
+- [ ] Networking RPC, replication, prediction, and rollback over loopback with simulated loss.
+- [ ] Export smoke test for every supported platform preset.
+- [ ] Every demo project and template builds and runs headless.
+
 ### Determinism tests
 
 - [ ] Per-tick world-state hashes match between two runs with identical inputs.
@@ -1028,6 +1865,9 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - [ ] Second-vendor GPU runner dedicated to cross-vendor determinism verification.
 - [ ] Scheduled soak-test job for long-running destruction and memory growth.
 - [ ] Scheduled headless batch-match job producing aggregate balance reports.
+- [ ] macOS (MoltenVK) runner.
+- [ ] Android build job.
+- [ ] Scheduled comparative physics benchmark job publishing its report as an artifact.
 
 ## Cross-cutting engineering rules
 
@@ -1043,10 +1883,15 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - Anything affecting simulation must be deterministic: no wall-clock time, no frame-rate dependence, no unseeded randomness, no order-dependent accumulation.
 - Network code never trusts a client for authoritative state.
 - Systems that run for hours need soak tests. Correct for one minute and degrading over one hour is not correct.
+- Anything that moves things — animation, particles, characters, vehicles, navigation obstacles, audio occlusion — integrates with physics through the typed bridge rather than a parallel ad-hoc simulation.
+- Physics features are judged against the best standalone physics engines, with benchmark evidence. Other features are judged against Godot parity.
+- Every user-facing feature ships with documentation and a demo scene in the same change or the next one.
 
 ## Recommended implementation order
 
-Work on one vertical path at a time rather than creating empty crates for every eventual subsystem:
+Work on one vertical path at a time rather than creating empty crates for every eventual subsystem.
+
+Foundation (Milestones 0-7):
 
 1. Finish Vulkan/winit modernization and validation.
 2. Add the workspace plus `rusting-core`, ECS schedules, components, and compatibility facade.
@@ -1058,15 +1903,23 @@ Work on one vertical path at a time rather than creating empty crates for every 
 8. Build the vertical slice while filling in editor, rendering, asset, and physics gaps.
 9. Add hot reload, undo/redo, polish, packaging, and performance gating.
 
-Then the Sundering track, which depends on the hybrid physics of step 6:
+Physics leadership and Godot parity (Milestones 8-23):
 
-10. Establish determinism: simulation math, ordering rules, per-tick state hashing, headless mode, and the cross-vendor verification harness. This result decides the networking model, so it comes first.
-11. Add replay recording and playback on top of the state hash.
-12. Add the headless server, wire protocol, and replication. Keep clients as renderers until determinism is proven.
-13. Build chunked destructible terrain, fracture, structural load, and Scar persistence.
-14. Add dynamic navigation and GPU crowd agents over changing geometry.
-15. Fill in runtime presentation: animation, audio, particles, runtime UI, and frame pacing.
-16. Add the competitive gameplay framework: teams, abilities as forces, dynamic vision, and bots.
-17. Build the Sundering slices in order, adding balance and operations tooling as each slice requires it.
+10. Establish determinism: simulation math, ordering rules, per-tick state hashing, and the verification harness. Every later solver depends on these rules.
+11. Add reflection, prefabs, observers, data resources, and Rust hot reload. Every later editor and animation feature depends on reflection.
+12. Complete rigid-body physics: joints, articulations, characters, vehicles, ragdolls, fields, CCD, and 2D physics.
+13. Build the physics debugger and the comparative benchmark harness early, so every later solver is measured from its first commit.
+14. Add deformables, fluids, granular media, fracture, and million-body GPU scale.
+15. In parallel, reach parity in advanced rendering, animation, audio, runtime UI, 2D, and navigation, integrating each with physics as it lands.
+16. Add networking with prediction and deterministic rollback.
+17. Grow editor parity, platforms/export, and documentation continuously, closing them out at the 1.0 release gate.
+
+Sundering (Milestones 24-29):
+
+18. Add competitive authority on top of the engine networking, keeping clients as renderers until determinism is proven.
+19. Build chunked destructible terrain, structural load, and Scar persistence on the engine fracture system.
+20. Add navigation and GPU crowd agents over terrain that changes every tick.
+21. Add the competitive gameplay framework: teams, abilities as forces, dynamic vision, and bots.
+22. Build the Sundering slices in order, adding balance and operations tooling as each slice requires it.
 
 The next concrete editor task is a Shortcuts settings panel. It must display the central action map, let a user rebind one action at a time, detect duplicate bindings, and persist choices inside project editor settings. Then add focus-selection and interactive translate/rotate/scale handles. Explicit frame contexts and an offscreen scene viewport target remain the next renderer-architecture task.

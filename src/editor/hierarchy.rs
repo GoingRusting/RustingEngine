@@ -3,7 +3,10 @@
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 
-use crate::runtime::{Camera, Collider, PhysicsBody, RigidBody};
+use crate::runtime::{
+    Camera, Collider, DirectionalLight, MeshRenderer, PhysicsBody, PointLight,
+    RigidBody, SpotLight, Visibility,
+};
 use crate::runtime::{Name, Parent};
 use crate::Transform;
 
@@ -121,7 +124,114 @@ fn append_branch(
     }
 }
 
-/// Draws object creation, selection actions, parenting, and the tree rows.
+/// Rows matching `query` (case-insensitive name search) plus their ancestors,
+/// so every match is shown in its place in the tree.
+fn filter_items<'a>(
+    items: &'a [HierarchyItem],
+    query: &str,
+) -> Vec<&'a HierarchyItem> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return items.iter().collect();
+    }
+    let mut keep = vec![false; items.len()];
+    // Indexes of the current row's ancestors; items are parent-first.
+    let mut path = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        path.truncate(item.depth);
+        if item.name.to_lowercase().contains(&query) {
+            keep[index] = true;
+            for &ancestor in &path {
+                keep[ancestor] = true;
+            }
+        }
+        path.push(index);
+    }
+    items
+        .iter()
+        .zip(keep)
+        .filter_map(|(item, keep)| keep.then_some(item))
+        .collect()
+}
+
+/// Applies one row click to the selection and returns the new selection and
+/// primary object. Ctrl toggles one row; Shift adds the visible range between
+/// the primary object and the clicked row.
+fn click_selection(
+    selection: &[Entity],
+    primary: Option<Entity>,
+    visible: &[Entity],
+    clicked: Entity,
+    toggle: bool,
+    range: bool,
+) -> (Vec<Entity>, Option<Entity>) {
+    let position = |entity| visible.iter().position(|&item| item == entity);
+    if range {
+        if let (Some(anchor), Some(end)) =
+            (primary.and_then(position), position(clicked))
+        {
+            let mut next = selection.to_vec();
+            for &entity in &visible[anchor.min(end)..=anchor.max(end)] {
+                if !next.contains(&entity) {
+                    next.push(entity);
+                }
+            }
+            return (next, primary);
+        }
+    }
+    if toggle {
+        let mut next = selection.to_vec();
+        if let Some(index) = next.iter().position(|&item| item == clicked) {
+            next.remove(index);
+            let primary = if primary == Some(clicked) {
+                next.last().copied()
+            } else {
+                primary
+            };
+            return (next, primary);
+        }
+        next.push(clicked);
+        return (next, Some(clicked));
+    }
+    (vec![clicked], Some(clicked))
+}
+
+/// Blender's Shift-click in the viewport: add an unselected object and make
+/// it active, make a selected one active, or deselect the active one.
+pub(super) fn shift_pick_selection(
+    selection: &[Entity],
+    primary: Option<Entity>,
+    picked: Entity,
+) -> (Vec<Entity>, Option<Entity>) {
+    let mut next = selection.to_vec();
+    if primary == Some(picked) {
+        next.retain(|&entity| entity != picked);
+        let primary = next.last().copied();
+        return (next, primary);
+    }
+    if !next.contains(&picked) {
+        next.push(picked);
+    }
+    (next, Some(picked))
+}
+
+fn entity_icon(world: &World, entity: Entity) -> super::EditorIcon {
+    use super::EditorIcon;
+    if world.get::<Camera>(entity).is_some() {
+        EditorIcon::Camera
+    } else if world.get::<DirectionalLight>(entity).is_some()
+        || world.get::<PointLight>(entity).is_some()
+        || world.get::<SpotLight>(entity).is_some()
+    {
+        EditorIcon::Light
+    } else if world.get::<MeshRenderer>(entity).is_some() {
+        EditorIcon::Mesh
+    } else {
+        EditorIcon::Empty
+    }
+}
+
+/// Draws object creation, search, selection, parenting, and the tree rows.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_hierarchy_area(
     ui: &mut egui::Ui,
@@ -135,25 +245,51 @@ pub(super) fn draw_hierarchy_area(
     edited_rigid_body: &mut Option<RigidBody>,
     edited_collider: &mut Option<Collider>,
 ) {
+    use gui_elements::EditorTheme;
     if state.rename_target.is_some_and(|target| {
         !entities.iter().any(|item| item.entity == target)
     }) {
         state.rename_target = None;
     }
-    if gui_elements::EditorTheme::toolbar_icon_button(
-        ui,
-        "Add Object",
-        super::EditorIcon::AddObject,
-        120.0,
-        true,
-    )
-    .on_hover_text("Open the object catalog")
-    .clicked()
+    state
+        .selection
+        .retain(|&entity| entities.iter().any(|item| item.entity == entity));
+    // Viewport picking only sets the primary object; resync the set here.
+    if state
+        .selected
+        .is_none_or(|primary| !state.selection.contains(&primary))
     {
-        state.add_object_parent = None;
-        state.add_object_modal_open = true;
+        state.selection = state.selected.into_iter().collect();
     }
-    ui.separator();
+
+    ui.horizontal(|ui| {
+        if EditorTheme::toolbar_icon_button(
+            ui,
+            "",
+            super::EditorIcon::AddObject,
+            EditorTheme::ROW_HEIGHT + 8.0,
+            true,
+        )
+        .on_hover_text("Add object")
+        .clicked()
+        {
+            state.add_object_parent = None;
+            state.add_object_modal_open = true;
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut state.hierarchy_filter)
+                .hint_text("Search")
+                .desired_width(f32::INFINITY),
+        );
+    });
+    ui.add_space(2.0);
+
+    let visible = filter_items(entities, &state.hierarchy_filter);
+    let visible_entities =
+        visible.iter().map(|item| item.entity).collect::<Vec<_>>();
+    let (toggle, range) =
+        ui.input(|input| (input.modifiers.command, input.modifiers.shift));
+
     egui::ScrollArea::both()
         .id_salt("hierarchy_panel_scroll")
         .auto_shrink([false, false])
@@ -161,17 +297,73 @@ pub(super) fn draw_hierarchy_area(
             egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
         )
         .show(ui, |ui| {
-            for item in entities {
+            for item in &visible {
+                let item = *item;
                 if state.rename_target == Some(item.entity) {
                     draw_inline_rename(ui, item, state, entity_request);
                     continue;
                 }
-                let response = gui_elements::EditorTheme::tree_row(
-                    ui,
-                    &item.name,
-                    item.depth,
-                    state.selected == Some(item.entity),
+                let visible_now = world
+                    .get::<Visibility>(item.entity)
+                    .is_none_or(|visibility| visibility.visible);
+                // Rows hidden by themselves or an ancestor are dimmed, as in
+                // Blender's outliner.
+                let response = ui
+                    .scope(|ui| {
+                        if !crate::runtime::visible_in_hierarchy(
+                            world,
+                            item.entity,
+                        ) {
+                            ui.multiply_opacity(0.45);
+                        }
+                        EditorTheme::tree_row(
+                            ui,
+                            &item.name,
+                            item.depth,
+                            state.selection.contains(&item.entity),
+                            state.selected == Some(item.entity),
+                            Some(entity_icon(world, item.entity)),
+                        )
+                    })
+                    .inner;
+
+                // Eye toggle, drawn over the row's right edge. It is
+                // registered after the row, so it wins the click.
+                let eye_rect = egui::Rect::from_center_size(
+                    egui::pos2(
+                        response.rect.right() - 12.0,
+                        response.rect.center().y,
+                    ),
+                    egui::vec2(18.0, 18.0),
                 );
+                let eye = ui
+                    .interact(
+                        eye_rect,
+                        ui.id().with(("hierarchy_eye", item.entity)),
+                        egui::Sense::click(),
+                    )
+                    .on_hover_text(if visible_now { "Hide" } else { "Show" });
+                super::icons::paint_editor_icon(
+                    ui.painter(),
+                    if visible_now {
+                        super::EditorIcon::Eye
+                    } else {
+                        super::EditorIcon::EyeClosed
+                    },
+                    eye_rect,
+                    if eye.hovered() {
+                        EditorTheme::TEXT
+                    } else {
+                        EditorTheme::TEXT_MUTED
+                    },
+                );
+                if eye.clicked() {
+                    *entity_request = Some(EntityRequest::SetVisible(
+                        item.entity,
+                        !visible_now,
+                    ));
+                }
+
                 response.dnd_set_drag_payload(HierarchyDrag(item.entity));
                 if let Some(payload) =
                     response.dnd_hover_payload::<HierarchyDrag>()
@@ -179,11 +371,11 @@ pub(super) fn draw_hierarchy_area(
                     let valid = can_reparent(world, payload.0, item.entity);
                     ui.painter().rect_stroke(
                         response.rect,
-                        5.0,
+                        f32::from(EditorTheme::RADIUS),
                         egui::Stroke::new(
                             2.0_f32,
                             if valid {
-                                gui_elements::EditorTheme::ACCENT_HOVER
+                                EditorTheme::ACCENT_HOVER
                             } else {
                                 egui::Color32::LIGHT_RED
                             },
@@ -201,52 +393,72 @@ pub(super) fn draw_hierarchy_area(
                         ));
                     }
                 }
-                if response.clicked() || response.secondary_clicked() {
-                    select_item(
-                        world,
-                        item,
-                        state,
-                        edited_transform,
-                        edited_camera,
-                        edited_physics,
-                        edited_rigid_body,
-                        edited_collider,
-                    );
+
+                // Right-click keeps an existing multi-selection so the
+                // context menu acts on all of it.
+                let right_click_keeps = response.secondary_clicked()
+                    && state.selection.contains(&item.entity);
+                if (response.clicked() || response.secondary_clicked())
+                    && !right_click_keeps
+                {
+                    let (selection, primary) = if response.clicked() {
+                        click_selection(
+                            &state.selection,
+                            state.selected,
+                            &visible_entities,
+                            item.entity,
+                            toggle,
+                            range,
+                        )
+                    } else {
+                        (vec![item.entity], Some(item.entity))
+                    };
+                    state.selection = selection;
+                    match primary.and_then(|primary| {
+                        entities.iter().find(|item| item.entity == primary)
+                    }) {
+                        Some(primary) => select_item(
+                            world,
+                            primary,
+                            state,
+                            edited_transform,
+                            edited_camera,
+                            edited_physics,
+                            edited_rigid_body,
+                            edited_collider,
+                        ),
+                        None => state.selected = None,
+                    }
+                }
+                if response.double_clicked() {
+                    start_rename(state, item);
                 }
                 response.context_menu(|ui| {
                     ui.set_min_width(220.0);
-                    gui_elements::EditorTheme::menu_section(ui, "OBJECT");
-                    if gui_elements::EditorTheme::menu_action(
-                        ui,
-                        "Add Child Object...",
-                        true,
-                    )
-                    .clicked()
+                    let count = state.selection.len();
+                    EditorTheme::menu_section(ui, "OBJECT");
+                    if EditorTheme::menu_action(ui, "Add Child Object...", true)
+                        .clicked()
                     {
                         state.add_object_parent = Some(item.entity);
                         state.add_object_modal_open = true;
                     }
-                    if gui_elements::EditorTheme::menu_action(
-                        ui, "Rename", true,
-                    )
-                    .clicked()
-                    {
-                        state.selected = Some(item.entity);
-                        state.rename_draft = item.name.clone();
-                        state.rename_target = Some(item.entity);
+                    if EditorTheme::menu_action(ui, "Rename", true).clicked() {
+                        start_rename(state, item);
                     }
-                    if gui_elements::EditorTheme::menu_action(
-                        ui,
-                        "Duplicate",
-                        true,
-                    )
-                    .clicked()
+                    let duplicate = if count > 1 {
+                        format!("Duplicate {count} Objects")
+                    } else {
+                        "Duplicate".to_owned()
+                    };
+                    if EditorTheme::menu_action(ui, &duplicate, true).clicked()
                     {
-                        *entity_request =
-                            Some(EntityRequest::Duplicate(item.entity));
+                        *entity_request = Some(EntityRequest::Duplicate(
+                            state.selection.clone(),
+                        ));
                     }
                     if world.get::<Parent>(item.entity).is_some()
-                        && gui_elements::EditorTheme::menu_action(
+                        && EditorTheme::menu_action(
                             ui,
                             "Move to Scene Root",
                             true,
@@ -256,18 +468,50 @@ pub(super) fn draw_hierarchy_area(
                         *entity_request =
                             Some(EntityRequest::Reparent(item.entity, None));
                     }
-                    gui_elements::EditorTheme::menu_section(ui, "DANGER");
-                    if gui_elements::EditorTheme::menu_action(
-                        ui, "Delete", true,
-                    )
-                    .clicked()
-                    {
-                        *entity_request =
-                            Some(EntityRequest::Delete(item.entity));
+                    EditorTheme::menu_section(ui, "DANGER");
+                    let delete = if count > 1 {
+                        format!("Delete {count} Objects")
+                    } else {
+                        "Delete".to_owned()
+                    };
+                    if EditorTheme::menu_action(ui, &delete, true).clicked() {
+                        *entity_request = Some(EntityRequest::Delete(
+                            state.selection.clone(),
+                        ));
                     }
                 });
             }
         });
+
+    // Blender-style keys while the pointer is over the Hierarchy.
+    if ui.ui_contains_pointer()
+        && !ui.ctx().wants_keyboard_input()
+        && !state.selection.is_empty()
+    {
+        let (delete, rename) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Delete)
+                    || input.key_pressed(egui::Key::X),
+                input.key_pressed(egui::Key::F2),
+            )
+        });
+        if delete {
+            *entity_request =
+                Some(EntityRequest::Delete(state.selection.clone()));
+        } else if rename {
+            if let Some(item) = state.selected.and_then(|primary| {
+                entities.iter().find(|item| item.entity == primary)
+            }) {
+                start_rename(state, item);
+            }
+        }
+    }
+}
+
+fn start_rename(state: &mut EditorState, item: &HierarchyItem) {
+    state.selected = Some(item.entity);
+    state.rename_draft = item.name.clone();
+    state.rename_target = Some(item.entity);
 }
 
 fn can_reparent(world: &World, child: Entity, parent: Entity) -> bool {
@@ -406,8 +650,10 @@ mod tests {
 
         let _ = context.run(egui::RawInput::default(), |context| {
             egui::CentralPanel::default().show(context, |ui| {
-                let parent = EditorTheme::tree_row(ui, "Parent", 0, false);
-                let child = EditorTheme::tree_row(ui, "Child", 1, false);
+                let parent =
+                    EditorTheme::tree_row(ui, "Parent", 0, false, false, None);
+                let child =
+                    EditorTheme::tree_row(ui, "Child", 1, false, false, None);
                 rects = Some((parent.rect, child.rect));
             });
         });
@@ -415,5 +661,60 @@ mod tests {
         let (parent, child) = rects.unwrap();
         assert_eq!(child.left() - parent.left(), 18.0);
         assert!(child.top() >= parent.bottom());
+    }
+
+    #[test]
+    fn search_keeps_matches_and_their_ancestors_only() {
+        let mut world = World::new();
+        let root = world.spawn(Name("Level".into())).id();
+        let arm = world.spawn((Name("Arm".into()), Parent(root))).id();
+        let lamp = world.spawn((Name("Desk Lamp".into()), Parent(arm))).id();
+        world.spawn((Name("Floor".into()), Parent(root)));
+        world.spawn(Name("Sun".into()));
+        let items = collect_entities(&mut world);
+
+        let shown = filter_items(&items, "  LAMP ")
+            .iter()
+            .map(|item| item.entity)
+            .collect::<Vec<_>>();
+        assert_eq!(shown, vec![root, arm, lamp]);
+        assert_eq!(filter_items(&items, "").len(), items.len());
+        assert!(filter_items(&items, "missing").is_empty());
+    }
+
+    #[test]
+    fn clicks_select_toggle_and_extend_with_a_primary_object() {
+        let mut world = World::new();
+        let [a, b, c, d] = std::array::from_fn(|_| world.spawn_empty().id());
+        let visible = [a, b, c, d];
+
+        let (selection, primary) =
+            click_selection(&[a, b], Some(a), &visible, c, false, false);
+        assert_eq!((selection, primary), (vec![c], Some(c)));
+
+        let (selection, primary) =
+            click_selection(&[b], Some(b), &visible, d, true, false);
+        assert_eq!((selection.clone(), primary), (vec![b, d], Some(d)));
+        let (selection, primary) =
+            click_selection(&selection, primary, &visible, d, true, false);
+        assert_eq!((selection, primary), (vec![b], Some(b)));
+
+        // Shift extends from the primary object and keeps it primary.
+        let (selection, primary) =
+            click_selection(&[c], Some(c), &visible, a, false, true);
+        assert_eq!((selection, primary), (vec![c, a, b], Some(c)));
+    }
+
+    #[test]
+    fn viewport_shift_pick_adds_activates_and_deselects() {
+        let mut world = World::new();
+        let [a, b] = std::array::from_fn(|_| world.spawn_empty().id());
+
+        let (selection, primary) = shift_pick_selection(&[a], Some(a), b);
+        assert_eq!((selection.clone(), primary), (vec![a, b], Some(b)));
+        let (selection, primary) = shift_pick_selection(&selection, primary, a);
+        assert_eq!((selection.clone(), primary), (vec![a, b], Some(a)));
+        let (selection, primary) = shift_pick_selection(&selection, primary, a);
+        assert_eq!((selection, primary), (vec![b], Some(b)));
     }
 }

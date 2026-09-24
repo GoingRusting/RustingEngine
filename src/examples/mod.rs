@@ -1,3 +1,4 @@
+#[cfg(feature = "gltf")]
 pub mod gltf_test;
 pub mod physics;
 pub mod rotate;

@@ -1,6 +1,7 @@
 #[allow(dead_code, unused)]
 // ! SHAPE AND MESH SYSTEM - Defines geometry and scene organization
 // More I do this, more I understand and respect all developers that created a blender, unity, unreal engine and etc. just F for every man that did something like that and biggest F for that people, who did it opensource. F
+#[cfg(feature = "gltf")]
 pub mod gltf_loader;
 use std::sync::Arc;
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};

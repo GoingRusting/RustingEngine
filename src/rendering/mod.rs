@@ -174,7 +174,8 @@ pub fn init_vulkan(event_loop: &EventLoop<()>, title: &str) -> VulkanBase {
     let mut required_extensions = Surface::required_extensions(event_loop)
         .expect("Failed to determine Vulkan surface extensions");
 
-    let validation_enabled = cfg!(debug_assertions)
+    let validation_enabled = (cfg!(debug_assertions)
+        || cfg!(feature = "validation"))
         && library
             .layer_properties()
             .expect("Failed to enumerate Vulkan layers")

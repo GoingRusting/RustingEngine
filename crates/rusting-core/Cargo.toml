@@ -8,3 +8,4 @@ bevy_ecs = "0.19.1"
 nalgebra = "0.34.2"
 serde = { version = "1.0.228", features = ["derive"] }
 uuid = { version = "1.25.0", features = ["v4"] }
+winit = "0.30.12"

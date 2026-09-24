@@ -601,39 +601,16 @@ impl RenderScene {
             ))
             .unwrap();
 
-        let mut indirect_data: Vec<DrawIndexedIndirectCommand> = Vec::new();
-        for batch in &self.batches {
-            indirect_data.push(DrawIndexedIndirectCommand {
-                index_count: batch.mesh.index_count,
-                instance_count: batch.instances.len() as u32,
-                first_index: 0,
-                vertex_offset: 0,
-                first_instance: batch.base_instance_offset,
-            });
-        }
-
-        let _indirect_staging = Buffer::from_iter(
-            allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            indirect_data,
-        )
-        .unwrap();
-
         for batch in &self.batches {
             let cmd = DrawIndexedIndirectCommand {
                 index_count: batch.mesh.index_count,
                 instance_count: batch.instances.len() as u32,
                 first_index: 0,
                 vertex_offset: 0,
-                first_instance: batch.base_instance_offset,
+                // A nonzero firstInstance in an indirect command needs the
+                // optional drawIndirectFirstInstance feature. The vertex
+                // shader adds the batch offset from push constants instead.
+                first_instance: 0,
             };
             let single_staging = Buffer::from_iter(
                 allocator.clone(),
@@ -1423,5 +1400,89 @@ pub fn record_compute_physics_spatial(
             .unwrap();
 
         read_index ^= 1;
+    }
+}
+
+/// Records a GPU reset of a batch's indirect `instance_count` before culling
+/// refills it. A host write here could race a frame still drawing from the
+/// same buffer.
+pub fn record_reset_instance_count(
+    builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    indirect: &Subbuffer<[DrawIndexedIndirectCommand]>,
+) {
+    // instance_count is the second u32 of VkDrawIndexedIndirectCommand.
+    builder
+        .fill_buffer(indirect.clone().reinterpret::<[u32]>().slice(1..2), 0)
+        .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn instance_count_reset_is_a_queued_gpu_fill_of_that_field_only() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let base = crate::rendering::test_support::headless_device();
+        let allocator =
+            Arc::new(StandardMemoryAllocator::new_default(base.device.clone()));
+        let command = DrawIndexedIndirectCommand {
+            index_count: 36,
+            instance_count: 7,
+            first_index: 3,
+            vertex_offset: 4,
+            first_instance: 5,
+        };
+        let indirect = Buffer::from_iter(
+            allocator,
+            BufferCreateInfo {
+                usage: BufferUsage::INDIRECT_BUFFER
+                    | BufferUsage::STORAGE_BUFFER
+                    | BufferUsage::TRANSFER_DST,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                ..Default::default()
+            },
+            [command],
+        )
+        .unwrap();
+        let mut builder = AutoCommandBufferBuilder::primary(
+            Arc::new(StandardCommandBufferAllocator::new(
+                base.device.clone(),
+                Default::default(),
+            )),
+            base.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        record_reset_instance_count(&mut builder, &indirect);
+        vulkano::sync::now(base.device.clone())
+            .then_execute(base.queue.clone(), builder.build().unwrap())
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let reset = indirect.read().unwrap()[0];
+        assert_eq!(
+            [
+                reset.index_count,
+                reset.instance_count,
+                reset.first_index,
+                reset.vertex_offset,
+                reset.first_instance
+            ],
+            [36, 0, 3, 4, 5]
+        );
     }
 }

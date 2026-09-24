@@ -17,8 +17,10 @@ pub mod shaders;
 pub mod tests;
 
 pub use assets::{
-    AssetPlugin, AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset,
+    spawn_gltf_nodes, AlphaMode, AssetPlugin, AssetServer, Handle,
+    ImportedGltfLight, ImportedGltfNode, ImportedGltfPrimitive, MaterialAsset,
     MaterialModel, MeshAsset, PrimitiveShape, SceneAsset, TextureAsset,
+    TextureFilter, TextureSampler, TextureWrap,
 };
 pub use core::collisions::CollisionType;
 pub use core::{Material, MaterialBuilder, Physics, ShaderType, Transform};
@@ -47,5 +49,5 @@ pub mod prelude {
     };
     pub use crate::rusting_game;
     pub use crate::Transform;
-    pub use crate::{MaterialAsset, MaterialModel};
+    pub use crate::{AlphaMode, MaterialAsset, MaterialModel};
 }

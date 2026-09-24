@@ -27,6 +27,7 @@ pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
 pub use input::{KeyCode, MouseButton, RuntimeInput};
 pub use render_world::*;
+pub use rusting_core::schedule::{FrameReport, ScheduleStage};
 pub use scene_file::*;
 pub use time::{FrameTime, TimeControl};
 
@@ -75,23 +76,6 @@ impl Hasher for FastHasher {
         self.0 ^= value;
         self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
     }
-}
-
-/// The ordered stages executed by [`App::update`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ScheduleStage {
-    Startup,
-    FixedUpdate,
-    Update,
-    PostUpdate,
-    RenderExtract,
-}
-
-/// Summary of work performed during a single application update.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FrameReport {
-    pub fixed_steps: u32,
-    pub exit_requested: bool,
 }
 
 /// Errors produced while constructing or controlling the runtime.
@@ -283,7 +267,7 @@ impl App {
     pub fn add_event<T: Send + Sync + 'static>(&mut self) -> &mut Self {
         if !self.world.contains_resource::<EventQueue<T>>() {
             self.world.insert_resource(EventQueue::<T>::default());
-            self.event_maintenance.push(EventQueue::<T>::begin_frame);
+            self.event_maintenance.push(events::begin_frame::<T>);
         }
         self
     }

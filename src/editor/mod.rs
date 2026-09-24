@@ -7,6 +7,7 @@ mod dock;
 pub mod gui_elements;
 mod hierarchy;
 mod icons;
+mod inspector;
 mod overlay;
 mod picking;
 mod project;
@@ -17,23 +18,24 @@ use dock::EditorLayoutFile;
 pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
 use hierarchy::{collect_entities, draw_hierarchy_area};
 pub use icons::EditorIcon;
+use inspector::{draw_inspector_area, ComponentEdit};
 pub use view::draw_editor_view;
 
 pub use project::{
-    create_project, open_project, OpenProject, ProjectError,
+    create_project, open_project, EditorPreferences, OpenProject, ProjectError,
     ProjectManagerState, ProjectManifest, RecentProject,
     PROJECT_FORMAT_VERSION,
 };
 pub use shortcuts::{
     add_mouse_delta, handle_keyboard_input, handle_mouse_button_input,
-    update_fly_camera, EditorFlyCamera, EditorShortcuts, EditorTransformMode,
-    KeyBinding, SceneViewAction, ShortcutAction, ShortcutContext,
-    TransformModes,
+    handle_mouse_wheel, update_fly_camera, EditorFlyCamera, EditorShortcuts,
+    EditorTransformMode, KeyBinding, SceneViewAction, ShortcutAction,
+    ShortcutContext, TransformModes,
 };
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Resource, World};
-use egui::{CentralPanel, ComboBox, Context, DragValue, TopBottomPanel};
+use egui::{CentralPanel, Context, DragValue, TopBottomPanel};
 use std::path::PathBuf;
 
 use crate::rendering::debug_overlay::RenderDebugOverlay;
@@ -41,12 +43,11 @@ use crate::runtime::{
     add_registered_component, cook_scene, load_scene,
     registered_component_names, registered_component_values,
     remove_registered_component, save_scene, scene_document,
-    set_registered_component, App, AppError, Camera, Collider, ColliderShape,
-    CollisionLayers, DirectionalLight, GlobalTransform, MeshRenderer, Name,
-    ObjectClasses, Parent, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
-    Plugin, PointLight, Projection, RenderCameraOverride, RenderSettings,
-    RenderWorld, RigidBody, RigidBodyKind, SceneDocument, SceneId,
-    SceneLoadMode, SimulationClass, SpotLight, Visibility,
+    set_registered_component, App, AppError, Camera, Collider, CollisionLayers,
+    DirectionalLight, GlobalTransform, MeshRenderer, Name, ObjectClasses,
+    Parent, PhysicsBackendStatus, PhysicsBody, Plugin, PointLight,
+    RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
+    SceneDocument, SceneId, SceneLoadMode, SpotLight, Visibility,
 };
 use crate::Transform;
 use crate::{
@@ -55,8 +56,10 @@ use crate::{
 };
 
 /// Applies the editor's compact dark workspace theme to an egui context.
+/// Also restores the user's saved UI scale.
 pub fn configure_editor_style(context: &Context) {
     gui_elements::EditorTheme::apply(context);
+    context.set_zoom_factor(EditorPreferences::load().ui_scale);
 }
 
 /// Editor interaction mode. Edit state never advances gameplay fixed updates.
@@ -110,8 +113,13 @@ pub enum EditorWorkspace {
 /// Persistent editor selection, project state, and area layout.
 #[derive(Resource, Clone, Debug)]
 pub struct EditorState {
-    /// Object currently selected in the Hierarchy.
+    /// Primary (active) selected object: the gizmo and Inspector act on it.
     pub selected: Option<Entity>,
+    /// Every selected object. Always contains `selected` when it is set; the
+    /// Hierarchy resets it to just `selected` when the two disagree.
+    pub selection: Vec<Entity>,
+    /// Name filter typed into the Hierarchy search box.
+    pub hierarchy_filter: String,
     /// Tells the editor if the game is stopped, playing, or paused.
     pub mode: EditorMode,
     /// Chooses a fast Debug build or an optimized Release build for Play.
@@ -135,7 +143,6 @@ pub struct EditorState {
     /// New class name being typed in the Inspector.
     pub class_draft: String,
     /// Text being edited for custom serialized components.
-    pub component_drafts: std::collections::HashMap<(Entity, String), String>,
     /// Camera mode used by the first live 3D area.
     pub workspace: EditorWorkspace,
     /// Camera used by Scene View instead of the game's camera.
@@ -272,6 +279,8 @@ impl Default for EditorState {
     fn default() -> Self {
         Self {
             selected: None,
+            selection: Vec::new(),
+            hierarchy_filter: String::new(),
             mode: EditorMode::Edit,
             game_build_profile: GameBuildProfile::Debug,
             scene_path: String::new(),
@@ -283,7 +292,6 @@ impl Default for EditorState {
             add_object_modal_open: false,
             add_object_parent: None,
             class_draft: String::new(),
-            component_drafts: std::collections::HashMap::new(),
             workspace: EditorWorkspace::Scene,
             editor_camera: None,
             play_snapshot: None,
@@ -932,10 +940,12 @@ enum EntityRequest {
     CreateCamera(Option<Entity>),
     /// Adds an authored light used by editor and game rendering.
     CreateLight(EditorLightType, Option<Entity>),
-    /// Copies every serialized component of one object.
-    Duplicate(Entity),
-    /// Removes one object and all of its children.
-    Delete(Entity),
+    /// Copies every serialized component of each object.
+    Duplicate(Vec<Entity>),
+    /// Removes objects and all of their children.
+    Delete(Vec<Entity>),
+    /// Shows or hides one object (the Hierarchy eye toggle).
+    SetVisible(Entity, bool),
     /// Changes the display name stored in the scene.
     Rename(Entity, String),
     /// Moves one object below another object, or back to the scene root.
@@ -1177,28 +1187,6 @@ fn draw_project_manager(
     request
 }
 
-/// Draws three number inputs for an X, Y, and Z value.
-///
-/// # Arguments
-/// * `ui` - Egui area that receives the inputs.
-/// * `label` - Name shown before the three values.
-/// * `values` - Numbers changed by the inputs.
-/// * `speed` - Amount changed while dragging the mouse.
-fn edit_vector(
-    ui: &mut egui::Ui,
-    label: &str,
-    values: &mut [f32; 3],
-    speed: f64,
-) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        for (axis, value) in ["X", "Y", "Z"].into_iter().zip(values) {
-            ui.label(axis);
-            ui.add(DragValue::new(value).speed(speed));
-        }
-    });
-}
-
 /// Draws one fixed-size button in an editor area header.
 ///
 /// The rectangle and icon are painted separately. Different icon sizes can
@@ -1243,12 +1231,12 @@ fn show_dock_node(
     actions: &mut Vec<DockAction>,
     show_panel: &mut impl FnMut(&mut egui::Ui, EditorPanel),
 ) {
-    const DIVIDER: f32 = 6.0;
+    const DIVIDER: f32 = 4.0;
     match node {
         EditorDockNode::Area { id, panel } => {
             let id = *id;
             // Leave breathing room between the panel and its resize divider.
-            let panel_rect = rect.shrink(2.0);
+            let panel_rect = rect.shrink(1.0);
             // Every area gets its own ID space. Two areas can show the same
             // panel without Egui thinking that their controls are duplicates.
             // A leaf draws its header first and panel content below it.
@@ -1277,13 +1265,14 @@ fn show_dock_node(
                         // transparent because Vulkan draws below egui.
                         ui.painter().rect_filled(
                             panel_rect,
-                            6.0,
+                            4.0,
                             gui_elements::EditorTheme::PANEL,
                         );
                     }
+                    // Blender marks the active area subtly, not with a thick frame.
                     let stroke = if active {
                         egui::Stroke::new(
-                            2.0_f32,
+                            1.0_f32,
                             gui_elements::EditorTheme::ACCENT,
                         )
                     } else {
@@ -1294,9 +1283,31 @@ fn show_dock_node(
                     };
                     egui::Frame::NONE
                         .fill(gui_elements::EditorTheme::PANEL_RAISED)
-                        .inner_margin(egui::Margin::symmetric(8, 5))
+                        .corner_radius(egui::CornerRadius {
+                            nw: 4,
+                            ne: 4,
+                            sw: 0,
+                            se: 0,
+                        })
+                        .inner_margin(egui::Margin::symmetric(4, 2))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                // Blender shows the editor type as an icon
+                                // before its switcher.
+                                let (icon_rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(18.0, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                icons::paint_editor_icon(
+                                    ui.painter(),
+                                    panel.icon(),
+                                    icon_rect,
+                                    if active {
+                                        gui_elements::EditorTheme::ACCENT_HOVER
+                                    } else {
+                                        gui_elements::EditorTheme::TEXT_MUTED
+                                    },
+                                );
                                 let buttons_width = 22.0 * 3.0
                                     + ui.spacing().item_spacing.x * 2.0;
                                 let selector_width = (ui.available_width()
@@ -1365,12 +1376,12 @@ fn show_dock_node(
                             });
                         });
                     egui::Frame::NONE
-                        .inner_margin(egui::Margin::same(8))
+                        .inner_margin(egui::Margin::same(6))
                         .show(ui, |ui| show_panel(ui, *panel));
                     // Paint the selection border last so panel contents cannot hide it.
                     ui.painter().rect_stroke(
                         panel_rect,
-                        6.0,
+                        4.0,
                         stroke,
                         egui::StrokeKind::Inside,
                     );
@@ -1510,494 +1521,6 @@ fn apply_dock_actions(state: &mut EditorState, actions: Vec<DockAction>) {
             }
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-/// Draws settings for the object selected in the Hierarchy.
-///
-/// Editable values are temporary copies. `draw_editor_view` writes them back
-/// to the ECS world after egui finishes using them.
-///
-/// # Arguments
-/// * `ui` - Egui area used to draw the Inspector.
-/// * `world` - ECS world used to read the selected object's components.
-/// * `state` - Selection, project paths, and unfinished text edits.
-/// * `physics_backends` - Tells which physics choices work right now.
-/// * `edited_transform` - Temporary Transform changed by GUI inputs.
-/// * `edited_camera` - Temporary Camera changed by GUI inputs.
-/// * `edited_classes` - Temporary object classes changed by GUI inputs.
-/// * `edited_physics` - Temporary physics choice changed by GUI inputs.
-/// * `edited_rigid_body` - Temporary mass and velocity values.
-/// * `edited_collider` - Temporary collider shape and material values.
-/// * `registered_names` - Custom Rust component types available to add.
-/// * `custom_values` - Custom Rust components already on the object.
-/// * `component_edits` - Component changes applied after drawing.
-/// * `add_physics` - Becomes true when Add Physics is pressed.
-/// * `remove_physics` - Becomes true when Remove is pressed.
-/// * `edit_custom_shader` - Opens the selected compute shader in Code Editor.
-fn draw_inspector_area(
-    ui: &mut egui::Ui,
-    world: &World,
-    state: &mut EditorState,
-    physics_backends: PhysicsBackendStatus,
-    edited_transform: &mut Option<Transform>,
-    edited_camera: &mut Option<Camera>,
-    edited_directional_light: &mut Option<DirectionalLight>,
-    edited_point_light: &mut Option<PointLight>,
-    edited_spot_light: &mut Option<SpotLight>,
-    edited_classes: &mut Option<ObjectClasses>,
-    edited_physics: &mut Option<PhysicsBody>,
-    edited_rigid_body: &mut Option<RigidBody>,
-    edited_collider: &mut Option<Collider>,
-    registered_names: &[String],
-    custom_values: &[(String, String)],
-    component_edits: &mut Vec<ComponentEdit>,
-    add_physics: &mut bool,
-    remove_physics: &mut bool,
-    edit_custom_shader: &mut bool,
-) {
-    let Some(entity) = state.selected else {
-        ui.label("Select an entity in the Hierarchy area.");
-        return;
-    };
-    egui::ScrollArea::both()
-        .id_salt("inspector_panel_scroll")
-        .auto_shrink([false, false])
-        .scroll_bar_visibility(
-            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-        )
-        .show(ui, |ui| {
-        ui.monospace(format!("{entity:?}"));
-        if let Some(classes) = edited_classes {
-            ui.collapsing("Classes", |ui| {
-                let mut remove = None;
-                for class in &classes.names {
-                    ui.horizontal(|ui| {
-                        ui.label(class);
-                        if ui.small_button("Remove").clicked() {
-                            remove = Some(class.clone());
-                        }
-                    });
-                }
-                if let Some(class) = remove {
-                    classes.remove(&class);
-                }
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut state.class_draft);
-                    if ui.button("Add Class").clicked()
-                        && classes.add(&state.class_draft)
-                    {
-                        state.class_draft.clear();
-                    }
-                });
-                ui.small("An object can belong to several classes.");
-            });
-        }
-        if let Some(transform) = edited_transform {
-            ui.collapsing("Transform", |ui| {
-                edit_vector(ui, "Position", &mut transform.position, 0.1);
-                edit_vector(ui, "Rotation", &mut transform.rotation, 0.01);
-                edit_vector(ui, "Scale", &mut transform.scale, 0.01);
-            });
-        }
-        if let Some(renderer) = world.get::<MeshRenderer>(entity) {
-            ui.collapsing("Mesh Renderer", |ui| {
-                ui.monospace(format!("Mesh: {}", renderer.mesh.key()));
-                ui.monospace(format!("Material: {}", renderer.material.key()));
-            });
-        }
-        if let Some(camera) = edited_camera {
-            ui.collapsing("Camera", |ui| {
-                ui.checkbox(&mut camera.active, "Active");
-                ui.add(
-                    DragValue::new(&mut camera.priority)
-                        .prefix("Priority ")
-                        .speed(1.0),
-                );
-                match &mut camera.projection {
-                    Projection::Perspective {
-                        vertical_fov_radians,
-                        near,
-                        far,
-                    } => {
-                        let mut fov = vertical_fov_radians.to_degrees();
-                        ui.add(
-                            egui::Slider::new(&mut fov, 10.0..=120.0)
-                                .text("Vertical FOV")
-                                .suffix(" deg"),
-                        );
-                        *vertical_fov_radians = fov.to_radians();
-                        projection_planes(ui, near, far);
-                    }
-                    Projection::Orthographic {
-                        vertical_size,
-                        near,
-                        far,
-                    } => {
-                        ui.add(
-                            DragValue::new(vertical_size)
-                                .prefix("Vertical size ")
-                                .range(0.01..=100_000.0)
-                                .speed(0.1),
-                        );
-                        projection_planes(ui, near, far);
-                    }
-                }
-            });
-        }
-        if let Some(light) = edited_directional_light {
-            ui.collapsing("Directional Light", |ui| {
-                edit_vector(ui, "Color", &mut light.color, 0.01);
-                ui.add(
-                    DragValue::new(&mut light.illuminance)
-                        .prefix("Illuminance ")
-                        .range(0.0..=1_000_000.0)
-                        .speed(100.0),
-                );
-                ui.checkbox(&mut light.shadows, "Cast shadows");
-            });
-        }
-        if let Some(light) = edited_point_light {
-            ui.collapsing("Point Light", |ui| {
-                edit_vector(ui, "Color", &mut light.color, 0.01);
-                ui.add(
-                    DragValue::new(&mut light.intensity)
-                        .prefix("Intensity ")
-                        .range(0.0..=1_000_000.0)
-                        .speed(10.0),
-                );
-                ui.add(
-                    DragValue::new(&mut light.range)
-                        .prefix("Range ")
-                        .range(0.01..=100_000.0)
-                        .speed(0.1),
-                );
-            });
-        }
-        if let Some(light) = edited_spot_light {
-            ui.collapsing("Spot Light", |ui| {
-                edit_vector(ui, "Color", &mut light.color, 0.01);
-                ui.add(
-                    DragValue::new(&mut light.intensity)
-                        .prefix("Intensity ")
-                        .range(0.0..=1_000_000.0)
-                        .speed(10.0),
-                );
-                ui.add(
-                    DragValue::new(&mut light.range)
-                        .prefix("Range ")
-                        .range(0.01..=100_000.0)
-                        .speed(0.1),
-                );
-                let mut inner = light.inner_angle.to_degrees();
-                let mut outer = light.outer_angle.to_degrees();
-                ui.add(
-                    egui::Slider::new(&mut inner, 0.1..=179.0)
-                        .text("Inner angle")
-                        .suffix(" deg"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut outer, inner..=179.0)
-                        .text("Outer angle")
-                        .suffix(" deg"),
-                );
-                light.inner_angle = inner.to_radians();
-                light.outer_angle = outer.max(inner).to_radians();
-            });
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Physics");
-            if edited_physics.is_some() {
-                if ui.small_button("Remove").clicked() {
-                    *remove_physics = true;
-                }
-            } else if ui.small_button("Add Physics").clicked() {
-                *add_physics = true;
-                *edited_physics = Some(PhysicsBody::default());
-                *edited_rigid_body = Some(RigidBody::default());
-                *edited_collider = Some(Collider::default());
-            }
-        });
-        if let Some(physics) = edited_physics {
-            ComboBox::from_label("Simulation")
-                .selected_text(simulation_class_name(physics.simulation))
-                .show_ui(ui, |ui| {
-                    for class in [
-                        SimulationClass::None,
-                        SimulationClass::Static,
-                        SimulationClass::Gameplay,
-                        SimulationClass::GpuDynamic,
-                    ] {
-                        ui.selectable_value(
-                            &mut physics.simulation,
-                            class,
-                            simulation_class_name(class),
-                        );
-                    }
-                });
-            match physics.simulation {
-                SimulationClass::None => {
-                    ui.small("No physics simulation.");
-                }
-                SimulationClass::Static => {
-                    if let Some(body) = edited_rigid_body {
-                        body.kind = RigidBodyKind::Fixed;
-                    }
-                    ui.small("Static collider; never dispatched per frame.");
-                }
-                SimulationClass::Gameplay => {
-                    ui.colored_label(
-                        if physics_backends.gameplay_available {
-                            ui.visuals().text_color()
-                        } else {
-                            egui::Color32::LIGHT_RED
-                        },
-                        if physics_backends.gameplay_available {
-                            "CPU-authoritative gameplay physics."
-                        } else {
-                            "Gameplay physics backend is not connected yet."
-                        },
-                    );
-                }
-                SimulationClass::GpuDynamic => {
-                    if !physics_backends.gpu_dynamic_available {
-                        ui.colored_label(
-                            egui::Color32::LIGHT_YELLOW,
-                            "GPU gravity and condition events run in native Play; editor preview simulation is not active yet.",
-                        );
-                    }
-                    ComboBox::from_label("GPU solver")
-                        .selected_text(physics_solver_name(physics.solver))
-                        .show_ui(ui, |ui| {
-                            for solver in [
-                                PhysicsSolver::Full,
-                                PhysicsSolver::Simplified,
-                                PhysicsSolver::NoCollision,
-                                PhysicsSolver::Custom,
-                            ] {
-                                ui.selectable_value(
-                                    &mut physics.solver,
-                                    solver,
-                                    physics_solver_name(solver),
-                                );
-                            }
-                        });
-                    if physics.solver == PhysicsSolver::Custom {
-                        let path =
-                            physics.custom_shader.get_or_insert_with(|| {
-                                format!(
-                                    "{}/shaders/custom.comp",
-                                    state.project_root
-                                )
-                            });
-                        ui.text_edit_singleline(path);
-                        if ui.button("Open in Code Editor").clicked() {
-                            *edit_custom_shader = true;
-                        }
-                    }
-                }
-            };
-            if physics.simulation != SimulationClass::None {
-                let body =
-                    edited_rigid_body.get_or_insert_with(RigidBody::default);
-                if physics.simulation != SimulationClass::Static {
-                    ComboBox::from_label("Body")
-                        .selected_text(rigid_body_kind_name(body.kind))
-                        .show_ui(ui, |ui| {
-                            for kind in [
-                                RigidBodyKind::Dynamic,
-                                RigidBodyKind::Kinematic,
-                                RigidBodyKind::Fixed,
-                            ] {
-                                ui.selectable_value(
-                                    &mut body.kind,
-                                    kind,
-                                    rigid_body_kind_name(kind),
-                                );
-                            }
-                        });
-                    ui.add(
-                        DragValue::new(&mut body.mass)
-                            .prefix("Mass ")
-                            .suffix(" kg")
-                            .range(0.001..=1_000_000.0),
-                    );
-                    ui.add(
-                        DragValue::new(&mut body.gravity_scale)
-                            .prefix("Gravity ")
-                            .range(-100.0..=100.0),
-                    );
-                    edit_vector(ui, "Velocity", &mut body.linear_velocity, 0.1);
-                }
-                edit_collider(
-                    ui,
-                    edited_collider.get_or_insert_with(Collider::default),
-                );
-            }
-        }
-        ui.separator();
-        ui.label("Compiled Components");
-        for (name, _) in custom_values {
-            let key = (entity, name.clone());
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.monospace(name);
-                    if ui.button("Apply").clicked() {
-                        if let Some(value) = state.component_drafts.get(&key) {
-                            component_edits.push(ComponentEdit::Set {
-                                entity,
-                                name: name.clone(),
-                                value: value.clone(),
-                            });
-                        }
-                    }
-                    if ui.button("Remove").clicked() {
-                        component_edits.push(ComponentEdit::Remove {
-                            entity,
-                            name: name.clone(),
-                        });
-                    }
-                });
-                if let Some(value) = state.component_drafts.get_mut(&key) {
-                    ui.text_edit_multiline(value);
-                }
-            });
-        }
-        for name in registered_names.iter().filter(|name| {
-            !custom_values.iter().any(|(present, _)| present == *name)
-        }) {
-            if ui.button(format!("+ {name}")).clicked() {
-                component_edits.push(ComponentEdit::Add {
-                    entity,
-                    name: name.clone(),
-                });
-            }
-        }
-    });
-}
-
-enum ComponentEdit {
-    Set {
-        entity: Entity,
-        name: String,
-        value: String,
-    },
-    Add {
-        entity: Entity,
-        name: String,
-    },
-    Remove {
-        entity: Entity,
-        name: String,
-    },
-}
-
-/// Returns the simple name shown for a physics simulation choice.
-fn simulation_class_name(class: SimulationClass) -> &'static str {
-    match class {
-        SimulationClass::None => "No Physics",
-        SimulationClass::Static => "Static",
-        SimulationClass::Gameplay => "Gameplay (CPU)",
-        SimulationClass::GpuDynamic => "GPU Dynamic",
-    }
-}
-
-/// Returns the simple name shown for a GPU physics solver.
-fn physics_solver_name(solver: PhysicsSolver) -> &'static str {
-    match solver {
-        PhysicsSolver::Full => "Full Physics",
-        PhysicsSolver::Simplified => "Simplified",
-        PhysicsSolver::NoCollision => "Gravity / No Collision",
-        PhysicsSolver::Space => "Space",
-        PhysicsSolver::Custom => "Custom Compute Shader",
-    }
-}
-
-/// Returns the simple name shown for a rigid-body type.
-fn rigid_body_kind_name(kind: RigidBodyKind) -> &'static str {
-    match kind {
-        RigidBodyKind::Fixed => "Fixed",
-        RigidBodyKind::Dynamic => "Dynamic",
-        RigidBodyKind::Kinematic => "Kinematic",
-    }
-}
-
-/// Draws shape, friction, bounce, and trigger settings for one collider.
-///
-/// * `ui` - Egui area that receives the controls.
-/// * `collider` - Collider changed by those controls.
-fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
-    let shape_name = match collider.shape {
-        ColliderShape::Box { .. } => "Box",
-        ColliderShape::Sphere { .. } => "Sphere",
-        ColliderShape::Capsule { .. } => "Capsule",
-    };
-    ComboBox::from_label("Collider")
-        .selected_text(shape_name)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(shape_name == "Box", "Box").clicked() {
-                collider.shape = ColliderShape::Box {
-                    half_extents: [0.5; 3],
-                };
-            }
-            if ui
-                .selectable_label(shape_name == "Sphere", "Sphere")
-                .clicked()
-            {
-                collider.shape = ColliderShape::Sphere { radius: 0.5 };
-            }
-            if ui
-                .selectable_label(shape_name == "Capsule", "Capsule")
-                .clicked()
-            {
-                collider.shape = ColliderShape::Capsule {
-                    half_height: 0.5,
-                    radius: 0.5,
-                };
-            }
-        });
-    match &mut collider.shape {
-        ColliderShape::Box { half_extents } => {
-            edit_vector(ui, "Half size", half_extents, 0.05);
-            for extent in half_extents {
-                *extent = extent.max(0.001);
-            }
-        }
-        ColliderShape::Sphere { radius } => {
-            ui.add(
-                DragValue::new(radius)
-                    .prefix("Radius ")
-                    .range(0.001..=1_000_000.0)
-                    .speed(0.05),
-            );
-        }
-        ColliderShape::Capsule {
-            half_height,
-            radius,
-        } => {
-            ui.add(
-                DragValue::new(half_height)
-                    .prefix("Half height ")
-                    .range(0.001..=1_000_000.0)
-                    .speed(0.05),
-            );
-            ui.add(
-                DragValue::new(radius)
-                    .prefix("Radius ")
-                    .range(0.001..=1_000_000.0)
-                    .speed(0.05),
-            );
-        }
-    }
-    ui.add(
-        egui::Slider::new(&mut collider.friction, 0.0..=1.0).text("Friction"),
-    );
-    ui.add(
-        egui::Slider::new(&mut collider.restitution, 0.0..=1.0)
-            .text("Bounciness"),
-    );
-    ui.checkbox(&mut collider.sensor, "Trigger / sensor");
 }
 
 /// Checks that an editable source file stays inside the selected game project.
@@ -2147,27 +1670,6 @@ fn save_project_source(
     }
     std::fs::write(&path, source)
         .map_err(|error| format!("Could not save {}: {error}", path.display()))
-}
-
-/// Draws valid near and far camera clipping-plane inputs.
-///
-/// * `ui` - Egui area that receives both number inputs.
-/// * `near` - Closest distance visible to the camera.
-/// * `far` - Furthest distance visible to the camera.
-fn projection_planes(ui: &mut egui::Ui, near: &mut f32, far: &mut f32) {
-    ui.add(
-        DragValue::new(near)
-            .prefix("Near ")
-            .range(0.001..=1_000.0)
-            .speed(0.01),
-    );
-    *far = (*far).max(*near + 0.001);
-    ui.add(
-        DragValue::new(far)
-            .prefix("Far ")
-            .range((*near + 0.001)..=1_000_000.0)
-            .speed(1.0),
-    );
 }
 
 #[cfg(test)]

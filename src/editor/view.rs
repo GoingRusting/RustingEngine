@@ -130,14 +130,6 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             None
         })
         .unwrap_or_default();
-    if let Some(entity) = state.selected {
-        for (name, value) in &custom_values {
-            state
-                .component_drafts
-                .entry((entity, name.clone()))
-                .or_insert_with(|| value.clone());
-        }
-    }
     // Buttons set these small requests while drawing. We apply them later,
     // after egui no longer borrows temporary values.
     let mut viewport_rect = None;
@@ -359,6 +351,29 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                         has_open_project,
                                     )
                                     .clicked();
+                                gui_elements::EditorTheme::menu_section(
+                                    ui, "UI SCALE",
+                                );
+                                let zoom = ui.ctx().zoom_factor();
+                                for scale in EditorPreferences::UI_SCALES {
+                                    if gui_elements::EditorTheme::menu_choice(
+                                        ui,
+                                        &format!("{:.0}%", scale * 100.0),
+                                        (zoom - scale).abs() < 0.01,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        ui.ctx().set_zoom_factor(scale);
+                                        let preferences =
+                                            EditorPreferences { ui_scale: scale };
+                                        if let Err(error) = preferences.save() {
+                                            state.scene_message = Some(format!(
+                                                "Could not save UI scale: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
                             },
                         );
                         ui.separator();
@@ -1104,7 +1119,24 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         (scene_click_position, viewport_rect, state.editor_camera)
     {
         if !gizmo_consumed {
-            state.selected = pick_entity(world, camera, click, viewport);
+            let picked = pick_entity(world, camera, click, viewport);
+            let extend = context.input(|input| input.modifiers.shift);
+            match (extend, picked) {
+                (true, Some(picked)) => {
+                    (state.selection, state.selected) =
+                        super::hierarchy::shift_pick_selection(
+                            &state.selection,
+                            state.selected,
+                            picked,
+                        );
+                }
+                // Shift-clicking empty space keeps the selection.
+                (true, None) => {}
+                (false, picked) => {
+                    state.selected = picked;
+                    state.selection = picked.into_iter().collect();
+                }
+            }
             state.rename_draft = state
                 .selected
                 .and_then(|entity| world.get::<Name>(entity))
@@ -1303,7 +1335,12 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             || edited_rigid_body != original_rigid_body
             || edited_collider != original_collider
             || add_physics
-            || remove_physics);
+            || remove_physics
+            // Custom component field edits are live; drags coalesce into
+            // one Undo step like the built-in fields.
+            || component_edits
+                .iter()
+                .any(|edit| matches!(edit, ComponentEdit::Set { .. })));
     if inspector_changed {
         if history.pending_inspector.is_none() {
             match scene_document(world, "Inspector Undo Snapshot") {
@@ -1644,6 +1681,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         );
     }
     if let Some(request) = entity_request {
+        let keeps_selection = matches!(request, EntityRequest::SetVisible(..));
         if let Err(error) = remember_scene_before_edit(world, &mut history) {
             state.scene_message = Some(error);
         } else {
@@ -1846,32 +1884,35 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             (id.0 == child_id.0).then_some(entity)
                         }))
                     }
-                    EntityRequest::Duplicate(entity) => {
-                        let source_id = world
-                            .get::<SceneId>(entity)
-                            .copied()
-                            .ok_or_else(|| {
-                            "Selected object is not part of the saved scene"
-                                .to_owned()
-                        })?;
+                    EntityRequest::Duplicate(entities) => {
                         let mut document = scene_document(world, "Main Scene")
                             .map_err(|error| error.to_string())?;
-                        let mut copy = document
-                            .entities
-                            .iter()
-                            .find(|item| item.id == source_id.0)
-                            .cloned()
-                            .ok_or_else(|| {
-                                "Selected object was not found in the scene"
+                        let mut new_id = None;
+                        for entity in entities {
+                            let source_id = world
+                                .get::<SceneId>(entity)
+                                .copied()
+                                .ok_or_else(|| {
+                                "Selected object is not part of the saved scene"
                                     .to_owned()
                             })?;
-                        copy.id = uuid::Uuid::new_v4();
-                        copy.name = Some(format!(
-                            "{} Copy",
-                            copy.name.as_deref().unwrap_or("Object")
-                        ));
-                        let new_id = copy.id;
-                        document.entities.push(copy);
+                            let mut copy = document
+                                .entities
+                                .iter()
+                                .find(|item| item.id == source_id.0)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    "Selected object was not found in the scene"
+                                        .to_owned()
+                                })?;
+                            copy.id = uuid::Uuid::new_v4();
+                            copy.name = Some(format!(
+                                "{} Copy",
+                                copy.name.as_deref().unwrap_or("Object")
+                            ));
+                            new_id = Some(copy.id);
+                            document.entities.push(copy);
+                        }
                         crate::runtime::load_scene_document(
                             world,
                             &document,
@@ -1880,21 +1921,23 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         .map_err(|error| error.to_string())?;
                         let mut query = world.query::<(Entity, &SceneId)>();
                         Ok(query.iter(world).find_map(|(entity, id)| {
-                            (id.0 == new_id).then_some(entity)
+                            (Some(id.0) == new_id).then_some(entity)
                         }))
                     }
-                    EntityRequest::Delete(entity) => {
-                        let source_id = world
-                            .get::<SceneId>(entity)
-                            .copied()
-                            .ok_or_else(|| {
-                            "Selected object is not part of the saved scene"
-                                .to_owned()
-                        })?;
+                    EntityRequest::Delete(entities) => {
+                        let mut removed = std::collections::HashSet::new();
+                        for entity in entities {
+                            let source_id = world
+                                .get::<SceneId>(entity)
+                                .copied()
+                                .ok_or_else(|| {
+                                "Selected object is not part of the saved scene"
+                                    .to_owned()
+                            })?;
+                            removed.insert(source_id.0);
+                        }
                         let mut document = scene_document(world, "Main Scene")
                             .map_err(|error| error.to_string())?;
-                        let mut removed =
-                            std::collections::HashSet::from([source_id.0]);
                         loop {
                             let old_count = removed.len();
                             for item in &document.entities {
@@ -1920,10 +1963,24 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         .map_err(|error| error.to_string())?;
                         Ok(None)
                     }
+                    EntityRequest::SetVisible(entity, visible) => {
+                        world
+                            .get_entity_mut(entity)
+                            .map_err(|_| {
+                                "Selected object no longer exists".to_owned()
+                            })?
+                            .insert(crate::runtime::Visibility { visible });
+                        Ok(state.selected)
+                    }
                 }
             })();
             match result {
                 Ok(selected) => {
+                    // Scene reloads give entities new ids, so a
+                    // multi-selection only survives edits that keep them.
+                    if !keeps_selection {
+                        state.selection = selected.into_iter().collect();
+                    }
                     state.selected = selected;
                     state.rename_draft = selected
                         .and_then(|entity| world.get::<Name>(entity))
@@ -2072,7 +2129,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         };
         editor_assets.message = Some(result.unwrap_or_else(|error| error));
     }
-    if !component_edits.is_empty() {
+    if component_edits
+        .iter()
+        .any(|edit| !matches!(edit, ComponentEdit::Set { .. }))
+    {
         match remember_scene_before_edit(world, &mut history) {
             Ok(()) => state.scene_dirty = true,
             Err(error) => state.scene_message = Some(error),
@@ -2089,7 +2149,6 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 add_registered_component(world, entity, &name)
             }
             ComponentEdit::Remove { entity, name } => {
-                state.component_drafts.remove(&(entity, name.clone()));
                 remove_registered_component(world, entity, &name)
             }
         };
@@ -2183,6 +2242,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         build_scene_debug_overlay(
             world,
             state.selected,
+            &state.selection,
             gizmo_settings,
             hovered_gizmo,
             &gizmo_drag,
@@ -3305,6 +3365,7 @@ fn gizmo_axis_color(
 fn build_scene_debug_overlay(
     world: &World,
     selected: Option<Entity>,
+    selection: &[Entity],
     settings: EditorGizmoSettings,
     hovered: Option<GizmoHandle>,
     drag: &EditorGizmoDrag,
@@ -3323,6 +3384,22 @@ fn build_scene_debug_overlay(
             };
             overlay.line([value, 0.0, -20.0], [value, 0.0, 20.0], color);
             overlay.line([-20.0, 0.0, value], [20.0, 0.0, value], color);
+        }
+    }
+    if settings.show_selected_bounds {
+        // Blender style: the rest of a multi-selection in darker orange.
+        for &entity in
+            selection.iter().filter(|&&entity| Some(entity) != selected)
+        {
+            if let Some(transform) = world.get::<GlobalTransform>(entity) {
+                add_selected_bounds(
+                    &mut overlay,
+                    world,
+                    entity,
+                    transform.matrix,
+                    [0.85, 0.42, 0.08, 1.0],
+                );
+            }
         }
     }
     if settings.show_selected_axes {
@@ -3437,7 +3514,13 @@ fn build_scene_debug_overlay(
                     }
                 }
                 if settings.show_selected_bounds {
-                    add_selected_bounds(&mut overlay, world, entity, matrix);
+                    add_selected_bounds(
+                        &mut overlay,
+                        world,
+                        entity,
+                        matrix,
+                        [1.0, 0.78, 0.12, 1.0],
+                    );
                 }
             }
         }
@@ -3523,6 +3606,7 @@ fn add_selected_bounds(
     world: &World,
     entity: Entity,
     matrix: [[f32; 4]; 4],
+    color: [f32; 4],
 ) {
     let Some(renderer) = world.get::<MeshRenderer>(entity).copied() else {
         return;
@@ -3535,7 +3619,7 @@ fn add_selected_bounds(
     else {
         return;
     };
-    add_bound_box(overlay, matrix, minimum, maximum, [1.0, 0.78, 0.12, 1.0]);
+    add_bound_box(overlay, matrix, minimum, maximum, color);
 }
 
 /// Removes object scale from a transform column so gizmos stay a useful size.

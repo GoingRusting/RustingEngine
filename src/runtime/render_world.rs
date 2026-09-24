@@ -97,6 +97,8 @@ pub struct RenderWorld {
     pub physics_gravity: [f32; 3],
     pub physics_enabled: bool,
     pub background_color: [f32; 4],
+    /// Requested profile; the renderer resolves `Auto` from device capabilities.
+    pub quality: super::QualityProfile,
     cached: HashMap<Entity, ExtractedRenderable>,
     previous_order: Vec<Entity>,
     renderables_signature: Option<u64>,
@@ -149,8 +151,9 @@ pub fn extract_render_world(world: &mut World) {
     };
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
-    let background_color =
-        world.resource::<super::RenderSettings>().background_color;
+    let render_settings = world.resource::<super::RenderSettings>();
+    let (background_color, quality) =
+        (render_settings.background_color, render_settings.quality);
 
     let mut render_world = world.resource_mut::<RenderWorld>();
     match renderables {
@@ -251,6 +254,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.physics_gravity = physics_settings.gravity;
     render_world.physics_enabled = physics_settings.enabled;
     render_world.background_color = background_color;
+    render_world.quality = quality;
 }
 
 /// Creates a small fingerprint without allocating or sorting render objects.
@@ -263,8 +267,9 @@ fn renderables_signature(world: &mut World) -> u64 {
         &MeshRenderer,
         Option<&Visibility>,
     )>();
-    for (entity, transform, renderer, visibility) in query.iter(world) {
-        if visibility.is_some_and(|visibility| !visibility.visible) {
+    let world = &*world;
+    for (entity, transform, renderer, _) in query.iter(world) {
+        if !visible_in_hierarchy(world, entity) {
             continue;
         }
         count += 1;
@@ -283,6 +288,28 @@ fn renderables_signature(world: &mut World) -> u64 {
     hasher.finish()
 }
 
+/// An entity renders only when it and every ancestor are visible, like
+/// Blender's and Godot's hide-with-parent behavior.
+// ponytail: walks the parent chain per renderable; cache per frame if deep
+// hierarchies show up in extraction profiles.
+pub fn visible_in_hierarchy(world: &World, entity: Entity) -> bool {
+    let mut current = Some(entity);
+    // The step limit guards against a damaged scene with a parent cycle.
+    for _ in 0..1024 {
+        let Some(entity) = current else {
+            return true;
+        };
+        if world
+            .get::<Visibility>(entity)
+            .is_some_and(|visibility| !visibility.visible)
+        {
+            return false;
+        }
+        current = world.get::<super::Parent>(entity).map(|parent| parent.0);
+    }
+    true
+}
+
 fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
     let mut query = world.query::<(
         Entity,
@@ -290,11 +317,10 @@ fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
         &MeshRenderer,
         Option<&Visibility>,
     )>();
+    let world = &*world;
     let mut renderables = query
         .iter(world)
-        .filter(|(_, _, _, visibility)| {
-            visibility.is_none_or(|visibility| visibility.visible)
-        })
+        .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
         .map(|(entity, transform, renderer, _)| ExtractedRenderable {
             entity,
             transform: *transform,
@@ -539,5 +565,29 @@ mod tests {
         let render_world = app.world().resource::<RenderWorld>();
         assert_eq!(render_world.report.total, 0);
         assert_eq!(render_world.report.removed, 1);
+    }
+
+    #[test]
+    fn hiding_a_parent_hides_its_children() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let server = AssetServer::default();
+        let renderer = renderer(&server);
+        app.insert_resource(server);
+        let parent = app.spawn((Transform::default(), Visibility::default()));
+        app.spawn((
+            Transform::default(),
+            renderer,
+            super::super::Parent(parent),
+        ));
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().report.total, 1);
+
+        app.world_mut()
+            .get_mut::<Visibility>(parent)
+            .unwrap()
+            .visible = false;
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().report.total, 0);
     }
 }

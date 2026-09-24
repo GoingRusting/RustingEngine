@@ -35,6 +35,20 @@ impl EditorPanel {
         Self::Assets,
     ];
 
+    pub(super) fn icon(self) -> super::EditorIcon {
+        use super::EditorIcon;
+        match self {
+            Self::Scene => EditorIcon::Mesh,
+            Self::Game => EditorIcon::Play,
+            Self::Code => EditorIcon::Code,
+            Self::Hierarchy => EditorIcon::Tree,
+            Self::Inspector => EditorIcon::ViewOptions,
+            Self::Project => EditorIcon::Gear,
+            Self::Console => EditorIcon::Console,
+            Self::Assets => EditorIcon::Folder,
+        }
+    }
+
     pub(super) fn title(self) -> &'static str {
         match self {
             Self::Scene => "Scene View",

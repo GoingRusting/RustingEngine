@@ -4,12 +4,18 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant, SystemTime};
 
-use bevy_ecs::prelude::Resource;
+use bevy_ecs::prelude::{Local, ResMut, Resource};
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::{App, AppError, Plugin};
+use crate::runtime::{
+    App, AppError, Camera, DirectionalLight, MeshRenderer, Name, Plugin,
+    PointLight, ScheduleStage, SpotLight,
+};
 
 /// A compact typed asset identity. Reused slots receive a new generation, so
 /// stale handles can never resolve to unrelated assets.
@@ -121,6 +127,8 @@ impl<T> From<Handle<T>> for AssetKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadState {
+    /// A worker is decoding the asset; `Assets::poll_loads` publishes it.
+    Loading,
     Loaded,
     Failed(String),
 }
@@ -132,6 +140,10 @@ struct Slot<T> {
     path: Option<PathBuf>,
     references: u32,
     state: LoadState,
+    /// Source file modification time last seen by `changed`.
+    modified: Option<SystemTime>,
+    /// A worker is decoding a replacement; the old value stays visible.
+    reloading: bool,
 }
 
 /// Storage for one asset type, including path deduplication and deferred drops.
@@ -140,7 +152,13 @@ pub struct Assets<T> {
     free: Vec<u32>,
     paths: HashMap<PathBuf, Handle<T>>,
     deferred: Vec<(u64, T)>,
+    /// Results finished by worker threads, drained by `poll_loads`.
+    finished: Arc<Mutex<FinishedLoads<T>>>,
+    /// Hot reloads that failed to decode, drained by `take_reload_failures`.
+    reload_failures: Vec<AssetError>,
 }
+
+type FinishedLoads<T> = Vec<(AssetKey, Result<T, AssetError>)>;
 
 impl<T> Default for Assets<T> {
     fn default() -> Self {
@@ -149,13 +167,15 @@ impl<T> Default for Assets<T> {
             free: Vec::new(),
             paths: HashMap::new(),
             deferred: Vec::new(),
+            finished: Arc::default(),
+            reload_failures: Vec::new(),
         }
     }
 }
 
 impl<T> Assets<T> {
     pub fn insert(&mut self, value: T) -> Handle<T> {
-        self.insert_slot(value, None)
+        self.insert_slot(Some(value), None, LoadState::Loaded)
     }
 
     /// Inserts a prepared asset with a source path, or returns the asset that
@@ -172,7 +192,7 @@ impl<T> Assets<T> {
             }
             self.paths.remove(&path);
         }
-        Ok(self.insert_slot(value, Some(path)))
+        Ok(self.insert_slot(Some(value), Some(path), LoadState::Loaded))
     }
 
     pub fn get_or_insert_with(
@@ -191,7 +211,7 @@ impl<T> Assets<T> {
             path: path.clone(),
             message: error.to_string(),
         })?;
-        Ok(self.insert_slot(value, Some(path)))
+        Ok(self.insert_slot(Some(value), Some(path), LoadState::Loaded))
     }
 
     #[must_use]
@@ -200,10 +220,10 @@ impl<T> Assets<T> {
     }
 
     pub fn get_mut(&mut self, handle: Handle<T>) -> Option<&mut T> {
-        self.slot_mut(handle).and_then(|slot| {
-            slot.revision = slot.revision.saturating_add(1);
-            slot.value.as_mut()
-        })
+        let slot = self.slot_mut(handle)?;
+        let value = slot.value.as_mut()?;
+        slot.revision = slot.revision.saturating_add(1);
+        Some(value)
     }
 
     #[must_use]
@@ -262,16 +282,86 @@ impl<T> Assets<T> {
                 references: slot.references,
             });
         }
+        // Removing a loading or failed asset frees its slot; a late worker
+        // result for it is discarded by `poll_loads`.
         let path = slot.path.take();
-        let value = slot
-            .value
-            .take()
-            .ok_or_else(|| AssetError::Missing(handle.into()))?;
+        let value = slot.value.take();
+        slot.state = LoadState::Loaded;
         if let Some(path) = path {
             self.paths.remove(&path);
         }
         self.free.push(handle.index);
-        Ok(value)
+        value.ok_or_else(|| AssetError::Missing(handle.into()))
+    }
+
+    /// Publishes every worker result that finished since the last poll and
+    /// returns how many handles changed state.
+    pub fn poll_loads(&mut self) -> usize {
+        let finished = std::mem::take(
+            &mut *self.finished.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        let mut published = 0;
+        for (key, result) in finished {
+            let Some(slot) = self.slots.get_mut(key.index as usize) else {
+                continue;
+            };
+            if slot.generation != key.generation
+                || (slot.state != LoadState::Loading && !slot.reloading)
+            {
+                continue;
+            }
+            let reloading = std::mem::take(&mut slot.reloading);
+            match result {
+                Ok(value) => {
+                    slot.value = Some(value);
+                    slot.state = LoadState::Loaded;
+                }
+                // A failed hot reload keeps serving the last good value.
+                Err(error) if reloading => {
+                    self.reload_failures.push(error);
+                    continue;
+                }
+                Err(error) => slot.state = LoadState::Failed(error.to_string()),
+            }
+            slot.revision = slot.revision.saturating_add(1);
+            published += 1;
+        }
+        published
+    }
+
+    /// Returns path-backed assets whose file modification time changed since
+    /// they were loaded or last reported. Missing files are ignored so an
+    /// editor's save-by-rename never drops the current value.
+    // ponytail: stats every watched file per call; switch to OS file
+    // notifications if projects grow to many thousands of assets.
+    pub fn changed(&mut self) -> Vec<(Handle<T>, PathBuf)> {
+        let mut changed = Vec::new();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let Some(path) = slot.path.as_ref() else {
+                continue;
+            };
+            if !slot.is_live() || slot.reloading {
+                continue;
+            }
+            let modified = file_modified(path);
+            if modified.is_some() && modified != slot.modified {
+                slot.modified = modified;
+                changed.push((
+                    Handle {
+                        index: index as u32,
+                        generation: slot.generation,
+                        marker: PhantomData,
+                    },
+                    path.clone(),
+                ));
+            }
+        }
+        changed
+    }
+
+    /// Drains hot reloads whose decode failed since the last call.
+    pub fn take_reload_failures(&mut self) -> Vec<AssetError> {
+        std::mem::take(&mut self.reload_failures)
     }
 
     pub fn retire(
@@ -333,15 +423,23 @@ impl<T> Assets<T> {
         })
     }
 
-    fn insert_slot(&mut self, value: T, path: Option<PathBuf>) -> Handle<T> {
+    fn insert_slot(
+        &mut self,
+        value: Option<T>,
+        path: Option<PathBuf>,
+        state: LoadState,
+    ) -> Handle<T> {
+        let modified = path.as_deref().and_then(file_modified);
         let handle = if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index as usize];
             slot.generation = slot.generation.wrapping_add(1).max(1);
             slot.revision = slot.revision.saturating_add(1);
-            slot.value = Some(value);
+            slot.value = value;
             slot.path = path.clone();
             slot.references = 0;
-            slot.state = LoadState::Loaded;
+            slot.state = state;
+            slot.modified = modified;
+            slot.reloading = false;
             Handle {
                 index,
                 generation: slot.generation,
@@ -353,10 +451,12 @@ impl<T> Assets<T> {
             self.slots.push(Slot {
                 generation: 1,
                 revision: 1,
-                value: Some(value),
+                value,
                 path: path.clone(),
                 references: 0,
-                state: LoadState::Loaded,
+                state,
+                modified,
+                reloading: false,
             });
             Handle {
                 index,
@@ -372,14 +472,231 @@ impl<T> Assets<T> {
 
     fn slot(&self, handle: Handle<T>) -> Option<&Slot<T>> {
         self.slots.get(handle.index as usize).filter(|slot| {
-            slot.generation == handle.generation && slot.value.is_some()
+            slot.generation == handle.generation && slot.is_live()
         })
     }
 
     fn slot_mut(&mut self, handle: Handle<T>) -> Option<&mut Slot<T>> {
         self.slots.get_mut(handle.index as usize).filter(|slot| {
-            slot.generation == handle.generation && slot.value.is_some()
+            slot.generation == handle.generation && slot.is_live()
         })
+    }
+}
+
+impl<T: Send + 'static> Assets<T> {
+    /// Starts decoding `path` on a worker thread and returns a handle in
+    /// `LoadState::Loading`. The loader must only produce CPU data; GPU
+    /// preparation stays on the main thread. Requests for a path that is
+    /// already loading or loaded return the existing handle.
+    pub fn load_async(
+        &mut self,
+        path: impl AsRef<Path>,
+        loader: impl FnOnce(&Path) -> Result<T, AssetError> + Send + 'static,
+    ) -> Result<Handle<T>, AssetError> {
+        let path = normalize_path(path.as_ref())?;
+        if let Some(handle) = self.paths.get(&path).copied() {
+            if self
+                .slot(handle)
+                .is_some_and(|slot| !matches!(slot.state, LoadState::Failed(_)))
+            {
+                return Ok(handle);
+            }
+            self.paths.remove(&path);
+        }
+        let handle =
+            self.insert_slot(None, Some(path.clone()), LoadState::Loading);
+        self.spawn_load(handle.into(), path, loader);
+        Ok(handle)
+    }
+
+    /// Decodes a replacement for a path-backed asset on a worker thread.
+    /// The current value stays visible until `poll_loads` publishes the new
+    /// one; a failed decode keeps it and is reported by
+    /// `take_reload_failures`.
+    pub fn reload_async(
+        &mut self,
+        handle: Handle<T>,
+        loader: impl FnOnce(&Path) -> Result<T, AssetError> + Send + 'static,
+    ) -> Result<(), AssetError> {
+        let slot = self
+            .slot_mut(handle)
+            .ok_or_else(|| AssetError::Missing(handle.into()))?;
+        let path = slot.path.clone().ok_or(AssetError::EmptyPath)?;
+        if slot.state == LoadState::Loading || slot.reloading {
+            return Ok(());
+        }
+        slot.reloading = true;
+        self.spawn_load(handle.into(), path, loader);
+        Ok(())
+    }
+
+    fn spawn_load(
+        &self,
+        key: AssetKey,
+        path: PathBuf,
+        loader: impl FnOnce(&Path) -> Result<T, AssetError> + Send + 'static,
+    ) {
+        let finished = Arc::clone(&self.finished);
+        // ponytail: one OS thread per load; use a bounded pool once bulk
+        // imports make thread count matter.
+        std::thread::spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| loader(&path)))
+                .unwrap_or_else(|_| {
+                    Err(AssetError::Load {
+                        path: path.clone(),
+                        message: "loader panicked".to_owned(),
+                    })
+                })
+                .map_err(|error| AssetError::Load {
+                    path: path.clone(),
+                    message: error.to_string(),
+                });
+            finished
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((key, result));
+        });
+    }
+}
+
+fn read_asset_file(path: &Path) -> Result<Vec<u8>, AssetError> {
+    std::fs::read(path).map_err(|error| AssetError::Load {
+        path: path.to_owned(),
+        message: error.to_string(),
+    })
+}
+
+fn decode_cooked<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<T, AssetError> {
+    bincode::deserialize(&read_asset_file(path)?).map_err(|error| {
+        AssetError::Load {
+            path: path.to_owned(),
+            message: error.to_string(),
+        }
+    })
+}
+
+fn decode_mesh_file(path: &Path) -> Result<MeshAsset, AssetError> {
+    decode_cooked(path)
+}
+
+/// Decodes a cooked `.rtexture`, or any image file as an sRGB texture.
+fn decode_texture_file(path: &Path) -> Result<TextureAsset, AssetError> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "rtexture")
+    {
+        return decode_cooked(path);
+    }
+    let image = image::open(path).map_err(|error| AssetError::Load {
+        path: path.to_owned(),
+        message: error.to_string(),
+    })?;
+    let rgba = image.to_rgba8();
+    Ok(TextureAsset {
+        size: [rgba.width(), rgba.height()],
+        rgba8: rgba.into_raw(),
+        color_space: TextureColorSpace::Srgb,
+        sampler: TextureSampler::default(),
+    })
+}
+
+fn file_modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
+impl<T> Slot<T> {
+    /// Loaded, loading, and failed slots are addressable; freed ones are not.
+    fn is_live(&self) -> bool {
+        self.value.is_some() || self.state != LoadState::Loaded
+    }
+}
+
+/// Fills per-vertex tangents from triangle UV gradients (Lengyel's method).
+/// `w` holds bitangent handedness. Vertices without usable UVs get an
+/// arbitrary unit tangent perpendicular to their normal.
+pub fn generate_tangents(vertices: &mut [MeshVertex], indices: &[u32]) {
+    use nalgebra::Vector3;
+    let mut tangents = vec![Vector3::<f32>::zeros(); vertices.len()];
+    let mut bitangents = tangents.clone();
+    for triangle in indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|i| triangle[i] as usize);
+        if a.max(b).max(c) >= vertices.len() {
+            continue;
+        }
+        let position = |i: usize| Vector3::from(vertices[i].position);
+        let edge1 = position(b) - position(a);
+        let edge2 = position(c) - position(a);
+        let [u0, v0] = vertices[a].uv;
+        let (du1, dv1) = (vertices[b].uv[0] - u0, vertices[b].uv[1] - v0);
+        let (du2, dv2) = (vertices[c].uv[0] - u0, vertices[c].uv[1] - v0);
+        let determinant = du1 * dv2 - du2 * dv1;
+        if determinant.abs() <= f32::EPSILON {
+            continue;
+        }
+        let tangent = (edge1 * dv2 - edge2 * dv1) / determinant;
+        let bitangent = (edge2 * du1 - edge1 * du2) / determinant;
+        for i in [a, b, c] {
+            tangents[i] += tangent;
+            bitangents[i] += bitangent;
+        }
+    }
+    for (index, vertex) in vertices.iter_mut().enumerate() {
+        let normal = Vector3::from(vertex.normal)
+            .try_normalize(f32::EPSILON)
+            .unwrap_or_else(Vector3::y);
+        let orthogonal = |t: Vector3<f32>| {
+            (t - normal * normal.dot(&t)).try_normalize(1.0e-6)
+        };
+        let tangent = orthogonal(tangents[index]).unwrap_or_else(|| {
+            let axis = if normal.x.abs() < 0.9 {
+                Vector3::x()
+            } else {
+                Vector3::y()
+            };
+            orthogonal(axis).expect("axis is not parallel to the normal")
+        });
+        let handedness = if normal.cross(&tangent).dot(&bitangents[index]) < 0.0
+        {
+            -1.0
+        } else {
+            1.0
+        };
+        vertex.tangent = [tangent.x, tangent.y, tangent.z, handedness];
+    }
+}
+
+/// Maps glTF sampler state; unspecified filters keep the linear default.
+#[cfg(feature = "gltf")]
+fn gltf_texture_sampler(sampler: &gltf::texture::Sampler) -> TextureSampler {
+    use gltf::texture::{MagFilter, MinFilter, WrappingMode};
+    use TextureFilter::{Linear, Nearest};
+    let wrap = |mode| match mode {
+        WrappingMode::Repeat => TextureWrap::Repeat,
+        WrappingMode::MirroredRepeat => TextureWrap::MirroredRepeat,
+        WrappingMode::ClampToEdge => TextureWrap::ClampToEdge,
+    };
+    let (min_filter, mipmap_filter) = match sampler.min_filter() {
+        Some(MinFilter::Nearest | MinFilter::NearestMipmapNearest) => {
+            (Nearest, Nearest)
+        }
+        Some(MinFilter::NearestMipmapLinear) => (Nearest, Linear),
+        Some(MinFilter::LinearMipmapNearest) => (Linear, Nearest),
+        Some(MinFilter::Linear | MinFilter::LinearMipmapLinear) | None => {
+            (Linear, Linear)
+        }
+    };
+    TextureSampler {
+        mag_filter: match sampler.mag_filter() {
+            Some(MagFilter::Nearest) => Nearest,
+            Some(MagFilter::Linear) | None => Linear,
+        },
+        min_filter,
+        mipmap_filter,
+        wrap: [wrap(sampler.wrap_s()), wrap(sampler.wrap_t())],
     }
 }
 
@@ -387,6 +704,7 @@ impl<T> Assets<T> {
 /// whichever channel layout the source used. 16-bit and float glTF image
 /// formats are rare (most exporters emit 8-bit PNG/JPEG); they are
 /// downsampled to 8 bits rather than rejected.
+#[cfg(feature = "gltf")]
 fn gltf_image_to_rgba8(image: &gltf::image::Data) -> Vec<u8> {
     use gltf::image::Format;
     let pixel_count = (image.width as usize) * (image.height as usize);
@@ -566,17 +884,50 @@ impl PrimitiveShape {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextureColorSpace {
     Srgb,
     Linear,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+pub enum TextureFilter {
+    Nearest,
+    #[default]
+    Linear,
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+pub enum TextureWrap {
+    #[default]
+    Repeat,
+    MirroredRepeat,
+    ClampToEdge,
+}
+
+/// Sampling state carried with a texture. The default (linear, repeat)
+/// matches the renderer's shared sampler.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
+pub struct TextureSampler {
+    pub mag_filter: TextureFilter,
+    pub min_filter: TextureFilter,
+    pub mipmap_filter: TextureFilter,
+    /// Wrap modes along U and V.
+    pub wrap: [TextureWrap; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextureAsset {
     pub size: [u32; 2],
     pub rgba8: Vec<u8>,
     pub color_space: TextureColorSpace,
+    pub sampler: TextureSampler,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -586,9 +937,22 @@ pub enum MaterialModel {
     Unlit,
 }
 
+/// How a material's base-color alpha is interpreted, matching glTF.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum AlphaMode {
+    #[default]
+    Opaque,
+    /// Fragments with alpha below `cutoff` are discarded.
+    Mask {
+        cutoff: f32,
+    },
+    Blend,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialAsset {
     pub model: MaterialModel,
+    pub alpha_mode: AlphaMode,
     pub base_color: [f32; 4],
     pub emissive: [f32; 3],
     pub metallic: f32,
@@ -604,6 +968,7 @@ impl Default for MaterialAsset {
     fn default() -> Self {
         Self {
             model: MaterialModel::Pbr,
+            alpha_mode: AlphaMode::Opaque,
             base_color: [1.0; 4],
             emissive: [0.0; 3],
             metallic: 0.0,
@@ -675,17 +1040,7 @@ impl AssetServer {
         &mut self,
         path: impl AsRef<Path>,
     ) -> Result<Handle<MeshAsset>, AssetError> {
-        self.meshes.get_or_insert_with(path, |path| {
-            let bytes =
-                std::fs::read(path).map_err(|error| AssetError::Load {
-                    path: path.to_owned(),
-                    message: error.to_string(),
-                })?;
-            bincode::deserialize(&bytes).map_err(|error| AssetError::Load {
-                path: path.to_owned(),
-                message: error.to_string(),
-            })
-        })
+        self.meshes.get_or_insert_with(path, decode_mesh_file)
     }
 
     /// Loads an image as an sRGB texture and deduplicates its source path.
@@ -693,24 +1048,35 @@ impl AssetServer {
         &mut self,
         path: impl AsRef<Path>,
     ) -> Result<Handle<TextureAsset>, AssetError> {
-        self.textures.get_or_insert_with(path, |path| {
-            let image =
-                image::open(path).map_err(|error| AssetError::Load {
-                    path: path.to_owned(),
-                    message: error.to_string(),
-                })?;
-            let rgba = image.to_rgba8();
-            Ok(TextureAsset {
-                size: [rgba.width(), rgba.height()],
-                rgba8: rgba.into_raw(),
-                color_space: TextureColorSpace::Srgb,
-            })
-        })
+        self.textures.get_or_insert_with(path, decode_texture_file)
+    }
+
+    /// Starts worker decodes for every mesh and texture whose source file
+    /// changed on disk. Returns how many reloads started. Changed scene
+    /// paths are left for the caller via `scenes.changed()`.
+    // ponytail: glTF-derived `.rmesh`/`.rtexture` reload when rewritten, but
+    // editing the source `.gltf` does not re-import it yet.
+    pub fn reload_changed(&mut self) -> usize {
+        let mut started = 0;
+        for (handle, _) in self.meshes.changed() {
+            started += usize::from(
+                self.meshes.reload_async(handle, decode_mesh_file).is_ok(),
+            );
+        }
+        for (handle, _) in self.textures.changed() {
+            started += usize::from(
+                self.textures
+                    .reload_async(handle, decode_texture_file)
+                    .is_ok(),
+            );
+        }
+        started
     }
 
     /// Imports one glTF texture slot as an sRGB or linear [`TextureAsset`],
     /// deduplicating repeated references to the same image/color-space pair
     /// by their synthesized asset path.
+    #[cfg(feature = "gltf")]
     fn import_gltf_texture(
         &mut self,
         source: &Path,
@@ -723,21 +1089,33 @@ impl AssetServer {
             TextureColorSpace::Srgb => "srgb",
             TextureColorSpace::Linear => "linear",
         };
+        let gltf_sampler = texture.sampler();
+        // ponytail: one image used with two samplers is stored twice; split
+        // pixels from sampling state if that shows up in real assets.
+        let sampler_key = gltf_sampler
+            .index()
+            .map_or_else(|| "default".to_owned(), |index| index.to_string());
         let texture_key = source.with_extension(format!(
-            "gltf-image-{}-{suffix}.rtexture",
+            "gltf-image-{}-sampler-{sampler_key}-{suffix}.rtexture",
             texture.source().index()
         ));
-        self.textures.get_or_insert_with(texture_key, |_| {
-            Ok(TextureAsset {
+        // Written next to the source like `.rmesh`, so saved scenes that
+        // reference this key load without re-importing the glTF.
+        self.textures.get_or_insert_with(texture_key, |key| {
+            let texture = TextureAsset {
                 size: [image.width, image.height],
                 rgba8: gltf_image_to_rgba8(image),
                 color_space,
-            })
+                sampler: gltf_texture_sampler(&gltf_sampler),
+            };
+            write_cooked_asset(key, &texture)?;
+            Ok(texture)
         })
     }
 
     /// Imports every triangle primitive from a glTF or GLB file as typed CPU
     /// mesh and material assets. Rendering uploads them later as usual.
+    #[cfg(feature = "gltf")]
     pub fn import_gltf(
         &mut self,
         path: impl AsRef<Path>,
@@ -775,12 +1153,12 @@ impl AssetServer {
                     .read_tex_coords(0)
                     .map(|values| values.into_f32().collect())
                     .unwrap_or_else(|| vec![[0.0; 2]; positions.len()]);
-                let tangents = reader
-                    .read_tangents()
-                    .map(Iterator::collect)
-                    .unwrap_or_else(|| {
-                        vec![[1.0, 0.0, 0.0, 1.0]; positions.len()]
-                    });
+                let imported_tangents =
+                    reader.read_tangents().map(Iterator::collect::<Vec<_>>);
+                let generate = imported_tangents.is_none();
+                let tangents = imported_tangents.unwrap_or_else(|| {
+                    vec![[1.0, 0.0, 0.0, 1.0]; positions.len()]
+                });
                 if normals.len() != positions.len()
                     || uvs.len() != positions.len()
                     || tangents.len() != positions.len()
@@ -792,7 +1170,7 @@ impl AssetServer {
                                 .into(),
                     });
                 }
-                let vertices = positions
+                let mut vertices = positions
                     .into_iter()
                     .enumerate()
                     .map(|(index, position)| MeshVertex {
@@ -802,7 +1180,7 @@ impl AssetServer {
                         tangent: tangents[index],
                     })
                     .collect::<Vec<_>>();
-                let indices =
+                let indices: Vec<u32> =
                     if let Some(values) = reader.read_indices() {
                         values.into_u32().collect()
                     } else {
@@ -814,25 +1192,16 @@ impl AssetServer {
                             })?;
                         (0..vertex_count).collect()
                     };
+                if generate {
+                    generate_tangents(&mut vertices, &indices);
+                }
                 let mesh_key = source.with_extension(format!(
                     "mesh-{}-{}.rmesh",
                     mesh.index(),
                     primitive.index()
                 ));
                 let mesh_asset = MeshAsset { vertices, indices };
-                std::fs::write(
-                    &mesh_key,
-                    bincode::serialize(&mesh_asset).map_err(|error| {
-                        AssetError::Load {
-                            path: mesh_key.clone(),
-                            message: error.to_string(),
-                        }
-                    })?,
-                )
-                .map_err(|error| AssetError::Load {
-                    path: mesh_key.clone(),
-                    message: error.to_string(),
-                })?;
+                write_cooked_asset(&mesh_key, &mesh_asset)?;
                 let mesh_handle =
                     self.meshes.insert_with_path(mesh_key, mesh_asset)?;
                 let gltf_material = primitive.material();
@@ -900,6 +1269,21 @@ impl AssetServer {
                     material_key,
                     MaterialAsset {
                         model: MaterialModel::Pbr,
+                        alpha_mode: match gltf_material.alpha_mode() {
+                            gltf::material::AlphaMode::Opaque => {
+                                AlphaMode::Opaque
+                            }
+                            gltf::material::AlphaMode::Mask => {
+                                AlphaMode::Mask {
+                                    cutoff: gltf_material
+                                        .alpha_cutoff()
+                                        .unwrap_or(0.5),
+                                }
+                            }
+                            gltf::material::AlphaMode::Blend => {
+                                AlphaMode::Blend
+                            }
+                        },
                         base_color: pbr.base_color_factor(),
                         emissive: gltf_material.emissive_factor(),
                         metallic: pbr.metallic_factor(),
@@ -924,6 +1308,216 @@ impl AssetServer {
         }
         Ok(imported)
     }
+
+    /// Imports a glTF file's node tree: local transforms, parent links, mesh
+    /// primitives, cameras, and `KHR_lights_punctual` lights. The returned
+    /// list is indexed like the glTF `nodes` array. Light intensities keep
+    /// glTF's physical values (lux for directional, candela otherwise).
+    #[cfg(feature = "gltf")]
+    pub fn import_gltf_scene(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Vec<ImportedGltfNode>, AssetError> {
+        let primitives = self.import_gltf(&path)?;
+        let source = normalize_path(path.as_ref())?;
+        // ponytail: parses the JSON a second time after import_gltf; share
+        // the parsed document if import time on large files matters.
+        let document = gltf::Gltf::open(&source)
+            .map_err(|error| AssetError::Load {
+                path: source.clone(),
+                message: error.to_string(),
+            })?
+            .document;
+        let mut first_primitive = Vec::new();
+        let mut offset = 0;
+        for mesh in document.meshes() {
+            first_primitive.push(offset);
+            offset += mesh.primitives().len();
+        }
+        let mut nodes = document
+            .nodes()
+            .map(|node| {
+                let (position, [x, y, z, w], scale) =
+                    node.transform().decomposed();
+                let (roll, pitch, yaw) =
+                    nalgebra::UnitQuaternion::from_quaternion(
+                        nalgebra::Quaternion::new(w, x, y, z),
+                    )
+                    .euler_angles();
+                ImportedGltfNode {
+                    name: node.name().map_or_else(
+                        || format!("Node {}", node.index()),
+                        str::to_owned,
+                    ),
+                    parent: None,
+                    transform: crate::Transform {
+                        position,
+                        rotation: [roll, pitch, yaw],
+                        scale,
+                    },
+                    primitives: node.mesh().map_or_else(Vec::new, |mesh| {
+                        let start = first_primitive[mesh.index()];
+                        primitives[start..start + mesh.primitives().len()]
+                            .to_vec()
+                    }),
+                    camera: node.camera().map(|camera| Camera {
+                        projection: match camera.projection() {
+                            gltf::camera::Projection::Perspective(p) => {
+                                crate::runtime::Projection::Perspective {
+                                    vertical_fov_radians: p.yfov(),
+                                    near: p.znear(),
+                                    far: p.zfar().unwrap_or(1_000.0),
+                                }
+                            }
+                            gltf::camera::Projection::Orthographic(o) => {
+                                crate::runtime::Projection::Orthographic {
+                                    vertical_size: o.ymag() * 2.0,
+                                    near: o.znear(),
+                                    far: o.zfar(),
+                                }
+                            }
+                        },
+                        ..Camera::default()
+                    }),
+                    light: node.light().map(|light| {
+                        let color = light.color();
+                        let intensity = light.intensity();
+                        let range = light
+                            .range()
+                            .unwrap_or(PointLight::default().range);
+                        match light.kind() {
+                            gltf::khr_lights_punctual::Kind::Directional => {
+                                ImportedGltfLight::Directional(
+                                    DirectionalLight {
+                                        color,
+                                        illuminance: intensity,
+                                        ..DirectionalLight::default()
+                                    },
+                                )
+                            }
+                            gltf::khr_lights_punctual::Kind::Point => {
+                                ImportedGltfLight::Point(PointLight {
+                                    color,
+                                    intensity,
+                                    range,
+                                })
+                            }
+                            gltf::khr_lights_punctual::Kind::Spot {
+                                inner_cone_angle,
+                                outer_cone_angle,
+                            } => ImportedGltfLight::Spot(SpotLight {
+                                color,
+                                intensity,
+                                range,
+                                inner_angle: inner_cone_angle,
+                                outer_angle: outer_cone_angle,
+                            }),
+                        }
+                    }),
+                }
+            })
+            .collect::<Vec<_>>();
+        for node in document.nodes() {
+            for child in node.children() {
+                nodes[child.index()].parent = Some(node.index());
+            }
+        }
+        Ok(nodes)
+    }
+}
+
+/// Writes an importer-produced asset as bincode at its synthesized key.
+#[cfg(feature = "gltf")]
+fn write_cooked_asset(
+    path: &Path,
+    asset: &impl Serialize,
+) -> Result<(), AssetError> {
+    let error = |message: String| AssetError::Load {
+        path: path.to_owned(),
+        message,
+    };
+    let bytes =
+        bincode::serialize(asset).map_err(|value| error(value.to_string()))?;
+    std::fs::write(path, bytes).map_err(|value| error(value.to_string()))
+}
+
+/// Spawns imported glTF nodes as entities with `Name`, `Transform`, parent
+/// links, cameras, and lights. A node's first primitive renders on the node
+/// itself; extra primitives become child entities. Returns one entity per
+/// node, in node order. Each primitive keeps its imported glTF material
+/// unless `material_override` is supplied.
+pub fn spawn_gltf_nodes(
+    app: &mut App,
+    nodes: &[ImportedGltfNode],
+    material_override: Option<Handle<MaterialAsset>>,
+) -> Result<Vec<bevy_ecs::entity::Entity>, AppError> {
+    let renderer = |primitive: &ImportedGltfPrimitive| MeshRenderer {
+        mesh: primitive.mesh,
+        material: material_override.unwrap_or(primitive.material),
+        cast_shadows: true,
+        receive_shadows: true,
+    };
+    let entities = nodes
+        .iter()
+        .map(|node| {
+            let entity = app.spawn((Name(node.name.clone()), node.transform));
+            let mut world_entity = app.world_mut().entity_mut(entity);
+            if let Some(camera) = node.camera {
+                world_entity.insert(camera);
+            }
+            match node.light {
+                Some(ImportedGltfLight::Directional(light)) => {
+                    world_entity.insert(light);
+                }
+                Some(ImportedGltfLight::Point(light)) => {
+                    world_entity.insert(light);
+                }
+                Some(ImportedGltfLight::Spot(light)) => {
+                    world_entity.insert(light);
+                }
+                None => {}
+            }
+            if let Some(first) = node.primitives.first() {
+                world_entity.insert(renderer(first));
+            }
+            entity
+        })
+        .collect::<Vec<_>>();
+    for (node, &entity) in nodes.iter().zip(&entities) {
+        if let Some(parent) = node.parent {
+            app.set_parent(entity, entities[parent])?;
+        }
+        for primitive in node.primitives.iter().skip(1) {
+            let child = app.spawn((
+                Name(primitive.name.clone()),
+                crate::Transform::default(),
+                renderer(primitive),
+            ));
+            app.set_parent(child, entity)?;
+        }
+    }
+    Ok(entities)
+}
+
+/// One glTF node prepared for spawning; see [`spawn_gltf_nodes`].
+#[derive(Clone, Debug)]
+pub struct ImportedGltfNode {
+    pub name: String,
+    /// Index of the parent node in the same list.
+    pub parent: Option<usize>,
+    /// Local transform relative to the parent.
+    pub transform: crate::Transform,
+    pub primitives: Vec<ImportedGltfPrimitive>,
+    pub camera: Option<Camera>,
+    pub light: Option<ImportedGltfLight>,
+}
+
+/// A `KHR_lights_punctual` light attached to a glTF node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImportedGltfLight {
+    Directional(DirectionalLight),
+    Point(PointLight),
+    Spot(SpotLight),
 }
 
 impl Default for AssetServer {
@@ -941,6 +1535,7 @@ impl Default for AssetServer {
             size: [1, 1],
             rgba8: vec![255; 4],
             color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
         });
         let mut materials = Assets::default();
         let fallback_material = materials.insert(MaterialAsset {
@@ -1454,12 +2049,30 @@ fn fallback_cube() -> MeshAsset {
     MeshAsset { vertices, indices }
 }
 
+/// How often `poll_asset_loads` checks watched files for changes.
+pub const HOT_RELOAD_SCAN_INTERVAL: Duration = Duration::from_millis(500);
+
+fn poll_asset_loads(
+    mut server: ResMut<AssetServer>,
+    mut last_scan: Local<Option<Instant>>,
+) {
+    if last_scan.is_none_or(|last| last.elapsed() >= HOT_RELOAD_SCAN_INTERVAL) {
+        *last_scan = Some(Instant::now());
+        server.reload_changed();
+    }
+    server.meshes.poll_loads();
+    server.textures.poll_loads();
+    server.materials.poll_loads();
+    server.scenes.poll_loads();
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AssetPlugin;
 
 impl Plugin for AssetPlugin {
     fn build(&self, app: &mut App) -> Result<(), AppError> {
         app.insert_resource(AssetServer::default());
+        app.add_systems(ScheduleStage::Update, poll_asset_loads);
         Ok(())
     }
 }
@@ -1468,6 +2081,7 @@ impl Plugin for AssetPlugin {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "gltf")]
     fn gltf_image(
         format: gltf::image::Format,
         pixels: Vec<u8>,
@@ -1480,7 +2094,142 @@ mod tests {
         }
     }
 
+    /// Polls until no handle is loading, failing the test after 5 seconds.
+    fn poll_until_settled(assets: &mut Assets<u32>, handles: &[Handle<u32>]) {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while handles.iter().any(|handle| {
+            assets.load_state(*handle) == Some(&LoadState::Loading)
+        }) {
+            assert!(std::time::Instant::now() < deadline, "load timed out");
+            assets.poll_loads();
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
+    fn changed_files_reload_on_workers_and_failures_keep_last_value() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-hot-reload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("tri.rmesh");
+        let mesh = |count: u32| MeshAsset {
+            vertices: Vec::new(),
+            indices: (0..count).collect(),
+        };
+        // Explicit timestamps: coarse filesystem clocks could otherwise hide
+        // a rewrite made within the same tick.
+        let write = |bytes: Vec<u8>, seconds: u64| {
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
+        let settle = |server: &mut AssetServer| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while server.meshes.slots.iter().any(|slot| slot.reloading) {
+                assert!(Instant::now() < deadline, "reload timed out");
+                server.meshes.poll_loads();
+                std::thread::yield_now();
+            }
+        };
+        write(bincode::serialize(&mesh(3)).unwrap(), 1_000);
+        let mut server = AssetServer::default();
+        let handle = server.load_mesh(&path).unwrap();
+        let first_revision = server.meshes.revision(handle).unwrap();
+        assert_eq!(
+            server.reload_changed(),
+            0,
+            "unchanged file is not reloaded"
+        );
+
+        write(bincode::serialize(&mesh(6)).unwrap(), 2_000);
+        assert_eq!(server.reload_changed(), 1);
+        assert_eq!(
+            server.meshes.get(handle).unwrap().indices.len(),
+            3,
+            "old value stays visible while the worker decodes"
+        );
+        settle(&mut server);
+        assert_eq!(server.meshes.get(handle).unwrap().indices.len(), 6);
+        assert!(server.meshes.revision(handle).unwrap() > first_revision);
+
+        write(b"not a mesh".to_vec(), 3_000);
+        assert_eq!(server.reload_changed(), 1);
+        settle(&mut server);
+        assert_eq!(server.meshes.get(handle).unwrap().indices.len(), 6);
+        assert_eq!(server.meshes.load_state(handle), Some(&LoadState::Loaded));
+        assert_eq!(server.meshes.take_reload_failures().len(), 1);
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(server.reload_changed(), 0, "deleted file keeps its value");
+        assert!(server.meshes.get(handle).is_some());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn async_loads_publish_success_failure_panic_and_discard_cancelled() {
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let mut assets = Assets::<u32>::default();
+        let loaded = assets
+            .load_async("async/ok.bin", move |_| {
+                gate.recv().unwrap();
+                Ok(7)
+            })
+            .unwrap();
+        assert_eq!(assets.load_state(loaded), Some(&LoadState::Loading));
+        assert!(!assets.contains(loaded));
+        assert_eq!(
+            assets.load_async("async/./ok.bin", |_| Ok(99)).unwrap(),
+            loaded,
+            "a path already loading is deduplicated"
+        );
+        let failed = assets
+            .load_async("async/bad.bin", |path| {
+                Err(AssetError::Load {
+                    path: path.to_owned(),
+                    message: "corrupt".to_owned(),
+                })
+            })
+            .unwrap();
+        let panicked = assets
+            .load_async("async/panic.bin", |_| panic!("decoder bug"))
+            .unwrap();
+        let cancelled = assets.load_async("async/gone.bin", |_| Ok(1)).unwrap();
+        assert_eq!(
+            assets.remove(cancelled),
+            Err(AssetError::Missing(cancelled.into()))
+        );
+
+        release.send(()).unwrap();
+        poll_until_settled(&mut assets, &[loaded, failed, panicked]);
+
+        assert_eq!(assets.get(loaded), Some(&7));
+        assert_eq!(assets.handle_for_path("async/ok.bin"), Some(loaded));
+        assert!(matches!(
+            assets.load_state(failed),
+            Some(LoadState::Failed(message)) if message.contains("corrupt")
+        ));
+        assert!(matches!(
+            assets.load_state(panicked),
+            Some(LoadState::Failed(message)) if message.contains("panicked")
+        ));
+        assert_eq!(assets.load_state(cancelled), None);
+        assert_eq!(assets.len(), 1);
+
+        let retried = assets.load_async("async/bad.bin", |_| Ok(3)).unwrap();
+        assert_ne!(retried, failed, "a failed path can be retried");
+        poll_until_settled(&mut assets, &[retried]);
+        assert_eq!(assets.get(retried), Some(&3));
+    }
+
+    #[test]
+    #[cfg(feature = "gltf")]
     fn gltf_image_conversion_expands_every_supported_channel_layout() {
         assert_eq!(
             gltf_image_to_rgba8(&gltf_image(
@@ -1570,6 +2319,210 @@ mod tests {
         *assets.get_mut(handle).unwrap() = 2;
         assert!(assets.revision(handle).unwrap() > initial);
         assert_eq!(assets.get(handle), Some(&2));
+    }
+
+    #[test]
+    #[cfg(feature = "gltf")]
+    fn gltf_import_carries_sampler_state_and_alpha_mode() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-gltf-sampler-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        image::RgbaImage::from_raw(1, 1, vec![1, 2, 3, 255])
+            .unwrap()
+            .save(folder.join("pixel.png"))
+            .unwrap();
+        let positions: Vec<u8> =
+            [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+        std::fs::write(folder.join("tri.bin"), &positions).unwrap();
+        let path = folder.join("tri.gltf");
+        std::fs::write(
+            &path,
+            r#"{
+              "asset": {"version": "2.0"},
+              "buffers": [{"uri": "tri.bin", "byteLength": 36}],
+              "bufferViews": [{"buffer": 0, "byteLength": 36}],
+              "accessors": [{"bufferView": 0, "componentType": 5126,
+                "count": 3, "type": "VEC3",
+                "min": [0, 0, 0], "max": [1, 1, 0]}],
+              "images": [{"uri": "pixel.png"}],
+              "samplers": [{"magFilter": 9728, "minFilter": 9986,
+                "wrapS": 33071, "wrapT": 33648}],
+              "textures": [{"source": 0, "sampler": 0}, {"source": 0}],
+              "materials": [{
+                "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+                "emissiveTexture": {"index": 1},
+                "alphaMode": "MASK", "alphaCutoff": 0.25}],
+              "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0}, "material": 0}]}]
+            }"#,
+        )
+        .unwrap();
+        let mut server = AssetServer::default();
+
+        let imported = server.import_gltf(&path).unwrap();
+
+        let material = server.materials.get(imported[0].material).unwrap();
+        assert_eq!(material.alpha_mode, AlphaMode::Mask { cutoff: 0.25 });
+        let sampled = material.base_color_texture.unwrap();
+        let default = material.emissive_texture.unwrap();
+        assert_ne!(
+            sampled, default,
+            "sampler state is part of texture identity"
+        );
+        assert_eq!(
+            server.textures.get(sampled).unwrap().sampler,
+            TextureSampler {
+                mag_filter: TextureFilter::Nearest,
+                min_filter: TextureFilter::Nearest,
+                mipmap_filter: TextureFilter::Linear,
+                wrap: [TextureWrap::ClampToEdge, TextureWrap::MirroredRepeat],
+            }
+        );
+        assert_eq!(
+            server.textures.get(default).unwrap().sampler,
+            TextureSampler::default()
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn gltf_scene_import_spawns_hierarchy_cameras_and_lights() {
+        use crate::runtime::Parent;
+        use crate::Transform;
+
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-gltf-scene-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let positions: Vec<u8> =
+            [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+        std::fs::write(folder.join("tri.bin"), &positions).unwrap();
+        let path = folder.join("scene.gltf");
+        // Node 0 (rotated 90 degrees about Y) carries a two-primitive mesh
+        // and parents node 1 (camera) and node 2 (spot light).
+        std::fs::write(
+            &path,
+            r#"{
+              "asset": {"version": "2.0"},
+              "extensionsUsed": ["KHR_lights_punctual"],
+              "extensions": {"KHR_lights_punctual": {"lights": [
+                {"type": "spot", "color": [1, 0.5, 0], "intensity": 40,
+                 "range": 7,
+                 "spot": {"innerConeAngle": 0.2, "outerConeAngle": 0.6}}]}},
+              "buffers": [{"uri": "tri.bin", "byteLength": 36}],
+              "bufferViews": [{"buffer": 0, "byteLength": 36}],
+              "accessors": [{"bufferView": 0, "componentType": 5126,
+                "count": 3, "type": "VEC3",
+                "min": [0, 0, 0], "max": [1, 1, 0]}],
+              "cameras": [{"type": "orthographic", "orthographic":
+                {"xmag": 2, "ymag": 1.5, "znear": 0.5, "zfar": 50}}],
+              "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0}},
+                {"attributes": {"POSITION": 0}}]}],
+              "nodes": [
+                {"name": "Root", "mesh": 0, "children": [1, 2],
+                 "translation": [1, 2, 3],
+                 "rotation": [0, 0.70710677, 0, 0.70710677]},
+                {"name": "Eye", "camera": 0, "scale": [2, 2, 2]},
+                {"extensions": {"KHR_lights_punctual": {"light": 0}}}],
+              "scenes": [{"nodes": [0]}]
+            }"#,
+        )
+        .unwrap();
+        let mut server = AssetServer::default();
+
+        let nodes = server.import_gltf_scene(&path).unwrap();
+
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].name, "Root");
+        assert_eq!(nodes[2].name, "Node 2");
+        assert_eq!(
+            nodes.iter().map(|node| node.parent).collect::<Vec<_>>(),
+            [None, Some(0), Some(0)]
+        );
+        assert_eq!(nodes[0].transform.position, [1.0, 2.0, 3.0]);
+        let [x, y, z] = nodes[0].transform.rotation;
+        assert!(x.abs() < 1.0e-5 && z.abs() < 1.0e-5);
+        assert!((y - std::f32::consts::FRAC_PI_2).abs() < 1.0e-3);
+        assert_eq!(nodes[1].transform.scale, [2.0; 3]);
+        assert_eq!(nodes[0].primitives.len(), 2);
+        assert_eq!(
+            nodes[1].camera.unwrap().projection,
+            crate::runtime::Projection::Orthographic {
+                vertical_size: 3.0,
+                near: 0.5,
+                far: 50.0
+            }
+        );
+        assert_eq!(
+            nodes[2].light,
+            Some(ImportedGltfLight::Spot(SpotLight {
+                color: [1.0, 0.5, 0.0],
+                intensity: 40.0,
+                range: 7.0,
+                inner_angle: 0.2,
+                outer_angle: 0.6,
+            }))
+        );
+
+        let mut app = App::new();
+        let entities = spawn_gltf_nodes(&mut app, &nodes, None).unwrap();
+        let world = app.world_mut();
+        let root = entities[0];
+        assert_eq!(world.get::<Name>(root).unwrap().0, "Root");
+        assert!(world.get::<MeshRenderer>(root).is_some());
+        assert_eq!(world.get::<Transform>(root), Some(&nodes[0].transform));
+        assert_eq!(world.get::<Parent>(entities[1]), Some(&Parent(root)));
+        assert!(world.get::<Camera>(entities[1]).is_some());
+        assert!(world.get::<SpotLight>(entities[2]).is_some());
+        let extra_primitives = world
+            .query::<(&Parent, &MeshRenderer)>()
+            .iter(world)
+            .filter(|(parent, _)| parent.0 == root)
+            .count();
+        assert_eq!(extra_primitives, 1, "second primitive is a child entity");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn generated_tangents_follow_uvs_handedness_and_degenerate_fallback() {
+        let quad = |flip_v: bool, uv_scale: f32| {
+            let v = |y: f32| if flip_v { 1.0 - y } else { y } * uv_scale;
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+                .map(|[x, y]: [f32; 2]| MeshVertex {
+                    position: [x, y, 0.0],
+                    normal: [0.0, 0.0, 1.0],
+                    uv: [x * uv_scale, v(y)],
+                    tangent: [0.0; 4],
+                })
+                .to_vec()
+        };
+        let indices = [0, 1, 2, 0, 2, 3];
+
+        let mut right_handed = quad(false, 1.0);
+        generate_tangents(&mut right_handed, &indices);
+        let mut flipped = quad(true, 1.0);
+        generate_tangents(&mut flipped, &indices);
+        let mut degenerate = quad(false, 0.0);
+        generate_tangents(&mut degenerate, &indices);
+
+        for vertex in &right_handed {
+            assert_eq!(vertex.tangent, [1.0, 0.0, 0.0, 1.0]);
+        }
+        for vertex in &flipped {
+            assert_eq!(vertex.tangent, [1.0, 0.0, 0.0, -1.0]);
+        }
+        for vertex in &degenerate {
+            let [x, y, z, _] = vertex.tangent;
+            assert!(z.abs() < 1.0e-6, "tangent is perpendicular to normal");
+            assert!(((x * x + y * y) - 1.0).abs() < 1.0e-6, "unit length");
+        }
     }
 
     #[test]

@@ -263,6 +263,15 @@ const fn axis_index(axis: GizmoAxis) -> usize {
     }
 }
 
+/// Blender/Godot mouse navigation while the middle button is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationDrag {
+    /// Middle drag: turn around the pivot in front of the camera.
+    Orbit,
+    /// Shift + middle drag: slide the camera and its pivot sideways.
+    Pan,
+}
+
 /// Temporary input state for the editor camera. It is never serialized.
 #[derive(Resource, Clone, Debug)]
 pub struct EditorFlyCamera {
@@ -270,6 +279,12 @@ pub struct EditorFlyCamera {
     pub active: bool,
     pressed_actions: HashSet<SceneViewAction>,
     pending_mouse_delta: [f32; 2],
+    /// Mouse-wheel steps not yet applied; positive moves toward the pivot.
+    pending_wheel: f32,
+    /// Middle-button navigation in progress, if any.
+    pub drag: Option<NavigationDrag>,
+    /// Distance from the camera to the orbit pivot along its view direction.
+    pub orbit_distance: f32,
     /// Movement speed in world units per second.
     pub speed: f32,
     /// Multiplier while Shift is held.
@@ -284,6 +299,9 @@ impl Default for EditorFlyCamera {
             active: false,
             pressed_actions: HashSet::new(),
             pending_mouse_delta: [0.0, 0.0],
+            pending_wheel: 0.0,
+            drag: None,
+            orbit_distance: 5.0,
             speed: 6.0,
             sprint_multiplier: 3.0,
             look_sensitivity: 0.002,
@@ -389,7 +407,8 @@ pub fn handle_keyboard_input(
     true
 }
 
-/// Holds the fly camera while the secondary mouse button is down in Scene View.
+/// Holds the fly camera while the secondary mouse button is down in Scene
+/// View, and orbits (or pans with Shift) while the middle button is down.
 ///
 /// An active transform keeps ownership of the secondary button so right-click
 /// can cancel it instead of unexpectedly entering fly mode.
@@ -399,7 +418,17 @@ pub fn handle_mouse_button_input(
     state: ElementState,
     button: MouseButton,
     cursor_position: [f64; 2],
+    shift: bool,
 ) -> bool {
+    if button == MouseButton::Middle {
+        return handle_navigation_button(
+            world,
+            window,
+            state,
+            cursor_position,
+            shift,
+        );
+    }
     if button != MouseButton::Right {
         return false;
     }
@@ -419,27 +448,81 @@ pub fn handle_mouse_button_input(
     if transform_active {
         return false;
     }
-    let scene_active =
-        world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
-    let viewport = *world.resource::<EditorViewport>();
-    let inside_viewport = viewport.valid
-        && cursor_position[0] >= f64::from(viewport.offset[0])
-        && cursor_position[1] >= f64::from(viewport.offset[1])
-        && cursor_position[0]
-            < f64::from(viewport.offset[0] + viewport.extent[0])
-        && cursor_position[1]
-            < f64::from(viewport.offset[1] + viewport.extent[1]);
-    if scene_active && inside_viewport {
+    if pointer_in_scene_view(world, cursor_position) {
         set_fly_camera_active(world, window, true);
         return true;
     }
     false
 }
 
+fn handle_navigation_button(
+    world: &mut World,
+    window: &Window,
+    state: ElementState,
+    cursor_position: [f64; 2],
+    shift: bool,
+) -> bool {
+    if state == ElementState::Released {
+        let mut fly = world.resource_mut::<EditorFlyCamera>();
+        if fly.drag.take().is_none() {
+            return false;
+        }
+        fly.pending_mouse_delta = [0.0, 0.0];
+        capture_pointer(window, false);
+        return true;
+    }
+    let busy = world.resource::<EditorFlyCamera>().active
+        || world
+            .get_resource::<EditorGizmoDrag>()
+            .is_some_and(EditorGizmoDrag::is_active)
+        || world.resource::<EditorTransformMode>().start_requested;
+    if busy || !pointer_in_scene_view(world, cursor_position) {
+        return false;
+    }
+    let mut fly = world.resource_mut::<EditorFlyCamera>();
+    fly.drag = Some(if shift {
+        NavigationDrag::Pan
+    } else {
+        NavigationDrag::Orbit
+    });
+    fly.pending_mouse_delta = [0.0, 0.0];
+    capture_pointer(window, true);
+    true
+}
+
+/// Queues mouse-wheel dolly steps when the pointer is over the Scene View.
+pub fn handle_mouse_wheel(
+    world: &mut World,
+    lines: f32,
+    cursor_position: [f64; 2],
+) -> bool {
+    if world.resource::<EditorFlyCamera>().active
+        || !pointer_in_scene_view(world, cursor_position)
+    {
+        return false;
+    }
+    world.resource_mut::<EditorFlyCamera>().pending_wheel += lines;
+    true
+}
+
+fn pointer_in_scene_view(world: &World, cursor_position: [f64; 2]) -> bool {
+    let scene_active =
+        world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
+    let viewport = *world.resource::<EditorViewport>();
+    scene_active
+        && viewport.valid
+        && cursor_position[0] >= f64::from(viewport.offset[0])
+        && cursor_position[1] >= f64::from(viewport.offset[1])
+        && cursor_position[0]
+            < f64::from(viewport.offset[0] + viewport.extent[0])
+        && cursor_position[1]
+            < f64::from(viewport.offset[1] + viewport.extent[1])
+}
+
 /// Receives raw pointer movement while the editor owns the captured pointer.
 pub fn add_mouse_delta(world: &mut World, delta: (f64, f64)) {
     let mut fly = world.resource_mut::<EditorFlyCamera>();
-    if fly.active {
+    if fly.active || fly.drag.is_some() {
         fly.pending_mouse_delta[0] += delta.0 as f32;
         fly.pending_mouse_delta[1] += delta.1 as f32;
     }
@@ -500,6 +583,10 @@ pub fn camera_to_object(world: &mut World) {
     {
         camera_transform.position = position.into();
     }
+    // Orbit around the focused object afterwards.
+    if let Some(mut fly) = world.get_resource_mut::<EditorFlyCamera>() {
+        fly.orbit_distance = distance;
+    }
 }
 
 /// Returns the world-space center and enclosing radius of an optional mesh.
@@ -558,8 +645,12 @@ fn world_bounds(
 }
 /// Applies one frame of pointer look and WASD/vertical movement.
 pub fn update_fly_camera(world: &mut World, delta: Duration) {
+    update_mouse_navigation(world);
     let (active, actions, mouse_delta, speed, sprint_multiplier, sensitivity) = {
         let mut fly = world.resource_mut::<EditorFlyCamera>();
+        if fly.drag.is_some() {
+            return;
+        }
         let mouse_delta = std::mem::take(&mut fly.pending_mouse_delta);
         (
             fly.active,
@@ -622,18 +713,117 @@ pub fn update_fly_camera(world: &mut World, delta: Duration) {
     }
 }
 
+/// Applies queued middle-drag orbit/pan and mouse-wheel dolly.
+fn update_mouse_navigation(world: &mut World) {
+    let (drag, mouse_delta, wheel, distance, sensitivity) = {
+        let mut fly = world.resource_mut::<EditorFlyCamera>();
+        let wheel = std::mem::take(&mut fly.pending_wheel);
+        let mouse_delta = if fly.drag.is_some() {
+            std::mem::take(&mut fly.pending_mouse_delta)
+        } else {
+            [0.0, 0.0]
+        };
+        (
+            fly.drag,
+            mouse_delta,
+            wheel,
+            fly.orbit_distance,
+            fly.look_sensitivity,
+        )
+    };
+    if drag.is_none() && wheel == 0.0 {
+        return;
+    }
+    let Some(camera) = world.resource::<EditorState>().editor_camera else {
+        return;
+    };
+    let Some(mut transform) = world.get_mut::<Transform>(camera) else {
+        return;
+    };
+    match drag {
+        Some(NavigationDrag::Orbit) => {
+            orbit_camera(&mut transform, distance, mouse_delta, sensitivity);
+        }
+        Some(NavigationDrag::Pan) => {
+            pan_camera(&mut transform, distance, mouse_delta);
+        }
+        None => {}
+    }
+    let distance = dolly_camera(&mut transform, distance, wheel);
+    world.resource_mut::<EditorFlyCamera>().orbit_distance = distance;
+}
+
+fn camera_axes(
+    transform: &Transform,
+) -> (Vector3<f32>, Vector3<f32>, Vector3<f32>) {
+    let rotation = Rotation3::from_euler_angles(
+        transform.rotation[0],
+        transform.rotation[1],
+        transform.rotation[2],
+    );
+    (
+        rotation * Vector3::new(0.0, 0.0, -1.0),
+        rotation * Vector3::new(1.0, 0.0, 0.0),
+        rotation * Vector3::new(0.0, 1.0, 0.0),
+    )
+}
+
+/// Turns the camera around the pivot `distance` units in front of it, so
+/// the pivot stays fixed on screen.
+fn orbit_camera(
+    transform: &mut Transform,
+    distance: f32,
+    mouse_delta: [f32; 2],
+    sensitivity: f32,
+) {
+    let (forward, ..) = camera_axes(transform);
+    let pivot = Vector3::from(transform.position) + forward * distance;
+    transform.rotation[1] -= mouse_delta[0] * sensitivity;
+    transform.rotation[0] =
+        (transform.rotation[0] - mouse_delta[1] * sensitivity).clamp(-1.5, 1.5);
+    let (forward, ..) = camera_axes(transform);
+    transform.position = (pivot - forward * distance).into();
+}
+
+/// Grab-style pan: the scene follows the pointer. Speed scales with the
+/// pivot distance so far and near views both feel the same.
+fn pan_camera(transform: &mut Transform, distance: f32, mouse_delta: [f32; 2]) {
+    let (_, right, up) = camera_axes(transform);
+    let scale = distance * 0.0015;
+    let step = (up * mouse_delta[1] - right * mouse_delta[0]) * scale;
+    transform.position = (Vector3::from(transform.position) + step).into();
+}
+
+/// Moves toward the pivot by a fixed fraction per wheel step and returns the
+/// new pivot distance.
+fn dolly_camera(transform: &mut Transform, distance: f32, steps: f32) -> f32 {
+    if steps == 0.0 {
+        return distance;
+    }
+    let (forward, ..) = camera_axes(transform);
+    let next = (distance * 0.85_f32.powf(steps)).clamp(0.05, 10_000.0);
+    transform.position = (Vector3::from(transform.position)
+        + forward * (distance - next))
+        .into();
+    next
+}
+
+fn capture_pointer(window: &Window, captured: bool) {
+    let _ = window.set_cursor_grab(if captured {
+        CursorGrabMode::Locked
+    } else {
+        CursorGrabMode::None
+    });
+    window.set_cursor_visible(!captured);
+}
+
 /// Changes pointer capture and clears keys so movement cannot get stuck.
 fn set_fly_camera_active(world: &mut World, window: &Window, active: bool) {
     let mut fly = world.resource_mut::<EditorFlyCamera>();
     fly.active = active;
     fly.pressed_actions.clear();
     fly.pending_mouse_delta = [0.0, 0.0];
-    let _ = window.set_cursor_grab(if active {
-        CursorGrabMode::Locked
-    } else {
-        CursorGrabMode::None
-    });
-    window.set_cursor_visible(!active);
+    capture_pointer(window, active);
 }
 
 #[cfg(test)]
@@ -794,5 +984,27 @@ mod tests {
         assert_eq!(camera.position[0], 10.0);
         assert_eq!(camera.position[1], 2.0);
         assert!(camera.position[2] > -3.0);
+    }
+
+    #[test]
+    fn orbit_keeps_the_pivot_fixed_and_dolly_moves_toward_it() {
+        let mut transform = Transform::new([0.0, 1.0, 5.0]);
+        let pivot = |transform: &Transform, distance: f32| {
+            Vector3::from(transform.position)
+                + camera_axes(transform).0 * distance
+        };
+        let before = pivot(&transform, 5.0);
+
+        orbit_camera(&mut transform, 5.0, [120.0, -40.0], 0.002);
+        assert!((pivot(&transform, 5.0) - before).norm() < 1e-4);
+        assert!(transform.position != [0.0, 1.0, 5.0]);
+
+        let distance = dolly_camera(&mut transform, 5.0, 2.0);
+        assert!(distance < 5.0);
+        assert!((pivot(&transform, distance) - before).norm() < 1e-4);
+
+        pan_camera(&mut transform, distance, [100.0, 0.0]);
+        let (_, right, _) = camera_axes(&transform);
+        assert!((pivot(&transform, distance) - before).dot(&right) < 0.0);
     }
 }

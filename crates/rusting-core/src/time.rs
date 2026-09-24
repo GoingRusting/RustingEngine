@@ -1,0 +1,474 @@
+use std::time::Duration;
+use std::{error::Error, fmt};
+
+use bevy_ecs::prelude::Resource;
+
+/// Frame and simulation timing visible to systems.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct FrameTime {
+    /// Number of successful application updates since the app started.
+    pub frame: u64,
+    /// Real time since the previous frame, even while paused.
+    pub real_delta: Duration,
+    /// Game time since the previous frame after pause and time scale.
+    pub delta: Duration,
+    /// Total game time, without time spent paused.
+    pub elapsed: Duration,
+    /// Time simulated by one fixed-schedule execution.
+    pub fixed_delta: Duration,
+    /// Number of completed fixed-schedule executions.
+    pub fixed_tick: u64,
+}
+
+impl Default for FrameTime {
+    fn default() -> Self {
+        Self {
+            frame: 0,
+            real_delta: Duration::ZERO,
+            delta: Duration::ZERO,
+            elapsed: Duration::ZERO,
+            fixed_delta: Duration::from_secs_f64(1.0 / 60.0),
+            fixed_tick: 0,
+        }
+    }
+}
+
+impl FrameTime {
+    /// Returns the current game-frame time as an easy-to-use `f32` value.
+    #[must_use]
+    pub fn delta_seconds(&self) -> f32 {
+        self.delta.as_secs_f32()
+    }
+
+    /// Returns total running game time as an easy-to-use `f32` value.
+    #[must_use]
+    pub fn elapsed_seconds(&self) -> f32 {
+        self.elapsed.as_secs_f32()
+    }
+}
+
+/// Pause, stepping, scale, and fixed-schedule catch-up controls.
+#[derive(Resource, Clone, Debug)]
+pub struct TimeControl {
+    /// Whether variable time and ordinary fixed-schedule executions are paused.
+    pub paused: bool,
+    /// Multiplier applied to real time while the simulation is running.
+    pub time_scale: f64,
+    /// Time simulated by one fixed-schedule execution.
+    pub fixed_delta: Duration,
+    /// Maximum number of accumulated fixed-schedule executions run per application update.
+    pub max_fixed_steps: u32,
+    accumulator: Duration,
+    pending_steps: u32,
+}
+
+impl Default for TimeControl {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            time_scale: 1.0,
+            fixed_delta: Duration::from_secs_f64(1.0 / 60.0),
+            max_fixed_steps: 8,
+            accumulator: Duration::ZERO,
+            pending_steps: 0,
+        }
+    }
+}
+
+impl TimeControl {
+    /// Pauses variable time and ordinary fixed-schedule executions.
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Resumes variable time and ordinary fixed-schedule executions.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Queues one fixed-schedule execution to be consumed while paused.
+    pub fn step(&mut self) {
+        self.pending_steps = self.pending_steps.saturating_add(1);
+    }
+}
+
+/// Errors produced while advancing simulation time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimeAdvanceError {
+    /// The configured fixed timestep is zero.
+    InvalidFixedDelta,
+}
+
+impl fmt::Display for TimeAdvanceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFixedDelta => {
+                formatter.write_str("fixed delta must be greater than zero")
+            }
+        }
+    }
+}
+
+impl Error for TimeAdvanceError {}
+
+/// Advances frame and fixed-schedule bookkeeping by one application update.
+///
+/// Catch-up work is capped by [`TimeControl::max_fixed_steps`], with any
+/// remaining accumulated time retained for later updates. A queued step is
+/// consumed only while paused and advances elapsed time by exactly one fixed
+/// timestep without consuming the accumulator.
+///
+/// # Errors
+///
+/// Returns [`TimeAdvanceError::InvalidFixedDelta`] when `control.fixed_delta`
+/// is zero, before mutating either the supplied [`TimeControl`] or
+/// [`FrameTime`].
+///
+/// # Panics
+///
+/// After fixed-delta validation, when the simulation is not paused, this may
+/// panic if `control.time_scale` is positive and non-finite, or if scaling
+/// `real_delta` by the non-negative time scale cannot be represented by
+/// [`Duration::mul_f64`]. Negative and `NaN` time scales are clamped to zero
+/// and do not panic.
+pub fn advance(
+    control: &mut TimeControl,
+    time: &mut FrameTime,
+    real_delta: Duration,
+) -> Result<u32, TimeAdvanceError> {
+    if control.fixed_delta.is_zero() {
+        return Err(TimeAdvanceError::InvalidFixedDelta);
+    }
+
+    let scaled_delta = if control.paused {
+        Duration::ZERO
+    } else {
+        real_delta.mul_f64(control.time_scale.max(0.0))
+    };
+    control.accumulator = control.accumulator.saturating_add(scaled_delta);
+
+    let mut fixed_steps = 0;
+    let fixed_delta = control.fixed_delta;
+    while control.accumulator >= fixed_delta
+        && fixed_steps < control.max_fixed_steps
+        && !control.paused
+    {
+        control.accumulator -= fixed_delta;
+        fixed_steps += 1;
+    }
+    let stepped_while_paused = control.paused && control.pending_steps > 0;
+    if stepped_while_paused {
+        control.pending_steps -= 1;
+        fixed_steps = 1;
+    }
+    let elapsed_delta = if stepped_while_paused {
+        fixed_delta
+    } else {
+        scaled_delta
+    };
+
+    time.frame = time.frame.saturating_add(1);
+    time.real_delta = real_delta;
+    time.delta = scaled_delta;
+    time.elapsed = time.elapsed.saturating_add(elapsed_delta);
+    time.fixed_delta = fixed_delta;
+    time.fixed_tick = time.fixed_tick.saturating_add(u64::from(fixed_steps));
+    Ok(fixed_steps)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bevy_ecs::prelude::Resource;
+
+    use super::{advance, FrameTime, TimeAdvanceError, TimeControl};
+
+    #[test]
+    fn default_starts_at_frame_zero_with_sixty_hz_fixed_delta() {
+        let time = FrameTime::default();
+
+        assert_eq!(time.frame, 0);
+        assert_eq!(time.real_delta, Duration::ZERO);
+        assert_eq!(time.delta, Duration::ZERO);
+        assert_eq!(time.elapsed, Duration::ZERO);
+        assert_eq!(time.fixed_delta, Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(time.fixed_tick, 0);
+    }
+
+    #[test]
+    fn duration_accessors_return_seconds() {
+        let time = FrameTime {
+            delta: Duration::from_millis(125),
+            elapsed: Duration::from_millis(2_500),
+            ..FrameTime::default()
+        };
+
+        assert_eq!(time.delta_seconds(), 0.125);
+        assert_eq!(time.elapsed_seconds(), 2.5);
+    }
+
+    #[test]
+    fn frame_time_is_an_ecs_resource() {
+        fn assert_resource<T: Resource>() {}
+
+        assert_resource::<FrameTime>();
+    }
+
+    #[test]
+    fn frame_time_is_clone_and_copy() {
+        fn assert_clone_copy<T: Clone + Copy>() {}
+
+        assert_clone_copy::<FrameTime>();
+    }
+
+    #[test]
+    fn time_control_defaults_and_public_traits_are_stable() {
+        fn assert_resource_clone_debug<
+            T: Resource + Clone + std::fmt::Debug,
+        >() {
+        }
+        fn assert_error_traits<T: std::error::Error + Clone + Copy + Eq>() {}
+
+        assert_resource_clone_debug::<TimeControl>();
+        assert_error_traits::<TimeAdvanceError>();
+
+        let control = TimeControl::default();
+        assert!(!control.paused);
+        assert_eq!(control.time_scale, 1.0);
+        assert_eq!(control.fixed_delta, Duration::from_secs_f64(1.0 / 60.0));
+        assert_eq!(control.max_fixed_steps, 8);
+        assert_eq!(control.accumulator, Duration::ZERO);
+        assert_eq!(control.pending_steps, 0);
+        assert_eq!(
+            TimeAdvanceError::InvalidFixedDelta.to_string(),
+            "fixed delta must be greater than zero"
+        );
+    }
+
+    #[test]
+    fn normal_scaled_advance_updates_all_bookkeeping() {
+        let mut control = TimeControl {
+            time_scale: 0.5,
+            fixed_delta: Duration::from_millis(10),
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(25)),
+            Ok(1)
+        );
+        assert_eq!(control.accumulator, Duration::from_micros(2_500));
+        assert_eq!(time.frame, 1);
+        assert_eq!(time.real_delta, Duration::from_millis(25));
+        assert_eq!(time.delta, Duration::from_micros(12_500));
+        assert_eq!(time.elapsed, Duration::from_micros(12_500));
+        assert_eq!(time.fixed_delta, Duration::from_millis(10));
+        assert_eq!(time.fixed_tick, 1);
+    }
+
+    #[test]
+    fn catch_up_cap_retains_backlog_for_later_frames() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            max_fixed_steps: 2,
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(35)),
+            Ok(2)
+        );
+        assert_eq!(control.accumulator, Duration::from_millis(15));
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(1));
+        assert_eq!(control.accumulator, Duration::from_millis(5));
+        assert_eq!(time.fixed_tick, 3);
+        assert_eq!(time.elapsed, Duration::from_millis(35));
+    }
+
+    #[test]
+    fn pause_drains_one_queued_step_per_update_and_resume_restores_time() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+        control.pause();
+        control.step();
+        control.step();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_secs(1)),
+            Ok(1)
+        );
+        assert_eq!(time.delta, Duration::ZERO);
+        assert_eq!(time.elapsed, Duration::from_millis(10));
+        assert_eq!(control.pending_steps, 1);
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(1));
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(0));
+
+        control.resume();
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(10)),
+            Ok(1)
+        );
+        assert_eq!(time.elapsed, Duration::from_millis(30));
+        assert_eq!(time.fixed_tick, 3);
+    }
+
+    #[test]
+    fn steps_queued_while_running_persist_until_paused() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+        control.step();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(10)),
+            Ok(1)
+        );
+        assert_eq!(control.pending_steps, 1);
+        control.pause();
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(1));
+        assert_eq!(control.pending_steps, 0);
+    }
+
+    #[test]
+    fn negative_and_nan_time_scales_clamp_to_zero() {
+        for scale in [-1.0, f64::NAN] {
+            let mut control = TimeControl {
+                time_scale: scale,
+                fixed_delta: Duration::from_millis(10),
+                ..TimeControl::default()
+            };
+            let mut time = FrameTime::default();
+
+            assert_eq!(
+                advance(&mut control, &mut time, Duration::from_secs(1)),
+                Ok(0)
+            );
+            assert_eq!(control.accumulator, Duration::ZERO);
+            assert_eq!(time.delta, Duration::ZERO);
+            assert_eq!(time.elapsed, Duration::ZERO);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn positive_infinite_time_scale_panics_while_running() {
+        let mut control = TimeControl {
+            time_scale: f64::INFINITY,
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+
+        let _ = advance(&mut control, &mut time, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn zero_max_fixed_steps_retains_the_entire_backlog() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            max_fixed_steps: 0,
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(25)),
+            Ok(0)
+        );
+        assert_eq!(control.accumulator, Duration::from_millis(25));
+        assert_eq!(time.elapsed, Duration::from_millis(25));
+        assert_eq!(time.fixed_tick, 0);
+    }
+
+    #[test]
+    fn zero_fixed_delta_errors_before_mutating_either_resource() {
+        let mut control = TimeControl {
+            paused: true,
+            time_scale: 2.0,
+            fixed_delta: Duration::ZERO,
+            max_fixed_steps: 3,
+            accumulator: Duration::from_millis(7),
+            pending_steps: 2,
+        };
+        let mut time = FrameTime {
+            frame: 4,
+            real_delta: Duration::from_millis(1),
+            delta: Duration::from_millis(2),
+            elapsed: Duration::from_millis(3),
+            fixed_delta: Duration::from_millis(4),
+            fixed_tick: 5,
+        };
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_secs(1)),
+            Err(TimeAdvanceError::InvalidFixedDelta)
+        );
+        assert!(control.paused);
+        assert_eq!(control.time_scale, 2.0);
+        assert_eq!(control.fixed_delta, Duration::ZERO);
+        assert_eq!(control.max_fixed_steps, 3);
+        assert_eq!(control.accumulator, Duration::from_millis(7));
+        assert_eq!(control.pending_steps, 2);
+        assert_eq!(time.frame, 4);
+        assert_eq!(time.real_delta, Duration::from_millis(1));
+        assert_eq!(time.delta, Duration::from_millis(2));
+        assert_eq!(time.elapsed, Duration::from_millis(3));
+        assert_eq!(time.fixed_delta, Duration::from_millis(4));
+        assert_eq!(time.fixed_tick, 5);
+    }
+
+    #[test]
+    fn paused_updates_and_steps_preserve_accumulated_partial_time() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+        advance(&mut control, &mut time, Duration::from_millis(6)).unwrap();
+        control.pause();
+        advance(&mut control, &mut time, Duration::from_secs(1)).unwrap();
+        control.step();
+        advance(&mut control, &mut time, Duration::ZERO).unwrap();
+        assert_eq!(control.accumulator, Duration::from_millis(6));
+
+        control.resume();
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_millis(4)),
+            Ok(1)
+        );
+        assert_eq!(control.accumulator, Duration::ZERO);
+    }
+
+    #[test]
+    fn counters_durations_and_step_queue_saturate() {
+        let mut control = TimeControl {
+            paused: true,
+            fixed_delta: Duration::from_nanos(1),
+            accumulator: Duration::MAX,
+            pending_steps: u32::MAX,
+            ..TimeControl::default()
+        };
+        control.step();
+        assert_eq!(control.pending_steps, u32::MAX);
+
+        let mut time = FrameTime {
+            frame: u64::MAX,
+            elapsed: Duration::MAX,
+            fixed_tick: u64::MAX,
+            ..FrameTime::default()
+        };
+        assert_eq!(advance(&mut control, &mut time, Duration::MAX), Ok(1));
+        assert_eq!(control.accumulator, Duration::MAX);
+        assert_eq!(control.pending_steps, u32::MAX - 1);
+        assert_eq!(time.frame, u64::MAX);
+        assert_eq!(time.elapsed, Duration::MAX);
+        assert_eq!(time.fixed_tick, u64::MAX);
+    }
+}
