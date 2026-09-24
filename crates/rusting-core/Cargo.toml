@@ -1,7 +1,16 @@
 [package]
 name = "rusting-core"
 version = "0.1.0"
+authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
+description = "Core ECS components, transforms, hierarchy, time, input, events, and schedule stages for RustingEngine"
+license-file = "LICENSE.md"
+repository = "https://github.com/GoingRusting/RustingEngine"
+homepage = "https://github.com/GoingRusting/RustingEngine"
+documentation = "https://docs.rs/rusting-core"
+readme = "README.md"
+keywords = ["ecs", "game-engine", "gamedev", "3d"]
+categories = ["game-engines"]
 
 [dependencies]
 bevy_ecs = "0.19.1"
