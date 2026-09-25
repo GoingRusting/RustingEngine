@@ -156,6 +156,9 @@ pub struct Assets<T> {
     finished: Arc<Mutex<FinishedLoads<T>>>,
     /// Hot reloads that failed to decode, drained by `take_reload_failures`.
     reload_failures: Vec<AssetError>,
+    /// Paths whose hot reload published a new value, drained by
+    /// `take_reloaded`.
+    reloaded: Vec<PathBuf>,
 }
 
 type FinishedLoads<T> = Vec<(AssetKey, Result<T, AssetError>)>;
@@ -169,6 +172,7 @@ impl<T> Default for Assets<T> {
             deferred: Vec::new(),
             finished: Arc::default(),
             reload_failures: Vec::new(),
+            reloaded: Vec::new(),
         }
     }
 }
@@ -287,6 +291,8 @@ impl<T> Assets<T> {
         let path = slot.path.take();
         let value = slot.value.take();
         slot.state = LoadState::Loaded;
+        // A hot reload still in flight must not publish into the freed slot.
+        slot.reloading = false;
         if let Some(path) = path {
             self.paths.remove(&path);
         }
@@ -315,6 +321,9 @@ impl<T> Assets<T> {
                 Ok(value) => {
                     slot.value = Some(value);
                     slot.state = LoadState::Loaded;
+                    if reloading {
+                        self.reloaded.extend(slot.path.clone());
+                    }
                 }
                 // A failed hot reload keeps serving the last good value.
                 Err(error) if reloading => {
@@ -362,6 +371,11 @@ impl<T> Assets<T> {
     /// Drains hot reloads whose decode failed since the last call.
     pub fn take_reload_failures(&mut self) -> Vec<AssetError> {
         std::mem::take(&mut self.reload_failures)
+    }
+
+    /// Drains the paths of hot reloads that published since the last call.
+    pub fn take_reloaded(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.reloaded)
     }
 
     pub fn retire(
@@ -537,9 +551,8 @@ impl<T: Send + 'static> Assets<T> {
         loader: impl FnOnce(&Path) -> Result<T, AssetError> + Send + 'static,
     ) {
         let finished = Arc::clone(&self.finished);
-        // ponytail: one OS thread per load; use a bounded pool once bulk
-        // imports make thread count matter.
-        std::thread::spawn(move || {
+        // Rayon's pool bounds concurrent decodes to the core count.
+        rayon::spawn(move || {
             let result = catch_unwind(AssertUnwindSafe(|| loader(&path)))
                 .unwrap_or_else(|_| {
                     Err(AssetError::Load {
@@ -566,10 +579,23 @@ fn read_asset_file(path: &Path) -> Result<Vec<u8>, AssetError> {
     })
 }
 
+/// `bincode::deserialize` with its input length as the size limit, so a
+/// corrupt length prefix fails instead of allocating gigabytes.
+pub(crate) fn deserialize_bounded<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> bincode::Result<T> {
+    use bincode::Options;
+    bincode::options()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(bytes.len() as u64)
+        .deserialize(bytes)
+}
+
 fn decode_cooked<T: serde::de::DeserializeOwned>(
     path: &Path,
 ) -> Result<T, AssetError> {
-    bincode::deserialize(&read_asset_file(path)?).map_err(|error| {
+    deserialize_bounded(&read_asset_file(path)?).map_err(|error| {
         AssetError::Load {
             path: path.to_owned(),
             message: error.to_string(),
@@ -578,7 +604,30 @@ fn decode_cooked<T: serde::de::DeserializeOwned>(
 }
 
 fn decode_mesh_file(path: &Path) -> Result<MeshAsset, AssetError> {
-    decode_cooked(path)
+    let mesh: MeshAsset = decode_cooked(path)?;
+    check_mesh_indices(path, &mesh.indices, mesh.vertices.len())?;
+    Ok(mesh)
+}
+
+/// Rejects indices past the vertex list. The renderer draws them unchecked
+/// and without `robustBufferAccess`, so one bad index can lose the device.
+fn check_mesh_indices(
+    path: &Path,
+    indices: &[u32],
+    vertex_count: usize,
+) -> Result<(), AssetError> {
+    match indices
+        .iter()
+        .find(|index| **index as usize >= vertex_count)
+    {
+        Some(index) => Err(AssetError::Load {
+            path: path.to_owned(),
+            message: format!(
+                "mesh index {index} is out of range for {vertex_count} vertices"
+            ),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Decodes a cooked `.rtexture`, or any image file as an sRGB texture.
@@ -832,6 +881,76 @@ pub struct MeshAsset {
     pub indices: Vec<u32>,
 }
 
+/// What a LOD group measures to pick a level.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+pub enum LodMetric {
+    /// World distance from the camera to the bounds' center.
+    Distance,
+    /// Fraction of the view height the bounding sphere's diameter covers,
+    /// which tracks projected error across fields of view.
+    #[default]
+    ScreenSize,
+}
+
+/// One mesh of a [`LodGroupAsset`] and where it hands over to the next.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LodLevel {
+    pub mesh: Handle<MeshAsset>,
+    /// `Distance`: the level draws while the distance is below this.
+    /// `ScreenSize`: it draws while the screen size is at least this.
+    /// Past the last level's value the object is not drawn; use infinity
+    /// or `0.0` to draw it at any range.
+    pub until: f32,
+}
+
+/// Coarser stand-ins for one mesh. Every renderer drawing `levels[0].mesh`
+/// picks one level per object and frame instead.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LodGroupAsset {
+    pub metric: LodMetric,
+    /// Finest first.
+    pub levels: Vec<LodLevel>,
+}
+
+impl LodGroupAsset {
+    /// Each level's `[start, end)` range of the metric turned into a value
+    /// that grows with distance: the distance itself, or the inverse screen
+    /// size.
+    #[must_use]
+    pub fn ranges(&self) -> Vec<[f32; 2]> {
+        let mut start = 0.0;
+        self.levels
+            .iter()
+            .map(|level| {
+                let end = match self.metric {
+                    LodMetric::Distance => level.until,
+                    LodMetric::ScreenSize => 1.0 / level.until,
+                };
+                let range = [start, end];
+                start = end;
+                range
+            })
+            .collect()
+    }
+}
+
+/// `.rlod` file: a [`LodGroupAsset`] whose meshes are paths relative to it.
+#[derive(Deserialize)]
+struct LodGroupFile {
+    #[serde(default)]
+    metric: LodMetric,
+    levels: Vec<LodLevelFile>,
+}
+
+#[derive(Deserialize)]
+struct LodLevelFile {
+    mesh: PathBuf,
+    /// Left out: the level draws at any range.
+    until: Option<f32>,
+}
+
 /// Procedural meshes shipped with the engine and available in Add Object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrimitiveShape {
@@ -994,6 +1113,7 @@ pub struct AssetServer {
     pub textures: Assets<TextureAsset>,
     pub materials: Assets<MaterialAsset>,
     pub scenes: Assets<SceneAsset>,
+    pub lod_groups: Assets<LodGroupAsset>,
     pub fallback_mesh: Handle<MeshAsset>,
     /// Shared smooth sphere used by the editor's Add Sphere action.
     pub builtin_sphere: Handle<MeshAsset>,
@@ -1035,12 +1155,72 @@ impl AssetServer {
             })
     }
 
-    /// Loads an engine-native mesh created by the glTF importer.
+    /// Loads an engine-native mesh created by the glTF importer, and the
+    /// LOD group in the `.rlod` file beside it when there is one.
     pub fn load_mesh(
         &mut self,
         path: impl AsRef<Path>,
     ) -> Result<Handle<MeshAsset>, AssetError> {
-        self.meshes.get_or_insert_with(path, decode_mesh_file)
+        let handle = self.meshes.get_or_insert_with(&path, decode_mesh_file)?;
+        let lods = path.as_ref().with_extension("rlod");
+        if lods.is_file() && self.lod_groups.handle_for_path(&lods).is_none() {
+            self.load_lod_group(lods)?;
+        }
+        Ok(handle)
+    }
+
+    /// Loads a `.rlod` JSON file and the meshes it names, which are
+    /// relative to the file.
+    // ponytail: `.rlod` edits need a reload of the scene; add them to
+    // `reload_changed` when groups are tuned live.
+    pub fn load_lod_group(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Handle<LodGroupAsset>, AssetError> {
+        let path = path.as_ref();
+        let error = |message: String| AssetError::Load {
+            path: path.to_owned(),
+            message,
+        };
+        let file: LodGroupFile =
+            serde_json::from_slice(&read_asset_file(path)?)
+                .map_err(|value| error(value.to_string()))?;
+        if file.levels.is_empty() {
+            return Err(error("a LOD group needs at least one level".into()));
+        }
+        let directory = path.parent().unwrap_or(Path::new(""));
+        let levels = file
+            .levels
+            .into_iter()
+            .map(|level| {
+                Ok(LodLevel {
+                    mesh: self.meshes.get_or_insert_with(
+                        directory.join(level.mesh),
+                        decode_mesh_file,
+                    )?,
+                    until: level.until.unwrap_or(match file.metric {
+                        LodMetric::Distance => f32::INFINITY,
+                        LodMetric::ScreenSize => 0.0,
+                    }),
+                })
+            })
+            .collect::<Result<_, AssetError>>()?;
+        let group = LodGroupAsset {
+            metric: file.metric,
+            levels,
+        };
+        if group
+            .ranges()
+            .iter()
+            .any(|[start, end]| start > end || end.is_nan())
+        {
+            return Err(error(
+                "LOD levels must hand over at growing distances or \
+                 shrinking screen sizes"
+                    .into(),
+            ));
+        }
+        self.lod_groups.insert_with_path(path, group)
     }
 
     /// Loads an image as an sRGB texture and deduplicates its source path.
@@ -1071,6 +1251,21 @@ impl AssetServer {
             );
         }
         started
+    }
+
+    /// Drains mesh and texture hot reloads whose decode failed. The previous
+    /// value stays loaded; callers only report the error.
+    pub fn take_reload_failures(&mut self) -> Vec<AssetError> {
+        let mut failures = self.meshes.take_reload_failures();
+        failures.extend(self.textures.take_reload_failures());
+        failures
+    }
+
+    /// Drains the mesh and texture paths whose hot reload published.
+    pub fn take_reloaded(&mut self) -> Vec<PathBuf> {
+        let mut reloaded = self.meshes.take_reloaded();
+        reloaded.extend(self.textures.take_reloaded());
+        reloaded
     }
 
     /// Imports one glTF texture slot as an sRGB or linear [`TextureAsset`],
@@ -1192,6 +1387,7 @@ impl AssetServer {
                             })?;
                         (0..vertex_count).collect()
                     };
+                check_mesh_indices(&source, &indices, vertices.len())?;
                 if generate {
                     generate_tangents(&mut vertices, &indices);
                 }
@@ -1548,6 +1744,7 @@ impl Default for AssetServer {
             textures,
             materials,
             scenes: Assets::default(),
+            lod_groups: Assets::default(),
             fallback_mesh,
             builtin_sphere,
             builtin_primitives,
@@ -1609,7 +1806,7 @@ pub fn procedural_sphere_mesh(subdivisions: u32) -> MeshAsset {
 /// Builds the CPU mesh used for one built-in editor primitive.
 #[must_use]
 pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
-    match shape {
+    let mut mesh = match shape {
         PrimitiveShape::Cube => fallback_cube(),
         PrimitiveShape::Sphere => procedural_sphere_mesh(16),
         PrimitiveShape::Triangle => mesh_from_triangles(&[[
@@ -1656,7 +1853,10 @@ pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
         PrimitiveShape::Cylinder => cylinder_mesh(32),
         PrimitiveShape::Cone => cone_mesh(32),
         PrimitiveShape::Torus => torus_mesh(32, 12),
-    }
+    };
+    // The builders write placeholder tangents; normal maps need real ones.
+    generate_tangents(&mut mesh.vertices, &mesh.indices);
+    mesh
 }
 
 fn mesh_from_triangles(triangles: &[[[f32; 3]; 3]]) -> MeshAsset {
@@ -2108,13 +2308,71 @@ mod tests {
     }
 
     #[test]
+    fn cooked_mesh_with_out_of_range_index_is_rejected() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-mesh-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("broken.rmesh");
+        let mesh = MeshAsset {
+            vertices: vec![MeshVertex::default(); 3],
+            indices: vec![0, 1, 3],
+        };
+        std::fs::write(&path, bincode::serialize(&mesh).unwrap()).unwrap();
+
+        let result = AssetServer::default().load_mesh(&path);
+
+        assert!(matches!(result, Err(AssetError::Load { .. })), "{result:?}");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn huge_length_prefix_fails_without_allocating() {
+        // A 2^62-byte string prefix followed by three bytes.
+        let mut bytes = (1u64 << 62).to_le_bytes().to_vec();
+        bytes.extend(b"abc");
+        assert!(deserialize_bounded::<String>(&bytes).is_err());
+        let valid = bincode::serialize(&(7u32, "abc".to_owned())).unwrap();
+        assert_eq!(
+            deserialize_bounded::<(u32, String)>(&valid).unwrap(),
+            (7, "abc".to_owned())
+        );
+    }
+
+    #[test]
+    fn removing_during_a_hot_reload_does_not_resurrect_the_slot() {
+        let mut assets = Assets::<u32>::default();
+        let handle = assets.load_async("virtual.bin", |_| Ok(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while assets.get(handle).is_none() {
+            assert!(Instant::now() < deadline, "load timed out");
+            assets.poll_loads();
+            std::thread::yield_now();
+        }
+        let (sender, receiver) = std::sync::mpsc::channel::<()>();
+        assets
+            .reload_async(handle, move |_| {
+                receiver.recv().ok();
+                Ok(2)
+            })
+            .unwrap();
+        assert_eq!(assets.remove(handle), Ok(1));
+        sender.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            assets.poll_loads();
+            std::thread::yield_now();
+        }
+        assert_eq!(assets.len(), 0);
+    }
+
+    #[test]
     fn changed_files_reload_on_workers_and_failures_keep_last_value() {
         let folder = std::env::temp_dir()
             .join(format!("rusting-hot-reload-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("tri.rmesh");
         let mesh = |count: u32| MeshAsset {
-            vertices: Vec::new(),
+            vertices: vec![MeshVertex::default(); count as usize],
             indices: (0..count).collect(),
         };
         // Explicit timestamps: coarse filesystem clocks could otherwise hide
@@ -2158,6 +2416,7 @@ mod tests {
         settle(&mut server);
         assert_eq!(server.meshes.get(handle).unwrap().indices.len(), 6);
         assert!(server.meshes.revision(handle).unwrap() > first_revision);
+        assert_eq!(server.take_reloaded().len(), 1);
 
         write(b"not a mesh".to_vec(), 3_000);
         assert_eq!(server.reload_changed(), 1);
@@ -2165,6 +2424,7 @@ mod tests {
         assert_eq!(server.meshes.get(handle).unwrap().indices.len(), 6);
         assert_eq!(server.meshes.load_state(handle), Some(&LoadState::Loaded));
         assert_eq!(server.meshes.take_reload_failures().len(), 1);
+        assert!(server.take_reloaded().is_empty(), "failed reload");
 
         std::fs::remove_file(&path).unwrap();
         assert_eq!(server.reload_changed(), 0, "deleted file keeps its value");
@@ -2595,5 +2855,72 @@ mod tests {
             );
             assert_eq!(server.primitive_for_handle(handle), Some(shape));
         }
+    }
+
+    #[test]
+    fn lod_group_beside_a_mesh_loads_with_it_and_rejects_bad_hand_overs() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-lod-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(folder.join("lods")).unwrap();
+        let mesh = |count: u32| MeshAsset {
+            vertices: vec![MeshVertex::default(); count as usize],
+            indices: (0..count).collect(),
+        };
+        let write_mesh = |name: &str, count| {
+            std::fs::write(
+                folder.join(name),
+                bincode::serialize(&mesh(count)).unwrap(),
+            )
+            .unwrap();
+        };
+        write_mesh("rock.rmesh", 6);
+        write_mesh("lods/rock_1.rmesh", 3);
+        std::fs::write(
+            folder.join("rock.rlod"),
+            r#"{"metric": "ScreenSize", "levels": [
+                {"mesh": "rock.rmesh", "until": 0.5},
+                {"mesh": "lods/rock_1.rmesh"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut server = AssetServer::default();
+        let rock = server.load_mesh(folder.join("rock.rmesh")).unwrap();
+        let (_, group) = server.lod_groups.iter().next().unwrap();
+        assert_eq!(group.metric, LodMetric::ScreenSize);
+        assert_eq!(group.levels[0].mesh, rock, "paths are relative to it");
+        let coarse = group.levels[1].mesh;
+        assert_eq!(server.meshes.get(coarse).unwrap().indices.len(), 3);
+        // A missing `until` draws at any range.
+        assert_eq!(group.ranges(), [[0.0, 2.0], [2.0, f32::INFINITY]]);
+        // Loading the mesh again does not add the group twice.
+        server.load_mesh(folder.join("rock.rmesh")).unwrap();
+        assert_eq!(server.lod_groups.len(), 1);
+
+        let distance = LodGroupAsset {
+            metric: LodMetric::Distance,
+            levels: vec![
+                LodLevel {
+                    mesh: rock,
+                    until: 7.0,
+                },
+                LodLevel {
+                    mesh: coarse,
+                    until: 11.0,
+                },
+            ],
+        };
+        assert_eq!(distance.ranges(), [[0.0, 7.0], [7.0, 11.0]]);
+        std::fs::write(
+            folder.join("bad.rlod"),
+            r#"{"metric": "Distance", "levels": [
+                {"mesh": "rock.rmesh", "until": 10},
+                {"mesh": "lods/rock_1.rmesh", "until": 5}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(server.load_lod_group(folder.join("bad.rlod")).is_err());
+        std::fs::write(folder.join("empty.rlod"), r#"{"levels": []}"#).unwrap();
+        assert!(server.load_lod_group(folder.join("empty.rlod")).is_err());
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

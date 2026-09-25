@@ -5,12 +5,12 @@ use vulkano::device::Device;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::render_pass::RenderPass;
 
+use crate::assets::MaterialModel;
 use crate::rendering::pipeline::create_pipeline;
 use crate::shaders::{fragment::*, vertex::vs};
 
-/// Fragment shader variant that a user can assign to an object or scene.
-/// Determines which fragment shader is used during rendering.
-/// `Pbr` is the most powerful one
+/// Internal fragment shader variant of the legacy renderer. Public materials
+/// choose a [`MaterialModel`]; the extra variants are debug and stress shaders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ShaderType {
     /// Full PBR (Cook-Torrance BRDF, fog, vignette, tone-mapping). This is the default.
@@ -47,6 +47,15 @@ impl ShaderType {
             ShaderType::Emissive => 2,
             ShaderType::NormalDebug => 3,
             ShaderType::Heavy => 4,
+        }
+    }
+}
+
+impl From<MaterialModel> for ShaderType {
+    fn from(model: MaterialModel) -> Self {
+        match model {
+            MaterialModel::Pbr => ShaderType::Pbr,
+            MaterialModel::Unlit => ShaderType::Unlit,
         }
     }
 }

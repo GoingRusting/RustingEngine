@@ -9,12 +9,15 @@ use bevy_ecs::prelude::World;
 use egui::DragValue;
 
 use super::gui_elements::EditorTheme;
-use super::EditorState;
+use super::{AssetRequest, EditorState};
+use crate::assets::{
+    AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel, TextureAsset,
+};
 use crate::runtime::{
     Camera, Collider, ColliderShape, DirectionalLight, MeshRenderer, Name,
     ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
-    PointLight, Projection, RigidBody, RigidBodyKind, SimulationClass,
-    SpotLight,
+    PointLight, Projection, RenderBounds, RigidBody, RigidBodyKind,
+    SimulationClass, SpotLight,
 };
 use crate::Transform;
 
@@ -52,6 +55,30 @@ const PHYSICS_SOLVERS: [(PhysicsSolver, &str); 5] = [
     (PhysicsSolver::Space, "Space"),
 ];
 
+const MATERIAL_MODELS: [(MaterialModel, &str); 2] =
+    [(MaterialModel::Pbr, "PBR"), (MaterialModel::Unlit, "Unlit")];
+
+/// Inspector names of the material texture slots, in [`texture_slots`] order.
+pub(super) const TEXTURE_SLOTS: [&str; 5] = [
+    "Base Color Map",
+    "Normal Map",
+    "Metal/Rough Map",
+    "Occlusion Map",
+    "Emissive Map",
+];
+
+pub(super) fn texture_slots(
+    material: &mut MaterialAsset,
+) -> [&mut Option<Handle<TextureAsset>>; 5] {
+    [
+        &mut material.base_color_texture,
+        &mut material.normal_texture,
+        &mut material.metallic_roughness_texture,
+        &mut material.occlusion_texture,
+        &mut material.emissive_texture,
+    ]
+}
+
 const RIGID_BODY_KINDS: [(RigidBodyKind, &str); 3] = [
     (RigidBodyKind::Dynamic, "Dynamic"),
     (RigidBodyKind::Kinematic, "Kinematic"),
@@ -78,6 +105,9 @@ pub(super) fn draw_inspector_area(
     edited_physics: &mut Option<PhysicsBody>,
     edited_rigid_body: &mut Option<RigidBody>,
     edited_collider: &mut Option<Collider>,
+    edited_render_bounds: &mut Option<RenderBounds>,
+    edited_material: &mut Option<MaterialAsset>,
+    asset_request: &mut Option<AssetRequest>,
     registered_names: &[String],
     custom_values: &[(String, String)],
     component_edits: &mut Vec<ComponentEdit>,
@@ -131,11 +161,16 @@ pub(super) fn draw_inspector_area(
                         "Mesh",
                         &format!("#{:016x}", renderer.mesh.key()),
                     );
-                    widgets::value(
-                        ui,
-                        "Material",
-                        &format!("#{:016x}", renderer.material.key()),
-                    );
+                    let mesh_box = world
+                        .get_resource::<crate::assets::AssetServer>()
+                        .and_then(|assets| assets.meshes.get(renderer.mesh))
+                        .and_then(crate::editor::overlay::mesh_bounds);
+                    edit_render_bounds(ui, edited_render_bounds, mesh_box);
+                });
+            }
+            if let Some(material) = edited_material {
+                widgets::section(ui, "Material", false, |ui| {
+                    draw_material(ui, world, material, asset_request);
                 });
             }
             if let Some(camera) = edited_camera {
@@ -219,7 +254,7 @@ pub(super) fn draw_inspector_area(
                         }
                         Err(error) => {
                             ui.colored_label(
-                                egui::Color32::LIGHT_RED,
+                                EditorTheme::ERROR,
                                 format!("Unreadable value: {error}"),
                             );
                         }
@@ -411,7 +446,7 @@ fn draw_physics(
             } else {
                 note(
                     ui,
-                    egui::Color32::LIGHT_RED,
+                    EditorTheme::ERROR,
                     "Gameplay physics backend is not connected yet.",
                 );
             }
@@ -420,7 +455,7 @@ fn draw_physics(
             if !physics_backends.gpu_dynamic_available {
                 note(
                     ui,
-                    egui::Color32::LIGHT_YELLOW,
+                    EditorTheme::WARNING,
                     "GPU gravity and condition events run in native Play; \
                      editor preview simulation is not active yet.",
                 );
@@ -468,6 +503,192 @@ fn draw_physics(
 }
 
 /// Draws shape, friction, bounce, and trigger settings for one collider.
+/// Render Bounds choice for the culling volume.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BoundsKind {
+    /// No override: culling uses the mesh's own box.
+    Mesh,
+    Box,
+    Sphere,
+}
+
+/// Returns the override for a newly chosen kind, starting from the mesh box
+/// (or the unit cube when the mesh is unknown) so the volume does not jump.
+fn bounds_for_kind(
+    kind: BoundsKind,
+    mesh_box: Option<([f32; 3], [f32; 3])>,
+) -> Option<RenderBounds> {
+    let (min, max) = mesh_box.unwrap_or(([-0.5; 3], [0.5; 3]));
+    match kind {
+        BoundsKind::Mesh => None,
+        BoundsKind::Box => Some(RenderBounds::Aabb { min, max }),
+        BoundsKind::Sphere => {
+            let center =
+                std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5);
+            let radius = (0..3)
+                .map(|axis| (max[axis] - min[axis]).powi(2))
+                .sum::<f32>()
+                .sqrt()
+                * 0.5;
+            Some(RenderBounds::Sphere { center, radius })
+        }
+    }
+}
+
+/// Edits the local-space `RenderBounds` override; `None` is the mesh box.
+/// Material of the selected Mesh Renderer. The caller writes the copy back,
+/// cloning the material first when other renderers share it.
+fn draw_material(
+    ui: &mut egui::Ui,
+    world: &World,
+    material: &mut MaterialAsset,
+    asset_request: &mut Option<AssetRequest>,
+) {
+    widgets::property_row(ui, "", |ui| {
+        if ui
+            .button("New Material")
+            .on_hover_text("Give this object its own default material")
+            .clicked()
+        {
+            *asset_request = Some(AssetRequest::NewMaterial);
+        }
+    });
+    widgets::choice(ui, "Model", &mut material.model, &MATERIAL_MODELS);
+    let mut alpha = match material.alpha_mode {
+        AlphaMode::Opaque => 0,
+        AlphaMode::Mask { .. } => 1,
+        AlphaMode::Blend => 2,
+    };
+    if widgets::choice(
+        ui,
+        "Alpha",
+        &mut alpha,
+        &[(0, "Opaque"), (1, "Mask"), (2, "Blend")],
+    ) {
+        material.alpha_mode = match alpha {
+            1 => AlphaMode::Mask { cutoff: 0.5 },
+            2 => AlphaMode::Blend,
+            _ => AlphaMode::Opaque,
+        };
+    }
+    if let AlphaMode::Mask { cutoff } = &mut material.alpha_mode {
+        widgets::drag(
+            ui,
+            "Alpha Cutoff",
+            DragValue::new(cutoff).range(0.0..=1.0).speed(0.01),
+        );
+    }
+    let [r, g, b, a] = &mut material.base_color;
+    let mut rgb = [*r, *g, *b];
+    if widgets::color(ui, "Base Color", &mut rgb) {
+        [*r, *g, *b] = rgb;
+    }
+    widgets::drag(
+        ui,
+        "Opacity",
+        DragValue::new(a).range(0.0..=1.0).speed(0.01),
+    );
+    widgets::drag(
+        ui,
+        "Metallic",
+        DragValue::new(&mut material.metallic)
+            .range(0.0..=1.0)
+            .speed(0.01),
+    );
+    widgets::drag(
+        ui,
+        "Roughness",
+        DragValue::new(&mut material.roughness)
+            .range(0.0..=1.0)
+            .speed(0.01),
+    );
+    widgets::color(ui, "Emissive", &mut material.emissive);
+
+    let Some(assets) = world.get_resource::<AssetServer>() else {
+        return;
+    };
+    let mut textures = vec![
+        (None, "None".to_owned()),
+        (Some(assets.fallback_texture), "White (built-in)".to_owned()),
+    ];
+    textures.extend(assets.textures.paths().map(|(handle, path)| {
+        let name = path.file_name().unwrap_or(path.as_os_str());
+        (Some(handle), name.to_string_lossy().into_owned())
+    }));
+    // ponytail: every image loads as sRGB, like scene loading does; normal
+    // and metal/rough maps need a linear load path keyed by color space.
+    for (slot, (label, texture)) in TEXTURE_SLOTS
+        .iter()
+        .zip(texture_slots(material))
+        .enumerate()
+    {
+        let selected = textures
+            .iter()
+            .find(|(handle, _)| handle == texture)
+            .map_or("Unknown", |(_, name)| name.as_str());
+        widgets::property_row(ui, label, |ui| {
+            let load = ui
+                .button("Load…")
+                .on_hover_text("Choose an image file for this slot");
+            if load.clicked() {
+                *asset_request = Some(AssetRequest::LoadMaterialTexture(slot));
+            }
+            egui::ComboBox::from_id_salt(label)
+                .width(ui.available_width())
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for (handle, name) in &textures {
+                        ui.selectable_value(texture, *handle, name);
+                    }
+                });
+        });
+    }
+}
+
+fn edit_render_bounds(
+    ui: &mut egui::Ui,
+    bounds: &mut Option<RenderBounds>,
+    mesh_box: Option<([f32; 3], [f32; 3])>,
+) {
+    let current = match bounds {
+        None => BoundsKind::Mesh,
+        Some(RenderBounds::Aabb { .. }) => BoundsKind::Box,
+        Some(RenderBounds::Sphere { .. }) => BoundsKind::Sphere,
+    };
+    let mut kind = current;
+    widgets::choice(
+        ui,
+        "Render Bounds",
+        &mut kind,
+        &[
+            (BoundsKind::Mesh, "Mesh"),
+            (BoundsKind::Box, "Box"),
+            (BoundsKind::Sphere, "Sphere"),
+        ],
+    );
+    if kind != current {
+        *bounds = bounds_for_kind(kind, mesh_box);
+    }
+    match bounds {
+        None => {}
+        Some(RenderBounds::Aabb { min, max }) => {
+            widgets::vec3(ui, "Min", min, 0.05);
+            widgets::vec3(ui, "Max", max, 0.05);
+            for axis in 0..3 {
+                max[axis] = max[axis].max(min[axis]);
+            }
+        }
+        Some(RenderBounds::Sphere { center, radius }) => {
+            widgets::vec3(ui, "Center", center, 0.05);
+            widgets::drag(
+                ui,
+                "Radius",
+                DragValue::new(radius).range(0.0..=1_000_000.0).speed(0.05),
+            );
+        }
+    }
+}
+
 fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
     #[derive(Clone, Copy, PartialEq)]
     enum Shape {
@@ -527,4 +748,33 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
     widgets::drag(ui, "Friction", unit(&mut collider.friction));
     widgets::drag(ui, "Bounciness", unit(&mut collider.restitution));
     widgets::checkbox(ui, "Trigger", &mut collider.sensor);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_bounds_kinds_start_from_the_mesh_box() {
+        let mesh_box = Some(([0.0, 0.0, 0.0], [2.0, 2.0, 1.0]));
+        assert_eq!(bounds_for_kind(BoundsKind::Mesh, mesh_box), None);
+        assert_eq!(
+            bounds_for_kind(BoundsKind::Box, mesh_box),
+            Some(RenderBounds::Aabb {
+                min: [0.0; 3],
+                max: [2.0, 2.0, 1.0],
+            })
+        );
+        assert_eq!(
+            bounds_for_kind(BoundsKind::Sphere, mesh_box),
+            Some(RenderBounds::Sphere {
+                center: [1.0, 1.0, 0.5],
+                radius: 1.5,
+            })
+        );
+        assert_eq!(
+            bounds_for_kind(BoundsKind::Box, None),
+            Some(RenderBounds::default())
+        );
+    }
 }

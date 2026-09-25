@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use bevy_ecs::change_detection::{DetectChanges, Tick};
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Resource, World};
+use bevy_ecs::prelude::{Or, Ref, Resource, With, World};
 use nalgebra::Matrix4;
 
 use crate::components::{Children, GlobalTransform, Parent};
@@ -34,6 +35,14 @@ impl Error for HierarchyError {}
 pub struct HierarchyDiagnostics {
     pub cycles: Vec<Entity>,
     pub missing_parents: Vec<Entity>,
+}
+
+/// What the last full propagation saw. A run with no changed `Transform` or
+/// `Parent` and the same component counts has nothing to update.
+#[derive(Resource)]
+struct PropagationFingerprint {
+    last_run: Tick,
+    counts: [usize; 3],
 }
 
 /// Parents `child` beneath `parent`, maintaining both sides of the relation.
@@ -100,7 +109,50 @@ pub fn clear_parent(
 /// absent. Every live entity is resolved in deterministic entity order, and
 /// diagnostic entity lists are likewise sorted. A [`GlobalTransform`] is never
 /// inserted on a transformless entity.
+///
+/// Returns early when no `Transform` or `Parent` changed since the last run
+/// and no entity lost one of them or `Children`. Removing or despawning such
+/// an entity lowers a count; adding one back is itself a change.
+// ponytail: any single moved object still rebuilds everything; walk only the
+// changed subtrees if many moving objects make this hot.
 pub fn propagate_transforms(world: &mut World) {
+    let this_run = world.increment_change_tick();
+    let mut counts = [0; 3];
+    let mut changed = false;
+    let last_run = world
+        .get_resource::<PropagationFingerprint>()
+        .map(|fingerprint| fingerprint.last_run);
+    let mut query = world.query_filtered::<(
+        Option<Ref<Transform>>,
+        Option<Ref<Parent>>,
+        Option<&Children>,
+    ), Or<(With<Transform>, With<Parent>, With<Children>)>>(
+    );
+    for (transform, parent, children) in query.iter(world) {
+        counts[0] += usize::from(transform.is_some());
+        counts[1] += usize::from(parent.is_some());
+        counts[2] += usize::from(children.is_some());
+        changed |= last_run.is_some_and(|last_run| {
+            transform.is_some_and(|value| {
+                value.last_changed().is_newer_than(last_run, this_run)
+            }) || parent.is_some_and(|value| {
+                value.last_changed().is_newer_than(last_run, this_run)
+            })
+        });
+    }
+    let unchanged = world
+        .get_resource::<PropagationFingerprint>()
+        .is_some_and(|fingerprint| fingerprint.counts == counts)
+        && !changed
+        && world.contains_resource::<HierarchyDiagnostics>();
+    world.insert_resource(PropagationFingerprint {
+        last_run: this_run,
+        counts,
+    });
+    if unchanged {
+        return;
+    }
+
     if !world.contains_resource::<HierarchyDiagnostics>() {
         world.insert_resource(HierarchyDiagnostics::default());
     }
@@ -430,6 +482,42 @@ mod tests {
         assert!(diagnostics.missing_parents.is_empty());
         assert!(world.get::<GlobalTransform>(first).is_none());
         assert!(world.get::<GlobalTransform>(second).is_none());
+    }
+
+    #[test]
+    fn propagation_skips_unchanged_worlds_but_sees_later_edits() {
+        let mut world = World::new();
+        let parent = world.spawn(Transform::new([2.0, 0.0, 0.0])).id();
+        let child = world.spawn(Transform::new([1.0, 0.0, 0.0])).id();
+        set_parent(&mut world, child, parent).unwrap();
+        propagate_transforms(&mut world);
+
+        // Nothing changed, so a planted value survives the next run.
+        world.get_mut::<GlobalTransform>(child).unwrap().matrix[3][0] = 99.0;
+        propagate_transforms(&mut world);
+        assert_eq!(
+            world.get::<GlobalTransform>(child).unwrap().matrix[3][0],
+            99.0
+        );
+
+        world.get_mut::<Transform>(parent).unwrap().position[0] = 5.0;
+        propagate_transforms(&mut world);
+        assert_eq!(
+            world.get::<GlobalTransform>(child).unwrap().matrix[3][0],
+            6.0
+        );
+
+        // Despawning the parent changes no remaining component, only counts.
+        world.despawn(parent);
+        propagate_transforms(&mut world);
+        assert_eq!(
+            world.get::<GlobalTransform>(child).unwrap().matrix[3][0],
+            1.0
+        );
+        assert_eq!(
+            world.resource::<HierarchyDiagnostics>().missing_parents,
+            vec![child]
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Material system for creating visually appealing objects without textures.
 //!
 //! Materials control the surface appearance of objects including color,
-//! roughness, metalness, and which shader to use.
+//! roughness, metalness, and lighting model.
 
-use crate::rendering::shader_registry::ShaderType;
+use crate::assets::MaterialModel;
 
 /// Core material definition that determines how an object appears when rendered.
 ///
@@ -13,7 +13,7 @@ use crate::rendering::shader_registry::ShaderType;
 /// # Examples
 ///
 /// ```
-/// use rusting_engine::{Material, ShaderType};
+/// use rusting_engine::{Material, MaterialModel};
 ///
 /// // Create a red, metallic material
 /// let metal = Material::standard()
@@ -26,7 +26,7 @@ use crate::rendering::shader_registry::ShaderType;
 /// let glow = Material::standard()
 ///     .color([0.0, 1.0, 0.0])
 ///     .emissive(2.0)
-///     .shader(ShaderType::Unlit)
+///     .model(MaterialModel::Unlit)
 ///     .build();
 /// ```
 #[derive(Clone, Debug)]
@@ -43,8 +43,8 @@ pub struct Material {
     /// How metallic the surface appears (0.0 = dielectric, 1.0 = pure metal)
     pub metalness: f32,
 
-    /// Which shader program to use for rendering this material
-    pub shader: ShaderType,
+    /// Lighting model; the renderer picks the shader variant from it.
+    pub model: MaterialModel,
 
     /// Optional texture ID for the base color/albedo map
     pub base_color_texture: Option<usize>,
@@ -60,7 +60,7 @@ impl Default for Material {
             emissive: 0.0,
             roughness: 0.5,
             metalness: 0.0,
-            shader: ShaderType::Pbr,
+            model: MaterialModel::Pbr,
             base_color_texture: None,
             metallic_roughness_texture: None,
         }
@@ -106,7 +106,7 @@ pub struct MaterialBuilder {
     emissive: f32,
     roughness: f32,
     metalness: f32,
-    shader: ShaderType,
+    model: MaterialModel,
     base_color_texture: Option<usize>,
     metallic_roughness_texture: Option<usize>,
 }
@@ -119,7 +119,7 @@ impl Default for MaterialBuilder {
             emissive: material.emissive,
             roughness: material.roughness,
             metalness: material.metalness,
-            shader: material.shader,
+            model: material.model,
             base_color_texture: material.base_color_texture,
             metallic_roughness_texture: material.metallic_roughness_texture,
         }
@@ -215,25 +215,18 @@ impl MaterialBuilder {
         self
     }
 
-    /// Sets which shader to use for rendering this material.
-    ///
-    /// Different shader types provide different visual effects and
-    /// performance characteristics.
+    /// Sets the lighting model.
     ///
     /// # Example
     ///
     /// ```
-    /// # use rusting_engine::{Material, ShaderType};
+    /// # use rusting_engine::{Material, MaterialModel};
     /// let unlit = Material::standard()
-    ///     .shader(ShaderType::Unlit)  // No lighting calculations
-    ///     .build();
-    ///
-    /// let pbr = Material::standard()
-    ///     .shader(ShaderType::Pbr)    // Full physically-based rendering
+    ///     .model(MaterialModel::Unlit)  // No lighting calculations
     ///     .build();
     /// ```
-    pub fn shader(mut self, s: ShaderType) -> Self {
-        self.shader = s;
+    pub fn model(mut self, model: MaterialModel) -> Self {
+        self.model = model;
         self
     }
 
@@ -265,7 +258,7 @@ impl MaterialBuilder {
             emissive: self.emissive,
             roughness: self.roughness,
             metalness: self.metalness,
-            shader: self.shader,
+            model: self.model,
             base_color_texture: self.base_color_texture,
             metallic_roughness_texture: self.metallic_roughness_texture,
         }

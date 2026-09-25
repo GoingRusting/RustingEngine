@@ -4,6 +4,7 @@
 //! composites the resulting shapes over the Vulkan scene.
 
 mod dock;
+mod file_dialogs;
 pub mod gui_elements;
 mod hierarchy;
 mod icons;
@@ -16,6 +17,7 @@ pub mod view;
 
 use dock::EditorLayoutFile;
 pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
+use file_dialogs::{DialogPurpose, FileDialogs};
 use hierarchy::{collect_entities, draw_hierarchy_area};
 pub use icons::EditorIcon;
 use inspector::{draw_inspector_area, ComponentEdit};
@@ -28,9 +30,9 @@ pub use project::{
 };
 pub use shortcuts::{
     add_mouse_delta, handle_keyboard_input, handle_mouse_button_input,
-    handle_mouse_wheel, update_fly_camera, EditorFlyCamera, EditorShortcuts,
-    EditorTransformMode, KeyBinding, SceneViewAction, ShortcutAction,
-    ShortcutContext, TransformModes,
+    handle_mouse_wheel, release_editor_navigation, update_fly_camera,
+    EditorFlyCamera, EditorShortcuts, EditorTransformMode, KeyBinding,
+    SceneViewAction, ShortcutAction, ShortcutContext, TransformModes,
 };
 
 use bevy_ecs::entity::Entity;
@@ -39,6 +41,7 @@ use egui::{CentralPanel, Context, DragValue, TopBottomPanel};
 use std::path::PathBuf;
 
 use crate::rendering::debug_overlay::RenderDebugOverlay;
+use crate::rendering::scene_renderer::SceneDebugView;
 use crate::runtime::{
     add_registered_component, cook_scene, load_scene,
     registered_component_names, registered_component_values,
@@ -46,7 +49,7 @@ use crate::runtime::{
     set_registered_component, App, AppError, Camera, Collider, CollisionLayers,
     DirectionalLight, GlobalTransform, MeshRenderer, Name, ObjectClasses,
     Parent, PhysicsBackendStatus, PhysicsBody, Plugin, PointLight,
-    RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
+    RenderBounds, RenderCameraOverride, RenderSettings, RenderWorld, RigidBody,
     SceneDocument, SceneId, SceneLoadMode, SpotLight, Visibility,
 };
 use crate::Transform;
@@ -54,6 +57,123 @@ use crate::{
     AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset, MeshAsset,
     PrimitiveShape, TextureAsset,
 };
+
+/// True when the editor must redraw every frame: the game is playing or the
+/// fly camera moves without window events. Otherwise it redraws only on input,
+/// egui repaint requests, and a slow idle tick.
+pub fn editor_needs_continuous_redraw(world: &World) -> bool {
+    world
+        .get_resource::<EditorState>()
+        .is_some_and(|state| state.mode == EditorMode::Play)
+        || world
+            .get_resource::<EditorFlyCamera>()
+            .is_some_and(|fly| fly.active || fly.drag.is_some())
+}
+
+/// Editor view state saved beside a scene, like Godot's per-scene edit
+/// state. The game never reads it, so the scene file stays clean.
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, PartialEq)]
+struct EditorSceneMetadata {
+    camera_position: Option<[f32; 3]>,
+    camera_rotation: Option<[f32; 3]>,
+    orbit_distance: Option<f32>,
+    /// Selected objects by `SceneId`; the first one is the active object.
+    selection: Vec<uuid::Uuid>,
+}
+
+/// Sidecar path for a scene's editor metadata: `main.rscene` becomes
+/// `main.rscene.editor.json`.
+fn editor_metadata_path(scene: &std::path::Path) -> PathBuf {
+    let mut path = scene.as_os_str().to_owned();
+    path.push(".editor.json");
+    PathBuf::from(path)
+}
+
+/// Saves the scene, then the editor camera pose and selection beside it.
+/// A failed metadata write does not fail the save.
+pub fn save_editor_scene(
+    world: &mut World,
+    state: &EditorState,
+    path: &std::path::Path,
+) -> Result<(), crate::runtime::SceneIoError> {
+    save_scene(world, path, "Main Scene")?;
+    let camera = state
+        .editor_camera
+        .and_then(|camera| world.get::<Transform>(camera));
+    let selection = state
+        .selected
+        .into_iter()
+        .chain(state.selection.iter().copied())
+        .filter_map(|entity| world.get::<SceneId>(entity).map(|id| id.0));
+    let mut metadata = EditorSceneMetadata {
+        camera_position: camera.map(|transform| transform.position),
+        camera_rotation: camera.map(|transform| transform.rotation),
+        orbit_distance: world
+            .get_resource::<EditorFlyCamera>()
+            .map(|fly| fly.orbit_distance),
+        selection: Vec::new(),
+    };
+    for id in selection {
+        if !metadata.selection.contains(&id) {
+            metadata.selection.push(id);
+        }
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&metadata) {
+        let _ =
+            crate::runtime::write_atomic(editor_metadata_path(path), &bytes);
+    }
+    Ok(())
+}
+
+/// Replaces the scene, then restores the editor camera pose and selection
+/// saved beside it. A missing or unreadable sidecar leaves the camera as is
+/// and clears the selection.
+pub fn load_editor_scene(
+    world: &mut World,
+    state: &mut EditorState,
+    path: &std::path::Path,
+) -> Result<usize, crate::runtime::SceneIoError> {
+    let count = load_scene(world, path, SceneLoadMode::Replace)?;
+    state.selected = None;
+    state.selection.clear();
+    let Some(metadata) = std::fs::read(editor_metadata_path(path))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<EditorSceneMetadata>(&bytes).ok()
+        })
+    else {
+        return Ok(count);
+    };
+    if let Some(mut transform) = state
+        .editor_camera
+        .and_then(|camera| world.get_mut::<Transform>(camera))
+    {
+        if let Some(position) = metadata.camera_position {
+            transform.position = position;
+        }
+        if let Some(rotation) = metadata.camera_rotation {
+            transform.rotation = rotation;
+        }
+    }
+    if let (Some(distance), Some(mut fly)) = (
+        metadata.orbit_distance,
+        world.get_resource_mut::<EditorFlyCamera>(),
+    ) {
+        fly.orbit_distance = distance;
+    }
+    let mut query = world.query::<(Entity, &SceneId)>();
+    let by_id: std::collections::HashMap<_, _> = query
+        .iter(world)
+        .map(|(entity, id)| (id.0, entity))
+        .collect();
+    state.selection = metadata
+        .selection
+        .iter()
+        .filter_map(|id| by_id.get(id).copied())
+        .collect();
+    state.selected = state.selection.first().copied();
+    Ok(count)
+}
 
 /// Applies the editor's compact dark workspace theme to an egui context.
 /// Also restores the user's saved UI scale.
@@ -177,6 +297,9 @@ pub struct EditorViewport {
     pub extent: [u32; 2],
     /// False when the layout does not contain a live 3D area.
     pub valid: bool,
+    /// True when the pointer is over the view and no egui popup, menu, or
+    /// viewport toolbar covers it.
+    pub hovered: bool,
 }
 
 /// Options for helpers visible only while authoring in the Scene View.
@@ -191,6 +314,8 @@ pub struct EditorGizmoSettings {
     pub show_selected_axes: bool,
     /// Draw a yellow box around the selected render mesh.
     pub show_selected_bounds: bool,
+    /// Diagnostic shading of the Scene View; Play always renders lit.
+    pub shading: SceneDebugView,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -235,12 +360,23 @@ impl EditorGizmoDrag {
     }
 }
 
+/// Shading the renderer uses this frame: the Scene View's chosen shading,
+/// or [`SceneDebugView::Lit`] in every other workspace.
+pub fn editor_debug_view(world: &World) -> SceneDebugView {
+    if world.resource::<EditorState>().workspace == EditorWorkspace::Scene {
+        world.resource::<EditorGizmoSettings>().shading
+    } else {
+        SceneDebugView::Lit
+    }
+}
+
 impl Default for EditorGizmoSettings {
     fn default() -> Self {
         Self {
             show_grid: true,
             show_selected_axes: true,
             show_selected_bounds: true,
+            shading: SceneDebugView::Lit,
         }
     }
 }
@@ -253,7 +389,7 @@ pub struct EditorDebugOverlay(pub RenderDebugOverlay);
 #[derive(Resource, Clone, Debug, Default)]
 struct EditorHistory {
     /// Scene states restored by Undo, newest last.
-    undo: Vec<SceneDocument>,
+    undo: std::collections::VecDeque<SceneDocument>,
     /// Scene states restored by Redo, newest last.
     redo: Vec<SceneDocument>,
     /// Scene state from before the current continuous Inspector edit.
@@ -265,10 +401,10 @@ impl EditorHistory {
     const MAX_SNAPSHOTS: usize = 100;
 
     fn push_undo(&mut self, document: SceneDocument) {
-        if self.undo.last() != Some(&document) {
-            self.undo.push(document);
+        if self.undo.back() != Some(&document) {
+            self.undo.push_back(document);
             if self.undo.len() > Self::MAX_SNAPSHOTS {
-                self.undo.remove(0);
+                self.undo.pop_front();
             }
         }
         self.redo.clear();
@@ -397,7 +533,8 @@ impl Plugin for EditorPlugin {
             .insert_resource(PendingDestructiveAction::default())
             .insert_resource(EditorAssetState::default())
             .insert_resource(EditorBuildState::default())
-            .insert_resource(ProjectManagerState::default());
+            .insert_resource(ProjectManagerState::default())
+            .insert_resource(FileDialogs::default());
         Ok(())
     }
 }
@@ -435,6 +572,27 @@ struct EditorAssetState {
     gltf_primitives: Vec<ImportedGltfPrimitive>,
     /// Result of the latest import or assignment.
     message: Option<String>,
+    /// Cached `project_asset_files` result, so the disk is not walked every
+    /// frame.
+    files: Vec<PathBuf>,
+    /// Project root and time of the last scan; `None` forces a rescan.
+    files_scanned: Option<(String, std::time::Instant)>,
+}
+
+impl EditorAssetState {
+    /// Rescans the project's `assets` folder when the project changed or the
+    /// cached list is older than one second.
+    fn refresh_files(&mut self, project_root: &str) {
+        let fresh = self.files_scanned.as_ref().is_some_and(|(root, time)| {
+            root == project_root
+                && time.elapsed() < std::time::Duration::from_secs(1)
+        });
+        if !fresh {
+            self.files = project_asset_files(project_root);
+            self.files_scanned =
+                Some((project_root.to_owned(), std::time::Instant::now()));
+        }
+    }
 }
 
 /// Cargo work that can run without freezing the editor window.
@@ -479,6 +637,8 @@ struct EditorBuildState {
     /// Receiver is locked only because ECS resources must be thread-safe.
     receiver:
         std::sync::Mutex<Option<std::sync::mpsc::Receiver<BuildWorkerMessage>>>,
+    /// Set by Stop; the worker kills its current process when it sees it.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EditorBuildState {
@@ -507,6 +667,8 @@ impl EditorBuildState {
             BuildRequest::Export { .. } => "Building game for export...".into(),
         };
         self.console_cursor = 0;
+        self.stop = std::sync::Arc::default();
+        let stop = std::sync::Arc::clone(&self.stop);
         std::thread::spawn(move || {
             let command = match &request {
                 BuildRequest::Check => "check",
@@ -523,21 +685,18 @@ impl EditorBuildState {
             if let Some(flag) = profile.and_then(GameBuildProfile::cargo_flag) {
                 cargo.arg(flag);
             }
-            let result = cargo
+            cargo
                 .args(["--message-format", "short", "--manifest-path"])
                 .arg(&manifest)
-                .current_dir(&project_root)
-                .output();
-            let finished = match result {
-                Ok(output) => {
-                    let mut success = output.status.success();
-                    let mut text =
-                        String::from_utf8_lossy(&output.stdout).into_owned();
-                    text.push_str(&String::from_utf8_lossy(&output.stderr));
-                    if !text.is_empty() {
-                        let _ = sender.send(BuildWorkerMessage::Output(text));
-                    }
-                    if output.status.success() {
+                .current_dir(&project_root);
+            let finished = match run_streamed(&mut cargo, &sender, &stop) {
+                Ok(None) => BuildFinished {
+                    success: false,
+                    output: "\nCargo task stopped.\n".into(),
+                },
+                Ok(Some(status)) => {
+                    let mut success = status.success();
+                    if success {
                         if let BuildRequest::BuildAndRun { profile } = &request
                         {
                             return run_native_game(
@@ -545,6 +704,7 @@ impl EditorBuildState {
                                 &manifest,
                                 *profile,
                                 sender,
+                                &stop,
                             );
                         } else if let BuildRequest::Export {
                             parent,
@@ -597,6 +757,11 @@ impl EditorBuildState {
             let _ = sender.send(BuildWorkerMessage::Finished(finished));
         });
         Ok(())
+    }
+
+    /// Asks the worker to kill the running Cargo task or native game.
+    fn request_stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Receives new compiler and game output without blocking the editor.
@@ -656,17 +821,21 @@ impl EditorBuildState {
             while !self.output.is_char_boundary(remove) {
                 remove += 1;
             }
+            const MARKER: &str = "[older output truncated]\n";
             self.output.drain(..remove);
-            self.output.insert_str(0, "[older output truncated]\n");
+            self.output.insert_str(0, MARKER);
+            // Keep the Console cursor on the same text; unsent text that was
+            // dropped restarts the Console at the marker.
+            self.console_cursor = match self.console_cursor.checked_sub(remove)
+            {
+                Some(cursor) => cursor + MARKER.len(),
+                None => 0,
+            };
         }
     }
 
     /// Returns build text that has not yet been sent to the Console panel.
     fn take_console_output(&mut self) -> String {
-        if self.console_cursor > self.output.len() {
-            // The bounded output buffer discarded old bytes.
-            self.console_cursor = 0;
-        }
         let text = self.output[self.console_cursor..].to_owned();
         self.console_cursor = self.output.len();
         text
@@ -679,97 +848,97 @@ fn run_native_game(
     manifest: &std::path::Path,
     profile: GameBuildProfile,
     sender: std::sync::mpsc::Sender<BuildWorkerMessage>,
+    stop: &std::sync::atomic::AtomicBool,
 ) {
-    use std::io::BufRead;
-    use std::process::Stdio;
-
     let _ = sender.send(BuildWorkerMessage::Output(
         "\nBuild passed. Starting native game...\n".into(),
     ));
+    // On Unix `cargo run` replaces itself with the game, so Stop kills the
+    // game; on Windows Cargo's job object takes the game down with it.
     let mut cargo = std::process::Command::new("cargo");
     cargo.arg("run");
     if let Some(flag) = profile.cargo_flag() {
         cargo.arg(flag);
     }
-    let child = cargo
+    cargo
         .arg("--manifest-path")
         .arg(manifest)
-        .current_dir(project_root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = sender.send(BuildWorkerMessage::Finished(BuildFinished {
-                success: false,
-                output: format!("Could not start native game: {error}\n"),
-            }));
-            return;
-        }
-    };
-
-    let mut readers = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        let sender = sender.clone();
-        readers.push(std::thread::spawn(move || {
-            for line in std::io::BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) => {
-                        let _ = sender.send(BuildWorkerMessage::Output(
-                            format!("{line}\n"),
-                        ));
-                    }
-                    Err(error) => {
-                        let _ = sender.send(BuildWorkerMessage::Output(
-                            format!("Could not read game output: {error}\n"),
-                        ));
-                        break;
-                    }
-                }
-            }
-        }));
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let sender = sender.clone();
-        readers.push(std::thread::spawn(move || {
-            for line in std::io::BufReader::new(stderr).lines() {
-                match line {
-                    Ok(line) => {
-                        let _ = sender.send(BuildWorkerMessage::Output(
-                            format!("{line}\n"),
-                        ));
-                    }
-                    Err(error) => {
-                        let _ = sender.send(BuildWorkerMessage::Output(
-                            format!("Could not read game errors: {error}\n"),
-                        ));
-                        break;
-                    }
-                }
-            }
-        }));
-    }
-
-    let status = child.wait();
-    for reader in readers {
-        let _ = reader.join();
-    }
-    let finished = match status {
-        Ok(status) if status.success() => BuildFinished {
+        .current_dir(project_root);
+    let finished = match run_streamed(&mut cargo, &sender, stop) {
+        Ok(Some(status)) if status.success() => BuildFinished {
             success: true,
             output: "\nNative game exited successfully.\n".into(),
         },
-        Ok(status) => BuildFinished {
+        Ok(Some(status)) => BuildFinished {
             success: false,
             output: format!("\nNative game exited with status {status}.\n"),
         },
+        Ok(None) => BuildFinished {
+            success: false,
+            output: "\nNative game stopped.\n".into(),
+        },
         Err(error) => BuildFinished {
             success: false,
-            output: format!("\nCould not wait for native game: {error}\n"),
+            output: format!("\nCould not run native game: {error}\n"),
         },
     };
     let _ = sender.send(BuildWorkerMessage::Finished(finished));
+}
+
+/// Runs one command and sends each stdout and stderr line to the editor as
+/// it arrives. Returns `None` when `stop` was set and the process was killed.
+// ponytail: killing `cargo build` can leave its rustc children running until
+// they finish; add a process group kill if that becomes a problem.
+fn run_streamed(
+    command: &mut std::process::Command,
+    sender: &std::sync::mpsc::Sender<BuildWorkerMessage>,
+    stop: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
+        child.stdout.take().map(|pipe| Box::new(pipe) as _),
+        child.stderr.take().map(|pipe| Box::new(pipe) as _),
+    ];
+    let readers: Vec<_> = pipes
+        .into_iter()
+        .flatten()
+        .map(|pipe| {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(pipe).lines() {
+                    let text = match line {
+                        Ok(line) => format!("{line}\n"),
+                        Err(error) => {
+                            format!("Could not read output: {error}\n")
+                        }
+                    };
+                    let _ = sender.send(BuildWorkerMessage::Output(text));
+                }
+            })
+        })
+        .collect();
+
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    for reader in readers {
+        let _ = reader.join();
+    }
+    Ok(status)
 }
 
 /// Creates a portable folder after Cargo has produced the release binary.
@@ -928,6 +1097,16 @@ enum AssetRequest {
     ImportGltf(PathBuf),
     AssignTexture(Handle<TextureAsset>),
     AssignPrimitive(Handle<MeshAsset>, Handle<MaterialAsset>),
+    /// Gives the selected renderer a fresh default material.
+    NewMaterial,
+    /// Picks an image file for one `inspector::TEXTURE_SLOTS` slot.
+    LoadMaterialTexture(usize),
+    /// Puts the image a `LoadMaterialTexture` dialog chose into the slot.
+    SetMaterialTexture {
+        entity: Entity,
+        slot: usize,
+        path: PathBuf,
+    },
 }
 
 /// Scene-object operation requested by the Hierarchy area.
@@ -1088,6 +1267,7 @@ fn copy_into_project_assets(
 fn draw_project_manager(
     context: &Context,
     manager: &mut ProjectManagerState,
+    dialogs: &mut FileDialogs,
 ) -> Option<ProjectRequest> {
     if !manager.open {
         return None;
@@ -1122,12 +1302,11 @@ fn draw_project_manager(
                     });
             }
             if ui.button("Browse for existing project...").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Open RustingEngine Project")
-                    .pick_folder()
-                {
-                    request = Some(ProjectRequest::Open(path));
-                }
+                dialogs.pick_folder(
+                    DialogPurpose::OpenProject,
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Open RustingEngine Project"),
+                );
             }
 
             ui.separator();
@@ -1149,29 +1328,25 @@ fn draw_project_manager(
                     );
                 }
                 if ui.button("Browse...").clicked() {
-                    let mut dialog = rfd::FileDialog::new()
+                    let mut dialog = rfd::AsyncFileDialog::new()
                         .set_title("Choose Project Parent Folder");
                     if !manager.parent_directory.as_os_str().is_empty() {
                         dialog =
                             dialog.set_directory(&manager.parent_directory);
                     }
-                    if let Some(path) = dialog.pick_folder() {
-                        manager.parent_directory = path;
-                    }
+                    dialogs.pick_folder(
+                        DialogPurpose::ProjectParentFolder,
+                        dialog,
+                    );
                 }
             });
             if ui.button("Create Project").clicked() {
                 if manager.parent_directory.as_os_str().is_empty() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Choose Where to Create the Project")
-                        .pick_folder()
-                    {
-                        manager.parent_directory = path.clone();
-                        request = Some(ProjectRequest::Create {
-                            parent: path,
-                            name: manager.project_name.clone(),
-                        });
-                    }
+                    dialogs.pick_folder(
+                        DialogPurpose::CreateProjectIn,
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Choose Where to Create the Project"),
+                    );
                 } else {
                     request = Some(ProjectRequest::Create {
                         parent: manager.parent_directory.clone(),
@@ -1249,12 +1424,11 @@ fn show_dock_node(
                     // A panel must never draw or receive clicks over its neighbor.
                     ui.set_clip_rect(ui.clip_rect().intersect(panel_rect));
                     // Clicking any empty space or control selects this area.
-                    let pressed_inside = ui.input(|input| {
-                        input.pointer.primary_pressed()
-                            && input.pointer.interact_pos().is_some_and(
-                                |position| panel_rect.contains(position),
-                            )
-                    });
+                    // `rect_contains_pointer` respects layers, so a popup from
+                    // another area floating over this one does not select it.
+                    let pressed_inside = ui
+                        .input(|input| input.pointer.primary_pressed())
+                        && ui.rect_contains_pointer(panel_rect);
                     if pressed_inside {
                         *active_area = id;
                     }
@@ -1474,9 +1648,9 @@ fn show_dock_node(
                 divider_rect,
                 0.0,
                 if response.hovered() || response.dragged() {
-                    egui::Color32::from_rgb(55, 120, 220)
+                    gui_elements::EditorTheme::ACCENT_HOVER
                 } else {
-                    egui::Color32::from_rgb(38, 41, 48)
+                    gui_elements::EditorTheme::BORDER_SOFT
                 },
             );
             // Splits can contain more splits, so draw both children the same way.
@@ -1668,7 +1842,7 @@ fn save_project_source(
             format!("Could not create {}: {error}", parent.display())
         })?;
     }
-    std::fs::write(&path, source)
+    crate::runtime::write_atomic(&path, source.as_bytes())
         .map_err(|error| format!("Could not save {}: {error}", path.display()))
 }
 

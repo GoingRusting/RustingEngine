@@ -1,20 +1,22 @@
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use egui_winit_vulkano::{Gui, GuiConfig};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
     add_mouse_delta, configure_editor_style, draw_editor_view,
-    handle_keyboard_input, handle_mouse_button_input, handle_mouse_wheel,
-    update_fly_camera, EditorDebugOverlay, EditorPlugin, EditorState,
-    EditorViewport, EditorWorkspace,
+    editor_debug_view, editor_needs_continuous_redraw, handle_keyboard_input,
+    handle_mouse_button_input, handle_mouse_wheel, load_editor_scene,
+    release_editor_navigation, update_fly_camera, EditorDebugOverlay,
+    EditorPlugin, EditorState, EditorViewport, EditorWorkspace,
 };
+use rusting_engine::rendering::egui_painter::EguiPainter;
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
 use rusting_engine::rendering::scene_renderer::{
     SceneRenderOptions, SceneRenderer, SceneViewport,
 };
 use rusting_engine::runtime::{
-    extract_render_world, load_scene, Camera, MeshRenderer, Name,
-    RenderExtractPlugin, RenderWorld, SceneLoadMode, TimeControl,
+    extract_render_world, Camera, MeshRenderer, Name, RenderCameraOverride,
+    RenderWorld, TimeControl,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
@@ -25,8 +27,20 @@ use vulkano_util::context::{VulkanoConfig, VulkanoContext};
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
+
+/// egui context, winit input translation, and the engine painter.
+struct Gui {
+    context: egui::Context,
+    input: egui_winit::State,
+    painter: EguiPainter,
+    /// Texture changes not painted yet. A frame that fails to acquire an
+    /// image keeps them for the next one, so the font atlas is never lost.
+    textures: egui::TexturesDelta,
+    primitives: Vec<egui::ClippedPrimitive>,
+    pixels_per_point: f32,
+}
 
 struct EditorApplication {
     /// Vulkan device, queues, and shared memory allocators.
@@ -47,7 +61,17 @@ struct EditorApplication {
     applied_vsync: Option<bool>,
     /// Latest physical cursor coordinates used to enter fly mode from Scene View.
     cursor_position: [f64; 2],
+    /// True after a window event that the next frame must show.
+    input_pending: bool,
+    /// Earliest time egui asked to repaint, set by its repaint callback.
+    egui_repaint_at: Arc<Mutex<Option<Instant>>>,
+    /// Time of the next idle redraw, which shows build output, finished asset
+    /// loads, and hot reloads that arrive without input.
+    idle_redraw_at: Instant,
 }
+
+/// Longest time an idle editor waits before it draws a frame.
+const IDLE_REDRAW_INTERVAL: Duration = Duration::from_millis(500);
 
 impl EditorApplication {
     /// Creates editor data that does not need an open operating-system window.
@@ -55,7 +79,11 @@ impl EditorApplication {
         // Plugins add assets, render extraction, demo behaviour, and GUI state.
         let mut runtime = RuntimeApp::new();
         runtime.add_plugin(AssetPlugin).unwrap();
-        runtime.add_plugin(RenderExtractPlugin).unwrap();
+        // The editor extracts once, after the GUI edits the world, so it adds
+        // RenderExtractPlugin's resources without its scheduled system.
+        runtime
+            .insert_resource(RenderWorld::default())
+            .insert_resource(RenderCameraOverride::default());
         runtime.add_plugin(DemoPlugin).unwrap();
         runtime.add_plugin(EditorPlugin).unwrap();
         runtime.world_mut().resource_mut::<TimeControl>().pause();
@@ -110,18 +138,6 @@ impl EditorApplication {
                 ..Camera::default()
             },
         ));
-        // Replace the demo objects when a saved editor scene already exists.
-        let scene_path =
-            runtime.world().resource::<EditorState>().scene_path.clone();
-        if std::path::Path::new(&scene_path).is_file() {
-            if let Err(error) = load_scene(
-                runtime.world_mut(),
-                &scene_path,
-                SceneLoadMode::Replace,
-            ) {
-                eprintln!("failed to restore editor scene: {error}");
-            }
-        }
         // The editor camera is separate from the camera shipped with the game.
         let editor_camera = runtime
             .world_mut()
@@ -141,8 +157,26 @@ impl EditorApplication {
             .editor_camera = Some(editor_camera);
         runtime
             .world_mut()
-            .resource_mut::<rusting_engine::runtime::RenderCameraOverride>()
+            .resource_mut::<RenderCameraOverride>()
             .entity = Some(editor_camera);
+        // Replace the demo objects when a saved editor scene already exists.
+        // This runs after the editor camera exists so its saved pose applies.
+        let scene_path =
+            runtime.world().resource::<EditorState>().scene_path.clone();
+        if std::path::Path::new(&scene_path).is_file() {
+            let result = runtime.world_mut().resource_scope(
+                |world, mut state: bevy_ecs::prelude::Mut<EditorState>| {
+                    load_editor_scene(
+                        world,
+                        &mut state,
+                        std::path::Path::new(&scene_path),
+                    )
+                },
+            );
+            if let Err(error) = result {
+                eprintln!("failed to restore editor scene: {error}");
+            }
+        }
 
         Self {
             vulkan: VulkanoContext::new(VulkanoConfig::default()),
@@ -154,6 +188,9 @@ impl EditorApplication {
             frame_pacer: FramePacer::default(),
             applied_vsync: None,
             cursor_position: [0.0; 2],
+            input_pending: true,
+            egui_repaint_at: Arc::default(),
+            idle_redraw_at: Instant::now(),
         }
     }
 }
@@ -204,17 +241,40 @@ impl ApplicationHandler for EditorApplication {
             .expect("failed to create editor scene renderer"),
         );
         // Egui draws last, which places controls over the 3D scene.
-        let gui = Gui::new(
-            event_loop,
-            renderer.surface(),
+        let painter = EguiPainter::new(
             renderer.graphics_queue(),
+            self.vulkan.memory_allocator().clone(),
             renderer.swapchain_format(),
-            GuiConfig {
-                is_overlay: true,
-                ..GuiConfig::default()
-            },
+        )
+        .expect("failed to create editor egui painter");
+        let context = egui::Context::default();
+        let input = egui_winit::State::new(
+            context.clone(),
+            context.viewport_id(),
+            event_loop,
+            Some(renderer.window().scale_factor() as f32),
+            Some(match context.theme() {
+                egui::Theme::Dark => winit::window::Theme::Dark,
+                egui::Theme::Light => winit::window::Theme::Light,
+            }),
+            Some(painter.max_texture_side()),
         );
-        configure_editor_style(&gui.context());
+        let gui = Gui {
+            context,
+            input,
+            painter,
+            textures: egui::TexturesDelta::default(),
+            primitives: Vec::new(),
+            pixels_per_point: 1.0,
+        };
+        configure_editor_style(&gui.context);
+        let repaint_at = Arc::clone(&self.egui_repaint_at);
+        gui.context.set_request_repaint_callback(move |info| {
+            let at = Instant::now() + info.delay;
+            if let Ok(mut slot) = repaint_at.lock() {
+                *slot = Some(slot.map_or(at, |old| old.min(at)));
+            }
+        });
         self.gui = Some(gui);
     }
 
@@ -227,14 +287,23 @@ impl ApplicationHandler for EditorApplication {
         let Some(gui) = self.gui.as_mut() else {
             return;
         };
-        // Give keyboard, mouse, and clipboard events to egui first.
-        gui.update(&event);
         let renderer = self.windows.get_renderer_mut(window_id).unwrap();
+        // Give keyboard, mouse, and clipboard events to egui first.
+        let _ = gui.input.on_window_event(renderer.window(), &event);
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.input_pending = true;
+        }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Focused(false) => {
+                release_editor_navigation(
+                    self.runtime.world_mut(),
+                    renderer.window(),
+                );
+            }
             WindowEvent::KeyboardInput { event, .. } => {
-                let ui_wants_keyboard = gui.context().wants_keyboard_input();
+                let ui_wants_keyboard = gui.context.wants_keyboard_input();
                 handle_keyboard_input(
                     self.runtime.world_mut(),
                     renderer.window(),
@@ -252,14 +321,17 @@ impl ApplicationHandler for EditorApplication {
                     state,
                     button,
                     self.cursor_position,
-                    gui.context().input(|input| input.modifiers.shift),
+                    gui.context.input(|input| input.modifiers.shift),
                 );
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
+                    // About 20 logical pixels per wheel line, so trackpad
+                    // dolly speed does not depend on display DPI.
                     MouseScrollDelta::PixelDelta(position) => {
-                        position.y as f32 / 40.0
+                        (position.y / (renderer.window().scale_factor() * 20.0))
+                            as f32
                     }
                 };
                 handle_mouse_wheel(
@@ -275,6 +347,12 @@ impl ApplicationHandler for EditorApplication {
             WindowEvent::RedrawRequested => {
                 // Update game time and all ECS schedules before drawing.
                 let now = Instant::now();
+                self.input_pending = false;
+                self.idle_redraw_at = now + IDLE_REDRAW_INTERVAL;
+                // The callback refills this with requests made by this frame.
+                if let Ok(mut slot) = self.egui_repaint_at.lock() {
+                    *slot = None;
+                }
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
                 // Navigation runs before ECS extraction, so the renderer uses
@@ -287,9 +365,19 @@ impl ApplicationHandler for EditorApplication {
                 }
 
                 // GUI changes ECS values and reports the live 3D rectangle.
-                gui.immediate_ui(|gui| {
-                    draw_editor_view(self.runtime.world_mut(), &gui.context());
+                let raw_input = gui.input.take_egui_input(renderer.window());
+                let output = gui.context.run(raw_input, |context| {
+                    draw_editor_view(self.runtime.world_mut(), context);
                 });
+                gui.input.handle_platform_output(
+                    renderer.window(),
+                    output.platform_output,
+                );
+                gui.textures.append(output.textures_delta);
+                gui.pixels_per_point = output.pixels_per_point;
+                gui.primitives = gui
+                    .context
+                    .tessellate(output.shapes, output.pixels_per_point);
                 extract_render_world(self.runtime.world_mut());
                 let vsync = self
                     .runtime
@@ -318,6 +406,10 @@ impl ApplicationHandler for EditorApplication {
                         } else {
                             SceneViewport::full(target_extent)
                         };
+                        let world = self.runtime.world();
+                        let scene_view =
+                            world.resource::<EditorState>().workspace
+                                == EditorWorkspace::Scene;
                         let future =
                             match self.scene_renderer.as_mut().unwrap().render(
                                 future,
@@ -325,20 +417,12 @@ impl ApplicationHandler for EditorApplication {
                                 target_extent,
                                 SceneRenderOptions {
                                     viewport,
-                                    debug_overlay: (self
-                                        .runtime
-                                        .world()
-                                        .resource::<EditorState>()
-                                        .workspace
-                                        == EditorWorkspace::Scene)
-                                        .then(|| {
-                                            &self
-                                                .runtime
-                                                .world()
-                                                .resource::<EditorDebugOverlay>(
-                                                )
-                                                .0
-                                        }),
+                                    debug_overlay: scene_view.then(|| {
+                                        &world
+                                            .resource::<EditorDebugOverlay>()
+                                            .0
+                                    }),
+                                    debug_view: editor_debug_view(world),
                                 },
                                 self.runtime.world().resource::<RenderWorld>(),
                                 self.runtime.world().resource::<AssetServer>(),
@@ -352,10 +436,28 @@ impl ApplicationHandler for EditorApplication {
                                     return;
                                 }
                             };
-                        let future = gui.draw_on_image(
+                        // The UI shows these on the next frame.
+                        let culling = self
+                            .scene_renderer
+                            .as_mut()
+                            .unwrap()
+                            .culling_stats();
+                        self.runtime.world_mut().insert_resource(culling);
+                        let future = match gui.painter.paint(
                             future,
                             renderer.swapchain_image_view(),
-                        );
+                            gui.pixels_per_point,
+                            &gui.primitives,
+                            &gui.textures,
+                        ) {
+                            Ok(future) => future,
+                            Err(error) => {
+                                eprintln!("failed to paint editor UI: {error}");
+                                event_loop.exit();
+                                return;
+                            }
+                        };
+                        gui.textures.clear();
                         renderer.present(future, false);
                     }
                     Err(VulkanError::OutOfDate) => renderer.resize(),
@@ -383,7 +485,18 @@ impl ApplicationHandler for EditorApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(renderer) = self.windows.get_primary_renderer_mut() {
+        let Some(renderer) = self.windows.get_primary_renderer_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        let egui_repaint_at =
+            self.egui_repaint_at.lock().ok().and_then(|at| *at);
+        let wake = egui_repaint_at
+            .map_or(self.idle_redraw_at, |at| at.min(self.idle_redraw_at));
+        if self.input_pending
+            || now >= wake
+            || editor_needs_continuous_redraw(self.runtime.world())
+        {
             self.frame_pacer.request_next_frame(
                 event_loop,
                 renderer.window(),
@@ -391,6 +504,8 @@ impl ApplicationHandler for EditorApplication {
                     .world()
                     .resource::<rusting_engine::runtime::RenderSettings>(),
             );
+        } else {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
     }
 }

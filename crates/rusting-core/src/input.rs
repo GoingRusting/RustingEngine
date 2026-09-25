@@ -89,6 +89,14 @@ impl RuntimeInput {
         }
     }
 
+    /// Releases every held key and button, reporting each as just released.
+    /// Call it when the window loses focus, because the matching release
+    /// events then go to another window.
+    pub fn release_all(&mut self) {
+        self.keys_just_released.extend(self.keys_held.drain());
+        self.mouse_just_released.extend(self.mouse_held.drain());
+    }
+
     /// Records the latest cursor position from a `CursorMoved` event.
     pub fn record_cursor_position(&mut self, position: [f32; 2]) {
         self.cursor_position = Some(position);
@@ -171,6 +179,19 @@ impl ActionMap {
 mod tests {
     use super::*;
     use bevy_ecs::prelude::Resource;
+
+    #[test]
+    fn release_all_clears_held_input_as_releases() {
+        let mut input = RuntimeInput::default();
+        input.record_key(KeyCode::KeyW, true);
+        input.record_mouse_button(MouseButton::Right, true);
+        input.clear_frame_edges();
+        input.release_all();
+        assert!(!input.key_held(KeyCode::KeyW));
+        assert!(input.key_just_released(KeyCode::KeyW));
+        assert!(input.mouse_just_released(MouseButton::Right));
+    }
+
     #[test]
     fn runtime_input_and_action_map_are_ecs_resources() {
         fn assert_resource<T: Resource>() {}

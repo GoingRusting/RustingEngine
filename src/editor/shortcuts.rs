@@ -511,6 +511,7 @@ fn pointer_in_scene_view(world: &World, cursor_position: [f64; 2]) -> bool {
     let viewport = *world.resource::<EditorViewport>();
     scene_active
         && viewport.valid
+        && viewport.hovered
         && cursor_position[0] >= f64::from(viewport.offset[0])
         && cursor_position[1] >= f64::from(viewport.offset[1])
         && cursor_position[0]
@@ -809,12 +810,23 @@ fn dolly_camera(transform: &mut Transform, distance: f32, steps: f32) -> f32 {
 }
 
 fn capture_pointer(window: &Window, captured: bool) {
-    let _ = window.set_cursor_grab(if captured {
-        CursorGrabMode::Locked
+    let _ = if captured {
+        // `Locked` exists only on macOS, Wayland, and Web; Windows and X11
+        // need `Confined` to keep the pointer inside the window.
+        window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
     } else {
-        CursorGrabMode::None
-    });
+        window.set_cursor_grab(CursorGrabMode::None)
+    };
     window.set_cursor_visible(!captured);
+}
+
+/// Ends fly and orbit navigation, for example when the window loses focus
+/// and the matching button or key release goes to another window.
+pub fn release_editor_navigation(world: &mut World, window: &Window) {
+    world.resource_mut::<EditorFlyCamera>().drag = None;
+    set_fly_camera_active(world, window, false);
 }
 
 /// Changes pointer capture and clears keys so movement cannot get stuck.
@@ -829,6 +841,24 @@ fn set_fly_camera_active(world: &mut World, window: &Window, active: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn covered_viewport_does_not_take_pointer_events() {
+        let mut world = World::new();
+        world.insert_resource(EditorState {
+            workspace: EditorWorkspace::Scene,
+            ..EditorState::default()
+        });
+        world.insert_resource(EditorViewport {
+            offset: [0, 0],
+            extent: [100, 100],
+            valid: true,
+            hovered: false,
+        });
+        assert!(!pointer_in_scene_view(&world, [50.0, 50.0]));
+        world.resource_mut::<EditorViewport>().hovered = true;
+        assert!(pointer_in_scene_view(&world, [50.0, 50.0]));
+    }
 
     #[test]
     fn numpad_zero_is_the_default_fly_camera_shortcut() {

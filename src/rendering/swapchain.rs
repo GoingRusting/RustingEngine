@@ -8,7 +8,7 @@ use vulkano::memory::allocator::{
 };
 use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass};
 use vulkano::swapchain::{
-    PresentMode, Surface, Swapchain, SwapchainCreateInfo,
+    CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreateInfo,
 };
 use winit::window::Window;
 
@@ -57,13 +57,19 @@ pub fn create_swapchain_and_images(
             min_image_count,
             image_format: format,
             image_color_space: color_space,
-            image_extent: window.inner_size().into(),
+            // Vulkan requires the surface's current extent when it has one.
+            image_extent: caps
+                .current_extent
+                .unwrap_or_else(|| window.inner_size().into()),
             image_usage: ImageUsage::COLOR_ATTACHMENT, // We'll draw to these images
-            composite_alpha: caps
+            composite_alpha: if caps
                 .supported_composite_alpha
-                .into_iter()
-                .next()
-                .unwrap(),
+                .contains_enum(CompositeAlpha::Opaque)
+            {
+                CompositeAlpha::Opaque
+            } else {
+                caps.supported_composite_alpha.into_iter().next().unwrap()
+            },
             present_mode,
             ..Default::default()
         },

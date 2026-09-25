@@ -22,6 +22,7 @@
 //! engine.run();
 //! ```
 
+use crate::assets::MaterialModel;
 use crate::core::{Material, Physics, Transform};
 #[cfg(feature = "gltf")]
 use crate::geometry::gltf_loader::{load_gltf_scene, GltfLoadError};
@@ -33,7 +34,7 @@ use crate::rendering::compute_registry::{
 use crate::rendering::frame_pacer::select_present_mode;
 use crate::rendering::init_vulkan;
 use crate::rendering::render::create_builder;
-use crate::rendering::shader_registry::{ShaderRegistry, ShaderType};
+use crate::rendering::shader_registry::ShaderRegistry;
 use crate::rendering::swapchain::{create_framebuffers, create_render_pass};
 use crate::rendering::VulkanBase;
 use crate::runtime::RenderSettings;
@@ -585,7 +586,7 @@ impl Engine {
             let combined_matrix = transform_matrix * instance_matrix;
             instance.model_matrix = combined_matrix.into();
             instance.physics = *phys;
-            instance.shader = mat.shader;
+            instance.shader = mat.model.into();
 
             // Allow override of material properties and textures
             instance.color = mat.color;
@@ -610,15 +611,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Sets a scene-wide graphics shader override.
+    /// Sets a scene-wide lighting model override.
     ///
-    /// All objects will use the specified shader instead of their per-object shader.
-    /// Useful for post-processing effects or uniform visual style.
-    ///
-    /// # Arguments
-    /// * `shader` - The shader type to use for all objects
-    pub fn set_scene_shader(&mut self, shader: ShaderType) {
-        self.registry.set_scene_shader(shader);
+    /// All objects render with `model` instead of their material's model.
+    pub fn set_scene_shader(&mut self, model: MaterialModel) {
+        self.registry.set_scene_shader(model.into());
     }
 
     /// Clears the scene-wide graphics shader override.
@@ -992,7 +989,13 @@ impl Engine {
                                     recreate_swapchain = true;
                                     return;
                                 }
-                                Err(e) => panic!("{e}"),
+                                Err(e) => {
+                                    // Device loss or out-of-memory: close
+                                    // with a message instead of aborting.
+                                    eprintln!("swapchain acquire failed: {e}");
+                                    active_event_loop.exit();
+                                    return;
+                                }
                             };
                         if suboptimal {
                             recreate_swapchain = true;
@@ -1103,8 +1106,8 @@ impl Engine {
                             let cull_start = std::time::Instant::now();
 
                             let view_proj = {
-                                let p = cgmath::Matrix4::from(proj);
-                                let v = cgmath::Matrix4::from(view);
+                                let p = nalgebra::Matrix4::from(proj);
+                                let v = nalgebra::Matrix4::from(view);
                                 let vp: [[f32; 4]; 4] = (p * v).into();
                                 vp
                             };
@@ -1241,7 +1244,7 @@ impl Engine {
                                 &mut render_builder,
                                 &framebuffers,
                                 img_index,
-                                self.base.window.inner_size().into(),
+                                self.swapchain.image_extent(),
                                 self.registry.default_pipeline(),
                             );
                             s.record_draws_multi(

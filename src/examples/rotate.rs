@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 /// # Rotating test
@@ -18,7 +18,7 @@ pub fn main() {
         },
         &Material::standard()
             .color([0.5, 0.5, 1.0])
-            .shader(ShaderType::Pbr)
+            .model(MaterialModel::Pbr)
             .build(),
         &Physics::default().collision_type(CollisionType::Box),
     );
@@ -31,7 +31,7 @@ pub fn main() {
         },
         &Material::standard()
             .color([1.0, 0.1, 0.1])
-            .shader(ShaderType::Pbr)
+            .model(MaterialModel::Pbr)
             .build(),
         &Physics::default()
             .compute_shader(ComputeShaderType::FullPhysics)
@@ -48,7 +48,7 @@ pub fn main() {
         },
         &Material::standard()
             .color([0.5, 0.5, 0.5])
-            .shader(ShaderType::Unlit)
+            .model(MaterialModel::Unlit)
             .build(),
         &Physics::default()
             .mass(1000000.0)

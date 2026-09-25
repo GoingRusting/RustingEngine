@@ -1,7 +1,10 @@
 pub mod camera;
 pub mod compute_registry;
 pub mod debug_overlay;
+#[cfg(feature = "editor")]
+pub mod egui_painter;
 pub mod frame_pacer;
+pub mod frame_passes;
 pub mod pipeline;
 pub mod readback;
 pub mod render;
@@ -20,7 +23,7 @@ use vulkano::instance::debug::{
     DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
     DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
 };
-use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
 use vulkano::swapchain::Surface;
 use vulkano::VulkanLibrary;
 use winit::event_loop::EventLoop;
@@ -109,8 +112,20 @@ pub struct HeadlessVulkanBase {
 
 pub fn init_vulkan_headless() -> HeadlessVulkanBase {
     let library = VulkanLibrary::new().expect("No Vulkan driver found.");
-    let instance = Instance::new(library, InstanceCreateInfo::default())
-        .expect("Failed to create headless Vulkan instance");
+    // Debug labels are recorded whenever the driver offers them, so headless
+    // GPU tests also exercise the renderer's label scopes.
+    let enabled_extensions = InstanceExtensions {
+        ext_debug_utils: library.supported_extensions().ext_debug_utils,
+        ..InstanceExtensions::empty()
+    };
+    let instance = Instance::new(
+        library,
+        InstanceCreateInfo {
+            enabled_extensions,
+            ..Default::default()
+        },
+    )
+    .expect("Failed to create headless Vulkan instance");
 
     let candidates: Vec<_> = instance
         .enumerate_physical_devices()
@@ -624,7 +639,6 @@ mod debug_utils_tests {
         AutoCommandBufferBuilder, CommandBufferUsage,
     };
     use vulkano::instance::debug::DebugUtilsLabel;
-    use vulkano::instance::InstanceExtensions;
 
     #[test]
     #[cfg_attr(

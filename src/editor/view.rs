@@ -9,6 +9,7 @@ use nalgebra::{Matrix4, Rotation3, Vector3, Vector4};
 use super::picking::{pick_entity, project_world_to_screen, scene_ray};
 use super::*;
 use crate::editor::overlay::{add_axis, add_bound_box};
+use crate::runtime::{CullingMode, QualityProfile};
 
 /// Draws the interactive editor into an already-open egui frame.
 ///
@@ -18,19 +19,39 @@ use crate::editor::overlay::{add_axis, add_bound_box};
 /// * `world` - ECS world containing scene objects and editor resources.
 /// * `context` - Current egui frame used to draw all controls.
 pub fn draw_editor_view(world: &mut World, context: &Context) {
-    // Copy editor values that egui will change during this frame.
-    let mut state = world.resource::<EditorState>().clone();
-    let mut project_manager = world.resource::<ProjectManagerState>().clone();
-    let mut history = world.resource::<EditorHistory>().clone();
-    let mut pending_action =
-        world.resource::<PendingDestructiveAction>().clone();
-    let mut editor_assets = world.resource::<EditorAssetState>().clone();
+    // Move editor values that egui will change during this frame out of the
+    // world. They are inserted back at the end; cloning them every frame
+    // copied the whole Undo history.
+    let mut state = take_resource::<EditorState>(world);
+    let mut project_manager = take_resource::<ProjectManagerState>(world);
+    let mut history = take_resource::<EditorHistory>(world);
+    let mut pending_action = take_resource::<PendingDestructiveAction>(world);
+    let mut editor_assets = take_resource::<EditorAssetState>(world);
+    let mut dialogs = take_resource::<FileDialogs>(world);
     let (build_running, build_finished, build_console_output) = {
         let mut build = world.resource_mut::<EditorBuildState>();
         let finished = build.poll();
         let console_output = build.take_console_output();
         (build.running, finished, console_output)
     };
+    let (reloaded, reload_failures) = world
+        .get_resource_mut::<AssetServer>()
+        .map(|mut assets| {
+            (assets.take_reloaded(), assets.take_reload_failures())
+        })
+        .unwrap_or_default();
+    for path in reloaded {
+        world.resource_mut::<EditorConsole>().push(
+            ConsoleLevel::Info,
+            format!("Hot reloaded {}", path.display()),
+        );
+    }
+    for failure in reload_failures {
+        world.resource_mut::<EditorConsole>().push(
+            ConsoleLevel::Error,
+            format!("Hot reload failed, keeping the last version: {failure}"),
+        );
+    }
     if !build_console_output.is_empty() {
         world.resource_mut::<EditorConsole>().push(
             ConsoleLevel::Info,
@@ -52,7 +73,8 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         );
     }
     let entities = collect_entities(world);
-    let asset_files = project_asset_files(&state.project_root);
+    editor_assets.refresh_files(&state.project_root);
+    let asset_files = std::mem::take(&mut editor_assets.files);
     let loaded_textures = world
         .get_resource::<AssetServer>()
         .map(|assets| {
@@ -64,8 +86,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         })
         .unwrap_or_default();
     let mut render_settings = world.resource::<RenderSettings>().clone();
+    let original_scene_render =
+        (render_settings.quality, render_settings.culling);
     let mut gizmo_settings = *world.resource::<EditorGizmoSettings>();
-    let mut gizmo_drag = world.resource::<EditorGizmoDrag>().clone();
+    let mut gizmo_drag = take_resource::<EditorGizmoDrag>(world);
     let mut transform_mode = *world.resource::<EditorTransformMode>();
     let editor_shortcuts = world.resource::<EditorShortcuts>().clone();
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
@@ -80,6 +104,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let render_report = world
         .get_resource::<RenderWorld>()
         .map(|render_world| render_world.report);
+    let culling_stats = world
+        .get_resource::<crate::rendering::scene_renderer::CullingStats>()
+        .copied();
     let mut edited_transform = state
         .selected
         .and_then(|entity| world.get::<Transform>(entity).copied());
@@ -110,7 +137,20 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut edited_collider = state
         .selected
         .and_then(|entity| world.get::<Collider>(entity).copied());
+    let mut edited_render_bounds = state
+        .selected
+        .and_then(|entity| world.get::<RenderBounds>(entity).copied());
+    let mut edited_material = state.selected.and_then(|entity| {
+        let renderer = world.get::<MeshRenderer>(entity)?;
+        world
+            .get_resource::<AssetServer>()?
+            .materials
+            .get(renderer.material)
+            .cloned()
+    });
+    let original_material = edited_material.clone();
     let original_selected = state.selected;
+    let original_render_bounds = edited_render_bounds;
     let original_transform = edited_transform;
     let original_camera = edited_camera;
     let original_directional_light = edited_directional_light;
@@ -142,6 +182,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut scene_drag_left_stopped = false;
     let mut scene_hover_position: Option<Pos2> = None;
     let mut scene_right_clicked = false;
+    let mut scene_hovered = false;
     let left_pressed = context.input(|input| {
         input.pointer.button_pressed(egui::PointerButton::Primary)
     });
@@ -160,6 +201,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut save_code = false;
     let mut validate_code = false;
     let mut run_project = false;
+    let mut stop_build = false;
     let mut add_area = false;
     let mut reset_layout = false;
     let mut save_layout = false;
@@ -180,6 +222,60 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         && std::path::Path::new(&state.project_root)
             .join("project.json")
             .is_file();
+    // Route a finished native file dialog to the action that opened it.
+    let mut dialog_project_request = None;
+    let mut dialog_scene = None;
+    let mut save_before_continue_to = None;
+    let mut save_as_path = None;
+    if let Some((purpose, paths)) = dialogs.poll() {
+        let first = paths.first().cloned();
+        match purpose {
+            DialogPurpose::OpenProject => {
+                dialog_project_request = first.map(ProjectRequest::Open);
+            }
+            DialogPurpose::ProjectParentFolder => {
+                if let Some(path) = first {
+                    project_manager.parent_directory = path;
+                }
+            }
+            DialogPurpose::CreateProjectIn => {
+                if let Some(path) = first {
+                    project_manager.parent_directory = path.clone();
+                    dialog_project_request = Some(ProjectRequest::Create {
+                        parent: path,
+                        name: project_manager.project_name.clone(),
+                    });
+                }
+            }
+            DialogPurpose::OpenScene => dialog_scene = first,
+            // A cancel still answers the Unsaved Scene prompt.
+            DialogPurpose::SaveSceneBeforeContinue => {
+                save_before_continue_to = Some(first);
+            }
+            DialogPurpose::SaveSceneAs => save_as_path = first,
+            DialogPurpose::ExportGame => export_destination = first,
+            DialogPurpose::ImportFiles if !paths.is_empty() => {
+                asset_request = Some(AssetRequest::ImportFiles(paths));
+            }
+            DialogPurpose::ImportFiles => {}
+            DialogPurpose::MaterialTexture { entity, slot } => {
+                asset_request = first.map(|path| {
+                    AssetRequest::SetMaterialTexture { entity, slot, path }
+                });
+            }
+        }
+    }
+    if dialogs.is_open() {
+        // The modal keeps panel clicks from changing what the dialog's
+        // answer will apply to.
+        egui::Modal::new(egui::Id::new("file_dialog_wait")).show(
+            context,
+            |ui| {
+                ui.label("Waiting for the file dialog...");
+            },
+        );
+        context.request_repaint_after(std::time::Duration::from_millis(50));
+    }
 
     // The top toolbar stays visible even when every area below it changes.
     TopBottomPanel::top("visible_editor_toolbar")
@@ -203,7 +299,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         ui.heading("RustingEngine");
                         if state.scene_dirty {
                             ui.colored_label(
-                                egui::Color32::YELLOW,
+                                gui_elements::EditorTheme::WARNING,
                                 "Unsaved scene",
                             );
                         }
@@ -377,21 +473,28 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             },
                         );
                         ui.separator();
-                        run_project =
-                            gui_elements::EditorTheme::toolbar_button(
-                                ui,
-                                if build_running {
-                                    "Building..."
-                                } else {
-                                    "Play"
-                                },
-                                false,
-                                !build_running && has_open_project,
-                            )
-                            .on_hover_text(
-                                "Save and cook the scene, compile the Rust game, then run it",
-                            )
-                            .clicked();
+                        if build_running {
+                            stop_build =
+                                gui_elements::EditorTheme::toolbar_button(
+                                    ui, "Stop", false, true,
+                                )
+                                .on_hover_text(
+                                    "Stop the running Cargo task or native game",
+                                )
+                                .clicked();
+                        } else {
+                            run_project =
+                                gui_elements::EditorTheme::toolbar_button(
+                                    ui,
+                                    "Play",
+                                    false,
+                                    has_open_project,
+                                )
+                                .on_hover_text(
+                                    "Save and cook the scene, compile the Rust game, then run it",
+                                )
+                                .clicked();
+                        }
                         gui_elements::EditorTheme::toolbar_combo_box_with_popup(
                             ui,
                             "toolbar_game_build_profile",
@@ -455,20 +558,21 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             "Choose the parent folder where the new Cargo project will be created"
                 .into(),
         );
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Choose Where to Create the New Project")
-            .pick_folder()
-        {
-            project_manager.parent_directory = path;
-        }
+        dialogs.pick_folder(
+            DialogPurpose::ProjectParentFolder,
+            rfd::AsyncFileDialog::new()
+                .set_title("Choose Where to Create the New Project"),
+        );
     }
     if save_clicked && state.scene_path.is_empty() {
         save_clicked = false;
         save_scene_as = true;
     }
-    let requested_project = draw_project_manager(context, &mut project_manager);
-    let selected_scene = open_scene.then(|| {
-        let mut dialog = rfd::FileDialog::new()
+    let requested_project =
+        draw_project_manager(context, &mut project_manager, &mut dialogs)
+            .or(dialog_project_request);
+    if open_scene {
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Open RustingEngine Scene")
             .add_filter("RustingEngine Scene", &["rscene"]);
         if has_open_project {
@@ -476,11 +580,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 std::path::Path::new(&state.project_root).join("scenes"),
             );
         }
-        dialog.pick_file()
-    });
+        dialogs.pick_file(DialogPurpose::OpenScene, dialog);
+    }
     let requested_action = requested_project
         .map(DestructiveRequest::OpenProject)
-        .or_else(|| selected_scene.flatten().map(DestructiveRequest::OpenScene))
+        .or_else(|| dialog_scene.map(DestructiveRequest::OpenScene))
         .or_else(|| new_scene.then_some(DestructiveRequest::NewScene))
         .or_else(|| load_clicked.then_some(DestructiveRequest::ReloadScene));
     let mut action_to_run = None;
@@ -510,29 +614,35 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     cancel = ui.button("Cancel").clicked();
                 });
             });
-        if save_and_continue {
-            let chosen_path = if state.scene_path.is_empty() {
-                let mut dialog = rfd::FileDialog::new()
-                    .set_title("Save RustingEngine Scene")
-                    .set_file_name("main.rscene")
-                    .add_filter("RustingEngine Scene", &["rscene"]);
-                if has_open_project {
-                    dialog = dialog.set_directory(
-                        std::path::Path::new(&state.project_root)
-                            .join("scenes"),
-                    );
-                }
-                dialog.save_file()
-            } else {
+        let chosen_path = if save_before_continue_to.is_some() {
+            save_before_continue_to
+        } else if save_and_continue && state.scene_path.is_empty() {
+            let mut dialog = rfd::AsyncFileDialog::new()
+                .set_title("Save RustingEngine Scene")
+                .set_file_name("main.rscene")
+                .add_filter("RustingEngine Scene", &["rscene"]);
+            if has_open_project {
+                dialog = dialog.set_directory(
+                    std::path::Path::new(&state.project_root).join("scenes"),
+                );
+            }
+            dialogs.save_file(DialogPurpose::SaveSceneBeforeContinue, dialog);
+            None
+        } else if save_and_continue {
+            Some(
                 project_content_path(&state.project_root, &state.scene_path)
-                    .ok()
-            };
+                    .ok(),
+            )
+        } else {
+            None
+        };
+        if let Some(chosen_path) = chosen_path {
             let result = chosen_path
                 .ok_or_else(|| "Save was cancelled".to_owned())
                 .and_then(|path| {
                     let relative =
                         project_relative_path(&state.project_root, &path)?;
-                    save_scene(world, &path, "Main Scene")
+                    save_editor_scene(world, &state, &path)
                         .map(|()| relative)
                         .map_err(|error| error.to_string())
                 });
@@ -636,6 +746,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         &mut edited_physics,
                         &mut edited_rigid_body,
                         &mut edited_collider,
+                        &mut edited_render_bounds,
+                        &mut edited_material,
+                        &mut asset_request,
                         &registered_names,
                         &custom_values,
                         &mut component_edits,
@@ -662,6 +775,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     egui::Sense::click_and_drag(),
                                 );
                                 scene_hover_position = response.hover_pos();
+                                scene_hovered = response.contains_pointer();
                                 if response.clicked() {
                                     scene_click_position =
                                         response.interact_pointer_pos();
@@ -726,6 +840,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     scene_drag_right_position = None;
                                     scene_drag_right_stopped = false;
                                     scene_right_clicked = false;
+                                    scene_hovered = false;
                                 }
                             }
                             viewport_rect = Some(rect);
@@ -775,7 +890,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 .clicked();
                             if state.code_dirty {
                                 ui.colored_label(
-                                    egui::Color32::YELLOW,
+                                    gui_elements::EditorTheme::WARNING,
                                     "Unsaved",
                                 );
                             }
@@ -786,10 +901,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             ui.small(message);
                         }
                         if build_running {
-                            ui.colored_label(
-                                egui::Color32::YELLOW,
-                                "Build or native game is running...",
-                            );
+                            ui.horizontal(|ui| {
+                                ui.colored_label(
+                                    gui_elements::EditorTheme::WARNING,
+                                    "Build or native game is running...",
+                                );
+                                stop_build |= ui.button("Stop").clicked();
+                            });
                         }
                         // Build logs live in Console, so the source editor
                         // always receives the complete remaining panel height.
@@ -842,6 +960,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     .range(1..=1_000),
                             );
                         });
+                        draw_scene_render_settings(ui, &mut render_settings);
                         if ui
                             .add_enabled(
                                 !build_running,
@@ -852,9 +971,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             )
                             .clicked()
                         {
-                            export_destination = rfd::FileDialog::new()
-                                .set_title("Choose Export Parent Folder")
-                                .pick_folder();
+                            dialogs.pick_folder(
+                                DialogPurpose::ExportGame,
+                                rfd::AsyncFileDialog::new()
+                                    .set_title("Choose Export Parent Folder"),
+                            );
                         }
                         if let Some(message) = &state.scene_message {
                             ui.label(message);
@@ -875,6 +996,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 report.removed
                             ));
                         }
+                        if let Some(stats) = culling_stats {
+                            ui.label(culling_stats_label(&stats));
+                        }
                             });
                     }
                     EditorPanel::Console => {
@@ -894,10 +1018,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                             ui.visuals().text_color()
                                         }
                                         ConsoleLevel::Warning => {
-                                            egui::Color32::YELLOW
+                                            gui_elements::EditorTheme::WARNING
                                         }
                                         ConsoleLevel::Error => {
-                                            egui::Color32::LIGHT_RED
+                                            gui_elements::EditorTheme::ERROR
                                         }
                                     };
                                     ui.colored_label(color, &entry.message);
@@ -907,7 +1031,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 }
                             } else {
                                 ui.colored_label(
-                                    egui::Color32::LIGHT_RED,
+                                    gui_elements::EditorTheme::ERROR,
                                     "EditorConsole is unavailable. Install EditorPlugin.",
                                 );
                             }
@@ -930,13 +1054,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             ));
                         }
                         if ui.button("Import Files...").clicked() {
-                            if let Some(paths) = rfd::FileDialog::new()
-                                .set_title("Import Project Assets")
-                                .pick_files()
-                            {
-                                asset_request =
-                                    Some(AssetRequest::ImportFiles(paths));
-                            }
+                            dialogs.pick_files(
+                                DialogPurpose::ImportFiles,
+                                rfd::AsyncFileDialog::new()
+                                    .set_title("Import Project Assets"),
+                            );
                         }
                         ui.horizontal(|ui| {
                             ui.label("Filter");
@@ -1059,7 +1181,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             serde_json::to_vec_pretty(&file)
                 .map_err(|error| error.to_string())
                 .and_then(|bytes| {
-                    std::fs::write(&layout_path, bytes)
+                    crate::runtime::write_atomic(&layout_path, &bytes)
                         .map_err(|error| error.to_string())
                 })
                 .map_or_else(
@@ -1162,6 +1284,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 end[1].saturating_sub(offset[1]),
             ],
             valid: true,
+            hovered: scene_hovered,
         };
         if let Some(mut current) = world.get_resource_mut::<EditorViewport>() {
             *current = viewport;
@@ -1178,13 +1301,12 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     if let Some(path) = open_scene_path {
         let result = project_relative_path(&state.project_root, &path)
             .and_then(|relative| {
-                load_scene(world, &path, SceneLoadMode::Replace)
+                load_editor_scene(world, &mut state, &path)
                     .map(|count| (count, relative))
                     .map_err(|error| error.to_string())
             });
         match result {
             Ok((entity_count, relative)) => {
-                state.selected = None;
                 state.scene_path = relative;
                 state.scene_dirty = false;
                 history.undo.clear();
@@ -1206,7 +1328,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("main.rscene");
-        let mut dialog = rfd::FileDialog::new()
+        let mut dialog = rfd::AsyncFileDialog::new()
             .set_title("Save RustingEngine Scene")
             .set_file_name(suggested_name)
             .add_filter("RustingEngine Scene", &["rscene"]);
@@ -1215,24 +1337,24 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 std::path::Path::new(&state.project_root).join("scenes"),
             );
         }
-        if let Some(path) = dialog.save_file() {
-            let result = project_relative_path(&state.project_root, &path)
-                .and_then(|relative| {
-                    save_scene(world, &path, "Main Scene")
-                        .map(|()| relative)
-                        .map_err(|error| error.to_string())
-                });
-            match result {
-                Ok(relative) => {
-                    state.scene_path = relative;
-                    state.scene_dirty = false;
-                    state.scene_message =
-                        Some(format!("Saved {}", state.scene_path));
-                }
-                Err(error) => {
-                    state.scene_message =
-                        Some(format!("Save As failed: {error}"));
-                }
+        dialogs.save_file(DialogPurpose::SaveSceneAs, dialog);
+    }
+    if let Some(path) = save_as_path {
+        let result = project_relative_path(&state.project_root, &path)
+            .and_then(|relative| {
+                save_editor_scene(world, &state, &path)
+                    .map(|()| relative)
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(relative) => {
+                state.scene_path = relative;
+                state.scene_dirty = false;
+                state.scene_message =
+                    Some(format!("Saved {}", state.scene_path));
+            }
+            Err(error) => {
+                state.scene_message = Some(format!("Save As failed: {error}"));
             }
         }
     }
@@ -1241,6 +1363,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             format_version: crate::runtime::SCENE_FORMAT_VERSION,
             name: "New Scene".into(),
             entities: Vec::new(),
+            render: Default::default(),
         };
         match crate::runtime::load_scene_document(
             world,
@@ -1269,27 +1392,27 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         if let Some(document) = history.pending_inspector.take() {
             history.push_undo(document);
         }
-        if let Some(previous) = history.undo.pop() {
+        if let Some(previous) = history.undo.pop_back() {
             match scene_document(world, "Redo Snapshot") {
-                Ok(current) => match crate::runtime::load_scene_document(
-                    world,
-                    &previous,
-                    SceneLoadMode::Replace,
-                ) {
-                    Ok(_) => {
-                        history.redo.push(current);
-                        state.selected = None;
-                        state.scene_dirty = true;
-                        state.scene_message = Some("Undo applied".into());
+                Ok(current) => {
+                    match reload_keeping_selection(world, &mut state, &previous)
+                    {
+                        Ok(()) => {
+                            history.redo.push(current);
+                            gizmo_drag = EditorGizmoDrag::default();
+                            finish_transform_mode(&mut transform_mode);
+                            state.scene_dirty = true;
+                            state.scene_message = Some("Undo applied".into());
+                        }
+                        Err(error) => {
+                            history.undo.push_back(previous);
+                            state.scene_message =
+                                Some(format!("Undo failed: {error}"));
+                        }
                     }
-                    Err(error) => {
-                        history.undo.push(previous);
-                        state.scene_message =
-                            Some(format!("Undo failed: {error}"));
-                    }
-                },
+                }
                 Err(error) => {
-                    history.undo.push(previous);
+                    history.undo.push_back(previous);
                     state.scene_message = Some(format!("Undo failed: {error}"));
                 }
             }
@@ -1298,23 +1421,22 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     if redo_clicked {
         if let Some(next) = history.redo.pop() {
             match scene_document(world, "Undo Snapshot") {
-                Ok(current) => match crate::runtime::load_scene_document(
-                    world,
-                    &next,
-                    SceneLoadMode::Replace,
-                ) {
-                    Ok(_) => {
-                        history.undo.push(current);
-                        state.selected = None;
-                        state.scene_dirty = true;
-                        state.scene_message = Some("Redo applied".into());
+                Ok(current) => {
+                    match reload_keeping_selection(world, &mut state, &next) {
+                        Ok(()) => {
+                            history.undo.push_back(current);
+                            gizmo_drag = EditorGizmoDrag::default();
+                            finish_transform_mode(&mut transform_mode);
+                            state.scene_dirty = true;
+                            state.scene_message = Some("Redo applied".into());
+                        }
+                        Err(error) => {
+                            history.redo.push(next);
+                            state.scene_message =
+                                Some(format!("Redo failed: {error}"));
+                        }
                     }
-                    Err(error) => {
-                        history.redo.push(next);
-                        state.scene_message =
-                            Some(format!("Redo failed: {error}"));
-                    }
-                },
+                }
                 Err(error) => {
                     history.redo.push(next);
                     state.scene_message = Some(format!("Redo failed: {error}"));
@@ -1334,6 +1456,8 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             || edited_physics != original_physics
             || edited_rigid_body != original_rigid_body
             || edited_collider != original_collider
+            || edited_render_bounds != original_render_bounds
+            || edited_material != original_material
             || add_physics
             || remove_physics
             // Custom component field edits are live; drags coalesce into
@@ -1362,23 +1486,29 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     // copied. Never write the previous object's values into the new object.
     let unchanged_selection = state.selected == original_selected;
 
-    // Write temporary Inspector values back to the selected ECS object.
-    if let (true, Some(entity), Some(transform)) =
-        (unchanged_selection, state.selected, edited_transform)
-    {
+    // Write temporary Inspector values back to the selected ECS object. Only
+    // changed values are inserted, so ECS change detection stays meaningful.
+    if let (true, Some(entity), Some(transform)) = (
+        unchanged_selection && edited_transform != original_transform,
+        state.selected,
+        edited_transform,
+    ) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(transform);
         }
     }
-    if let (true, Some(entity), Some(camera)) =
-        (unchanged_selection, state.selected, edited_camera)
-    {
+    if let (true, Some(entity), Some(camera)) = (
+        unchanged_selection && edited_camera != original_camera,
+        state.selected,
+        edited_camera,
+    ) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(camera);
         }
     }
     if let (true, Some(entity), Some(light)) = (
-        unchanged_selection,
+        unchanged_selection
+            && edited_directional_light != original_directional_light,
         state.selected,
         edited_directional_light,
     ) {
@@ -1386,23 +1516,29 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             entity.insert(light);
         }
     }
-    if let (true, Some(entity), Some(light)) =
-        (unchanged_selection, state.selected, edited_point_light)
-    {
+    if let (true, Some(entity), Some(light)) = (
+        unchanged_selection && edited_point_light != original_point_light,
+        state.selected,
+        edited_point_light,
+    ) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(light);
         }
     }
-    if let (true, Some(entity), Some(light)) =
-        (unchanged_selection, state.selected, edited_spot_light)
-    {
+    if let (true, Some(entity), Some(light)) = (
+        unchanged_selection && edited_spot_light != original_spot_light,
+        state.selected,
+        edited_spot_light,
+    ) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             entity.insert(light);
         }
     }
-    if let (true, Some(entity), Some(classes)) =
-        (unchanged_selection, state.selected, edited_classes)
-    {
+    if let (true, Some(entity), Some(classes)) = (
+        unchanged_selection && edited_classes != original_classes,
+        state.selected,
+        edited_classes,
+    ) {
         if let Ok(mut entity) = world.get_entity_mut(entity) {
             if classes.names.is_empty() {
                 entity.remove::<ObjectClasses>();
@@ -1411,7 +1547,32 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             }
         }
     }
-    if let (true, Some(entity)) = (unchanged_selection, state.selected) {
+    if let (true, Some(entity)) = (
+        unchanged_selection && edited_render_bounds != original_render_bounds,
+        state.selected,
+    ) {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            match edited_render_bounds {
+                Some(bounds) => entity.insert(bounds),
+                None => entity.remove::<RenderBounds>(),
+            };
+        }
+    }
+    if let (true, Some(entity), Some(material)) = (
+        unchanged_selection && edited_material != original_material,
+        state.selected,
+        edited_material,
+    ) {
+        set_material(world, entity, material);
+    }
+    let physics_changed = add_physics
+        || remove_physics
+        || edited_physics != original_physics
+        || edited_rigid_body != original_rigid_body
+        || edited_collider != original_collider;
+    if let (true, Some(entity)) =
+        (unchanged_selection && physics_changed, state.selected)
+    {
         if let Ok(mut entity_mut) = world.get_entity_mut(entity) {
             if remove_physics {
                 entity_mut.remove::<(
@@ -1477,6 +1638,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             Err(error) => state.code_message = Some(error),
         }
     }
+    if stop_build {
+        world.resource::<EditorBuildState>().request_stop();
+    }
     if validate_code {
         let is_rust = std::path::Path::new(&state.code_path)
             .extension()
@@ -1522,7 +1686,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 &state.code_path,
                 &state.code_source,
             )?;
-            save_scene(world, &scene_path, "Main Scene")
+            save_editor_scene(world, &state, &scene_path)
                 .map_err(|error| error.to_string())?;
             Ok(())
         })();
@@ -1577,7 +1741,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         Ok(())
                     }
                     .and_then(|()| {
-                        save_scene(world, &scene_path, "Main Scene")
+                        save_editor_scene(world, &state, &scene_path)
                             .map_err(|error| error.to_string())
                     })
                     .and_then(|()| {
@@ -1617,7 +1781,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     &state.project_root,
                     &state.scene_path,
                 )?;
-                save_scene(world, &scene_path, "Main Scene")
+                save_editor_scene(world, &state, &scene_path)
                     .map_err(|error| error.to_string())?;
                 let cooked = project.root.join(&project.manifest.cooked_scene);
                 cook_scene(&scene_path, &cooked)
@@ -1647,7 +1811,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         state.scene_message = Some(
             match project_content_path(&state.project_root, &state.scene_path)
                 .and_then(|path| {
-                    save_scene(world, &path, "Main Scene")
+                    save_editor_scene(world, &state, &path)
                         .map_err(|error| error.to_string())
                 }) {
                 Ok(()) => {
@@ -1662,11 +1826,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         state.scene_message = Some(
             match project_content_path(&state.project_root, &state.scene_path)
                 .and_then(|path| {
-                    load_scene(world, &path, SceneLoadMode::Replace)
+                    load_editor_scene(world, &mut state, &path)
                         .map_err(|error| error.to_string())
                 }) {
                 Ok(entity_count) => {
-                    state.selected = None;
                     state.scene_dirty = false;
                     history.undo.clear();
                     history.redo.clear();
@@ -1991,14 +2154,17 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 }
                 Err(error) => {
                     // The edit did not happen, so its unused snapshot is removed.
-                    history.undo.pop();
+                    history.undo.pop_back();
                     state.scene_message =
                         Some(format!("Could not change scene object: {error}"));
                 }
             }
         }
     }
+    editor_assets.files = asset_files;
     if let Some(request) = asset_request {
+        // Imports copy files into `assets`; show them on the next frame.
+        editor_assets.files_scanned = None;
         let result: Result<String, String> = match request {
             AssetRequest::ImportFiles(paths) => {
                 (|| -> Result<String, String> {
@@ -2096,6 +2262,71 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     Ok("Assigned texture to selected object".into())
                 })
             }
+            AssetRequest::NewMaterial => state
+                .selected
+                .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
+                .ok_or_else(|| "Select a mesh object first".to_owned())
+                .and_then(|entity| {
+                    remember_scene_before_edit(world, &mut history)?;
+                    let material = world
+                        .resource_mut::<AssetServer>()
+                        .materials
+                        .insert(MaterialAsset::default());
+                    world
+                        .get_mut::<MeshRenderer>(entity)
+                        .expect("checked above")
+                        .material = material;
+                    state.scene_dirty = true;
+                    Ok("Created a new material for the selected object".into())
+                }),
+            AssetRequest::LoadMaterialTexture(slot) => state
+                .selected
+                .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
+                .ok_or_else(|| "Select a mesh object first".to_owned())
+                .map(|entity| {
+                    dialogs.pick_file(
+                        DialogPurpose::MaterialTexture { entity, slot },
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Choose Texture")
+                            .add_filter(
+                                "Image",
+                                &["png", "jpg", "jpeg", "bmp", "tga"],
+                            ),
+                    );
+                    "Choosing a texture".to_owned()
+                }),
+            AssetRequest::SetMaterialTexture { entity, slot, path } => (|| {
+                let mut material = world
+                    .get::<MeshRenderer>(entity)
+                    .and_then(|renderer| {
+                        world
+                            .resource::<AssetServer>()
+                            .materials
+                            .get(renderer.material)
+                            .cloned()
+                    })
+                    .ok_or_else(|| {
+                        "The object no longer has a Mesh Renderer".to_owned()
+                    })?;
+                // Project textures are copied in so the saved scene points
+                // inside the project and the exported game finds them.
+                let path = if has_open_project {
+                    copy_into_project_assets(&state.project_root, &path)?
+                } else {
+                    path
+                };
+                let texture = world
+                    .resource_mut::<AssetServer>()
+                    .load_texture(&path)
+                    .map_err(|error| error.to_string())?;
+                remember_scene_before_edit(world, &mut history)?;
+                *crate::editor::inspector::texture_slots(&mut material)[slot] =
+                    Some(texture);
+                set_material(world, entity, material);
+                state.scene_dirty = true;
+                Ok(format!("Loaded texture {}", path.display()))
+            })(
+            ),
             AssetRequest::AssignPrimitive(mesh, material) => {
                 let selected = state
                     .selected
@@ -2227,7 +2458,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         .then_some(state.editor_camera)
         .flatten();
     render_settings.max_fps = render_settings.max_fps.max(1);
-    *world.resource_mut::<RenderSettings>() = render_settings;
+    apply_render_settings(
+        world,
+        &mut history,
+        &mut state,
+        render_settings,
+        original_scene_render,
+    );
     if let Some(request) = build_request {
         if let Err(error) = world
             .resource_mut::<EditorBuildState>()
@@ -2241,6 +2478,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let overlay = if state.workspace == EditorWorkspace::Scene {
         build_scene_debug_overlay(
             world,
+            state.editor_camera,
             state.selected,
             &state.selection,
             gizmo_settings,
@@ -2253,13 +2491,20 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     };
     world.resource_mut::<EditorDebugOverlay>().0 = overlay;
     *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
-    *world.resource_mut::<EditorGizmoDrag>() = gizmo_drag;
     *world.resource_mut::<EditorTransformMode>() = transform_mode;
-    *world.resource_mut::<EditorState>() = state;
-    *world.resource_mut::<EditorHistory>() = history;
-    *world.resource_mut::<PendingDestructiveAction>() = pending_action;
-    *world.resource_mut::<EditorAssetState>() = editor_assets;
-    *world.resource_mut::<ProjectManagerState>() = project_manager;
+    world.insert_resource(gizmo_drag);
+    world.insert_resource(state);
+    world.insert_resource(history);
+    world.insert_resource(pending_action);
+    world.insert_resource(editor_assets);
+    world.insert_resource(project_manager);
+    world.insert_resource(dialogs);
+}
+
+fn take_resource<T: Resource>(world: &mut World) -> T {
+    world
+        .remove_resource::<T>()
+        .unwrap_or_else(|| panic!("{} is missing", std::any::type_name::<T>()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2285,6 +2530,12 @@ fn update_transform_gizmo(
     escape_pressed: bool,
     transform_mode: &mut EditorTransformMode,
 ) -> (Option<GizmoHandle>, bool) {
+    // A drag belongs to the entity it started on. When the selection moves
+    // away, restore that entity instead of previewing onto the new selection.
+    if drag.is_active() && drag.entity != state.selected {
+        cancel_gizmo_drag(world, drag);
+        finish_transform_mode(transform_mode);
+    }
     let (Some(entity), Some(camera), Some(viewport)) =
         (state.selected, state.editor_camera, viewport)
     else {
@@ -2294,6 +2545,11 @@ fn update_transform_gizmo(
         return (None, false);
     };
     let Some(geometry) = gizmo_geometry(world, entity) else {
+        if drag.is_active() {
+            *edited_transform = drag.original_transform;
+            *drag = EditorGizmoDrag::default();
+            finish_transform_mode(transform_mode);
+        }
         return (None, false);
     };
     // Pressing G/S/R during an unfinished operation changes operation type by
@@ -2424,6 +2680,52 @@ fn update_transform_gizmo(
         return (hovered, true);
     }
     (hovered, consumed)
+}
+
+/// Replaces the scene with `document` and maps the selection back through
+/// `SceneId`, because the reload respawns every entity with a new `Entity`.
+fn reload_keeping_selection(
+    world: &mut World,
+    state: &mut EditorState,
+    document: &SceneDocument,
+) -> Result<(), crate::runtime::SceneIoError> {
+    let scene_id =
+        |world: &World, entity| world.get::<SceneId>(entity).map(|id| id.0);
+    let selected = state.selected.and_then(|entity| scene_id(world, entity));
+    let selection: Vec<_> = state
+        .selection
+        .iter()
+        .filter_map(|&entity| scene_id(world, entity))
+        .collect();
+    crate::runtime::load_scene_document(
+        world,
+        document,
+        SceneLoadMode::Replace,
+    )?;
+    let mut query = world.query::<(Entity, &SceneId)>();
+    let entities: std::collections::HashMap<_, _> = query
+        .iter(world)
+        .map(|(entity, id)| (id.0, entity))
+        .collect();
+    state.selected = selected.and_then(|id| entities.get(&id).copied());
+    state.selection = selection
+        .iter()
+        .filter_map(|id| entities.get(id).copied())
+        .collect();
+    Ok(())
+}
+
+/// Writes the authored transform back to the drag's own entity and ends the
+/// drag without an Undo step.
+fn cancel_gizmo_drag(world: &mut World, drag: &mut EditorGizmoDrag) {
+    if let (Some(entity), Some(transform)) =
+        (drag.entity, drag.original_transform)
+    {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert(transform);
+        }
+    }
+    *drag = EditorGizmoDrag::default();
 }
 
 fn finish_transform_mode(transform_mode: &mut EditorTransformMode) {
@@ -2646,7 +2948,7 @@ fn draw_viewport_transform_toolbar(
                                 transform.axis_mask[gizmo_axis_index(axis)];
                             let text = egui::RichText::new(label)
                                 .strong()
-                                .color(egui::Color32::WHITE);
+                                .color(gui_elements::EditorTheme::TEXT_STRONG);
                             let mut button = egui::Button::new(text)
                                 .min_size(egui::vec2(24.0, 24.0));
                             button = if active {
@@ -2656,7 +2958,7 @@ fn draw_viewport_transform_toolbar(
                                     )
                                     .stroke(egui::Stroke::new(
                                         1.0_f32,
-                                        egui::Color32::from_rgb(130, 190, 255),
+                                        gui_elements::EditorTheme::LINK,
                                     ))
                             } else {
                                 button.frame(false)
@@ -2682,6 +2984,94 @@ fn draw_viewport_transform_toolbar(
             .latest_pos()
             .is_some_and(|position| toolbar_rect.contains(position))
     })
+}
+
+/// Writes the panel's render settings back. Quality and culling are scene
+/// data, so an edit takes an undo snapshot and marks the scene dirty.
+/// Without an edit the world keeps its own values, which an Undo this frame
+/// may have just restored.
+/// Writes an edited material to `entity`'s renderer. A material other
+/// renderers share (or the built-in fallback) is cloned first so the edit
+/// stays on this object.
+// ponytail: the share check scans every renderer each edit frame; keep a
+// material use count if scenes grow large enough for this to show.
+pub(super) fn set_material(
+    world: &mut World,
+    entity: Entity,
+    material: MaterialAsset,
+) {
+    let Some(handle) = world.get::<MeshRenderer>(entity).map(|r| r.material)
+    else {
+        return;
+    };
+    let shared = handle == world.resource::<AssetServer>().fallback_material
+        || world.query::<(Entity, &MeshRenderer)>().iter(world).any(
+            |(other, renderer)| other != entity && renderer.material == handle,
+        );
+    let mut assets = world.resource_mut::<AssetServer>();
+    match assets.materials.get_mut(handle) {
+        Some(slot) if !shared => *slot = material,
+        _ => {
+            let handle = assets.materials.insert(material);
+            world
+                .get_mut::<MeshRenderer>(entity)
+                .expect("checked above")
+                .material = handle;
+        }
+    }
+}
+
+pub(super) fn apply_render_settings(
+    world: &mut World,
+    history: &mut EditorHistory,
+    state: &mut EditorState,
+    mut settings: RenderSettings,
+    original: (QualityProfile, CullingMode),
+) {
+    if (settings.quality, settings.culling) != original {
+        if let Err(error) = remember_scene_before_edit(world, history) {
+            state.scene_message = Some(error);
+        }
+        state.scene_dirty = true;
+    } else {
+        let scene = world.resource::<RenderSettings>();
+        settings.quality = scene.quality;
+        settings.culling = scene.culling;
+    }
+    *world.resource_mut::<RenderSettings>() = settings;
+}
+
+/// Scene-saved renderer options. The exported game loads them with the
+/// scene.
+fn draw_scene_render_settings(
+    ui: &mut egui::Ui,
+    settings: &mut RenderSettings,
+) {
+    use super::inspector::widgets::{choice, section};
+    section(ui, "Scene Rendering", false, |ui| {
+        choice(
+            ui,
+            "Quality",
+            &mut settings.quality,
+            &[
+                (QualityProfile::Auto, "Auto (by GPU)"),
+                (QualityProfile::Eco, "Eco"),
+                (QualityProfile::Balanced, "Balanced"),
+                (QualityProfile::High, "High"),
+            ],
+        );
+        choice(
+            ui,
+            "Culling",
+            &mut settings.culling,
+            &[
+                (CullingMode::Auto, "Auto"),
+                (CullingMode::Disabled, "Off"),
+                (CullingMode::Frustum, "Frustum"),
+                (CullingMode::FrustumAndOcclusion, "Frustum + Occlusion"),
+            ],
+        );
+    });
 }
 
 fn draw_viewport_render_settings(
@@ -2756,6 +3146,17 @@ fn draw_viewport_render_settings(
                         .on_hover_text(
                             "Show a yellow box around the selected mesh",
                         );
+                        gui_elements::EditorTheme::menu_section(
+                            ui,
+                            "VIEWPORT SHADING",
+                        );
+                        for view in SceneDebugView::ALL {
+                            ui.radio_value(
+                                &mut settings.shading,
+                                view,
+                                view.label(),
+                            );
+                        }
                         ui.min_rect()
                     },
                 );
@@ -3362,8 +3763,10 @@ fn gizmo_axis_color(
 
 /// Creates the first editor helpers: a quiet XZ grid and selected-object axes.
 /// More helpers such as bounds and collider shapes can append lines here later.
+#[allow(clippy::too_many_arguments)]
 fn build_scene_debug_overlay(
     world: &World,
+    editor_camera: Option<Entity>,
     selected: Option<Entity>,
     selection: &[Entity],
     settings: EditorGizmoSettings,
@@ -3384,6 +3787,22 @@ fn build_scene_debug_overlay(
             };
             overlay.line([value, 0.0, -20.0], [value, 0.0, 20.0], color);
             overlay.line([-20.0, 0.0, value], [20.0, 0.0, value], color);
+        }
+    }
+    // Cameras and lights have no mesh; draw Blender-style wire shapes in
+    // the selection colors so they can be seen and clicked.
+    for (entity, lines) in
+        crate::editor::overlay::object_shapes(world, editor_camera)
+    {
+        let color = if Some(entity) == selected {
+            [1.0, 0.78, 0.12, 1.0]
+        } else if selection.contains(&entity) {
+            [0.85, 0.42, 0.08, 1.0]
+        } else {
+            [0.72, 0.74, 0.78, 1.0]
+        };
+        for [start, end] in lines {
+            overlay.line(start, end, color);
         }
     }
     if settings.show_selected_bounds {
@@ -3601,6 +4020,20 @@ fn cross3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
 
 /// Finds the selected mesh's local bounds and asks the overlay helper to draw
 /// them in world space. Physics colliders are intentionally not involved.
+/// One profiler line: culling path, instance counts, and culling time.
+fn culling_stats_label(
+    stats: &crate::rendering::scene_renderer::CullingStats,
+) -> String {
+    let time = stats.time.map_or_else(
+        || "time n/a".to_owned(),
+        |time| format!("{:.3} ms", time.as_secs_f64() * 1000.0),
+    );
+    format!(
+        "Culling {:?} | {} submitted, {} visible, {} culled | {time}",
+        stats.path, stats.submitted, stats.visible, stats.culled
+    )
+}
+
 fn add_selected_bounds(
     overlay: &mut RenderDebugOverlay,
     world: &World,
@@ -3611,6 +4044,12 @@ fn add_selected_bounds(
     let Some(renderer) = world.get::<MeshRenderer>(entity).copied() else {
         return;
     };
+    if let Some(&bounds) = world.get::<RenderBounds>(entity) {
+        crate::editor::overlay::add_render_bounds(
+            overlay, bounds, matrix, color,
+        );
+        return;
+    }
     let Some(mesh) = world.resource::<AssetServer>().meshes.get(renderer.mesh)
     else {
         return;
@@ -3636,6 +4075,101 @@ fn normalized_axis(axis: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod gizmo_tests {
     use super::*;
+
+    #[test]
+    fn culling_stats_label_shows_counts_and_time() {
+        use crate::rendering::scene_renderer::{CullingPath, CullingStats};
+        let stats = CullingStats {
+            path: CullingPath::Gpu,
+            submitted: 4,
+            visible: 3,
+            culled: 1,
+            time: Some(std::time::Duration::from_micros(250)),
+        };
+        assert_eq!(
+            culling_stats_label(&stats),
+            "Culling Gpu | 4 submitted, 3 visible, 1 culled | 0.250 ms"
+        );
+        let untimed = CullingStats {
+            time: None,
+            ..stats
+        };
+        assert!(culling_stats_label(&untimed).ends_with("| time n/a"));
+    }
+
+    #[test]
+    fn selected_outline_shows_the_render_bounds_override() {
+        let mut world = World::new();
+        let assets = AssetServer::default();
+        let renderer = MeshRenderer {
+            mesh: assets.fallback_mesh,
+            material: assets.fallback_material,
+            cast_shadows: true,
+            receive_shadows: true,
+        };
+        world.insert_resource(assets);
+        let entity = world.spawn(renderer).id();
+        let matrix = Transform::default().to_matrix();
+
+        let mut overlay = RenderDebugOverlay::default();
+        add_selected_bounds(&mut overlay, &world, entity, matrix, [1.0; 4]);
+        assert_eq!(overlay.lines.len(), 12, "mesh box without an override");
+
+        world.entity_mut(entity).insert(RenderBounds::Sphere {
+            center: [0.0; 3],
+            radius: 3.0,
+        });
+        let mut overlay = RenderDebugOverlay::default();
+        add_selected_bounds(&mut overlay, &world, entity, matrix, [1.0; 4]);
+        assert_eq!(overlay.lines.len(), 96, "override sphere circles");
+        let [x, y, z] = overlay.lines[0].start;
+        assert!(((x * x + y * y + z * z).sqrt() - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn selection_change_cancels_drag_on_its_own_entity() {
+        let mut world = World::new();
+        let original = Transform::default();
+        let preview = Transform::default().with_position(4.0, 0.0, 0.0);
+        let first = world.spawn(preview).id();
+        let second_transform =
+            Transform::default().with_position(0.0, 9.0, 0.0);
+        let second = world.spawn(second_transform).id();
+        let mut state = EditorState {
+            selected: Some(second),
+            ..EditorState::default()
+        };
+        let mut drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Move),
+            modal: true,
+            entity: Some(first),
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(original),
+            ..EditorGizmoDrag::default()
+        };
+        let mut edited = Some(second_transform);
+
+        update_transform_gizmo(
+            &mut world,
+            &mut state,
+            None,
+            Some(Pos2::new(50.0, 0.0)),
+            None,
+            None,
+            false,
+            &mut drag,
+            &mut edited,
+            &mut EditorHistory::default(),
+            false,
+            false,
+            false,
+            &mut EditorTransformMode::default(),
+        );
+
+        assert!(!drag.is_active());
+        assert_eq!(world.get::<Transform>(first), Some(&original));
+        assert_eq!(edited, Some(second_transform));
+    }
 
     #[test]
     fn projected_two_axis_move_recovers_both_axis_distances() {

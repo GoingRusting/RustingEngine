@@ -370,6 +370,44 @@ fn one_class_rule_is_prepared_for_ten_thousand_matching_gpu_bodies() {
 }
 
 #[test]
+fn watched_gpu_bodies_keep_their_revision_while_unchanged() {
+    let mut app = App::new();
+    app.add_plugin(HybridPhysicsPlugin).unwrap();
+    app.add_plugin(RenderExtractPlugin).unwrap();
+    app.world_mut()
+        .resource_mut::<GpuPhysicsClassWatches>()
+        .add(
+            "falling",
+            GpuPhysicsRule::new(
+                "fell",
+                GpuCondition::position_y().less_than(-100.0),
+            ),
+        );
+    app.spawn((
+        Transform::default(),
+        PhysicsBody {
+            simulation: SimulationClass::GpuDynamic,
+            ..PhysicsBody::default()
+        },
+        RigidBody::default(),
+        ObjectClasses::new(["falling"]),
+    ));
+    app.update(Duration::ZERO).unwrap();
+    app.update(Duration::ZERO).unwrap();
+    let revision = app.world().resource::<RenderWorld>().gpu_physics_revision;
+    assert_eq!(app.world().resource::<RenderWorld>().gpu_physics.len(), 1);
+
+    app.update(Duration::ZERO).unwrap();
+    app.update(Duration::ZERO).unwrap();
+
+    // Each revision bump restarts the GPU simulation from authored poses.
+    assert_eq!(
+        app.world().resource::<RenderWorld>().gpu_physics_revision,
+        revision
+    );
+}
+
+#[test]
 fn gpu_event_and_instruction_layouts_are_stable() {
     use std::mem::{offset_of, size_of};
 

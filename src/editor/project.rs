@@ -222,7 +222,10 @@ pub fn open_project(root: &Path) -> Result<OpenProject, ProjectError> {
     }
     // Write fields added by migration only after every value was validated.
     if manifest != stored_manifest {
-        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+        crate::runtime::write_atomic(
+            &manifest_path,
+            &serde_json::to_vec_pretty(&manifest)?,
+        )?;
     }
     let scene_path = checked_project_path(&root, &manifest.main_scene)?;
     if !scene_path.is_file() {
@@ -456,6 +459,7 @@ fn default_scene(name: &str) -> SceneDocument {
                 spot_light: None,
             },
         ],
+        render: Default::default(),
     }
 }
 
@@ -531,7 +535,7 @@ impl EditorPreferences {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        crate::runtime::write_atomic(path, &serde_json::to_vec_pretty(self)?)?;
         Ok(())
     }
 }
@@ -549,7 +553,7 @@ fn save_recent_projects(recent: &[RecentProject]) -> Result<(), ProjectError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(recent)?)?;
+    crate::runtime::write_atomic(path, &serde_json::to_vec_pretty(recent)?)?;
     Ok(())
 }
 

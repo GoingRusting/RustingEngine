@@ -23,7 +23,7 @@ pub use assets::{
     TextureFilter, TextureSampler, TextureWrap,
 };
 pub use core::collisions::CollisionType;
-pub use core::{Material, MaterialBuilder, Physics, ShaderType, Transform};
+pub use core::{Material, MaterialBuilder, Physics, Transform};
 #[cfg(feature = "editor")]
 pub use editor::EditorPlugin;
 pub use engine::{Engine, PerspectiveCamera};

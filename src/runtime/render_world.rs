@@ -2,17 +2,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::ops::Range;
 
+use bevy_ecs::change_detection::{DetectChanges, Tick};
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Resource, World};
+use bevy_ecs::prelude::{Component, Or, Ref, Resource, With, World};
 
 use crate::assets::{Handle, MaterialAsset, MeshAsset};
 
 use super::{
     AmbientLight, App, AppError, Camera, DirectionalLight, GlobalTransform,
-    MeshRenderer, Plugin, PointLight, Projection, ScheduleStage, SpotLight,
-    Visibility,
+    MeshRenderer, Plugin, PointLight, Projection, RenderBounds, ScheduleStage,
+    SkyLight, SpotLight, ToneMapping, Visibility,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,6 +23,10 @@ pub struct ExtractedRenderable {
     pub material: Handle<MaterialAsset>,
     pub cast_shadows: bool,
     pub receive_shadows: bool,
+    /// The entity's local-space `RenderBounds` override. Without one the
+    /// renderer culls with the box around the mesh it actually draws, so
+    /// bounds follow mesh loads and reloads.
+    pub bounds: Option<RenderBounds>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,8 +86,9 @@ pub struct RenderWorld {
     pub point_lights: Vec<ExtractedPointLight>,
     pub spot_lights: Vec<ExtractedSpotLight>,
     pub ambient_light: Option<AmbientLight>,
+    pub sky_light: Option<SkyLight>,
+    pub tone_mapping: Option<ToneMapping>,
     pub lights_revision: u64,
-    pub dirty_ranges: Vec<Range<usize>>,
     pub report: ExtractionReport,
     /// Bodies whose newest runtime transforms will be owned by GPU compute.
     pub gpu_physics: Vec<super::ExtractedGpuPhysicsBody>,
@@ -99,9 +104,11 @@ pub struct RenderWorld {
     pub background_color: [f32; 4],
     /// Requested profile; the renderer resolves `Auto` from device capabilities.
     pub quality: super::QualityProfile,
+    pub culling: super::CullingMode,
     cached: HashMap<Entity, ExtractedRenderable>,
-    previous_order: Vec<Entity>,
     renderables_signature: Option<u64>,
+    /// Tick and component counts seen by the last signature hash.
+    renderables_fingerprint: Option<(Tick, [usize; 5])>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -120,17 +127,22 @@ pub fn extract_render_world(world: &mut World) {
     // Most game frames do not add objects or change their CPU transforms.
     // Hashing in place is much cheaper than allocating and sorting a new list
     // of ten thousand objects only to discover that nothing changed.
-    let renderables_signature = renderables_signature(world);
     let previous_renderables_signature =
         world.resource::<RenderWorld>().renderables_signature;
-    let renderables = (previous_renderables_signature
-        != Some(renderables_signature))
-    .then(|| collect_renderables(world));
+    let renderables_signature = if renderables_changed(world) {
+        Some(renderables_signature(world))
+    } else {
+        previous_renderables_signature
+    };
+    let renderables = (previous_renderables_signature != renderables_signature)
+        .then(|| collect_renderables(world));
     let active_camera = collect_active_camera(world);
     let directional_lights = collect_directional_lights(world);
     let point_lights = collect_point_lights(world);
     let spot_lights = collect_spot_lights(world);
-    let ambient_light = collect_ambient_light(world);
+    let ambient_light = collect_first::<AmbientLight>(world);
+    let sky_light = collect_first::<SkyLight>(world);
+    let tone_mapping = collect_first::<ToneMapping>(world);
     let has_gpu_physics_resources = world
         .contains_resource::<super::PhysicsIdRegistry>()
         && world.contains_resource::<super::GpuEventRegistry>()
@@ -152,8 +164,11 @@ pub fn extract_render_world(world: &mut World) {
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
     let render_settings = world.resource::<super::RenderSettings>();
-    let (background_color, quality) =
-        (render_settings.background_color, render_settings.quality);
+    let (background_color, quality, culling) = (
+        render_settings.background_color,
+        render_settings.quality,
+        render_settings.culling,
+    );
 
     let mut render_world = world.resource_mut::<RenderWorld>();
     match renderables {
@@ -165,7 +180,6 @@ pub fn extract_render_world(world: &mut World) {
                 total: render_world.renderables.len(),
                 ..ExtractionReport::default()
             };
-            render_world.dirty_ranges.clear();
         }
         Some(renderables) => {
             let current_entities = renderables
@@ -192,48 +206,30 @@ pub fn extract_render_world(world: &mut World) {
                 }
             }
             let changed = dirty_entities.len().saturating_sub(added);
-            let order = renderables
-                .iter()
-                .map(|renderable| renderable.entity)
-                .collect::<Vec<_>>();
-            let dirty_ranges = if order != render_world.previous_order {
-                (!renderables.is_empty())
-                    .then_some(0..renderables.len())
-                    .into_iter()
-                    .collect()
-            } else {
-                contiguous_ranges(renderables.iter().enumerate().filter_map(
-                    |(index, renderable)| {
-                        dirty_entities
-                            .contains(&renderable.entity)
-                            .then_some(index)
-                    },
-                ))
-            };
             render_world.cached = renderables
                 .iter()
                 .copied()
                 .map(|renderable| (renderable.entity, renderable))
                 .collect();
-            render_world.previous_order = order;
             render_world.report = ExtractionReport {
                 added,
                 changed,
                 removed,
                 total: renderables.len(),
             };
-            render_world.dirty_ranges = dirty_ranges;
             render_world.renderables = renderables;
             render_world.renderables_revision =
                 render_world.renderables_revision.wrapping_add(1);
         }
     }
-    render_world.renderables_signature = Some(renderables_signature);
+    render_world.renderables_signature = renderables_signature;
     render_world.active_camera = active_camera;
+    render_world.tone_mapping = tone_mapping;
     if render_world.directional_lights != directional_lights
         || render_world.point_lights != point_lights
         || render_world.spot_lights != spot_lights
         || render_world.ambient_light != ambient_light
+        || render_world.sky_light != sky_light
     {
         render_world.lights_revision =
             render_world.lights_revision.wrapping_add(1);
@@ -241,8 +237,13 @@ pub fn extract_render_world(world: &mut World) {
         render_world.point_lights = point_lights;
         render_world.spot_lights = spot_lights;
         render_world.ambient_light = ambient_light;
+        render_world.sky_light = sky_light;
     }
-    if let Some(gpu_physics) = gpu_physics {
+    // Scenes with watch rules extract every frame. Bump the revision only on
+    // a real change; each bump makes the renderer rebuild its physics tables.
+    if let Some(gpu_physics) =
+        gpu_physics.filter(|bodies| *bodies != render_world.gpu_physics)
+    {
         render_world.gpu_physics = gpu_physics;
         render_world.gpu_physics_revision =
             render_world.gpu_physics_revision.wrapping_add(1);
@@ -255,6 +256,57 @@ pub fn extract_render_world(world: &mut World) {
     render_world.physics_enabled = physics_settings.enabled;
     render_world.background_color = background_color;
     render_world.quality = quality;
+    render_world.culling = culling;
+}
+
+/// True unless no `GlobalTransform`, `MeshRenderer`, `Visibility`, or
+/// `Parent` changed since the last call and none was removed. Removing one
+/// lowers a count; adding one back is itself a change. A static scene then
+/// skips the per-object hash and parent-chain walks.
+fn renderables_changed(world: &mut World) -> bool {
+    let this_run = world.increment_change_tick();
+    let last_run = world
+        .resource::<RenderWorld>()
+        .renderables_fingerprint
+        .map(|(tick, _)| tick);
+    let newer = |tick: Tick| {
+        last_run.is_none_or(|last_run| tick.is_newer_than(last_run, this_run))
+    };
+    let mut counts = [0; 5];
+    let mut changed = false;
+    let mut query = world.query_filtered::<(
+        Option<Ref<GlobalTransform>>,
+        Option<Ref<MeshRenderer>>,
+        Option<Ref<Visibility>>,
+        Option<Ref<super::Parent>>,
+        Option<Ref<RenderBounds>>,
+    ), Or<(
+        With<MeshRenderer>,
+        With<Visibility>,
+        With<super::Parent>,
+        With<RenderBounds>,
+    )>>();
+    for (transform, renderer, visibility, parent, bounds) in query.iter(world) {
+        let ticks = [
+            transform.map(|value| value.last_changed()),
+            renderer.map(|value| value.last_changed()),
+            visibility.map(|value| value.last_changed()),
+            parent.map(|value| value.last_changed()),
+            bounds.map(|value| value.last_changed()),
+        ];
+        for (count, tick) in counts.iter_mut().zip(ticks) {
+            if let Some(tick) = tick {
+                *count += 1;
+                changed |= newer(tick);
+            }
+        }
+    }
+    let mut render_world = world.resource_mut::<RenderWorld>();
+    changed |= render_world
+        .renderables_fingerprint
+        .is_none_or(|(_, previous)| previous != counts);
+    render_world.renderables_fingerprint = Some((this_run, counts));
+    changed
 }
 
 /// Creates a small fingerprint without allocating or sorting render objects.
@@ -265,10 +317,10 @@ fn renderables_signature(world: &mut World) -> u64 {
         Entity,
         &GlobalTransform,
         &MeshRenderer,
-        Option<&Visibility>,
+        Option<&RenderBounds>,
     )>();
     let world = &*world;
-    for (entity, transform, renderer, _) in query.iter(world) {
+    for (entity, transform, renderer, bounds) in query.iter(world) {
         if !visible_in_hierarchy(world, entity) {
             continue;
         }
@@ -278,6 +330,7 @@ fn renderables_signature(world: &mut World) -> u64 {
         renderer.material.key().hash(&mut hasher);
         renderer.cast_shadows.hash(&mut hasher);
         renderer.receive_shadows.hash(&mut hasher);
+        format!("{bounds:?}").hash(&mut hasher);
         for row in transform.matrix {
             for value in row {
                 value.to_bits().hash(&mut hasher);
@@ -315,20 +368,23 @@ fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
         Entity,
         &GlobalTransform,
         &MeshRenderer,
-        Option<&Visibility>,
+        Option<&RenderBounds>,
     )>();
-    let world = &*world;
+    let world_ref = &*world;
     let mut renderables = query
-        .iter(world)
-        .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
-        .map(|(entity, transform, renderer, _)| ExtractedRenderable {
-            entity,
-            transform: *transform,
-            mesh: renderer.mesh,
-            material: renderer.material,
-            cast_shadows: renderer.cast_shadows,
-            receive_shadows: renderer.receive_shadows,
-        })
+        .iter(world_ref)
+        .filter(|(entity, ..)| visible_in_hierarchy(world_ref, *entity))
+        .map(
+            |(entity, transform, renderer, bounds)| ExtractedRenderable {
+                entity,
+                transform: *transform,
+                mesh: renderer.mesh,
+                material: renderer.material,
+                cast_shadows: renderer.cast_shadows,
+                receive_shadows: renderer.receive_shadows,
+                bounds: bounds.copied(),
+            },
+        )
         .collect::<Vec<_>>();
     renderables.sort_by_key(|renderable| {
         (
@@ -412,25 +468,13 @@ fn collect_spot_lights(world: &mut World) -> Vec<ExtractedSpotLight> {
     lights
 }
 
-fn collect_ambient_light(world: &mut World) -> Option<AmbientLight> {
-    let mut query = world.query::<(Entity, &AmbientLight)>();
+/// The environment component on the lowest entity, so the pick is stable.
+fn collect_first<T: Component + Copy>(world: &mut World) -> Option<T> {
+    let mut query = world.query::<(Entity, &T)>();
     query
         .iter(world)
         .min_by_key(|(entity, _)| entity.to_bits())
         .map(|(_, light)| *light)
-}
-
-fn contiguous_ranges(
-    indices: impl Iterator<Item = usize>,
-) -> Vec<Range<usize>> {
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    for index in indices {
-        match ranges.last_mut() {
-            Some(range) if range.end == index => range.end += 1,
-            _ => ranges.push(index..index + 1),
-        }
-    }
-    ranges
 }
 
 #[cfg(test)]
@@ -464,7 +508,6 @@ mod tests {
         app.update(Duration::ZERO).unwrap();
         let render_world = app.world().resource::<RenderWorld>();
         assert_eq!(render_world.report.added, 2);
-        assert_eq!(render_world.dirty_ranges, vec![0..2]);
 
         app.world_mut()
             .get_mut::<Transform>(second)
@@ -478,7 +521,6 @@ mod tests {
         let render_world = app.world().resource::<RenderWorld>();
         assert_eq!(render_world.report.removed, 1);
         assert_eq!(render_world.report.total, 1);
-        assert_eq!(render_world.dirty_ranges, vec![0..1]);
     }
 
     #[test]
@@ -565,6 +607,70 @@ mod tests {
         let render_world = app.world().resource::<RenderWorld>();
         assert_eq!(render_world.report.total, 0);
         assert_eq!(render_world.report.removed, 1);
+    }
+
+    #[test]
+    fn removing_a_hidden_visibility_after_a_quiet_frame_shows_the_object() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let server = AssetServer::default();
+        let renderer = renderer(&server);
+        app.insert_resource(server);
+        let entity = app.spawn((
+            Transform::default(),
+            renderer,
+            Visibility { visible: false },
+        ));
+        app.update(Duration::ZERO).unwrap();
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().report.total, 0);
+
+        // A removal changes no remaining component; only the count drops.
+        app.world_mut().entity_mut(entity).remove::<Visibility>();
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().report.total, 1);
+    }
+
+    #[test]
+    fn render_bounds_overrides_are_extracted_and_track_edits() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let server = AssetServer::default();
+        let renderer = renderer(&server);
+        app.insert_resource(server);
+        let entity = app.spawn((
+            Transform::new([5.0, 0.0, 0.0]),
+            renderer,
+            RenderBounds::Sphere {
+                center: [0.0, 1.0, 0.0],
+                radius: 2.0,
+            },
+        ));
+        let bounds = |app: &App| {
+            app.world().resource::<RenderWorld>().renderables[0].bounds
+        };
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(
+            bounds(&app),
+            Some(RenderBounds::Sphere {
+                center: [0.0, 1.0, 0.0],
+                radius: 2.0,
+            }),
+            "the override stays in local space"
+        );
+
+        let edited = RenderBounds::Aabb {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        *app.world_mut().get_mut::<RenderBounds>(entity).unwrap() = edited;
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().report.changed, 1);
+        assert_eq!(bounds(&app), Some(edited));
+
+        app.world_mut().entity_mut(entity).remove::<RenderBounds>();
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(bounds(&app), None, "the renderer uses the mesh box");
     }
 
     #[test]

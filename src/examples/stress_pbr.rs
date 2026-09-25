@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 /// # Stress Test: 10,000 PBR Cubes
@@ -13,11 +13,11 @@ pub fn main() {
     engine.set_light([300.0, 500.0, 300.0], [1.0, 1.0, 1.0], 50000.0);
     let red_pbr = Material::standard()
         .color([1.0, 0.2, 0.2])
-        .shader(ShaderType::Pbr)
+        .model(MaterialModel::Pbr)
         .build();
     let green_pbr = Material::standard()
         .color([0.2, 1.0, 0.2])
-        .shader(ShaderType::Pbr)
+        .model(MaterialModel::Pbr)
         .build();
     let grid_size = 20;
 
@@ -88,7 +88,7 @@ pub fn main() {
     //     },
     //     &Material::standard()
     //         .color([0.1, 1.0, 0.1])
-    //         .shader(ShaderType::Pbr)
+    //         .model(MaterialModel::Pbr)
     //         .build(),
     //     &Physics::default()
     //         .compute_shader(ComputeShaderType::Test)
@@ -98,7 +98,7 @@ pub fn main() {
     //     2,
     // );
 
-    engine.set_scene_shader(ShaderType::Pbr);
+    engine.set_scene_shader(MaterialModel::Pbr);
     engine.set_scene_physic(ComputeShaderType::Test);
     engine.run();
 }

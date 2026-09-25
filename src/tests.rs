@@ -1,3 +1,4 @@
+use crate::assets::MaterialModel;
 #[cfg(test)]
 use crate::core::material::Material;
 use crate::rendering::shader_registry::ShaderType;
@@ -46,21 +47,21 @@ fn shader_type_is_copy() {
 // Material Builder Tests
 
 #[test]
-fn material_default_has_pbr_shader() {
+fn material_default_has_pbr_model() {
     let mat = Material::default();
-    assert_eq!(mat.shader, ShaderType::Pbr);
+    assert_eq!(mat.model, MaterialModel::Pbr);
 }
 
 #[test]
-fn material_builder_sets_shader() {
-    let mat = Material::standard().shader(ShaderType::Unlit).build();
-    assert_eq!(mat.shader, ShaderType::Unlit);
+fn material_builder_sets_model() {
+    let mat = Material::standard().model(MaterialModel::Unlit).build();
+    assert_eq!(mat.model, MaterialModel::Unlit);
 }
 
 #[test]
-fn material_builder_default_shader_is_pbr() {
+fn material_builder_default_model_is_pbr() {
     let mat = Material::standard().build();
-    assert_eq!(mat.shader, ShaderType::Pbr);
+    assert_eq!(mat.model, MaterialModel::Pbr);
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn material_builder_defaults_match_material_defaults() {
     assert_eq!(actual.emissive, expected.emissive);
     assert_eq!(actual.roughness, expected.roughness);
     assert_eq!(actual.metalness, expected.metalness);
-    assert_eq!(actual.shader, expected.shader);
+    assert_eq!(actual.model, expected.model);
     assert_eq!(actual.base_color_texture, expected.base_color_texture);
     assert_eq!(
         actual.metallic_roughness_texture,
@@ -81,28 +82,28 @@ fn material_builder_defaults_match_material_defaults() {
 }
 
 #[test]
-fn material_builder_chaining_preserves_shader() {
+fn material_builder_chaining_preserves_model() {
     let mat = Material::standard()
         .color([1.0, 0.0, 0.0])
         .roughness(0.8)
         .metalness(0.5)
-        .shader(ShaderType::NormalDebug)
+        .model(MaterialModel::Unlit)
         .emissive(0.0)
         .build();
 
-    assert_eq!(mat.shader, ShaderType::NormalDebug);
+    assert_eq!(mat.model, MaterialModel::Unlit);
     assert_eq!(mat.color, [1.0, 0.0, 0.0]);
     assert_eq!(mat.roughness, 0.8);
     assert_eq!(mat.metalness, 0.5);
 }
 
 #[test]
-fn material_builder_shader_can_be_overridden() {
+fn material_builder_model_can_be_overridden() {
     let mat = Material::standard()
-        .shader(ShaderType::Unlit)
-        .shader(ShaderType::Emissive) // override to test what if user override
+        .model(MaterialModel::Unlit)
+        .model(MaterialModel::Pbr) // override to test what if user override
         .build();
-    assert_eq!(mat.shader, ShaderType::Emissive);
+    assert_eq!(mat.model, MaterialModel::Pbr);
 }
 
 // Instance Tests
@@ -141,7 +142,7 @@ fn instance_material_copy_preserves_every_property() {
         .emissive(1.25)
         .roughness(0.15)
         .metalness(0.85)
-        .shader(ShaderType::Unlit)
+        .model(MaterialModel::Unlit)
         .base_color_texture(3)
         .metallic_roughness_texture(7)
         .build();
@@ -153,7 +154,7 @@ fn instance_material_copy_preserves_every_property() {
     assert_eq!(instance.emissive, material.emissive);
     assert_eq!(instance.roughness, material.roughness);
     assert_eq!(instance.metalness, material.metalness);
-    assert_eq!(instance.shader, material.shader);
+    assert_eq!(instance.shader, ShaderType::Unlit);
     assert_eq!(instance.base_color_texture, material.base_color_texture);
     assert_eq!(
         instance.metallic_roughness_texture,

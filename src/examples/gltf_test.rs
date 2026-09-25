@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 
@@ -15,7 +15,7 @@ pub fn main() {
     //     },
     //     &Material::standard()
     //         .color([0.1, 1.0, 0.1])
-    //         .shader(ShaderType::Pbr)
+    //         .model(MaterialModel::Pbr)
     //         .build(),
     //     &Physics::default()
     //         .compute_shader(ComputeShaderType::FullPhysics)
@@ -34,7 +34,7 @@ pub fn main() {
             },
             &Material::standard()
                 .color([1.0, 1.0, 1.0])
-                .shader(ShaderType::Pbr)
+                .model(MaterialModel::Pbr)
                 .build(),
             &Physics::default()
                 .compute_shader(ComputeShaderType::Test)
@@ -61,7 +61,7 @@ pub fn main() {
                         },
                         &Material::standard()
                             .color([1.0, 1.0, 1.0])
-                            .shader(ShaderType::Pbr)
+                            .model(MaterialModel::Pbr)
                             .build(),
                         &Physics::default()
                             .compute_shader(ComputeShaderType::Test)
@@ -75,7 +75,7 @@ pub fn main() {
         }
     }
 
-    engine.set_scene_shader(ShaderType::Heavy);
+    engine.set_scene_shader(MaterialModel::Pbr);
     engine.set_scene_physic(ComputeShaderType::Test);
     engine.run();
 }

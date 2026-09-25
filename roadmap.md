@@ -393,6 +393,19 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
   components). Light intensities keep glTF physical units. The editor's
   flat `import_gltf` path is unchanged (AGENTS.md); wiring the editor to the
   node import is the owner's call.
+- [x] Sample imported UVs and material textures in the ECS renderer.
+  Found in the `issues.md` audit. `SceneVertex` now carries UVs, and the
+  fragment shader multiplies the material color by the base-color texture
+  (set 1, one descriptor set per texture, white when a material has none or
+  its texture is still loading). Uploads go through a staging buffer copied
+  in the frame's own command buffer, with no CPU wait. sRGB textures use an
+  `_SRGB` format; each glTF sampler (filter, wrap) gets a cached `Sampler`.
+  A changed texture revision re-uploads, and removed textures leave the
+  cache like meshes. Evidence: GPU tests
+  `base_color_texture_tints_the_surface_and_reloads_next_frame` (fails with
+  sampling disabled in the shader) and `material_without_texture_samples_white`.
+  Known ceiling: no mip chain yet. The other maps landed with the Milestone 4
+  PBR pass.
 - [ ] Add skins and animation after the static scene path is stable.
   Blocked: needs the skeleton/clip/pose runtime from Milestone 14; import
   lands together with that runtime rather than as data nothing consumes.
@@ -423,9 +436,15 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
   components. Evidence: `all_authored_light_types_round_trip_together` now
   round-trips an ambient light through cooked bytes and fails with the
   registration removed. Editor metadata is split out below.
-- [ ] Serialize per-scene editor metadata (editor camera pose, selection).
-  Blocked on owner: the state lives in `EditorState` in `src/editor/mod.rs`,
-  which AGENTS.md forbids automated sessions from changing.
+- [x] Serialize per-scene editor metadata (editor camera pose, selection).
+  `save_editor_scene` writes the editor camera position, rotation, orbit
+  distance, and selection (by `SceneId`, active object first) to a
+  `<scene>.editor.json` sidecar, like Godot's per-scene edit state, so the
+  game's scene file stays clean. `load_editor_scene` restores them after a
+  Replace load; a missing or corrupt sidecar only clears the selection. Every
+  editor save and open path, and the startup restore, uses the pair.
+  Evidence: unit test
+  `editor_scene_restores_camera_pose_and_selection_after_reload`.
 - [x] Reject unsupported scene versions with a clear structured error.
 - [x] Add explicit migration for legacy unversioned project and text-scene files.
 - [x] Add scene save, load, additive load, and unload operations.
@@ -464,14 +483,15 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
   `Arc`s to the buffers it binds, and the frame future keeps the command
   buffer until its fence completes. Evidence: the same GPU test holds a
   `Weak` to the replaced vertex buffer; it stays alive while frame 1 is in
-  flight and is freed once frame 1 is dropped after completion. Textures are
-  not yet uploaded by the ECS renderer; they follow the same pattern when
-  PBR texture binding lands.
-- [ ] Surface reload success and failure in the editor console.
-  Blocked on owner: the console lives in `src/editor/mod.rs`, which AGENTS.md
-  forbids automated sessions from changing. The data is ready:
-  `Assets::take_reload_failures()` drains failures, and `poll_loads` returns
-  the published count.
+  flight and is freed once frame 1 is dropped after completion. Textures
+  follow the same pattern: each frame's command buffer holds the descriptor
+  set, and with it the image, it binds.
+- [x] Surface reload success and failure in the editor console.
+  `poll_loads` records the path of each published hot reload;
+  `AssetServer::take_reloaded()` drains them, and the editor logs "Hot
+  reloaded <path>" at Info and each failure at Error. Evidence: unit test
+  `changed_files_reload_on_workers_and_failures_keep_last_value` (one path
+  after a good reload, none after a failed one).
 
 ### Exit gate
 
@@ -696,11 +716,9 @@ Goal: eliminate frame-loop stalls and host/GPU races while making rendering deri
   - Materials choose appearance through `MaterialModel::{Pbr, Unlit}`, never cost.
   - Cost is set only through `QualityProfile`, which `Auto` resolves from
     capabilities (item above).
-  The remaining user-facing variants are the public `ShaderType` (including
-  the benchmark-only `Heavy`) on the legacy `Engine` path. By roadmap
-  precedent that path is replaced in Milestone 1, not patched. The
-  Milestone 4 item "Replace public `ShaderType` with `MaterialModel`..."
-  owns its removal. Solver selection (`PhysicsSolver`) is a semantic
+  The legacy `Engine` path's public `ShaderType` (including the
+  benchmark-only `Heavy`) was removed by the Milestone 4 item "Replace
+  public `ShaderType` with `MaterialModel`...". Solver selection (`PhysicsSolver`) is a semantic
   choice, and "Keep manual CPU/GPU and solver selection available" keeps it
   manual on purpose. Evidence: code audit only; no code changed.
 
@@ -718,42 +736,449 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
 ### Pass schedule
 
 - [x] Batch opaque ECS renderables by mesh and material and draw them through a cached GPU instance buffer.
-- [ ] Directional shadow-map pass.
-- [ ] Opaque forward PBR pass.
-- [ ] Transparent forward pass with back-to-front sorting.
-- [ ] HDR render target and tone-mapping pass.
+- [x] Directional shadow-map pass.
+  `SceneRenderer` records a depth-only pass into a 2048x2048 `D32_SFLOAT`
+  shadow map before the main pass, drawing opaque/mask batches with
+  `cast_shadows` (others collapse to a zero-area triangle in the shadow
+  vertex shader). It shares the main pipeline layout and set 0, uses
+  slope-scaled depth bias, and is always cleared so the main pass samples
+  initialized depth. The orthographic light box covers `SHADOW_DISTANCE`
+  (50 m) in front of the camera. Evidence: GPU test
+  `directional_light_shadow_darkens_receivers_only_when_enabled` (off-view
+  caster darkens the floor; non-caster, non-receiver, and `shadows: false`
+  stay lit); fails with r=253 when the shadow factor is forced to 1.
+  Known ceilings: one cascade, no texel snapping (edges shimmer as the
+  camera moves), masked casters cast fully opaque, blended casters none.
+- [x] Opaque forward PBR pass.
+  The ECS fragment shader is metallic-roughness Cook-Torrance (GGX, Smith-
+  Schlick, Schlick Fresnel) for every light kind, plus emissive. Light units
+  are unchanged: a white Lambert surface facing a unit light still reflects
+  1. `MaterialModel::Unlit` outputs the base color. Built-in primitives now
+  get real tangents from `generate_tangents` instead of placeholders.
+  Ambient became a sky/ground hemisphere with the sky/environment item.
+  Evidence: GPU test `pbr_maps_and_unlit_model_shape_the_lit_color` (unlit
+  ignores light; PBR without light is black; emissive factor and map; the
+  occlusion map darkens ambient; a rough metal is darker than a dielectric
+  and a metallic-roughness map with blue 0 restores the dielectric; a normal
+  map tilted toward a grazing light brightens the surface). Disabling the
+  normal, metallic-roughness, occlusion, or emissive sample in the shader
+  each fails it.
+- [x] Transparent forward pass with back-to-front sorting.
+  Already delivered by Milestone 2 "Support alpha opaque, mask, and blend
+  modes": second pipeline, per-frame back-to-front sort. Evidence: GPU test
+  `alpha_modes_render_opaque_mask_and_sorted_blend` (fails with sorting
+  disabled), unit test `blended_objects_render_last_unbatched_and_back_to_front`.
+- [x] HDR render target and tone-mapping pass. The scene pass lights into an
+  `R16G16B16A16_SFLOAT` target (subpass 0); subpass 1 reads it as an input
+  attachment and maps it into the output with a `ToneMapping` component
+  (`Linear` clip by default like Godot, `Reinhard`, `Aces`, plus exposure;
+  saved as `rusting.tone_mapping`). Debug views and editor lines skip the
+  curve. Evidence: GPU test `hdr_values_above_one_survive_until_tone_mapping`
+  (fails with an 8-bit target, with the Reinhard branch removed, and with the
+  debug-view bypass removed); scene-file round trip includes the component;
+  all earlier renderer GPU tests pass unchanged.
 - [x] Bootstrap Vulkan egui overlay/compositing pass for the runnable editor.
-- [ ] Engine-owned egui compositing pass shared with the production renderer.
-- [ ] Explicit pass resources, transitions, and debug labels.
+- [x] Engine-owned egui compositing pass shared with the production renderer.
+  `rendering::egui_painter::EguiPainter` draws egui meshes in its own
+  load/store render pass over any target, including the `SceneRenderer`
+  output; `egui_winit_vulkano` is removed. It is behind the `editor` feature
+  because that feature owns the egui dependency. Evidence: GPU tests
+  `meshes_blend_over_the_target_in_points_and_respect_clip_rects` and
+  `texture_patches_update_one_region_and_freed_textures_stop_drawing` (they
+  fail with the sRGB output conversion removed, with the clip scissor
+  widened to the full target, and with partial updates written at offset 0);
+  the editor ran 8 s on Linux/Wayland and drew its UI with no validation
+  panic.
+- [x] Explicit pass resources, transitions, and debug labels.
+  `rendering::frame_passes` declares the frame's passes in order (Uploads,
+  Physics, Shadow, Scene, ToneMap, DebugOverlay), the resources each one
+  reads and writes, and the image layout it needs. `layout_transitions()`
+  derives the three layout changes (material textures and the shadow map to
+  shader-read before Scene, HDR color to shader-read before ToneMap). The
+  shadow render pass takes its final layout from the table, so the render
+  pass does that transition; vulkano still inserts the remaining barriers
+  until the Milestone 13 render graph. Each pass is recorded under its own
+  debug-utils label inside the frame's `SceneRenderer::render` label, and
+  `SceneRenderer::last_frame_passes()` reports the recorded order. The
+  headless test instance now enables `ext_debug_utils` when the driver has
+  it, so every GPU test records the labels. Evidence: unit tests in
+  `frame_passes` (every read follows a write, unique labels, exact
+  transition list); GPU test
+  `frames_record_the_declared_passes_with_their_layouts` (pass order, shadow
+  final layout, HDR input layout; fails with the shadow final layout
+  removed); the 38 `scene_renderer` GPU tests under
+  `VK_LAYER_KHRONOS_validation` on an RTX 3060 report no validation error,
+  while a removed Shadow label begin reports
+  `VUID-vkCmdEndDebugUtilsLabelEXT-commandBuffer-01912`.
 
 ### Materials and lighting
 
-- [ ] Replace public `ShaderType` with `MaterialModel::{Pbr, Unlit}` plus internal shader variants.
-- [ ] Complete metallic-roughness PBR texture binding and sampling.
-- [ ] Support base color, normal, metallic-roughness, occlusion, and emissive maps.
-- [ ] Support alpha cutoff and alpha blending.
-- [ ] Add one shadowed directional light.
-- [ ] Add several point lights with capability-appropriate limits.
-- [ ] Add sky/environment ambient lighting.
-- [ ] Add material/texture fallback behavior and diagnostic rendering.
+- [x] Replace public `ShaderType` with `MaterialModel::{Pbr, Unlit}` plus internal shader variants.
+  The legacy `Material` now carries `model: MaterialModel` (builder
+  `.model(...)`), and `Engine::set_scene_shader` takes a `MaterialModel`.
+  `ShaderType` is no longer re-exported from the crate root; it stays in
+  `rendering::shader_registry` as the legacy renderer's internal variant
+  enum, mapped by `From<MaterialModel>`. The `Emissive`, `NormalDebug`, and
+  `Heavy` variants are no longer selectable from the public API; the Pbr
+  variant already renders emissive. Evidence: unit tests
+  `material_builder_sets_model`, `material_builder_model_can_be_overridden`,
+  and `instance_material_copy_preserves_every_property` (an Unlit material
+  maps to the Unlit variant); doc tests on `Material` and `MaterialBuilder::model`.
+- [x] Complete metallic-roughness PBR texture binding and sampling.
+  Set 1 is now one cached descriptor set per material holding its five maps
+  (white where absent), rebuilt only when a map is re-uploaded. Metallic and
+  roughness factors, emissive, and the model travel in the instance buffer,
+  which is already rebuilt on material revision changes. Evidence: as above.
+- [x] Support base color, normal, metallic-roughness, occlusion, and emissive maps.
+  Normal maps use the vertex tangent and handedness (glTF convention);
+  metallic-roughness reads blue and green, occlusion red. Evidence: as above.
+- [x] Support alpha cutoff and alpha blending.
+  Already delivered by Milestone 2 "Support alpha opaque, mask, and blend
+  modes": second pipeline, per-frame back-to-front sort. Evidence: GPU test
+  `alpha_modes_render_opaque_mask_and_sorted_blend` (fails with sorting
+  disabled), unit test `blended_objects_render_last_unbatched_and_back_to_front`.
+- [x] Add one shadowed directional light.
+  The first uploaded `DirectionalLight` with `shadows: true` is shadowed;
+  its index reaches the fragment shader in `light_info.y`, and receivers
+  (`receive_shadows`) apply 3x3 PCF through a comparison sampler. Evidence:
+  same GPU test as the shadow-map pass.
+- [x] Add several point lights with capability-appropriate limits.
+  Point (and spot) lights share the light storage buffer with directional
+  lights and fade to zero at `range` (squared linear fade). The per-frame
+  budget comes from the resolved `QualityProfile`: Eco 16, Balanced 32,
+  High 64 (`MAX_LIGHTS`), with `Auto` resolved from device capabilities.
+  Lights past the budget are dropped and counted in
+  `RenderCapacityDiagnostics::dropped_lights`. Known ceiling: every
+  fragment loops over every uploaded light; no clustered culling yet.
+  Evidence: GPU test `several_point_lights_add_up_and_fade_out_at_their_range`
+  (a second light adds its color, a light past its range adds nothing, two
+  equal lights are brighter than one); forcing the range fade to 1 or
+  capping the shader loop at one light each fails it. GPU test
+  `lights_over_capacity_render_first_max_lights_and_report_the_rest` and
+  unit test for the ordered profile budgets cover the limits.
+- [x] Add sky/environment ambient lighting.
+  New `SkyLight { sky_color, ground_color, intensity }` component
+  (registered as `rusting.sky_light`, so the editor can add it and scenes
+  round-trip it) adds a hemisphere on top of any `AmbientLight`: +Y faces see
+  the sky, -Y faces the ground. Diffuse samples it along the normal and
+  specular along the reflection with roughness-aware Fresnel, so metals are
+  no longer black without direct light. The 0.12 gray fallback applies only
+  when neither component exists. The camera push constant grew to 128 bytes
+  (`ground_ambient`), the guaranteed minimum. Known ceiling: two colors, no
+  cubemap or HDRI; the sky system milestone brings image-based lighting.
+  Evidence: GPU test `sky_light_lights_up_faces_with_sky_and_down_faces_with_ground`
+  (top face red sky, bottom face blue ground, smooth metal reflects the sky,
+  gray fallback without either light); ignoring the normal's Y, using the
+  normal's Z, or dropping the environment specular each fails it. Unit test
+  `all_authored_light_types_round_trip_together` round-trips a sky light.
+  `base_color_texture_tints_the_surface_and_reloads_next_frame` now uses an
+  unlit material, since a lit dielectric correctly reflects 4% of the
+  environment.
+- [x] Add material/texture fallback behavior and diagnostic rendering.
+  Missing meshes draw the fallback cube and missing materials draw
+  magenta (both existed). New: a referenced map that is missing or failed
+  to upload binds a per-slot stand-in (magenta base color, flat normal,
+  white for the rest) instead of white, so a broken base color map is
+  visible and a broken normal map no longer tilts the shading.
+  `RenderCapacityDiagnostics` now counts `missing_meshes`,
+  `missing_materials`, and `missing_textures`. `SceneRenderOptions` gained
+  `debug_view: SceneDebugView::{Lit, Unshaded, Normals}` (shader reads it
+  from `light_info.z`); the editor's viewport settings popup has a
+  "Viewport shading" section, and only the Scene workspace uses it.
+  Evidence: GPU tests `missing_assets_draw_visible_fallbacks_and_are_counted`
+  (a removed or malformed base color map draws magenta; a missing normal
+  map under a grazing light matches no normal map; a removed material and
+  mesh draw a magenta cube; all counters) and
+  `debug_views_show_unshaded_base_color_and_normals`. Replacing the magenta
+  or flat-normal stand-in with white, or disabling the normals view, each
+  fails them. Unit test `scene_view_shading_applies_only_in_the_scene_workspace`.
 
 ### Visibility and quality
 
-- [ ] Add `RenderBounds` as a rendering-only component independent from the physics `Collider`.
-- [ ] Support local bounding spheres and axis-aligned boxes, transformed into world bounds during render preparation.
-- [ ] Generate default render bounds automatically for primitives and imported meshes, with an explicit editor override for unusual meshes and animations.
-- [ ] Add `CullingMode::{Auto, Disabled, Frustum, FrustumAndOcclusion}`. Start with the first three modes; reserve occlusion culling for a later pass.
-- [ ] Select CPU or GPU frustum culling by object count, simulation ownership, device capability, and quality profile.
-- [ ] Cull GPU-owned objects directly from their newest GPU physics transforms. Do not read every transform back to the CPU merely to decide visibility.
-- [ ] Make GPU culling write a compact visible-instance list and indirect draw commands consumed by the normal instanced renderer.
-- [ ] Let `Auto` bypass the culling dispatch for small scenes where direct rendering is cheaper, using a tested threshold before timing-based selection exists.
-- [ ] Keep render visibility separate from simulation activity: a culled object continues physics unless an explicit simulation-distance policy says otherwise.
-- [ ] Add Render Bounds editing and debug visualization to the Inspector and viewport.
-- [ ] Report submitted, visible, and culled instance counts plus culling compute time in the profiler.
-- [ ] Add hierarchical-Z occlusion culling after frustum culling, depth-pyramid generation, and conservative-bound tests are stable.
-- [ ] LOD asset groups and distance/error-based selection.
-- [ ] Transparent sorting.
-- [ ] Shadow resolution and distance scaling by quality profile.
+- [x] Add `RenderBounds` as a rendering-only component independent from the physics `Collider`.
+  `rusting_core::components::RenderBounds` (default: the unit cube's box),
+  saved as `rusting.render_bounds`. Evidence: scene-file round-trip test
+  includes it.
+- [x] Support local bounding spheres and axis-aligned boxes, transformed into world bounds during render preparation.
+  `RenderBounds::{Sphere, Aabb}` are local; `RenderBounds::transformed`
+  scales a sphere's radius by the largest axis scale and turns a box into
+  the axis-aligned box of its transformed corners (Arvo). Extraction carries
+  the local override in `ExtractedRenderable::bounds`; `SceneRenderer`
+  transforms it (or the mesh box) into world bounds when it prepares
+  instances. Evidence: unit tests
+  `render_bounds_stay_conservative_under_transforms` (rotated, non-uniformly
+  scaled, translated sphere and box; fails without the per-axis min/max) and
+  `render_bounds_overrides_are_extracted_and_track_edits` (fails when the
+  `RenderBounds` change tick is not tracked).
+- [x] Generate default render bounds automatically for primitives and imported meshes, with an explicit editor override for unusual meshes and animations.
+  An object without `RenderBounds` gets the box around the vertices of the
+  mesh the renderer actually uploaded (`PreparedMesh::bounds`), so built-in
+  primitives, imported glTF meshes, the fallback mesh shown while a mesh
+  loads, and reloaded meshes are all covered. The prepared instances record
+  the mesh revisions their bounds came from and rebuild when one changes,
+  without a scene change. A `RenderBounds` component overrides the mesh box.
+  Inspector editing of that override is the later "Render Bounds editing"
+  item. Evidence: GPU test
+  `culling_follows_the_camera_and_mesh_edits_without_scene_changes` (a mesh
+  edit alone un-culls an object; fails when the mesh revisions are not
+  checked).
+- [x] Add `CullingMode::{Auto, Disabled, Frustum, FrustumAndOcclusion}`. Start with the first three modes; reserve occlusion culling for a later pass.
+  `RenderSettings::culling` (default `Auto`) is extracted into
+  `RenderWorld::culling`. When culling is on, `SceneRenderer` tests each
+  instance's world bounds against the Gribb-Hartmann planes of the camera
+  clip matrix on the CPU. It compacts the survivors into a visible list:
+  each batch stays contiguous and draws once, and each kept blended instance
+  gets its own slot. The main and blend vertex shaders read the instance
+  index from that list as a per-instance vertex attribute. The list is
+  cached until the camera clip matrix, the culling mode, or the prepared
+  instances change, so a still camera costs nothing. The shadow pass still
+  draws every caster from the instance buffer directly.
+  `FrustumAndOcclusion` culls by frustum for now. How `Auto` picks a path
+  is described in the selection and small-scene items below. The CPU path
+  never culls GPU-physics bodies, because their CPU transform is stale.
+  Frames with GPU bodies take the GPU path, which culls them. Evidence:
+  - Unit tests: `frustum_test_keeps_bounds_that_touch_the_view_and_drops_the_rest`
+    (sphere and box on each side of the side, near, and far planes) and
+    `compaction_keeps_batches_contiguous_and_slots_blended_instances`.
+  - GPU tests: `culling_follows_the_camera_and_mesh_edits_without_scene_changes`
+    (the kept instance of a partly culled batch draws, a mesh edit
+    un-culls, a camera move re-culls);
+    `directional_light_shadow_darkens_receivers_only_when_enabled` (an
+    off-view caster is culled and still casts, `Disabled` culls nothing,
+    an override outside the view removes the floor from the image); and
+    `gpu_bodies_are_not_culled_by_their_stale_cpu_transform`.
+  - Mutations that fail these tests: the shader indexing with
+    `gl_InstanceIndex`, the cache ignoring mesh revisions, the cache
+    ignoring the camera, drawing whole batches, culling GPU bodies,
+    dropping plane normalization for spheres, and the OpenGL near plane
+    (`w + z`).
+  - The validation layer reports 0 errors across 42 `scene_renderer` tests.
+- [x] Select CPU or GPU frustum culling by object count, simulation ownership, device capability, and quality profile.
+  `select_culling_path` (`src/rendering/scene_renderer.rs`) returns a
+  `CullingPath` each frame:
+  - `Disabled` gives `Direct`: every instance is drawn.
+  - Any rendered GPU-owned body gives `Gpu`, because only the GPU has its
+    newest transform.
+  - Otherwise `Gpu` from `GPU_CULL_MIN_INSTANCES` (4096) instances, or four
+    times that on integrated GPUs and with the resolved `Eco` profile.
+  - Below the threshold, `Cpu`.
+
+  The threshold is untimed and marked with a `ponytail:` comment; the
+  profiler item replaces it with measured cull times.
+  `SceneRenderer::last_culling_path()` reports the choice.
+  `last_frame_culled()` is now `Option<usize>`: `None` on the GPU path,
+  whose count stays on the GPU.
+  Evidence: unit test
+  `culling_path_follows_mode_ownership_count_device_and_quality`, which
+  covers the threshold edge, GPU ownership, integrated GPUs, `Eco`, and
+  `Disabled`.
+- [x] Cull GPU-owned objects directly from their newest GPU physics transforms. Do not read every transform back to the CPU merely to decide visibility.
+  The `cull_shader` compute pass (`FramePass::Culling`, after Physics)
+  takes each instance's model from the physics state when it is a GPU
+  body, and from the instance buffer otherwise. It transforms the local
+  bounding sphere and tests the six clip planes. Nothing is read back to
+  the CPU.
+  The GPU tests a sphere around the mesh or `RenderBounds` box, so it keeps
+  some instances that the CPU box test drops (`ponytail:` comment).
+  Evidence: GPU test
+  `gpu_culling_counts_visible_instances_from_gpu_transforms_into_indirect_draws`.
+  A GPU body has its stale CPU transform in the view center and its GPU
+  state at x = -3. The cull pass counts only the static cube in that
+  batch. With the camera moved to x = -3, it counts only the body, and the
+  body draws at its GPU position.
+  `gpu_bodies_are_not_culled_by_their_stale_cpu_transform` now runs on the
+  GPU path and still draws the body.
+- [x] Make GPU culling write a compact visible-instance list and indirect draw commands consumed by the normal instanced renderer.
+  Each GPU-culled frame allocates fresh buffers:
+  - an indirect command per opaque batch and per blended instance, written
+    by the host with `instanceCount` 0
+  - a visible list sized like the instance buffer
+
+  The pass `atomicAdd`s each visible instance into its draw's count and
+  writes the instance index into that draw's range of the list. The main
+  and blend pipelines are unchanged. They read `instance_index` from the
+  list as a per-instance vertex attribute.
+  Each draw binds the list sliced at its group's start and calls
+  `draw_indexed_indirect` with `firstInstance` 0. This avoids
+  `drawIndirectFirstInstance`, which is not enabled. The CPU path now draws
+  through the same slices.
+  Evidence:
+  - The GPU test above reads back the commands after the fence: `[1, 1, 1]`
+    (one opaque batch, two blended draws), then `[1, 0, 0]` after the camera
+    moves. The frame's passes include `Culling`.
+  - Unit test `cull_gpu_layouts_match_shader_structs` checks the struct
+    sizes against the std430 and push-constant layouts, and the box-to-sphere
+    radius.
+  - Mutation checks that fail the tests: the shader ignoring the physics
+    model, the shader skipping the plane test, all blended instances
+    counting into one draw, and selection ignoring GPU ownership.
+  - Not caught by a test: drawing the full batch range directly instead of
+    indirectly, and ignoring the list slot base. Both leave the tested pixels
+    unchanged.
+  - The validation layer reports 0 errors across 45 `scene_renderer` tests.
+- [x] Let `Auto` bypass the culling dispatch for small scenes where direct rendering is cheaper, using a tested threshold before timing-based selection exists.
+  `select_culling_path` returns `Direct` for `Auto` below
+  `AUTO_DIRECT_MAX_INSTANCES` (64) instances, even when there are GPU
+  bodies: drawing everything is correct whoever owns the transform. An
+  explicit `Frustum` still culls small scenes. The threshold is untimed
+  (`ponytail:` comment); the profiler item replaces it with the measured
+  break-even. The `SlabScene` GPU tests set `Frustum`, because every test
+  scene is below the threshold.
+  Evidence:
+  - Unit test `culling_path_follows_mode_ownership_count_device_and_quality`
+    covers 63 instances (`Direct`, with or without GPU bodies), 64
+    (`Cpu`), and `Frustum` at 10 instances (`Cpu`, or `Gpu` with a GPU
+    body).
+  - GPU test `gpu_bodies_are_not_culled_by_their_stale_cpu_transform`
+    switches to `Auto`. The frame takes `Direct` with no `Culling` pass,
+    culls nothing, and still draws the body.
+  - Mutation checks that fail the tests: removing the bypass, and `<=`
+    in place of `<` at the threshold.
+- [x] Keep render visibility separate from simulation activity: a culled object continues physics unless an explicit simulation-distance policy says otherwise.
+  Culling results live only inside `SceneRenderer`: the visible list, the
+  indirect counts, and `last_frame_culled`. No simulation code reads them.
+  A search for `CullingPath`, `last_frame_culled`, and `Visibility` outside
+  the renderer finds only extraction, the scene file, and the editor. The
+  GPU physics dispatch runs over every body in the physics buffer before
+  the cull pass, and the CPU physics systems do not query `Visibility`.
+  No simulation-distance policy exists yet.
+  Evidence: GPU test `culled_gpu_bodies_keep_simulating`. A GPU body sits
+  at y = 5, above the ±1 view. On each of 4 ticks its draw count is 0
+  (culled), and its `position_y < 5` rule fires, so gravity keeps moving
+  it. With gravity removed, the test fails.
+- [x] Add Render Bounds editing and debug visualization to the Inspector and viewport.
+  The Mesh Renderer section has a "Render Bounds" choice: Mesh (no
+  override), Box (Min/Max), or Sphere (Center/Radius). A new Box or Sphere
+  starts from the mesh box, so the volume does not jump. Edits use the
+  same Inspector snapshot path as every other field, so Undo covers them;
+  choosing Mesh removes the component. With "Selected Bounds" on, the
+  viewport outline of a selected object with an override shows the
+  world-space volume that culling tests: the world box around the
+  transformed corners, or three great circles of the scaled sphere.
+  Without an override it still shows the mesh box.
+  Evidence: unit tests `render_bounds_kinds_start_from_the_mesh_box`,
+  `render_bounds_outline_uses_the_culled_world_volume` (box corners and
+  sphere radius after translation and non-uniform scale), and
+  `selected_outline_shows_the_render_bounds_override` (12 mesh-box lines
+  become 96 sphere lines of radius 3). fmt and clippy are clean in all
+  three configurations. Tests: 190+49+15, and 226+49+15 with `gpu-tests`.
+  Not covered by a test: driving the egui combo box through a real frame.
+- [x] Report submitted, visible, and culled instance counts plus culling compute time in the profiler.
+  `SceneRenderer::culling_stats()` returns `CullingStats`: the path,
+  submitted, visible, and culled counts, and the culling time. The
+  `Direct` and `Cpu` paths time the CPU visibility pass. The `Gpu` path
+  writes two timestamps around the cull dispatch and sums the indirect
+  commands' instance counts. Both are read back once that frame's fence
+  signals, without waiting, so the numbers lag a frame or two. The time is
+  `None` when the queue has no timestamp support. The editor binary stores
+  the stats as a resource each frame. The editor stats line then shows
+  "Culling Gpu | 4 submitted, 3 visible, 1 culled | 0.012 ms". There is no
+  dedicated profiler panel yet; that is backlog work in
+  `docs/editor-overhaul.md`. The `GPU_CULL_MIN_INSTANCES` and
+  `AUTO_DIRECT_MAX_INSTANCES` thresholds are still untimed. Tuning them
+  needs these numbers from real hardware.
+  Evidence: GPU test
+  `gpu_culling_counts_visible_instances_from_gpu_transforms_into_indirect_draws`
+  checks the read-back counts (4/3/1, then 1 visible and 3 culled) and that
+  the time is `Some`. It fails when `culling_stats` skips the readback, and
+  when the end timestamp goes to the wrong query. The CPU-path counts
+  (2/1/1) and time are checked in the shadow-caster culling GPU test. Unit
+  test `culling_stats_label_shows_counts_and_time` covers the label. The
+  validation layer reports 0 errors across the 46 `scene_renderer` tests.
+  fmt and clippy are clean in all three configurations. Tests: 191+49+15,
+  and 227+49+15 with `gpu-tests`.
+- [x] Add hierarchical-Z occlusion culling after frustum culling, depth-pyramid generation, and conservative-bound tests are stable.
+  `CullingMode::FrustumAndOcclusion` now selects `CullingPath::GpuOcclusion`,
+  a two-phase GPU cull. The early phase draws the opaque instances that
+  passed the frustum and were visible last frame. A compute pass then
+  builds a farthest-depth pyramid from that depth. The late phase tests
+  every frustum-visible instance against the pyramid. It writes this
+  frame's visibility history and draws only the instances the early phase
+  skipped, in a late render pass that loads HDR and depth. Blended
+  instances skip the history and go through the late phase. The occlusion
+  test projects the corners of each bounding sphere's box and treats a box
+  that crosses the near plane as visible. It then picks the mip where the
+  rectangle covers at most two texels per axis and compares the nearest
+  box depth with the farthest pyramid depth. The frame schedule gains the
+  `DepthPyramid`, `OcclusionCulling`, and `LateScene` passes. The culling
+  time sums both cull dispatches.
+  Evidence: GPU test
+  `occlusion_culls_hidden_objects_and_draws_revealed_ones_the_same_frame`
+  hides a cube behind a wall. It checks the early and late draw counts
+  over three frames ([0,2], [2,0], [1,0]) and the stats (2 submitted, 1
+  visible, 1 culled). After the camera moves past the wall, the cube draws
+  in the late phase of the same frame and the center pixel is red. GPU test
+  `depth_pyramid_mips_hold_the_farthest_depth_below_them` reads back every
+  mip of a 7×5 pyramid and compares it with a CPU max reduction, including
+  the odd last row and column. Mutations the tests catch: `occluded()`
+  always false, the early phase ignoring history, the late phase drawing
+  early instances again, dropping the odd-edge fold, last texel instead of
+  max, and the copy writing cleared depth. The validation layer, with
+  synchronization validation on, reports 0 errors and no hazards across
+  the 48 `scene_renderer` tests. fmt and clippy are clean in all three
+  configurations. Tests: 191+49+15, and 229+49+15 with `gpu-tests`.
+  Known limits: mip 0 of the pyramid is full resolution, a render-world
+  instance rebuild resets the visibility history (one frame of extra
+  late-phase draws), and the stats do not split frustum-culled from
+  occluded counts.
+- [x] LOD asset groups and distance/error-based selection.
+  `LodGroupAsset` lists mesh levels finest first. Each level has a
+  hand-over value. The `Distance` metric hands over at a world distance.
+  The `ScreenSize` metric hands over when the bounding sphere covers less
+  than a fraction of the view height, which tracks projected error across
+  fields of view. `load_mesh` also loads a `.rlod` JSON file next to the
+  mesh. Its level paths are relative to that file. A group applies to
+  every renderable whose mesh is its finest level. The renderer expands
+  each such renderable into one instance per level and gives each one a
+  `[start, end)` range of a LOD value that grows with distance. The CPU
+  cull and the GPU cull shader keep the instance whose range holds the
+  value, so exactly one level draws, and nothing draws past the last
+  level. Scenes with LOD groups skip the `Direct` path, and `Disabled`
+  culling still selects levels. Only the finest level casts shadows.
+  Evidence: GPU test
+  `lod_groups_draw_the_level_for_the_camera_distance_on_every_path` moves
+  an orthographic camera through level 0, level 1, and past the group on
+  the `Cpu` (frustum and `Disabled`) and `GpuOcclusion` paths. It checks
+  the drawn mesh per batch, the center pixel, the stats (2 submitted, 1
+  visible, 1 culled), and that only level 0 casts shadows. Unit test
+  `lod_value_grows_with_distance_like_group_ranges` checks level choice for
+  perspective and orthographic cameras and `world_sphere`. Unit test
+  `lod_group_beside_a_mesh_loads_with_it_and_rejects_bad_hand_overs` covers
+  `.rlod` loading, deduplication, and the rejection of empty groups and of
+  hand-overs that do not grow. Mutations the tests catch: the shader
+  ignoring the range, the CPU cull ignoring the range, every level casting
+  shadows, and path selection ignoring LOD groups. The validation layer,
+  with synchronization validation on, reports 0 errors across the 50
+  `scene_renderer` tests. fmt and clippy are clean in all three
+  configurations. Tests: 193+49+15, and 232+49+15 with `gpu-tests`.
+  Known limits: level changes pop with no cross-fade or hysteresis, the
+  shadow pass draws level 0 at every range, `.rlod` files do not hot
+  reload, and glTF `MSFT_lod` is not imported. Editor authoring is in the
+  `docs/editor-overhaul.md` backlog.
+- [x] Transparent sorting.
+  Already delivered by Milestone 2 "Support alpha opaque, mask, and blend
+  modes": second pipeline, per-frame back-to-front sort. Evidence: GPU test
+  `alpha_modes_render_opaque_mask_and_sorted_blend` (fails with sorting
+  disabled), unit test `blended_objects_render_last_unbatched_and_back_to_front`.
+- [x] Shadow resolution and distance scaling by quality profile.
+  `shadow_settings` maps the resolved profile to the directional shadow
+  map size and the view distance it covers: `Eco` 1024 texels over 30
+  units, `Balanced` 2048 over 50, and `High` 4096 over 80. The renderer
+  recreates the shadow map and its framebuffer when the size changes.
+  In-flight frames keep the old map alive. The shadow viewport and the
+  light-space box follow the new values.
+  Evidence: GPU test
+  `directional_light_shadow_darkens_receivers_only_when_enabled` moves the
+  camera 40 units from a shadowed floor. It checks that `Eco` leaves the
+  floor lit (outside its distance) and that `Balanced` and `High` shadow it.
+  It also checks the map size of each profile, including a switch back to
+  `Eco`. Mutations the test catches: a fixed shadow distance, no map
+  recreation, and a fixed viewport size. The validation layer, with
+  synchronization validation on, reports 0 errors across the 50
+  `scene_renderer` tests. fmt and clippy are clean in all three
+  configurations. Tests: 193+49+15, and 232+49+15 with `gpu-tests`.
+  Known limits: still one cascade with no texel snapping, and the sizes
+  are fixed per profile rather than scaled with the output resolution.
 - [ ] Optional anisotropy and MSAA based on device support.
 
 ### Profiling
@@ -889,7 +1314,7 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add a separate native Rust Cargo game project, project-local source editing, and Debug/Release build/run from the editor.
 - [x] Add a concise native Rust scene API for common transform operations without hiding the ECS from advanced games.
 - [x] Add a dockable area-tree layout with selectable editor types and project-local persistence.
-- [ ] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass.
+- [x] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass. Evidence: see Milestone 4 "Engine-owned egui compositing pass" (`EguiPainter` GPU tests, editor smoke run).
 - [x] Add a central editor-shortcut action map; `Numpad 0` toggles Scene View fly-camera pointer capture while Escape remains a normal UI key.
 - [ ] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map.
 - [ ] Route keyboard and mouse focus correctly between all viewport navigation modes and UI.

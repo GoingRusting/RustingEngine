@@ -19,7 +19,12 @@ pub(super) struct Ray {
     pub direction: Vector3<f32>,
 }
 
-/// Finds the nearest renderable mesh under a Scene View click.
+/// Screen distance in points within which a click hits a camera or light
+/// wire shape.
+const SHAPE_PICK_RADIUS: f32 = 6.0;
+
+/// Finds the nearest renderable mesh, camera, or light under a Scene View
+/// click. Cameras and lights are hit by clicking near their wire shape.
 pub(super) fn pick_entity(
     world: &mut World,
     camera_entity: Entity,
@@ -40,6 +45,28 @@ pub(super) fn pick_entity(
             .map(|(entity, mesh, transform)| (entity, mesh.mesh, *transform))
             .collect::<Vec<_>>()
     };
+    let shapes =
+        crate::editor::overlay::object_shapes(world, Some(camera_entity));
+    let shape_hits = shapes.into_iter().filter_map(|(entity, lines)| {
+        lines
+            .iter()
+            .filter_map(|&[start, end]| {
+                let project = |point| {
+                    project_world_to_screen(
+                        world,
+                        camera_entity,
+                        point,
+                        viewport,
+                    )
+                };
+                let near =
+                    segment_distance(click, project(start)?, project(end)?)
+                        <= SHAPE_PICK_RADIUS;
+                near.then(|| (Vector3::from(start) - ray.origin).norm())
+            })
+            .min_by(f32::total_cmp)
+            .map(|distance| (distance, entity))
+    });
     let assets = world.resource::<AssetServer>();
     candidates
         .into_iter()
@@ -48,8 +75,17 @@ pub(super) fn pick_entity(
             let distance = ray_mesh_bounds(ray, transform, mesh)?;
             Some((distance, entity))
         })
+        .chain(shape_hits.collect::<Vec<_>>())
         .min_by(|left, right| left.0.total_cmp(&right.0))
         .map(|(_, entity)| entity)
+}
+
+/// Distance from `point` to the segment between `start` and `end`.
+fn segment_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
+    let along = end - start;
+    let t = ((point - start).dot(along) / along.length_sq().max(f32::EPSILON))
+        .clamp(0.0, 1.0);
+    (start + along * t).distance(point)
 }
 
 /// Builds a ray by unprojecting Vulkan near and far depth points.
@@ -243,5 +279,80 @@ mod tests {
             Vector3::new(1.0, 1.0, 1.0),
         );
         assert_eq!(hit, Some(2.0));
+    }
+
+    #[test]
+    fn clicks_near_light_and_camera_shapes_select_them() {
+        use crate::runtime::{PointLight, SpotLight};
+        let mut app = crate::App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        let world = app.world_mut();
+        let at = |x: f32, y: f32, z: f32| GlobalTransform {
+            matrix: Matrix4::new_translation(&Vector3::new(x, y, z)).into(),
+        };
+        let camera = Camera {
+            projection: Projection::Perspective {
+                vertical_fov_radians: 1.0,
+                near: 0.1,
+                far: 100.0,
+            },
+            active: true,
+            priority: 0,
+        };
+        let editor_camera = world.spawn((camera, at(0.0, 0.0, 0.0))).id();
+        // A mesh behind the light, and a scene camera off to the right.
+        let mesh = world.resource::<AssetServer>().fallback_mesh;
+        let material = world.resource::<AssetServer>().fallback_material;
+        let wall = world
+            .spawn((
+                MeshRenderer {
+                    mesh,
+                    material,
+                    cast_shadows: true,
+                    receive_shadows: true,
+                },
+                at(0.0, 0.0, -10.0),
+            ))
+            .id();
+        let light = world
+            .spawn((PointLight::default(), at(0.0, 0.0, -5.0)))
+            .id();
+        let spot = world
+            .spawn((SpotLight::default(), at(-2.0, 0.0, -5.0)))
+            .id();
+        let scene_camera = world.spawn((camera, at(2.0, 0.0, -5.0))).id();
+        let viewport =
+            Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let screen = |world: &World, point| {
+            project_world_to_screen(world, editor_camera, point, viewport)
+                .unwrap()
+        };
+
+        // The point light's circle passes 0.15 right of its center.
+        let click = screen(world, [0.15, 0.0, -5.0]);
+        assert_eq!(
+            pick_entity(world, editor_camera, click, viewport),
+            Some(light)
+        );
+        // Just outside the light's circles, the wall behind is hit.
+        let click = screen(world, [0.0, 0.25, -5.0]);
+        assert_eq!(
+            pick_entity(world, editor_camera, click, viewport),
+            Some(wall)
+        );
+        let click = screen(world, [-2.1, 0.0, -5.0]);
+        assert_eq!(
+            pick_entity(world, editor_camera, click, viewport),
+            Some(spot)
+        );
+        // The scene camera's frustum edge runs from its origin forward.
+        let click = screen(world, [2.0, 0.0, -5.0]);
+        assert_eq!(
+            pick_entity(world, editor_camera, click, viewport),
+            Some(scene_camera)
+        );
+        // The editor camera never picks itself, and empty space picks nothing.
+        let click = Pos2::new(5.0, 5.0);
+        assert_eq!(pick_entity(world, editor_camera, click, viewport), None);
     }
 }

@@ -282,13 +282,9 @@ impl GameScene<'_> {
         material: crate::assets::Handle<crate::assets::MaterialAsset>,
         classes: crate::runtime::ObjectClasses,
     ) -> Entity {
-        ensure_scene_name_index(self.world);
-        if self
-            .world
-            .resource::<SceneNameIndex>()
-            .entities
-            .contains_key(&name)
-        {
+        // The index keeps names of despawned or renamed objects, so only a
+        // live entity that still carries the name blocks the spawn.
+        if find_named_entity(self.world, &name).is_some() {
             panic!("scene object `{name}` already exists");
         }
         let entity = self
@@ -729,6 +725,12 @@ impl ApplicationHandler for ProjectApplication {
                     ]);
             }
             WindowEvent::ScaleFactorChanged { .. } => renderer.resize(),
+            WindowEvent::Focused(false) => {
+                self.runtime
+                    .world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .release_all();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     self.runtime
@@ -774,6 +776,13 @@ impl ApplicationHandler for ProjectApplication {
                     eprintln!("runtime update failed: {error}");
                     event_loop.exit();
                     return;
+                }
+                if let Some(mut assets) =
+                    self.runtime.world_mut().get_resource_mut::<AssetServer>()
+                {
+                    for failure in assets.take_reload_failures() {
+                        eprintln!("hot reload failed: {failure}");
+                    }
                 }
                 self.runtime
                     .world_mut()
@@ -956,6 +965,19 @@ mod tests {
             .move_z(4.0);
 
         assert_eq!(scene.object("Orange Cube").position(), [2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn despawned_name_can_be_spawned_again() {
+        let mut world = World::new();
+        world.insert_resource(AssetServer::default());
+        let mut scene = GameScene { world: &mut world };
+        let first =
+            scene.spawn_cube("Shot", Transform::default(), &CubeSpawn::new());
+        scene.world.despawn(first);
+        let second =
+            scene.spawn_cube("Shot", Transform::default(), &CubeSpawn::new());
+        assert_ne!(first, second);
     }
 
     #[test]

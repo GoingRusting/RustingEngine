@@ -195,6 +195,122 @@ impl Default for AmbientLight {
     }
 }
 
+/// Hemisphere environment light: surfaces facing +Y see `sky_color`,
+/// surfaces facing -Y see `ground_color`, and the two blend in between.
+/// Adds to any [`AmbientLight`].
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SkyLight {
+    pub sky_color: [f32; 3],
+    pub ground_color: [f32; 3],
+    pub intensity: f32,
+}
+
+impl Default for SkyLight {
+    fn default() -> Self {
+        Self {
+            sky_color: [0.6, 0.75, 1.0],
+            ground_color: [0.3, 0.25, 0.2],
+            intensity: 0.3,
+        }
+    }
+}
+
+/// Curve that maps HDR scene color into the displayable 0..1 range.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+pub enum ToneMapper {
+    /// Clips at 1, like Godot's default. Leaves values below 1 unchanged.
+    #[default]
+    Linear,
+    /// `c / (1 + c)`: never clips, compresses highlights softly.
+    Reinhard,
+    /// Filmic ACES curve (Narkowicz fit): more contrast, saturated mids.
+    Aces,
+}
+
+/// Exposure and tone mapping applied to the lit scene before display, like
+/// the tonemap settings of Godot's `Environment`. The first one found in the
+/// world is used; without one the scene uses `Linear` at exposure 1.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToneMapping {
+    pub mapper: ToneMapper,
+    /// Scene color is multiplied by this before the curve.
+    pub exposure: f32,
+}
+
+impl Default for ToneMapping {
+    fn default() -> Self {
+        Self {
+            mapper: ToneMapper::Linear,
+            exposure: 1.0,
+        }
+    }
+}
+
+/// Render-only bounds used for visibility, separate from the physics
+/// `Collider`. Stored in the entity's local space; render extraction
+/// transforms them into world space every time the entity is extracted.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RenderBounds {
+    Sphere { center: [f32; 3], radius: f32 },
+    Aabb { min: [f32; 3], max: [f32; 3] },
+}
+
+/// The built-in unit cube's box.
+impl Default for RenderBounds {
+    fn default() -> Self {
+        RenderBounds::Aabb {
+            min: [-0.5; 3],
+            max: [0.5; 3],
+        }
+    }
+}
+
+impl RenderBounds {
+    /// Returns the bounds of this volume after `matrix` (a column-major
+    /// `GlobalTransform` matrix). A sphere stays a sphere whose radius grows
+    /// by the largest axis scale; a box becomes the axis-aligned box around
+    /// its transformed corners, so both stay conservative under rotation and
+    /// non-uniform scale.
+    pub fn transformed(&self, matrix: &[[f32; 4]; 4]) -> RenderBounds {
+        let matrix = nalgebra::Matrix4::from(*matrix);
+        let linear = matrix.fixed_view::<3, 3>(0, 0);
+        let translation = matrix.fixed_view::<3, 1>(0, 3);
+        match *self {
+            RenderBounds::Sphere { center, radius } => {
+                let scale = (0..3)
+                    .map(|axis| linear.column(axis).norm())
+                    .fold(0.0_f32, f32::max);
+                let center =
+                    linear * nalgebra::Vector3::from(center) + translation;
+                RenderBounds::Sphere {
+                    center: center.into(),
+                    radius: radius * scale,
+                }
+            }
+            RenderBounds::Aabb { min, max } => {
+                // Arvo's method: each output axis takes the smaller and the
+                // larger product per input axis.
+                let mut world_min: [f32; 3] = translation.into();
+                let mut world_max = world_min;
+                for row in 0..3 {
+                    for column in 0..3 {
+                        let a = linear[(row, column)] * min[column];
+                        let b = linear[(row, column)] * max[column];
+                        world_min[row] += a.min(b);
+                        world_max[row] += a.max(b);
+                    }
+                }
+                RenderBounds::Aabb {
+                    min: world_min,
+                    max: world_max,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Visibility {
     pub visible: bool,
@@ -206,13 +322,34 @@ impl Default for Visibility {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
 pub enum QualityProfile {
     Auto,
     Eco,
     #[default]
     Balanced,
     High,
+}
+
+/// How the renderer skips objects outside the view.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+pub enum CullingMode {
+    /// The renderer picks: small scenes draw everything, the rest cull by
+    /// frustum on the CPU or GPU.
+    #[default]
+    Auto,
+    /// Draw every visible object.
+    Disabled,
+    /// Skip objects whose world bounds lie outside the camera frustum.
+    Frustum,
+    /// Frustum culling plus GPU occlusion culling against a depth pyramid
+    /// of the objects visible last frame. Needs the GPU culling path, so it
+    /// always runs there, whatever the scene size.
+    FrustumAndOcclusion,
 }
 
 #[derive(bevy_ecs::prelude::Resource, Clone, Debug, PartialEq)]
@@ -224,6 +361,7 @@ pub struct RenderSettings {
     pub render_scale: f32,
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
+    pub culling: CullingMode,
 }
 
 impl Default for RenderSettings {
@@ -235,6 +373,7 @@ impl Default for RenderSettings {
             max_fps: 120,
             render_scale: 1.0,
             background_color: [0.025, 0.04, 0.07, 1.0],
+            culling: CullingMode::Auto,
         }
     }
 }
@@ -436,6 +575,9 @@ mod tests {
         assert_component::<PointLight>();
         assert_component::<SpotLight>();
         assert_component::<AmbientLight>();
+        assert_component::<SkyLight>();
+        assert_component::<ToneMapping>();
+        assert_component::<RenderBounds>();
         assert_component::<Visibility>();
         assert_component::<GpuEffectBody>();
         assert_component::<PhysicsBody>();
@@ -459,6 +601,52 @@ mod tests {
         assert_eq!(PhysicsSettings::default().gravity, [0.0, -9.81, 0.0]);
         assert_eq!(CollisionLayers::default().memberships, u32::MAX);
         assert_eq!(RenderSettings::default().quality, QualityProfile::Auto);
+    }
+
+    #[test]
+    fn render_bounds_stay_conservative_under_transforms() {
+        use nalgebra::{Matrix4, Rotation3, Vector3};
+        let matrix: [[f32; 4]; 4] =
+            (Matrix4::new_translation(&Vector3::new(10.0, 0.0, 0.0))
+                * Rotation3::from_axis_angle(
+                    &Vector3::z_axis(),
+                    std::f32::consts::FRAC_PI_4,
+                )
+                .to_homogeneous()
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    2.0, 1.0, 3.0,
+                )))
+            .into();
+        let RenderBounds::Sphere { center, radius } = (RenderBounds::Sphere {
+            center: [1.0, 0.0, 0.0],
+            radius: 1.0,
+        })
+        .transformed(&matrix) else {
+            panic!("a sphere stays a sphere");
+        };
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = [10.0 + 2.0 * half, 2.0 * half, 0.0];
+        for (value, expected) in center.iter().zip(expected) {
+            assert!((value - expected).abs() < 1e-5, "{center:?}");
+        }
+        assert!((radius - 3.0).abs() < 1e-5, "largest axis scale");
+
+        let RenderBounds::Aabb { min, max } = (RenderBounds::Aabb {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        })
+        .transformed(&matrix) else {
+            panic!("a box stays a box");
+        };
+        // The 2x1 face rotated 45 degrees spans (2 + 1) / sqrt(2) on x and
+        // y; z only scales.
+        let reach = 3.0 * half;
+        let expected_min = [10.0 - reach, -reach, -3.0];
+        let expected_max = [10.0 + reach, reach, 3.0];
+        for axis in 0..3 {
+            assert!((min[axis] - expected_min[axis]).abs() < 1e-5, "{min:?}");
+            assert!((max[axis] - expected_max[axis]).abs() < 1e-5, "{max:?}");
+        }
     }
 
     #[test]

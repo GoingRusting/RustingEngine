@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.2.0] - 2026-09-25
+
+### Changed
+
+- **Breaking:** public `ShaderType` is replaced by `MaterialModel::{Pbr, Unlit}`; `MaterialBuilder::shader` is now `MaterialBuilder::model`, and `Engine::set_scene_shader` takes a `MaterialModel`
+- Scene format version 6: scenes store their render settings (quality profile and culling mode). Older scenes (versions 0-5) still load; version 6 scenes do not open in older builds
+- `rusting-core` 0.1.1: `QualityProfile` and `CullingMode` are serializable
+- The editor composites egui with an engine-owned painter (`rendering::egui_painter`) instead of the bootstrap Vulkan integration
+- Native file dialogs in the editor run on a worker thread, so the window is no longer reported as "not responding" while a dialog is open
+
+### Added
+
+- Renderer: opaque forward PBR pass with base color, normal, metallic-roughness, occlusion, and emissive maps; alpha cutoff and alpha blending with back-to-front sorting of transparent objects; HDR target with a tone-mapping pass; sky/environment ambient lighting; several point lights; material and texture fallbacks
+- Directional shadow map whose resolution and distance scale with the quality profile (Eco 1024 px / 30 units, Balanced 2048 / 50, High 4096 / 80)
+- Culling: `RenderBounds` component (sphere or box, generated automatically with an editor override), `CullingMode::{Auto, Disabled, Frustum, FrustumAndOcclusion}`, CPU or GPU frustum culling chosen by scene size and device, GPU culling straight from GPU physics transforms into indirect draws, and hierarchical-Z occlusion culling
+- LOD asset groups (`.rlod`) with distance-based level selection
+- Declared frame pass schedule (`rendering::frame_passes`) with explicit resource transitions and debug labels per pass
+- Editor: "Scene Rendering" section in the Project panel to choose Quality and Culling per scene (undoable, saved with the scene)
+- Editor: Inspector "Material" section: model, alpha mode, base color, opacity, metallic, roughness, emissive, and five texture slots. Each slot picks a loaded texture or loads an image file into the project; "New Material" gives an object its own material. Shared materials are copied before editing
+- Editor: Blender-style wire shapes for cameras (frustum with up triangle) and lights (sun, point, spot) in the Scene View; click a shape to select the object
+- Editor: Render Bounds editing and preview in the Inspector and viewport; culling counts and time in the stats area
+- Editor: per-scene editor camera pose and selection are saved beside the scene; asset hot reload success and failure are shown in the console
+
+### Known issues
+
+- Image textures always load as sRGB, so normal, metallic-roughness, and occlusion maps loaded from image files look wrong; glTF-imported maps are not affected
+
 ## [1.1.3] - 2026-09-24
 
 ### Changed

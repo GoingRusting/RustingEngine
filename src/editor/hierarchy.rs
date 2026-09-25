@@ -54,11 +54,8 @@ pub(super) fn collect_entities(world: &mut World) -> Vec<HierarchyItem> {
         })
         .collect::<Vec<_>>();
     // Sorting once gives every group of siblings a stable readable order.
-    raw.sort_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-            .then_with(|| left.entity.cmp(&right.entity))
+    raw.sort_by_cached_key(|item| {
+        (item.name.to_ascii_lowercase(), item.entity)
     });
 
     let known = raw
@@ -246,14 +243,17 @@ pub(super) fn draw_hierarchy_area(
     edited_collider: &mut Option<Collider>,
 ) {
     use gui_elements::EditorTheme;
-    if state.rename_target.is_some_and(|target| {
-        !entities.iter().any(|item| item.entity == target)
-    }) {
+    let known = entities
+        .iter()
+        .map(|item| item.entity)
+        .collect::<std::collections::HashSet<_>>();
+    if state
+        .rename_target
+        .is_some_and(|target| !known.contains(&target))
+    {
         state.rename_target = None;
     }
-    state
-        .selection
-        .retain(|&entity| entities.iter().any(|item| item.entity == entity));
+    state.selection.retain(|entity| known.contains(entity));
     // Viewport picking only sets the primary object; resync the set here.
     if state
         .selected
@@ -294,10 +294,12 @@ pub(super) fn draw_hierarchy_area(
         .id_salt("hierarchy_panel_scroll")
         .auto_shrink([false, false])
         .scroll_bar_visibility(
-            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
         )
-        .show(ui, |ui| {
-            for item in &visible {
+        // Only rows inside the scrolled view are drawn. The inline rename row
+        // is a little taller, which shifts later rows by a few pixels.
+        .show_rows(ui, EditorTheme::ROW_HEIGHT, visible.len(), |ui, rows| {
+            for item in &visible[rows] {
                 let item = *item;
                 if state.rename_target == Some(item.entity) {
                     draw_inline_rename(ui, item, state, entity_request);
@@ -377,7 +379,7 @@ pub(super) fn draw_hierarchy_area(
                             if valid {
                                 EditorTheme::ACCENT_HOVER
                             } else {
-                                egui::Color32::LIGHT_RED
+                                crate::editor::gui_elements::EditorTheme::ERROR
                             },
                         ),
                         egui::StrokeKind::Inside,

@@ -11,6 +11,8 @@ use vulkano::memory::allocator::StandardMemoryAllocator;
 pub enum GltfLoadError {
     Import(gltf::Error),
     MissingPositions,
+    /// A primitive this loader cannot draw, such as lines or short attributes.
+    InvalidPrimitive(String),
 }
 
 impl fmt::Display for GltfLoadError {
@@ -22,6 +24,9 @@ impl fmt::Display for GltfLoadError {
             GltfLoadError::MissingPositions => {
                 write!(f, "glTF primitive has no POSITION attribute")
             }
+            GltfLoadError::InvalidPrimitive(message) => {
+                write!(f, "invalid glTF primitive: {message}")
+            }
         }
     }
 }
@@ -30,7 +35,8 @@ impl std::error::Error for GltfLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             GltfLoadError::Import(err) => Some(err),
-            GltfLoadError::MissingPositions => None,
+            GltfLoadError::MissingPositions
+            | GltfLoadError::InvalidPrimitive(_) => None,
         }
     }
 }
@@ -49,7 +55,7 @@ pub fn load_gltf_scene(
     allocator: &Arc<StandardMemoryAllocator>,
     path: &str,
 ) -> Result<GltfScene, GltfLoadError> {
-    let mut textures: Vec<Texture> = Vec::new();
+    let mut textures = GltfTextures::default();
     let (document, buffers, images) = gltf::import(path)?;
 
     let mut result = Vec::new();
@@ -68,7 +74,33 @@ pub fn load_gltf_scene(
         }
     }
 
-    Ok((result, textures))
+    Ok((result, textures.textures))
+}
+
+/// Textures copied out of glTF images, one per image however many
+/// primitives use it.
+#[derive(Default)]
+struct GltfTextures {
+    textures: Vec<Texture>,
+    by_image: std::collections::HashMap<usize, usize>,
+}
+
+impl GltfTextures {
+    fn index_for(
+        &mut self,
+        images: &[gltf::image::Data],
+        image: usize,
+    ) -> usize {
+        *self.by_image.entry(image).or_insert_with(|| {
+            let data = &images[image];
+            self.textures.push(Texture {
+                pixels: data.pixels.clone(),
+                width: data.width,
+                height: data.height,
+            });
+            self.textures.len() - 1
+        })
+    }
 }
 
 use crate::Transform;
@@ -77,7 +109,7 @@ fn process_node(
     allocator: &Arc<StandardMemoryAllocator>,
     buffers: &[gltf::buffer::Data],
     images: &[gltf::image::Data],
-    textures: &mut Vec<Texture>,
+    textures: &mut GltfTextures,
     result: &mut Vec<(Mesh, Instance)>,
     node: &gltf::Node,
     parent_transform: nalgebra::Matrix4<f32>,
@@ -109,33 +141,11 @@ fn process_node(
             let metalness = pbr.metallic_factor();
             let roughness = pbr.roughness_factor();
             let base_color_texture = pbr.base_color_texture().map(|info| {
-                let tex = info.texture();
-                let img = &images[tex.source().index()];
-
-                let index = textures.len();
-
-                textures.push(Texture {
-                    pixels: img.pixels.clone(),
-                    width: img.width,
-                    height: img.height,
-                });
-
-                index
+                textures.index_for(images, info.texture().source().index())
             });
             let metallic_roughness_texture =
                 pbr.metallic_roughness_texture().map(|info| {
-                    let tex = info.texture();
-                    let img = &images[tex.source().index()];
-
-                    let index = textures.len();
-
-                    textures.push(Texture {
-                        pixels: img.pixels.clone(),
-                        width: img.width,
-                        height: img.height,
-                    });
-
-                    index
+                    textures.index_for(images, info.texture().source().index())
                 });
             let instance = Instance {
                 model_matrix: Transform::from_matrix(global_transform)
@@ -174,6 +184,12 @@ fn extract_primitive(
     primitive: &gltf::Primitive,
     buffers: &[gltf::buffer::Data],
 ) -> Result<(Vec<VertexPosColorUv>, Option<Vec<u32>>), GltfLoadError> {
+    if primitive.mode() != gltf::mesh::Mode::Triangles {
+        return Err(GltfLoadError::InvalidPrimitive(format!(
+            "mode {:?} is not triangles",
+            primitive.mode()
+        )));
+    }
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
 
     let positions: Vec<[f32; 3]> = reader
@@ -194,6 +210,22 @@ fn extract_primitive(
     let indices = reader
         .read_indices()
         .map(|i| i.into_u32().collect::<Vec<u32>>());
+
+    if normals.len() != positions.len() || tex_coords.len() != positions.len() {
+        return Err(GltfLoadError::InvalidPrimitive(
+            "NORMAL or TEXCOORD_0 count differs from POSITION".into(),
+        ));
+    }
+    if let Some(index) = indices
+        .iter()
+        .flatten()
+        .find(|&&index| index as usize >= positions.len())
+    {
+        return Err(GltfLoadError::InvalidPrimitive(format!(
+            "index {index} is out of range for {} vertices",
+            positions.len()
+        )));
+    }
 
     let mut vertices = Vec::with_capacity(positions.len());
 
@@ -218,6 +250,23 @@ mod tests {
         let load_err = GltfLoadError::from(err);
         assert!(matches!(load_err, GltfLoadError::Import(_)));
         assert!(load_err.to_string().contains("failed to import glTF file"));
+    }
+
+    #[test]
+    fn shared_images_become_one_texture() {
+        let image = |value| gltf::image::Data {
+            pixels: vec![value; 4],
+            format: gltf::image::Format::R8G8B8A8,
+            width: 1,
+            height: 1,
+        };
+        let images = [image(1), image(2)];
+        let mut textures = GltfTextures::default();
+        assert_eq!(textures.index_for(&images, 1), 0);
+        assert_eq!(textures.index_for(&images, 0), 1);
+        assert_eq!(textures.index_for(&images, 1), 0);
+        assert_eq!(textures.textures.len(), 2);
+        assert_eq!(textures.textures[0].pixels, vec![2; 4]);
     }
 
     #[test]

@@ -113,8 +113,9 @@ impl Error for TimeAdvanceError {}
 
 /// Advances frame and fixed-schedule bookkeeping by one application update.
 ///
-/// Catch-up work is capped by [`TimeControl::max_fixed_steps`], with any
-/// remaining accumulated time retained for later updates. A queued step is
+/// Catch-up work is capped by [`TimeControl::max_fixed_steps`]. Remaining
+/// accumulated time is retained for later updates, up to one more capped
+/// update's worth; older backlog is dropped. A queued step is
 /// consumed only while paused and advances elapsed time by exactly one fixed
 /// timestep without consuming the accumulator.
 ///
@@ -155,6 +156,13 @@ pub fn advance(
     {
         control.accumulator -= fixed_delta;
         fixed_steps += 1;
+    }
+    if !control.paused && control.max_fixed_steps > 0 {
+        // Keep at most one more capped update of backlog, so one long stall
+        // does not make many later frames run the maximum number of steps.
+        control.accumulator = control
+            .accumulator
+            .min(fixed_delta.saturating_mul(control.max_fixed_steps));
     }
     let stepped_while_paused = control.paused && control.pending_steps > 0;
     if stepped_while_paused {
@@ -367,6 +375,24 @@ mod tests {
         let mut time = FrameTime::default();
 
         let _ = advance(&mut control, &mut time, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn long_stall_backlog_is_bounded_to_one_capped_update() {
+        let mut control = TimeControl {
+            fixed_delta: Duration::from_millis(10),
+            max_fixed_steps: 2,
+            ..TimeControl::default()
+        };
+        let mut time = FrameTime::default();
+
+        assert_eq!(
+            advance(&mut control, &mut time, Duration::from_secs(5)),
+            Ok(2)
+        );
+        assert_eq!(control.accumulator, Duration::from_millis(20));
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(2));
+        assert_eq!(advance(&mut control, &mut time, Duration::ZERO), Ok(0));
     }
 
     #[test]

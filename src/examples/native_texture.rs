@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 
@@ -28,7 +28,7 @@ pub fn main() {
                 .color([0.8, 0.8, 0.8]) // White base to show full texture color
                 .roughness(0.4)
                 .base_color_texture(rust_tex) // Attach our texture!
-                .shader(ShaderType::Pbr)
+                .model(MaterialModel::Pbr)
                 .build(),
             &Physics::default()
                 .compute_shader(ComputeShaderType::Test)
@@ -55,7 +55,7 @@ pub fn main() {
                 .metalness(0.2)
                 .roughness(0.1)
                 .base_color_texture(rust_tex) // Attach the exact SAME texture memory ID!
-                .shader(ShaderType::Pbr)
+                .model(MaterialModel::Pbr)
                 .build(),
             &Physics::default()
                 .compute_shader(ComputeShaderType::Test)
@@ -67,6 +67,6 @@ pub fn main() {
     }
 
     // Set shaders and run the engine loop
-    engine.set_scene_shader(ShaderType::Heavy);
+    engine.set_scene_shader(MaterialModel::Pbr);
     engine.run();
 }

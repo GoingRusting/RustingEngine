@@ -98,6 +98,12 @@ pub struct ComputeDispatchInfo {
 /// - Texture resources and samplers
 /// - Physics buffers (read/write for ping-pong updates)
 /// - Spatial grid structures for collision detection
+///
+/// `RenderScene` is build-once: add every instance, then call
+/// [`upload_to_gpu`](Self::upload_to_gpu). Adding or removing instances later
+/// changes only the CPU lists; the GPU physics buffers keep the old layout
+/// until the next upload, which also restarts the simulation. Scenes that
+/// change at runtime should use the ECS path (`App` and `SceneRenderer`).
 pub struct RenderScene {
     /// All render batches in the scene - each batch shares mesh geometry and shader
     pub batches: Vec<RenderBatch>,
@@ -233,6 +239,9 @@ impl RenderScene {
     ///
     /// The instance is removed from its batch. If the batch becomes empty,
     /// the batch is also removed. Uses swap-remove for efficiency.
+    ///
+    /// Call [`upload_to_gpu`](Self::upload_to_gpu) again afterwards; until
+    /// then draws and physics slots refer to the old instance layout.
     ///
     /// # Arguments
     /// * `handle` - The handle returned by `add_instance`

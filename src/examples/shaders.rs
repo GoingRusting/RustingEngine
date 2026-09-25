@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 
@@ -16,19 +16,19 @@ pub fn main() {
     // This removes heavy PBR calculations and avoids GPU-side physics checks.
     let unlit_mat = Material::standard()
         .color([0.2, 0.8, 0.2])
-        .shader(ShaderType::Unlit)
+        .model(MaterialModel::Unlit)
         .build();
 
     // An emissive glowing object that calculates physics interactions
     let emissive_mat = Material::standard()
         .color([1.0, 1.0, 0.0])
-        .shader(ShaderType::Emissive)
+        .emissive(1.0)
         .build();
 
     // 3. A standard PBR material
     let pbr_mat = Material::standard()
         .color([0.8, 0.2, 0.2])
-        .shader(ShaderType::Pbr)
+        .model(MaterialModel::Pbr)
         .build();
 
     // Create a terrain/floor object that does NOT consume heavy physics simulation resources

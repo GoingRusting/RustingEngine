@@ -21,10 +21,12 @@ use crate::Transform;
 use super::{
     AmbientLight, Camera, Collider, CollisionLayers, DirectionalLight,
     GpuPhysicsWatch, MeshRenderer, Name, ObjectClasses, Parent, PhysicsBody,
-    PointLight, Projection, RigidBody, SceneId, SpotLight, Visibility,
+    PointLight, Projection, RenderBounds, RenderSettings, RigidBody, SceneId,
+    SkyLight, SpotLight, ToneMapping, Visibility,
 };
+use crate::runtime::{CullingMode, QualityProfile};
 
-pub const SCENE_FORMAT_VERSION: u32 = 5;
+pub const SCENE_FORMAT_VERSION: u32 = 6;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -152,6 +154,38 @@ pub struct SceneDocument {
     pub format_version: u32,
     pub name: String,
     pub entities: Vec<SceneEntity>,
+    /// Stays the last field: cooked version 5 scenes end before it.
+    #[serde(default)]
+    pub render: SceneRenderSettings,
+}
+
+/// The scene's [`RenderSettings`] that ship with the game. A replacing load
+/// applies them; an additive load leaves the current ones.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+pub struct SceneRenderSettings {
+    pub quality: QualityProfile,
+    pub culling: CullingMode,
+}
+
+/// Cooked shape of version 5, before render settings.
+#[derive(Serialize, Deserialize)]
+struct LegacySceneDocumentV5 {
+    format_version: u32,
+    name: String,
+    entities: Vec<SceneEntity>,
+}
+
+impl From<LegacySceneDocumentV5> for SceneDocument {
+    fn from(document: LegacySceneDocumentV5) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document.entities,
+            render: SceneRenderSettings::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -242,6 +276,7 @@ impl From<LegacySceneDocumentV4> for SceneDocument {
                     spot_light: entity.spot_light,
                 })
                 .collect(),
+            render: SceneRenderSettings::default(),
         }
     }
 }
@@ -360,6 +395,7 @@ impl From<LegacySceneDocumentV3> for SceneDocument {
                     spot_light: None,
                 })
                 .collect(),
+            render: SceneRenderSettings::default(),
         }
     }
 }
@@ -416,6 +452,7 @@ impl From<LegacySceneDocumentV1> for SceneDocument {
                     spot_light: None,
                 })
                 .collect(),
+            render: SceneRenderSettings::default(),
         }
     }
 }
@@ -473,6 +510,7 @@ impl From<LegacySceneDocumentV2> for SceneDocument {
                     spot_light: None,
                 })
                 .collect(),
+            render: SceneRenderSettings::default(),
         }
     }
 }
@@ -598,6 +636,12 @@ pub struct SceneComponentRegistry {
 /// Registry name of the built-in ambient light, stored like a game
 /// component so adding it did not change the scene binary layout.
 pub const AMBIENT_LIGHT_COMPONENT: &str = "rusting.ambient_light";
+/// Registry name of the built-in hemisphere sky light.
+pub const SKY_LIGHT_COMPONENT: &str = "rusting.sky_light";
+/// Registry name of the built-in exposure and tone mapping settings.
+pub const TONE_MAPPING_COMPONENT: &str = "rusting.tone_mapping";
+/// Registry name of the built-in render-only visibility bounds.
+pub const RENDER_BOUNDS_COMPONENT: &str = "rusting.render_bounds";
 
 impl Default for SceneComponentRegistry {
     fn default() -> Self {
@@ -606,6 +650,15 @@ impl Default for SceneComponentRegistry {
         };
         registry
             .register::<AmbientLight>(AMBIENT_LIGHT_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<SkyLight>(SKY_LIGHT_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<ToneMapping>(TONE_MAPPING_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<RenderBounds>(RENDER_BOUNDS_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
     }
@@ -918,10 +971,18 @@ pub fn scene_document(
         });
     }
     entities.sort_by_key(|entity| entity.id);
+    let render = world
+        .get_resource::<RenderSettings>()
+        .map(|settings| SceneRenderSettings {
+            quality: settings.quality,
+            culling: settings.culling,
+        })
+        .unwrap_or_default();
     let document = SceneDocument {
         format_version: SCENE_FORMAT_VERSION,
         name: name.into(),
         entities,
+        render,
     };
     validate_scene_structure(&document)?;
     Ok(document)
@@ -938,8 +999,26 @@ pub fn save_scene(
         std::fs::create_dir_all(parent)?;
         relativize_scene_assets(&mut document, parent)?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(&document)?)?;
+    write_atomic(path, &serde_json::to_vec_pretty(&document)?)?;
     Ok(())
+}
+
+/// Writes through a synced temporary file and renames it over `path`, so a
+/// crash mid-write never leaves a truncated file behind.
+pub fn write_atomic(
+    path: impl AsRef<Path>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = path.as_ref();
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = std::path::PathBuf::from(temporary);
+    let mut file = std::fs::File::create(&temporary)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, path)
 }
 
 pub fn load_scene(
@@ -993,7 +1072,7 @@ pub fn cook_scene(
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(destination, bytes)?;
+    write_atomic(destination, &bytes)?;
     Ok(())
 }
 
@@ -1110,10 +1189,11 @@ pub fn load_scene_document(
     document: &SceneDocument,
     mode: SceneLoadMode,
 ) -> Result<usize, SceneIoError> {
-    let mut migrated = document.clone();
-    migrate_scene_document(&mut migrated)?;
-    let document = &migrated;
-    validate_version(document)?;
+    // Migration only raises `format_version`, which nothing below reads, so
+    // an older document is accepted as-is instead of being cloned first.
+    if document.format_version > SCENE_FORMAT_VERSION {
+        return Err(SceneIoError::UnsupportedVersion(document.format_version));
+    }
     validate_scene_structure(document)?;
     let registrations = world
         .resource::<SceneComponentRegistry>()
@@ -1131,14 +1211,15 @@ pub fn load_scene_document(
     // missing asset must not erase the scene that is already open.
     let prepared = prepare_assets(world, document)?;
 
-    if mode == SceneLoadMode::Replace {
+    // The old scene stays until the new one is complete, so a failing parent
+    // link or custom component leaves the open scene untouched.
+    let replaced = if mode == SceneLoadMode::Replace {
         let mut query =
             world.query_filtered::<Entity, bevy_ecs::query::With<SceneId>>();
-        let entities = query.iter(world).collect::<Vec<_>>();
-        for entity in entities {
-            world.despawn(entity);
-        }
-    }
+        query.iter(world).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     let mut spawned = HashMap::new();
     for (scene_entity, renderer) in document.entities.iter().zip(prepared) {
@@ -1188,23 +1269,43 @@ pub fn load_scene_document(
         spawned.insert(scene_entity.id, entity.id());
     }
 
-    for scene_entity in &document.entities {
-        let entity = spawned[&scene_entity.id];
-        if let Some(parent) = scene_entity.parent {
-            let parent = spawned
-                .get(&parent)
-                .copied()
-                .ok_or(SceneIoError::MissingParent(parent))?;
-            super::hierarchy::set_parent(world, entity, parent)?;
+    let linked = (|| {
+        for scene_entity in &document.entities {
+            let entity = spawned[&scene_entity.id];
+            if let Some(parent) = scene_entity.parent {
+                let parent = spawned
+                    .get(&parent)
+                    .copied()
+                    .ok_or(SceneIoError::MissingParent(parent))?;
+                super::hierarchy::set_parent(world, entity, parent)?;
+            }
+            for (name, serialized) in &scene_entity.components {
+                let registration =
+                    registrations.get(name).ok_or_else(|| {
+                        SceneIoError::UnknownComponent(name.clone())
+                    })?;
+                (registration.restore)(world, entity, serialized)?;
+            }
         }
-        for (name, serialized) in &scene_entity.components {
-            let registration = registrations
-                .get(name)
-                .ok_or_else(|| SceneIoError::UnknownComponent(name.clone()))?;
-            (registration.restore)(world, entity, serialized)?;
+        Ok(())
+    })();
+    let discarded = if linked.is_ok() {
+        if mode == SceneLoadMode::Replace {
+            if let Some(mut settings) =
+                world.get_resource_mut::<RenderSettings>()
+            {
+                settings.quality = document.render.quality;
+                settings.culling = document.render.culling;
+            }
         }
+        replaced
+    } else {
+        spawned.into_values().collect()
+    };
+    for entity in discarded {
+        world.despawn(entity);
     }
-    Ok(document.entities.len())
+    linked.map(|()| document.entities.len())
 }
 
 /// Checks every stable ID and parent chain before replacing the open scene.
@@ -1245,22 +1346,34 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
     {
         // `format_version` is the first field of every cooked shape. Version 4
         // is dispatched on it because a v4 material can also parse as v5.
-        if bincode::deserialize::<u32>(compiled)? == 4 {
-            bincode::deserialize::<LegacySceneDocumentV4>(compiled)?.into()
+        if crate::assets::deserialize_bounded::<u32>(compiled)? == 4 {
+            crate::assets::deserialize_bounded::<LegacySceneDocumentV4>(
+                compiled,
+            )?
+            .into()
         } else {
-            match bincode::deserialize(compiled) {
+            match crate::assets::deserialize_bounded(compiled) {
                 Ok(document) => document,
                 Err(current_error) => {
-                    if let Ok(legacy) =
-                        bincode::deserialize::<LegacySceneDocumentV3>(compiled)
+                    if let Ok(legacy) = crate::assets::deserialize_bounded::<
+                        LegacySceneDocumentV5,
+                    >(compiled)
                     {
                         legacy.into()
                     } else if let Ok(legacy) =
-                        bincode::deserialize::<LegacySceneDocumentV2>(compiled)
+                        crate::assets::deserialize_bounded::<
+                            LegacySceneDocumentV3,
+                        >(compiled)
+                    {
+                        legacy.into()
+                    } else if let Ok(legacy) =
+                        crate::assets::deserialize_bounded::<
+                            LegacySceneDocumentV2,
+                        >(compiled)
                     {
                         legacy.into()
                     } else {
-                        let legacy = bincode::deserialize::<
+                        let legacy = crate::assets::deserialize_bounded::<
                             LegacySceneDocumentV1,
                         >(compiled)
                         .map_err(|_| current_error)?;
@@ -1282,9 +1395,9 @@ fn migrate_scene_document(
     document: &mut SceneDocument,
 ) -> Result<(), SceneIoError> {
     match document.format_version {
-        0..=4 => {
-            // Versions before programmable GPU watches use safe defaults for
-            // the fields that were added later.
+        0..=5 => {
+            // Versions before programmable GPU watches and render settings
+            // use safe defaults for the fields that were added later.
             document.format_version = SCENE_FORMAT_VERSION;
             Ok(())
         }
@@ -1537,7 +1650,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         App, GpuCondition, GpuEventPayload, GpuPhysicsRule, PhysicsSolver,
-        RenderExtractPlugin, SimulationClass,
+        RenderExtractPlugin, SimulationClass, ToneMapper,
     };
     use crate::MaterialAsset;
 
@@ -1661,6 +1774,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_replace_keeps_the_open_scene() {
+        let mut app = scene_app();
+        app.spawn((Name("Open".into()), GameplayTag { speed: 1.0 }));
+        let mut document = scene_document(app.world_mut(), "Test").unwrap();
+        document.entities[0].name = Some("Broken".into());
+        document.entities[0]
+            .components
+            .insert("gameplay_tag".into(), "not a component".into());
+
+        assert!(load_scene_document(
+            app.world_mut(),
+            &document,
+            SceneLoadMode::Replace
+        )
+        .is_err());
+
+        let mut query = app.world_mut().query::<(&Name, &GameplayTag)>();
+        let entities = query.iter(app.world()).collect::<Vec<_>>();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0 .0, "Open");
+    }
+
+    #[test]
     fn builtin_primitive_round_trips_without_an_asset_file() {
         let mut app = scene_app();
         let (mesh, material) = {
@@ -1753,7 +1889,20 @@ mod tests {
             color: [0.2, 0.3, 0.9],
             intensity: 0.4,
         };
-        app.spawn((Name("Sky".into()), ambient));
+        let sky = SkyLight {
+            sky_color: [0.5, 0.6, 1.0],
+            ground_color: [0.2, 0.1, 0.0],
+            intensity: 0.7,
+        };
+        let tone = ToneMapping {
+            mapper: ToneMapper::Aces,
+            exposure: 1.5,
+        };
+        let bounds = RenderBounds::Sphere {
+            center: [0.0, 1.0, 0.0],
+            radius: 2.5,
+        };
+        app.spawn((Name("Sky".into()), ambient, sky, tone, bounds));
         let document = scene_document(app.world_mut(), "Lights").unwrap();
         assert!(document.entities.iter().any(|entity| entity
             .components
@@ -1811,6 +1960,27 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
         assert_eq!(ambients, [ambient]);
+        let skies = app
+            .world_mut()
+            .query::<&SkyLight>()
+            .iter(app.world())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(skies, [sky]);
+        let tones = app
+            .world_mut()
+            .query::<&ToneMapping>()
+            .iter(app.world())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(tones, [tone]);
+        let saved_bounds = app
+            .world_mut()
+            .query::<&RenderBounds>()
+            .iter(app.world())
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(saved_bounds, [bounds]);
     }
 
     #[test]
@@ -1899,6 +2069,24 @@ mod tests {
         assert_eq!(migrated.entities[0].directional_light, None);
         assert_eq!(migrated.entities[0].point_light, None);
         assert_eq!(migrated.entities[0].spot_light, None);
+    }
+
+    #[test]
+    fn version_five_scenes_load_with_default_render_settings() {
+        let legacy = LegacySceneDocumentV5 {
+            format_version: 5,
+            name: "Scene Before Render Settings".into(),
+            entities: Vec::new(),
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+        let json = serde_json::to_vec(&legacy).unwrap();
+        for bytes in [bytes, json] {
+            let migrated = decode_scene(&bytes).unwrap();
+            assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+            assert_eq!(migrated.name, "Scene Before Render Settings");
+            assert_eq!(migrated.render, SceneRenderSettings::default());
+        }
     }
 
     #[test]
@@ -2069,12 +2257,35 @@ mod tests {
             Transform::new([4.0, 5.0, 6.0]),
             GameplayTag { speed: 3.0 },
         ));
+        let shipped = SceneRenderSettings {
+            quality: QualityProfile::High,
+            culling: CullingMode::FrustumAndOcclusion,
+        };
+        {
+            let mut settings =
+                editor_app.world_mut().resource_mut::<RenderSettings>();
+            settings.quality = shipped.quality;
+            settings.culling = shipped.culling;
+        }
         save_scene(editor_app.world_mut(), &source, "Runtime").unwrap();
         cook_scene(&source, &compiled).unwrap();
 
         let mut game_app = scene_app();
+        load_scene(game_app.world_mut(), &compiled, SceneLoadMode::Additive)
+            .unwrap();
+        let settings = game_app.world().resource::<RenderSettings>();
+        assert_eq!(
+            (settings.quality, settings.culling),
+            (QualityProfile::Auto, CullingMode::Auto),
+            "an additive load keeps the current render settings"
+        );
         load_scene(game_app.world_mut(), &compiled, SceneLoadMode::Replace)
             .unwrap();
+        let settings = game_app.world().resource::<RenderSettings>();
+        assert_eq!(
+            (settings.quality, settings.culling),
+            (shipped.quality, shipped.culling)
+        );
         let mut query = game_app
             .world_mut()
             .query::<(&Name, &Transform, &GameplayTag)>();

@@ -1,5 +1,5 @@
 use rusting_engine::{
-    CollisionType, ComputeShaderType, Engine, Material, Physics, ShaderType,
+    CollisionType, ComputeShaderType, Engine, Material, MaterialModel, Physics,
     Transform,
 };
 /// # Stress Test: 10,000 Unlit Cubes
@@ -12,11 +12,11 @@ pub fn main() {
     engine.set_light([30.0, 50.0, 30.0], [1.0, 1.0, 1.0], 500.0);
     let red_unlit = Material::standard()
         .color([1.0, 0.2, 0.2])
-        .shader(ShaderType::Unlit)
+        .model(MaterialModel::Unlit)
         .build();
     let green_unlit = Material::standard()
         .color([0.2, 1.0, 0.2])
-        .shader(ShaderType::Unlit)
+        .model(MaterialModel::Unlit)
         .build();
     let grid_size = 20;
 

@@ -72,7 +72,7 @@ impl Instance {
         self.emissive = material.emissive;
         self.roughness = material.roughness;
         self.metalness = material.metalness;
-        self.shader = material.shader;
+        self.shader = material.model.into();
         self.base_color_texture = material.base_color_texture;
         self.metallic_roughness_texture = material.metallic_roughness_texture;
     }

@@ -32,6 +32,13 @@ impl EditorTheme {
     /// Highlight for the primary (active) object, as in Blender.
     pub const ACTIVE_OBJECT: egui::Color32 =
         egui::Color32::from_rgb(255, 160, 40);
+    /// Text on filled accent controls.
+    pub const TEXT_STRONG: egui::Color32 = egui::Color32::WHITE;
+    /// Notes about limits, unsaved state, and partial support.
+    pub const WARNING: egui::Color32 = egui::Color32::from_rgb(235, 200, 90);
+    pub const ERROR: egui::Color32 = egui::Color32::from_rgb(255, 128, 128);
+    /// Outline of toggled accent controls and link-like text.
+    pub const LINK: egui::Color32 = egui::Color32::from_rgb(130, 190, 255);
     pub const BUTTON: egui::Color32 = egui::Color32::from_rgb(53, 57, 67);
     pub const BUTTON_HOVER: egui::Color32 = egui::Color32::from_rgb(65, 70, 82);
     /// X, Y, and Z axis colors used by vector fields and gizmos.

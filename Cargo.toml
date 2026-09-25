@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "1.1.3"
+version = "1.2.0"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
@@ -53,7 +53,6 @@ editor = [
     "gltf",
     "dep:egui",
     "dep:egui-winit",
-    "dep:egui_winit_vulkano",
     "dep:rfd",
     "dep:vulkano-util",
 ]
@@ -73,7 +72,6 @@ winit = "0.30.12"
 rayon = "1.10"
 gltf = { version = "1.4.1", optional = true, features = ["KHR_lights_punctual"] }
 smallvec = "1.15.1"
-cgmath = "0.18.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga"] }
 bevy_ecs = { version = "0.19.1", features = ["multi_threaded"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -82,7 +80,6 @@ bincode = "1.3.3"
 uuid = { version = "1.25.0", features = ["serde", "v4"] }
 egui = { version = "0.31.1", optional = true }
 egui-winit = { version = "0.31.1", default-features = false, features = ["clipboard", "wayland", "x11"], optional = true }
-egui_winit_vulkano = { version = "0.28.0", default-features = false, features = ["clipboard", "wayland", "x11"], optional = true }
 rfd = { version = "0.17.2", optional = true }
 vulkano-util = { version = "0.35.0", optional = true }
 
