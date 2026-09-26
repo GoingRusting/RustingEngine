@@ -96,6 +96,27 @@ pub struct RenderWorld {
     pub gpu_physics_signature: Option<u64>,
     /// Changes only when CPU data used to create GPU physics buffers changes.
     pub gpu_physics_revision: u64,
+    /// Commands taken from [`super::GpuPhysicsCommands`] by the last
+    /// extraction that found any.
+    pub gpu_physics_commands: Vec<(super::PhysicsId, super::GpuBodyCommand)>,
+    /// Whether the batch asks for every body's state; see
+    /// [`super::GpuPhysicsCommands::read_all_states`].
+    pub gpu_physics_read_all: bool,
+    /// Whether the batch restarts GPU bodies from their authored state; see
+    /// [`super::GpuPhysicsCommands::reset_to_authored`].
+    pub gpu_physics_reset: bool,
+    /// Bumps with each new batch in `gpu_physics_commands`, so a renderer
+    /// that draws twice without an extraction does not apply it twice.
+    pub gpu_physics_commands_serial: u64,
+    /// Solid CPU and static colliders from the last CPU physics step, for
+    /// GPU bodies to collide against.
+    pub gpu_colliders: Vec<super::GpuCollider>,
+    /// Resolved [`super::GpuConditionShader`] sources, in dispatch order.
+    pub gpu_condition_shaders: Vec<String>,
+    /// Wrapped `PhysicsSolver::Custom` hook files, one per distinct path,
+    /// dispatched before the condition shaders. Refreshed only when the GPU
+    /// bodies are re-extracted.
+    pub gpu_solver_shaders: Vec<String>,
     pub physics_tick: u64,
     pub fixed_delta_seconds: f32,
     pub elapsed_seconds: f32,
@@ -147,9 +168,26 @@ pub fn extract_render_world(world: &mut World) {
         .contains_resource::<super::PhysicsIdRegistry>()
         && world.contains_resource::<super::GpuEventRegistry>()
         && world.contains_resource::<super::GpuPhysicsClassWatches>();
+    let commands = world
+        .get_resource_mut::<super::GpuPhysicsCommands>()
+        .map(|mut commands| std::mem::take(&mut *commands))
+        .unwrap_or_default();
+    // ponytail: resolves every frame; a handful of short strings. Track a
+    // revision on the resource if scenes ever carry many large shaders.
+    let condition_shaders = world
+        .get_resource::<super::GpuConditionShaders>()
+        .map(|shaders| shaders.0.clone())
+        .unwrap_or_default();
+    let condition_shaders =
+        match world.get_resource_mut::<super::GpuEventRegistry>() {
+            Some(mut registry) => condition_shaders
+                .iter()
+                .map(|shader| shader.resolve(&mut registry))
+                .collect(),
+            None => Vec::new(),
+        };
     let gpu_physics_signature = has_gpu_physics_resources
-        .then(|| super::hybrid_physics::simple_gpu_physics_signature(world))
-        .flatten();
+        .then(|| super::hybrid_physics::simple_gpu_physics_signature(world));
     let previous_gpu_signature =
         world.resource::<RenderWorld>().gpu_physics_signature;
     let gpu_physics = if gpu_physics_signature.is_some()
@@ -160,6 +198,16 @@ pub fn extract_render_world(world: &mut World) {
         Some(super::hybrid_physics::extract_gpu_physics_bodies(world))
     } else {
         Some(Vec::new())
+    };
+    // ponytail: rebuilt every frame from the CPU step; a revision would skip
+    // the upload for static-only scenes if colliders ever number thousands.
+    let gpu_colliders = if gpu_physics.as_ref().is_some_and(Vec::is_empty) {
+        Vec::new()
+    } else {
+        world
+            .get_resource::<super::PhysicsWorld>()
+            .map(super::PhysicsWorld::gpu_colliders)
+            .unwrap_or_default()
     };
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
@@ -239,16 +287,29 @@ pub fn extract_render_world(world: &mut World) {
         render_world.ambient_light = ambient_light;
         render_world.sky_light = sky_light;
     }
-    // Scenes with watch rules extract every frame. Bump the revision only on
-    // a real change; each bump makes the renderer rebuild its physics tables.
+    // A changed signature can still extract identical bodies (a tick bumped
+    // without an edit). Bump the revision only on a real change; each bump
+    // makes the renderer rebuild its physics tables.
     if let Some(gpu_physics) =
         gpu_physics.filter(|bodies| *bodies != render_world.gpu_physics)
     {
+        render_world.gpu_solver_shaders = custom_solver_shaders(&gpu_physics);
         render_world.gpu_physics = gpu_physics;
         render_world.gpu_physics_revision =
             render_world.gpu_physics_revision.wrapping_add(1);
     }
     render_world.gpu_physics_signature = gpu_physics_signature;
+    if !commands.commands.is_empty()
+        || commands.read_all_states
+        || commands.reset_to_authored
+    {
+        render_world.gpu_physics_commands = commands.commands;
+        render_world.gpu_physics_read_all = commands.read_all_states;
+        render_world.gpu_physics_reset = commands.reset_to_authored;
+        render_world.gpu_physics_commands_serial += 1;
+    }
+    render_world.gpu_condition_shaders = condition_shaders;
+    render_world.gpu_colliders = gpu_colliders;
     render_world.physics_tick = time.fixed_tick;
     render_world.fixed_delta_seconds = time.fixed_delta.as_secs_f32();
     render_world.elapsed_seconds = time.elapsed.as_secs_f32();
@@ -475,6 +536,29 @@ fn collect_first<T: Component + Copy>(world: &mut World) -> Option<T> {
         .iter(world)
         .min_by_key(|(entity, _)| entity.to_bits())
         .map(|(_, light)| *light)
+}
+
+/// Reads each distinct custom solver file once, in path order. A file that
+/// cannot be read becomes a shader that fails to compile with the reason, so
+/// it shows up in `SceneRenderer::condition_shader_errors`.
+// ponytail: files are read only when GPU bodies are re-extracted, so edits
+// need a scene change or restart; watch the files if hot reload is wanted.
+fn custom_solver_shaders(
+    bodies: &[super::ExtractedGpuPhysicsBody],
+) -> Vec<String> {
+    let paths = bodies
+        .iter()
+        .filter_map(|body| body.custom_shader.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    paths
+        .into_iter()
+        .map(|path| {
+            let glsl = std::fs::read_to_string(path).unwrap_or_else(|error| {
+                format!("#error cannot read custom solver {path}: {error}")
+            });
+            super::custom_solver_source(path, &glsl)
+        })
+        .collect()
 }
 
 #[cfg(test)]

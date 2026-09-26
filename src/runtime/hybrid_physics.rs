@@ -2,14 +2,27 @@
 //!
 //! This module does not create Vulkan buffers. It defines stable body IDs,
 //! programmable conditions, and the exact event format used for readback.
+//!
+//! # Latency
+//!
+//! GPU physics never blocks a frame. The renderer reads events and body
+//! state only after the frame that produced them has finished on the GPU,
+//! so they normally reach gameplay one to three rendered frames after the
+//! fixed tick they describe; [`GpuPhysicsEvent::tick`] and
+//! [`GpuStateMirror::tick`] record that tick. Gameplay that needs an answer
+//! in the same tick (a jump check, a hit-scan) must use
+//! [`SimulationClass::Cpu`](super::SimulationClass) bodies instead.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::lifecycle::RemovedComponents;
-use bevy_ecs::prelude::{Changed, Commands, Query, ResMut, Resource, World};
+use bevy_ecs::prelude::{
+    Changed, Commands, IntoScheduleConfigs, Query, Ref, ResMut, Resource, World,
+};
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
@@ -665,6 +678,154 @@ impl RawGpuPhysicsEvent {
     }
 }
 
+/// One change CPU gameplay asks the GPU simulation to make to a body.
+///
+/// Spawning, despawning, solver changes, and watch-rule changes need no
+/// command: edit the ECS components and the next extraction rebuilds the
+/// GPU tables while keeping every surviving body's simulated state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GpuBodyCommand {
+    /// Moves the body; its velocity is kept.
+    Teleport(Transform),
+    SetVelocity {
+        linear: [f32; 3],
+        angular: [f32; 3],
+    },
+    /// Instant change of momentum, in newton-seconds. Dynamic bodies only.
+    Impulse([f32; 3]),
+    /// Force in newtons applied for one fixed tick. Dynamic bodies only.
+    Force([f32; 3]),
+    /// Replaces the four custom values that conditions and shaders read.
+    SetCustomValues([f32; 4]),
+    /// Reads the body's full state back once, as a [`GpuStateMirror`], even
+    /// when its [`PhysicsSyncMode`] does not read state back.
+    ReadState,
+}
+
+/// Commands waiting for the next render extraction, in submission order.
+///
+/// The renderer applies them before the next fixed GPU step, in order per
+/// body, and rejects commands whose body generation is stale.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct GpuPhysicsCommands {
+    pub commands: Vec<(PhysicsId, GpuBodyCommand)>,
+    /// Reads every GPU body's full state back once after the next step.
+    /// Meant for debugging, save states, and tests: it copies the whole
+    /// simulation, so keep it off the per-frame gameplay path.
+    pub read_all_states: bool,
+    /// Discards the simulated GPU state and restarts every body from its
+    /// authored ECS components, with rule edge and cooldown state cleared.
+    /// This is Stop for a play session: the authored scene is the snapshot,
+    /// so no state is read back. Commands in the same batch apply after the
+    /// reset, which lets [`Self::restore`] resume a saved mid-play state.
+    pub reset_to_authored: bool,
+}
+
+impl GpuPhysicsCommands {
+    pub fn push(&mut self, body: PhysicsId, command: GpuBodyCommand) {
+        self.commands.push((body, command));
+    }
+
+    /// Puts a body back into a state read earlier, for example one captured
+    /// with [`Self::read_all_states`] when Play was paused.
+    pub fn restore(&mut self, body: PhysicsId, state: &GpuStateMirror) {
+        self.push(body, GpuBodyCommand::Teleport(state.transform));
+        self.push(
+            body,
+            GpuBodyCommand::SetVelocity {
+                linear: state.linear_velocity,
+                angular: state.angular_velocity,
+            },
+        );
+        if let Some(values) = state.custom_values {
+            self.push(body, GpuBodyCommand::SetCustomValues(values));
+        }
+    }
+}
+
+/// Requests a one-shot snapshot of every GPU body in an object class.
+///
+/// Each member's state arrives together, one to three frames later, as a
+/// [`GpuStateMirror`] carrying the same tick. Returns how many bodies were
+/// requested. Use it when gameplay needs more than events for a group,
+/// without paying [`PhysicsSyncMode::SelectedState`] every tick.
+pub fn request_gpu_class_snapshot(world: &mut World, class: &str) -> usize {
+    let members = world
+        .query::<(&PhysicsId, &super::ObjectClasses)>()
+        .iter(world)
+        .filter(|(_, classes)| classes.contains(class))
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let mut commands = world.resource_mut::<GpuPhysicsCommands>();
+    for &id in &members {
+        commands.push(id, GpuBodyCommand::ReadState);
+    }
+    members.len()
+}
+
+/// Version of the GPU physics ABI in `src/shaders/physics_abi.glsl`: the body
+/// state, command, and event layouts, the push constants, the bindings, and
+/// `emit_event`. GLSL sees it as `RUSTING_PHYSICS_ABI_VERSION`. It changes
+/// whenever a custom shader written for the old layout would break.
+pub const GPU_PHYSICS_ABI_VERSION: u32 = 1;
+
+/// Custom GLSL that runs over every GPU body after each fixed step.
+///
+/// `glsl` must define `void condition(inout PhysicsState body)`. It sees the
+/// ABI in `src/shaders/physics_abi.glsl` (the `PhysicsState` layout, the `pc`
+/// push constants with `dt`, `elapsed`, and the tick) and reports with the
+/// same `emit_event(body, event_id, payload_kind, payload)` as built-in rules.
+/// `EVENTS[i]` is the [`GpuEventId`] of `events[i]`, registered by name, so
+/// Rust receives these as ordinary [`GpuPhysicsEvent`]s. Changes to `body`
+/// are written back, so a hook can also steer the simulation.
+///
+/// The renderer compiles the source at runtime with `glslc` (from the Vulkan
+/// SDK or shaderc; set `RUSTING_GLSLC` to use another path). A shader that
+/// fails to compile is skipped and its error kept; see
+/// `SceneRenderer::condition_shader_errors`. The event buffer reserves one
+/// event per body, tick, and shader; more are counted as lost.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuConditionShader {
+    pub events: Vec<String>,
+    pub glsl: String,
+}
+
+/// Custom condition shaders, dispatched in list order after the built-in step.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct GpuConditionShaders(pub Vec<GpuConditionShader>);
+
+impl GpuConditionShader {
+    /// Registers the events and returns the GLSL the renderer compiles after
+    /// the shared ABI: an `EVENTS` table followed by the user's code.
+    #[must_use]
+    pub fn resolve(&self, registry: &mut GpuEventRegistry) -> String {
+        let ids = self
+            .events
+            .iter()
+            .map(|name| format!("{}u", registry.register(name.clone()).0))
+            .collect::<Vec<_>>();
+        let table = if ids.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "const uint EVENTS[{}] = uint[]({});\n",
+                ids.len(),
+                ids.join(", ")
+            )
+        };
+        format!("{table}#line 1\n{}", self.glsl)
+    }
+}
+
+/// Sent when GPU events were lost because the per-frame event buffer reached
+/// its memory budget. `WhileTrue` rules fire again on the next tick, but
+/// `OnEnter`/`OnExit` edges are gone; resynchronize from body state
+/// ([`PhysicsSyncMode::SelectedState`]) if gameplay depends on them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuPhysicsEventsLost {
+    pub count: u64,
+}
+
 /// Safe Rust event delivered after a raw GPU event resolves to a live entity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuPhysicsEvent {
@@ -683,6 +844,394 @@ pub struct GpuEventRouteReport {
     pub delivered: usize,
     pub stale: usize,
     pub unknown_event: usize,
+}
+
+/// How much GPU simulation data one body sends back to the CPU.
+///
+/// Synchronization is a cost chosen per body. It is never a hidden copy of
+/// the whole scene. Bodies without this component use `Events`.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+)]
+pub enum PhysicsSyncMode {
+    /// Nothing returns: watch rules are not evaluated for this body.
+    None,
+    /// Only the events of the body's watch rules return.
+    #[default]
+    Events,
+    /// Events, plus pose and velocities in [`GpuStateMirror`] every physics
+    /// frame.
+    SelectedState,
+    /// Like `SelectedState`, plus the body's custom values.
+    FullState,
+}
+
+impl PhysicsSyncMode {
+    /// Bytes copied back per body and fixed tick when state is read back.
+    /// The renderer asserts this matches its packed body layout.
+    pub const STATE_READBACK_BYTES: u64 = 144;
+
+    #[must_use]
+    pub fn reads_back_state(self) -> bool {
+        matches!(self, Self::SelectedState | Self::FullState)
+    }
+}
+
+/// GPU state of one body, copied back after its frame finished.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuStateSample {
+    pub physics_id: PhysicsId,
+    /// Fixed tick the GPU had simulated when the copy was taken.
+    pub tick: u64,
+    pub transform: Transform,
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    /// Present only for [`PhysicsSyncMode::FullState`] bodies.
+    pub custom_values: Option<[f32; 4]>,
+}
+
+/// Newest GPU state read back for a `SelectedState` or `FullState` body.
+///
+/// The authored `Transform` stays as it is: writing the delayed GPU pose into
+/// it would count as an edit and restart the body from that older pose. Read
+/// the simulated pose here, and check its age before trusting it for
+/// same-tick gameplay decisions.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GpuStateMirror {
+    /// Fixed tick the GPU had simulated when this state was produced.
+    pub tick: u64,
+    pub transform: Transform,
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub custom_values: Option<[f32; 4]>,
+}
+
+impl GpuStateMirror {
+    /// Fixed ticks between this state and `current_tick`; GPU state usually
+    /// reaches the CPU one to three frames late.
+    #[must_use]
+    pub fn age_ticks(&self, current_tick: u64) -> u64 {
+        current_tick.saturating_sub(self.tick)
+    }
+}
+
+/// Lets the engine choose CPU or GPU simulation for this body.
+///
+/// [`allocate_auto_simulation`] decides once, writes the choice into
+/// `PhysicsBody::simulation`, and records it in `decision` so tools can show
+/// why. Remove this component to pick the class by hand again; set
+/// `decision` to `None` to ask for a new decision. A body that is `None` or
+/// `Static` when it is decided stays that way.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+)]
+pub struct AutoSimulation {
+    /// Filled in by the engine; not saved.
+    #[serde(skip)]
+    pub decision: Option<AllocationDecision>,
+}
+
+/// The class an [`AutoSimulation`] body got and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllocationDecision {
+    pub class: super::SimulationClass,
+    pub reason: AllocationReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocationReason {
+    /// The body was `None` or `Static`; nothing to allocate.
+    NotDynamic,
+    /// No GPU physics backend is connected.
+    NoGpuBackend,
+    /// Custom solvers run only on the GPU.
+    CustomSolver,
+    /// Gameplay moves kinematic bodies every frame on the CPU.
+    Kinematic,
+    /// Sensors and mesh colliders exist only in the CPU solver.
+    CpuOnlyCollider,
+    /// Reading the full state back every tick costs more than simulating
+    /// the body on the CPU.
+    ReadsStateEveryTick,
+    /// Fewer flexible bodies than [`AutoAllocationPolicy::gpu_min_bodies`].
+    FewBodies,
+    /// At least [`AutoAllocationPolicy::gpu_min_bodies`] flexible bodies.
+    ManyBodies,
+    /// The last measured CPU physics time was over budget.
+    CpuOverBudget,
+}
+
+/// Thresholds used by [`allocate_auto_simulation`].
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct AutoAllocationPolicy {
+    /// Flexible `AutoSimulation` bodies at which they all go to the GPU.
+    pub gpu_min_bodies: usize,
+    /// CPU physics time per frame above which new bodies go to the GPU.
+    pub cpu_physics_budget: std::time::Duration,
+}
+
+impl Default for AutoAllocationPolicy {
+    fn default() -> Self {
+        Self {
+            gpu_min_bodies: 256,
+            cpu_physics_budget: std::time::Duration::from_millis(4),
+        }
+    }
+}
+
+/// A class this body must have regardless of the scene, if any.
+fn required_class(
+    body: &super::PhysicsBody,
+    rigid: Option<&super::RigidBody>,
+    collider: Option<&super::Collider>,
+    sync: Option<&PhysicsSyncMode>,
+    gpu: bool,
+) -> Option<AllocationDecision> {
+    use super::SimulationClass::{Cpu, Gpu};
+    let decide = |class, reason| Some(AllocationDecision { class, reason });
+    if !body.participates_in_dynamic_simulation() {
+        return decide(body.simulation, AllocationReason::NotDynamic);
+    }
+    if !gpu {
+        return decide(Cpu, AllocationReason::NoGpuBackend);
+    }
+    if body.solver == super::PhysicsSolver::Custom {
+        return decide(Gpu, AllocationReason::CustomSolver);
+    }
+    if rigid.is_some_and(|rigid| rigid.kind == super::RigidBodyKind::Kinematic)
+    {
+        return decide(Cpu, AllocationReason::Kinematic);
+    }
+    if collider.is_some_and(|collider| {
+        collider.sensor
+            || matches!(
+                collider.shape,
+                super::ColliderShape::ConvexMesh
+                    | super::ColliderShape::TriangleMesh
+            )
+    }) {
+        return decide(Cpu, AllocationReason::CpuOnlyCollider);
+    }
+    if sync.is_some_and(|sync| sync.reads_back_state()) {
+        return decide(Cpu, AllocationReason::ReadsStateEveryTick);
+    }
+    None
+}
+
+/// Gives every undecided [`AutoSimulation`] body a class.
+///
+/// Hard requirements come first (see [`AllocationReason`]); the other
+/// "flexible" bodies go to the GPU when there are at least
+/// `gpu_min_bodies` of them or the last frame's CPU physics was over
+/// budget, else to the CPU.
+// ponytail: decisions stick; a decided body never migrates between CPU and
+// GPU, because that needs a live state handoff. Add one if scenes grow
+// past the threshold long after they start.
+pub fn allocate_auto_simulation(world: &mut World) {
+    use super::SimulationClass::{Cpu, Gpu};
+    let policy = world
+        .get_resource::<AutoAllocationPolicy>()
+        .copied()
+        .unwrap_or_default();
+    let gpu = world
+        .get_resource::<super::PhysicsBackendStatus>()
+        .is_some_and(|status| status.gpu_dynamic_available);
+    let over_budget = world
+        .get_resource::<super::CpuFrameTimings>()
+        .is_some_and(|timings| timings.physics > policy.cpu_physics_budget);
+    let mut query = world.query::<(
+        Entity,
+        &AutoSimulation,
+        &super::PhysicsBody,
+        Option<&super::RigidBody>,
+        Option<&super::Collider>,
+        Option<&PhysicsSyncMode>,
+    )>();
+    let mut flexible = 0;
+    let mut pending = Vec::new();
+    for (entity, auto, body, rigid, collider, sync) in query.iter(world) {
+        let required = if auto.decision.is_none() {
+            // Judge the authored class, not a previous decision.
+            required_class(body, rigid, collider, sync, gpu)
+        } else {
+            auto.decision.filter(|decision| {
+                decision.reason != AllocationReason::FewBodies
+                    && decision.reason != AllocationReason::ManyBodies
+                    && decision.reason != AllocationReason::CpuOverBudget
+            })
+        };
+        flexible += usize::from(required.is_none());
+        if auto.decision.is_none() {
+            pending.push((entity, required));
+        }
+    }
+    for (entity, required) in pending {
+        let decision = required.unwrap_or(if over_budget {
+            AllocationDecision {
+                class: Gpu,
+                reason: AllocationReason::CpuOverBudget,
+            }
+        } else if flexible >= policy.gpu_min_bodies {
+            AllocationDecision {
+                class: Gpu,
+                reason: AllocationReason::ManyBodies,
+            }
+        } else {
+            AllocationDecision {
+                class: Cpu,
+                reason: AllocationReason::FewBodies,
+            }
+        });
+        let mut entity = world.entity_mut(entity);
+        if let Some(mut auto) = entity.get_mut::<AutoSimulation>() {
+            auto.decision = Some(decision);
+        }
+        if let Some(mut body) = entity.get_mut::<super::PhysicsBody>() {
+            if body.simulation != decision.class {
+                body.simulation = decision.class;
+            }
+        }
+    }
+}
+
+/// Keeps a CPU collider standing in for this GPU body, so CPU queries and
+/// CPU bodies can find it without reading the whole body back.
+///
+/// The proxy is a separate `Static` entity marked [`GpuProxyOf`]. The body's
+/// `place_on` event (with a `Position` payload) creates or moves it and
+/// `remove_on` removes it; removing this component or the body removes it
+/// too. Its pose is as old as the event (usually one to three frames) and
+/// reaches CPU queries on the next fixed step. GPU bodies never collide with
+/// proxies.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GpuQueryProxy {
+    pub collider: super::Collider,
+    pub layers: super::CollisionLayers,
+    pub place_on: GpuEventId,
+    pub remove_on: Option<GpuEventId>,
+}
+
+/// Marks the CPU proxy entity of a GPU body; see [`GpuQueryProxy`].
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuProxyOf(pub Entity);
+
+/// Places, moves and removes [`GpuQueryProxy`] proxies from this frame's
+/// GPU events, in their delivery order.
+fn sync_gpu_query_proxies(world: &mut World) {
+    let mut proxies = world
+        .query::<(Entity, &GpuProxyOf)>()
+        .iter(world)
+        .map(|(proxy, owner)| (owner.0, proxy))
+        .collect::<HashMap<_, _>>();
+    proxies.retain(|owner, proxy| {
+        let alive = world.get::<GpuQueryProxy>(*owner).is_some();
+        if !alive {
+            world.despawn(*proxy);
+        }
+        alive
+    });
+    let events = world
+        .resource::<EventQueue<GpuPhysicsEvent>>()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    for event in events {
+        let Some(settings) = world.get::<GpuQueryProxy>(event.entity).copied()
+        else {
+            continue;
+        };
+        if Some(event.event_id) == settings.remove_on {
+            if let Some(proxy) = proxies.remove(&event.entity) {
+                world.despawn(proxy);
+            }
+            continue;
+        }
+        if event.event_id != settings.place_on
+            || event.payload_kind != GpuEventPayload::Position as u32
+        {
+            continue;
+        }
+        // The body's authored rotation and scale, at the reported position.
+        let mut transform = world
+            .get::<Transform>(event.entity)
+            .copied()
+            .unwrap_or_default();
+        transform.position =
+            [event.payload[0], event.payload[1], event.payload[2]];
+        let parts = (
+            transform,
+            settings.collider,
+            settings.layers,
+            super::PhysicsBody {
+                simulation: super::SimulationClass::Static,
+                ..super::PhysicsBody::default()
+            },
+            GpuProxyOf(event.entity),
+        );
+        match proxies.get(&event.entity) {
+            Some(&proxy) => {
+                world.entity_mut(proxy).insert(parts);
+            }
+            None => {
+                let proxy = world.spawn(parts).id();
+                proxies.insert(event.entity, proxy);
+            }
+        }
+    }
+}
+
+/// Writes read-back GPU state into [`GpuStateMirror`] on live entities.
+///
+/// Samples for removed bodies (stale generation) are counted and ignored, and
+/// an older sample never replaces a newer one.
+pub fn apply_gpu_state_samples(
+    world: &mut World,
+    samples: &[GpuStateSample],
+) -> GpuEventRouteReport {
+    let mut report = GpuEventRouteReport::default();
+    for sample in samples {
+        let entity = world
+            .resource::<PhysicsIdRegistry>()
+            .resolve(sample.physics_id);
+        let Some(mut entity) =
+            entity.and_then(|entity| world.get_entity_mut(entity).ok())
+        else {
+            report.stale += 1;
+            continue;
+        };
+        if entity
+            .get::<GpuStateMirror>()
+            .is_some_and(|mirror| mirror.tick > sample.tick)
+        {
+            continue;
+        }
+        entity.insert(GpuStateMirror {
+            tick: sample.tick,
+            transform: sample.transform,
+            linear_velocity: sample.linear_velocity,
+            angular_velocity: sample.angular_velocity,
+            custom_values: sample.custom_values,
+        });
+        report.delivered += 1;
+    }
+    report
 }
 
 /// One compiled rule copied into the renderer-facing physics snapshot.
@@ -704,31 +1253,60 @@ pub struct ExtractedGpuPhysicsBody {
     pub rigid_body: super::RigidBody,
     /// Solver selected for this GPU body, including the Space attractor mode.
     pub solver: super::PhysicsSolver,
+    /// Collides against [`super::GpuCollider`]s unless the solver is
+    /// `NoCollision`. Full, Simplified and Space bodies also collide with
+    /// each other.
+    pub collider: Option<(super::Collider, super::CollisionLayers)>,
+    /// Solver hook file of a `PhysicsSolver::Custom` body; see
+    /// [`custom_solver_id`]. `None` for every other solver.
+    pub custom_shader: Option<String>,
     pub rules: Vec<ExtractedGpuPhysicsRule>,
+    pub sync: PhysicsSyncMode,
 }
 
-/// Returns a cheap signature when GPU bodies have no authored event rules.
-///
-/// Rule-free effect swarms remain GPU-owned after setup. Their complete CPU
-/// descriptions do not need to be cloned on every render frame. Scenes with
-/// class or object watches return `None` and keep full rule extraction.
-pub(super) fn simple_gpu_physics_signature(world: &mut World) -> Option<u64> {
-    if !world
-        .resource::<GpuPhysicsClassWatches>()
-        .classes
-        .is_empty()
-    {
-        return None;
-    }
-    let has_object_rules = {
-        let mut query = world.query::<&GpuPhysicsWatch>();
-        query.iter(world).any(|watch| !watch.rules.is_empty())
-    };
-    if has_object_rules {
-        return None;
-    }
+/// Identifies a custom solver file on the GPU. The native shader stores it
+/// in `properties.w` of every body that uses the file, and the solver's
+/// wrapper runs `solve(body)` only for those bodies. 24 bits so the id stays
+/// exact as an `f32`.
+// ponytail: FNV-1a hash; two paths could collide (1 in 16M). Hand out
+// indices from a registry if a project ever has many solver files.
+#[must_use]
+pub fn custom_solver_id(path: &str) -> u32 {
+    let hash = path.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    (hash & 0x00ff_ffff).max(1)
+}
 
+/// Wraps a custom solver file as a condition shader that runs its
+/// `void solve(inout PhysicsState body)` for the bodies that selected it.
+/// The built-in step still applies commands and watch rules to those bodies
+/// but leaves their motion to `solve`.
+#[must_use]
+pub fn custom_solver_source(path: &str, glsl: &str) -> String {
+    format!(
+        "const uint SOLVER_ID = {}u;\n#line 1\n{glsl}\n\
+         void condition(inout PhysicsState body) {{\n\
+         if (uint(body.properties.w) == SOLVER_ID) solve(body);\n}}\n",
+        custom_solver_id(path)
+    )
+}
+
+/// Returns a cheap signature of every GPU body's extracted inputs.
+///
+/// GPU-owned swarms keep their state after setup, so their complete CPU
+/// descriptions do not need to be cloned and compared on every render frame.
+/// Watch rules and class lists are covered by their change ticks rather than
+/// by hashing their contents.
+// ponytail: a tick bumps on any mutable access, even without a real edit; the
+// full extraction that follows still compares contents before a rebuild.
+pub(super) fn simple_gpu_physics_signature(world: &mut World) -> u64 {
     let mut hasher = super::FastHasher::default();
+    world
+        .resource_ref::<GpuPhysicsClassWatches>()
+        .last_changed()
+        .get()
+        .hash(&mut hasher);
     let mut count = 0_u64;
     let mut query = world.query::<(
         Entity,
@@ -736,12 +1314,42 @@ pub(super) fn simple_gpu_physics_signature(world: &mut World) -> Option<u64> {
         &Transform,
         &super::PhysicsBody,
         Option<&super::RigidBody>,
+        Option<Ref<super::ObjectClasses>>,
+        Option<Ref<GpuPhysicsWatch>>,
+        Option<&PhysicsSyncMode>,
+        Option<Ref<super::Collider>>,
+        Option<Ref<super::CollisionLayers>>,
     )>();
-    for (entity, id, transform, body, rigid_body) in query.iter(world) {
+    for (
+        entity,
+        id,
+        transform,
+        body,
+        rigid_body,
+        classes,
+        watch,
+        sync,
+        collider,
+        layers,
+    ) in query.iter(world)
+    {
         if !body.uses_gpu() {
             continue;
         }
         count += 1;
+        sync.copied().unwrap_or_default().hash(&mut hasher);
+        classes
+            .map(|classes| classes.last_changed().get())
+            .hash(&mut hasher);
+        watch
+            .map(|watch| watch.last_changed().get())
+            .hash(&mut hasher);
+        collider
+            .map(|collider| collider.last_changed().get())
+            .hash(&mut hasher);
+        layers
+            .map(|layers| layers.last_changed().get())
+            .hash(&mut hasher);
         entity.to_bits().hash(&mut hasher);
         id.hash(&mut hasher);
         for value in transform
@@ -774,7 +1382,7 @@ pub(super) fn simple_gpu_physics_signature(world: &mut World) -> Option<u64> {
         }
     }
     count.hash(&mut hasher);
-    Some(hasher.finish())
+    hasher.finish()
 }
 
 /// Collects GPU bodies and compiles their authored rules for rendering.
@@ -792,21 +1400,44 @@ pub(super) fn extract_gpu_physics_bodies(
             Option<&super::RigidBody>,
             Option<&super::ObjectClasses>,
             Option<&GpuPhysicsWatch>,
+            Option<&PhysicsSyncMode>,
+            Option<&super::Collider>,
+            Option<&super::CollisionLayers>,
         )>();
         query
             .iter(world)
-            .filter(|(_, _, _, body, _, _, _)| body.uses_gpu())
+            .filter(|(_, _, _, body, ..)| body.uses_gpu())
             .map(
-                |(entity, id, transform, body, rigid_body, classes, watch)| {
+                |(
+                    entity,
+                    id,
+                    transform,
+                    body,
+                    rigid_body,
+                    classes,
+                    watch,
+                    sync,
+                    collider,
+                    layers,
+                )| {
+                    let sync = sync.copied().unwrap_or_default();
+                    let watched = sync != PhysicsSyncMode::None;
                     (
                         entity,
                         *id,
                         *transform,
                         body.solver,
+                        (body.solver == super::PhysicsSolver::Custom)
+                            .then(|| body.custom_shader.clone())
+                            .flatten(),
                         rigid_body.copied().unwrap_or_default(),
-                        needs_class_lookup
+                        (needs_class_lookup && watched)
                             .then(|| classes.cloned().unwrap_or_default()),
-                        watch.cloned().unwrap_or_default(),
+                        watch.filter(|_| watched).cloned().unwrap_or_default(),
+                        sync,
+                        collider.map(|collider| {
+                            (*collider, layers.copied().unwrap_or_default())
+                        }),
                     )
                 },
             )
@@ -821,9 +1452,12 @@ pub(super) fn extract_gpu_physics_bodies(
                 physics_id,
                 transform,
                 solver,
+                custom_shader,
                 rigid_body,
                 classes,
                 watch,
+                sync,
+                collider,
             ) in raw
             {
                 let mut authored_rules = watch.rules;
@@ -859,7 +1493,10 @@ pub(super) fn extract_gpu_physics_bodies(
                     transform,
                     rigid_body,
                     solver,
+                    collider,
+                    custom_shader,
                     rules,
+                    sync,
                 });
             }
         },
@@ -907,6 +1544,17 @@ pub fn route_gpu_physics_events(
         });
         report.delivered += 1;
     }
+    // The GPU appends events with an atomic counter, so their buffer order
+    // changes from run to run. Deliver them in a fixed order instead.
+    routed.sort_by_key(|event| {
+        (
+            event.tick,
+            event.physics_id.slot,
+            event.physics_id.generation,
+            event.event_id.0,
+            event.flags,
+        )
+    });
     let mut events = world.resource_mut::<EventQueue<GpuPhysicsEvent>>();
     for event in routed {
         events.send(event);
@@ -929,8 +1577,22 @@ impl Plugin for HybridPhysicsPlugin {
         if !app.world().contains_resource::<GpuPhysicsClassWatches>() {
             app.insert_resource(GpuPhysicsClassWatches::default());
         }
+        if !app.world().contains_resource::<GpuPhysicsCommands>() {
+            app.insert_resource(GpuPhysicsCommands::default());
+        }
+        if !app.world().contains_resource::<GpuConditionShaders>() {
+            app.insert_resource(GpuConditionShaders::default());
+        }
+        if !app.world().contains_resource::<AutoAllocationPolicy>() {
+            app.insert_resource(AutoAllocationPolicy::default());
+        }
         app.add_event::<GpuPhysicsEvent>()
-            .add_systems(ScheduleStage::PostUpdate, maintain_gpu_physics_ids);
+            .add_event::<GpuPhysicsEventsLost>()
+            .add_systems(
+                ScheduleStage::PostUpdate,
+                (allocate_auto_simulation, maintain_gpu_physics_ids).chain(),
+            )
+            .add_systems(ScheduleStage::Update, sync_gpu_query_proxies);
         Ok(())
     }
 }

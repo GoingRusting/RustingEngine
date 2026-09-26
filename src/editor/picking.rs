@@ -9,7 +9,7 @@ use bevy_ecs::prelude::World;
 use egui::{Pos2, Rect};
 use nalgebra::{Matrix4, Orthographic3, Perspective3, Vector3, Vector4};
 
-use crate::assets::{AssetServer, MeshAsset};
+use crate::assets::AssetServer;
 use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
 
 /// A world-space ray produced by one Scene View mouse click.
@@ -71,8 +71,8 @@ pub(super) fn pick_entity(
     candidates
         .into_iter()
         .filter_map(|(entity, handle, transform)| {
-            let mesh = assets.meshes.get(handle)?;
-            let distance = ray_mesh_bounds(ray, transform, mesh)?;
+            let bounds = assets.mesh_bounds(handle)?;
+            let distance = ray_mesh_bounds(ray, transform, bounds)?;
             Some((distance, entity))
         })
         .chain(shape_hits.collect::<Vec<_>>())
@@ -194,9 +194,9 @@ pub(super) fn project_world_to_screen(
 fn ray_mesh_bounds(
     ray: Ray,
     transform: GlobalTransform,
-    mesh: &MeshAsset,
+    (minimum, maximum): ([f32; 3], [f32; 3]),
 ) -> Option<f32> {
-    let (minimum, maximum) = mesh_bounds(mesh)?;
+    let (minimum, maximum) = (Vector3::from(minimum), Vector3::from(maximum));
     let world_from_local = matrix_from_array(transform.matrix);
     let local_from_world = world_from_local.try_inverse()?;
     let local_origin4 = local_from_world * ray.origin.push(1.0);
@@ -216,19 +216,6 @@ fn ray_mesh_bounds(
         (Vector3::new(world_hit.x, world_hit.y, world_hit.z) - ray.origin)
             .norm(),
     )
-}
-
-/// Returns the smallest box containing every mesh vertex.
-fn mesh_bounds(mesh: &MeshAsset) -> Option<(Vector3<f32>, Vector3<f32>)> {
-    let first = mesh.vertices.first()?.position;
-    let mut minimum = Vector3::from(first);
-    let mut maximum = minimum;
-    for vertex in &mesh.vertices[1..] {
-        let position = Vector3::from(vertex.position);
-        minimum = minimum.inf(&position);
-        maximum = maximum.sup(&position);
-    }
-    Some((minimum, maximum))
 }
 
 /// Standard slab intersection. The returned distance is in local ray units.

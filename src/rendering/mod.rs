@@ -153,17 +153,39 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
         physical_device.properties().api_version,
     );
 
-    let (device, mut queues) = Device::new(
-        physical_device,
-        DeviceCreateInfo {
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
+    let enabled_features = optional_device_features(&physical_device);
+    let create = || {
+        Device::new(
+            physical_device.clone(),
+            DeviceCreateInfo {
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
+                enabled_features,
                 ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .expect("Failed to create headless Vulkan device");
+            },
+        )
+    };
+    // ponytail: NVIDIA reports InitializationFailed while too many devices
+    // are alive at once (12 parallel GPU tests); a short bounded retry lets
+    // the others finish. Share one device per test process if this grows.
+    let mut result = create();
+    for attempt in 1..=10 {
+        match result {
+            Err(vulkano::Validated::Error(
+                vulkano::VulkanError::InitializationFailed,
+            )) => {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    50 * attempt,
+                ));
+                result = create();
+            }
+            _ => break,
+        }
+    }
+    let (device, mut queues) =
+        result.expect("Failed to create headless Vulkan device");
 
     let queue = queues.next().unwrap();
 
@@ -172,6 +194,46 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
         device,
         queue,
     }
+}
+
+/// Optional features the renderer uses when the device has them. The
+/// renderer reads back what was enabled from `Device::enabled_features`.
+fn optional_device_features(
+    physical_device: &vulkano::device::physical::PhysicalDevice,
+) -> vulkano::device::DeviceFeatures {
+    vulkano::device::DeviceFeatures {
+        sampler_anisotropy: physical_device
+            .supported_features()
+            .sampler_anisotropy,
+        ..vulkano::device::DeviceFeatures::empty()
+    }
+}
+
+/// `VulkanoConfig::default()` plus the optional features the renderer uses
+/// when the device `VulkanoContext` will pick has them. `VulkanoContext`
+/// panics on a requested feature the device lacks, so the pick is probed
+/// first with a short-lived instance.
+// ponytail: creates a second instance at startup (a few ms); drop the probe
+// if vulkano-util gains a per-device feature callback.
+#[cfg(feature = "window")]
+pub fn vulkano_config() -> vulkano_util::context::VulkanoConfig {
+    let mut config = vulkano_util::context::VulkanoConfig::default();
+    let picked = VulkanLibrary::new()
+        .ok()
+        .and_then(|library| {
+            Instance::new(library, InstanceCreateInfo::default()).ok()
+        })
+        .and_then(|instance| {
+            instance
+                .enumerate_physical_devices()
+                .ok()?
+                .filter(|p| (config.device_filter_fn)(p))
+                .min_by_key(|p| (config.device_priority_fn)(p))
+        });
+    if let Some(physical_device) = picked {
+        config.device_features = optional_device_features(&physical_device);
+    }
+    config
 }
 
 #[derive(Clone)]
@@ -302,10 +364,12 @@ pub fn init_vulkan(event_loop: &EventLoop<()>, title: &str) -> VulkanBase {
         physical_device.properties().api_version,
     );
 
+    let enabled_features = optional_device_features(&physical_device);
     let (device, mut queues) = Device::new(
         physical_device,
         DeviceCreateInfo {
             enabled_extensions: device_extensions,
+            enabled_features,
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()

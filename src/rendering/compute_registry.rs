@@ -29,8 +29,8 @@ pub fn physics_execution(body: &PhysicsBody) -> PhysicsExecution {
     match body.simulation {
         SimulationClass::None => PhysicsExecution::Disabled,
         SimulationClass::Static => PhysicsExecution::StaticCollider,
-        SimulationClass::Gameplay => PhysicsExecution::GameplayCpu,
-        SimulationClass::GpuDynamic => match body.solver {
+        SimulationClass::Cpu => PhysicsExecution::GameplayCpu,
+        SimulationClass::Gpu => match body.solver {
             PhysicsSolver::Full => {
                 PhysicsExecution::GpuBuiltIn(ComputeShaderType::FullPhysics)
             }
@@ -98,14 +98,24 @@ pub enum ComputeShaderType {
     NoCollision,
     /// Yes
     GridBuild,
-    /// Space shader, it use gravity not like direction, but point to fly so [0,0,0]-> Push object to this point instead of "no gravity"
+    /// Space shader: gravity is a point that pulls bodies toward it, not a
+    /// direction, so `[0, 0, 0]` pulls toward the origin instead of meaning
+    /// "no gravity".
     Space,
     /// useless shader that has no effect on anything. You can use it to test for fast render without compute shader or I dont know
     Empty,
     /// culling shaders for insane optimization
     Cull,
-    /// This is testing not stable shaders
-    Test,
+    /// Full physics with body-to-body collisions found through a spatial
+    /// hash grid (`basic.comp`); needs a `GridBuild` pass first. Formerly
+    /// `Test`.
+    GridCollision,
+}
+
+#[allow(non_upper_case_globals)]
+impl ComputeShaderType {
+    #[deprecated(note = "renamed to `ComputeShaderType::GridCollision`")]
+    pub const Test: Self = Self::GridCollision;
 }
 
 impl ComputeShaderType {
@@ -118,7 +128,7 @@ impl ComputeShaderType {
             ComputeShaderType::GridBuild => 4,
             ComputeShaderType::Empty => 5,
             ComputeShaderType::Cull => 6,
-            ComputeShaderType::Test => 7,
+            ComputeShaderType::GridCollision => 7,
             ComputeShaderType::Space => 8,
         }
     }
@@ -126,7 +136,7 @@ impl ComputeShaderType {
     pub fn needs_bindings(&self) -> ShaderBindings {
         match self {
             ComputeShaderType::GridBuild => ShaderBindings::grid_build(),
-            ComputeShaderType::Test => ShaderBindings::grid_build(),
+            ComputeShaderType::GridCollision => ShaderBindings::grid_build(),
             _ => ShaderBindings::basic(),
         }
     }
@@ -178,9 +188,9 @@ impl ComputeShaderRegistry {
         pipelines.insert(ComputeShaderType::Cull, cp_cull);
 
         let cs_test = cs_test::load(device.clone())
-            .expect("Failed to load Test compute shader");
-        let cp_test = create_compute_pipeline(device, cs_test, "Test");
-        pipelines.insert(ComputeShaderType::Test, cp_test);
+            .expect("Failed to load GridCollision compute shader");
+        let cp_test = create_compute_pipeline(device, cs_test, "GridCollision");
+        pipelines.insert(ComputeShaderType::GridCollision, cp_test);
 
         let cs_space = cs_space::load(device.clone())
             .expect("Failed to load Space compute shader");
@@ -268,6 +278,16 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
+    fn old_test_name_still_selects_the_grid_solver() {
+        assert_eq!(ComputeShaderType::Test, ComputeShaderType::GridCollision);
+        assert!(matches!(
+            ComputeShaderType::GridCollision,
+            ComputeShaderType::Test
+        ));
+    }
+
+    #[test]
     fn static_bodies_skip_compute_dispatch() {
         let body = PhysicsBody {
             simulation: SimulationClass::Static,
@@ -279,7 +299,7 @@ mod tests {
     #[test]
     fn gpu_profiles_route_to_the_selected_shader() {
         let body = PhysicsBody {
-            simulation: SimulationClass::GpuDynamic,
+            simulation: SimulationClass::Gpu,
             solver: PhysicsSolver::Simplified,
             custom_shader: None,
         };
@@ -292,7 +312,7 @@ mod tests {
     #[test]
     fn custom_gpu_profile_keeps_its_project_shader_path() {
         let body = PhysicsBody {
-            simulation: SimulationClass::GpuDynamic,
+            simulation: SimulationClass::Gpu,
             solver: PhysicsSolver::Custom,
             custom_shader: Some("src/shaders/compute/crowd.comp".into()),
         };
@@ -302,5 +322,193 @@ mod tests {
                 "src/shaders/compute/crowd.comp".into()
             )
         );
+    }
+
+    /// Runs one `basic.comp` step with the grid cell listing `order`.
+    fn grid_step(
+        base: &crate::rendering::HeadlessVulkanBase,
+        bodies: &[crate::scene::object::InstanceData],
+        order: &[u32],
+    ) -> Vec<crate::scene::object::InstanceData> {
+        use crate::rendering::readback::read_back_buffer;
+        use crate::scene::object::PhysicsPushConstants;
+        use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
+        use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+        use vulkano::command_buffer::{
+            AutoCommandBufferBuilder, CommandBufferUsage,
+        };
+        use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+        use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+        use vulkano::memory::allocator::{
+            AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+        };
+        use vulkano::pipeline::{Pipeline, PipelineBindPoint};
+        use vulkano::sync::GpuFuture;
+
+        const HASH_SIZE: u32 = 65521;
+        const MAX_PER_CELL: u32 = 128;
+        const CELL_SIZE: f32 = 10.0;
+
+        let device = &base.device;
+        let memory =
+            Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let commands = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let sets = Arc::new(StandardDescriptorSetAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let storage = |data: Vec<u32>| {
+            Buffer::from_iter(
+                memory.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                data,
+            )
+            .unwrap()
+        };
+        let instances = |data: Vec<crate::scene::object::InstanceData>| {
+            Buffer::from_iter(
+                memory.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                data,
+            )
+            .unwrap()
+        };
+
+        // Every body sits in cell (0, 0, 0); mirror `hashCell` from the shader.
+        let cell = 0_u32.wrapping_mul(2_654_435_761)
+            ^ 0_u32.wrapping_mul(2_246_822_519)
+            ^ 0_u32.wrapping_mul(3_266_489_917);
+        let cell = (cell % HASH_SIZE) as usize;
+        let mut counts = vec![0; HASH_SIZE as usize];
+        counts[cell] = order.len() as u32;
+        let mut objects = vec![0; (HASH_SIZE * MAX_PER_CELL) as usize];
+        objects[cell * MAX_PER_CELL as usize..][..order.len()]
+            .copy_from_slice(order);
+
+        let read = instances(bodies.to_vec());
+        let write = instances(bodies.to_vec());
+        let pipeline = create_compute_pipeline(
+            device,
+            cs_test::load(device.clone()).unwrap(),
+            "GridCollision",
+        );
+        let set = DescriptorSet::new(
+            sets,
+            pipeline.layout().set_layouts()[0].clone(),
+            [
+                WriteDescriptorSet::buffer(0, read),
+                WriteDescriptorSet::buffer(1, write.clone()),
+                WriteDescriptorSet::buffer(2, storage(counts)),
+                WriteDescriptorSet::buffer(3, storage(objects)),
+                WriteDescriptorSet::buffer(4, storage(vec![0])),
+            ],
+            [],
+        )
+        .unwrap();
+        let mut builder = AutoCommandBufferBuilder::primary(
+            commands.clone(),
+            base.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        builder
+            .bind_pipeline_compute(pipeline.clone())
+            .unwrap()
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                set,
+            )
+            .unwrap()
+            .push_constants(
+                pipeline.layout().clone(),
+                0,
+                PhysicsPushConstants {
+                    dt: 1.0 / 60.0,
+                    total_objects: bodies.len() as u32,
+                    offset: 0,
+                    count: bodies.len() as u32,
+                    num_big_objects: 0,
+                    _pad: [0; 3],
+                    global_gravity: [0.0, -9.81, 0.0, CELL_SIZE],
+                },
+            )
+            .unwrap();
+        unsafe { builder.dispatch([1, 1, 1]) }.unwrap();
+        vulkano::sync::now(device.clone())
+            .then_execute(base.queue.clone(), builder.build().unwrap())
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        read_back_buffer(device, &base.queue, &memory, &commands, write)
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn grid_contacts_do_not_depend_on_cell_insertion_order() {
+        use crate::rendering::test_support::headless_device;
+        use crate::scene::object::InstanceData;
+
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let base = headless_device();
+        let body = |position: [f32; 3], velocity: [f32; 3]| InstanceData {
+            model: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [position[0], position[1], position[2], 1.0],
+            ],
+            color: [1.0; 4],
+            mat_props: [0.5, 0.0, 0.0, 0.0],
+            velocity: [velocity[0], velocity[1], velocity[2], 0.3],
+            angular_velocity: [0.0, 0.0, 0.0, 0.5],
+            physic_props: [0.0, 1.0, 1.0, 0.0],
+        };
+        // Four overlapping boxes: each one touches every other one, so its
+        // contacts are solved one after another in cell-list order.
+        let bodies = [
+            body([2.0, 2.0, 2.0], [1.0, 0.0, 0.0]),
+            body([2.6, 2.3, 2.1], [-1.0, 0.5, 0.0]),
+            body([2.3, 2.7, 2.4], [0.0, -2.0, 0.3]),
+            body([2.5, 2.4, 2.8], [0.2, 0.0, -1.5]),
+        ];
+
+        let forward = grid_step(base, &bodies, &[0, 1, 2, 3]);
+        let reversed = grid_step(base, &bodies, &[3, 2, 1, 0]);
+
+        let bits = |bodies: &[InstanceData]| {
+            bytemuck::cast_slice::<_, u32>(bodies).to_vec()
+        };
+        assert_ne!(bits(&forward), bits(&bodies), "contacts must move bodies");
+        assert_eq!(bits(&forward), bits(&reversed));
     }
 }

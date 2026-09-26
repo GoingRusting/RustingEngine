@@ -297,7 +297,7 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 - [x] `MeshRenderer` and visibility components using typed asset handles.
 - [x] Directional, point, and ambient light components.
 - [x] `RigidBody`, primitive `Collider`, sensor, and collision-layer components.
-- [x] `GpuEffectBody` marker for bodies currently assigned to GPU simulation.
+- [x] `GpuEffectBody` marker for bodies currently assigned to GPU simulation. Removed in Milestone 5: it only mirrored `PhysicsBody::uses_gpu`, which `SimulationClass::Gpu` now states directly.
 - [x] `FrameTime`, `TimeControl`, `RenderSettings`, `PhysicsSettings`, and `QualityProfile` resources.
 - [x] Input action mapping with keyboard, mouse, and gamepad-ready abstractions.
 
@@ -1179,14 +1179,110 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
   configurations. Tests: 193+49+15, and 232+49+15 with `gpu-tests`.
   Known limits: still one cascade with no texel snapping, and the sizes
   are fixed per profile rather than scaled with the output resolution.
-- [ ] Optional anisotropy and MSAA based on device support.
+- [x] Optional anisotropic filtering based on device support.
+  Every device path (`init_vulkan`, `init_vulkan_headless`, and
+  `rendering::vulkano_config` for the editor and exported games) enables
+  `samplerAnisotropy` when the device has it. `vulkano_config` probes the
+  device `VulkanoContext` will pick first, because `VulkanoContext` panics on
+  a requested feature the device lacks. Texture samplers with linear
+  minification filter at up to 16x, capped by the device limit; nearest
+  filtering stays unfiltered. `RendererCapabilities::sampler_anisotropy`
+  reports it. Evidence: unit test
+  `anisotropy_needs_the_feature_and_linear_filtering_and_caps_at_16`, and
+  GPU test `devices_enable_anisotropy_when_the_driver_supports_it` (fails
+  when the headless device does not enable the feature, checked on an RTX
+  3060). The editor starts without a panic with the feature on.
+  Known limit: textures still have no mip chain, so distant textures alias.
+- [x] Optional MSAA based on device support. The scene subpass renders
+  into multisampled HDR and depth targets that resolve into the existing
+  single-sample ones, so tone mapping, editor lines, and the depth pyramid
+  are unchanged. `RendererCapabilities::msaa_samples` is 4 or 2 when the
+  device can multisample both targets and resolve depth (Vulkan 1.2 or
+  `VK_KHR_depth_stencil_resolve`), else 1. The MSAA passes and pipelines are
+  built once at startup and share the single-sample pipeline layouts; each
+  frame picks them unless the resolved quality is `Eco`, and the
+  multisampled targets are freed when a frame goes back to 1x. Evidence:
+  unit test
+  `msaa_takes_the_largest_shared_count_up_to_four_with_a_depth_resolve`,
+  and GPU test `msaa_smooths_edges_except_on_eco` (a slanted edge has only
+  two shades on `Eco` and blended shades on `High`), plus the full GPU
+  suite, all passing on an RTX 3060 and on llvmpipe. The NVIDIA driver lost
+  the device (Xid 69) when the occlusion early pass ended its empty tone
+  mapping subpass with the multisampled pipeline still bound; binding the
+  tone mapping pipeline there fixes it.
+  Known limits: depth resolves from sample 0, so the occlusion pyramid can
+  be slightly non-conservative at silhouettes; 8x is not offered; no
+  per-frame toggle other than the quality profile.
 
 ### Profiling
 
-- [ ] Vulkan timestamp queries per pass.
-- [ ] CPU timings for extraction, preparation, command recording, physics, and editor.
-- [ ] Counters for draws, dispatches, triangles, visible instances, upload bytes, and GPU memory.
-- [ ] Named GPU allocations/resources where practical.
+- [x] Vulkan timestamp queries per pass.
+  Every `FramePass` writes a start and end timestamp (queries `2p` and
+  `2p + 1` of a per-frame-context pool, reset at the start of the command
+  buffer) through the new `PassRecorder`, which also does the debug labels.
+  Once the frame's fence signals, `SceneRenderer::gpu_pass_times` returns
+  `GpuPassTimes`, the time of each pass in recording order. The editor
+  stats line shows the total and each pass. `CullingStats::time` now comes
+  from the Culling, DepthPyramid, and OcclusionCulling pass times instead of
+  its own timestamp pairs. Evidence: GPU test
+  `frames_record_the_declared_passes_with_their_layouts` checks that every
+  recorded pass, including those inside the render pass, has a time and that
+  the total is above zero; `gpu_culling_counts_visible_instances_...` still
+  checks the cull time. Both pass on an RTX 3060 and llvmpipe, and with the
+  Khronos validation layer. Unit test
+  `gpu_pass_times_label_shows_total_then_each_pass`.
+  Known limits: times arrive one or two frames late; pass timestamps use
+  `AllCommands`, so overlap between passes counts toward the earlier one;
+  timestamp wrap-around reads as zero for one frame.
+- [x] CPU timings for extraction, preparation, command recording, physics, and editor.
+  `CpuFrameTimings` is a resource: `App::update` fills `physics` (all
+  FixedUpdate steps) and `extraction` (RenderExtract);
+  `SceneRenderer::write_cpu_timings` fills `preparation` (fence wait to
+  command buffer start) and `recording` (builder creation to build); the
+  editor fills `editor` (egui run and tessellation) and adds its second
+  `extract_render_world` to `extraction`. The editor stats line shows all
+  five. Evidence: unit tests `update_times_physics_and_extraction` and
+  `cpu_timings_label_shows_each_part`; GPU test
+  `frames_record_the_declared_passes_with_their_layouts` checks that
+  preparation and recording are above zero on an RTX 3060 and llvmpipe.
+  Known limits: `physics` covers every FixedUpdate system, not only physics;
+  the fence wait and the egui paint are not counted.
+- [x] Counters for draws, dispatches, triangles, visible instances, upload bytes, and GPU memory.
+  `SceneRenderer::render_counters` returns the `RenderCounters` resource.
+  Draws, dispatches, and direct-draw triangles are counted as commands are
+  recorded; indirect draws add the triangles read back from their GPU-culled
+  commands. Visible instances come from `CullingStats`. Upload bytes add up
+  every host-written buffer of the frame: meshes, texture staging, instance
+  and visibility lists, lights, cull commands, physics state, and debug
+  lines. GPU memory sums the device memory blocks in the renderer's
+  allocator pools. The editor stats line shows all six. Evidence: GPU test
+  `frames_record_the_declared_passes_with_their_layouts` checks exact draw,
+  dispatch, and triangle counts plus nonzero upload and memory;
+  `gpu_culling_counts_visible_instances_...` checks that the triangle count
+  includes the read-back indirect triangles and that 3 instances are
+  visible. Both pass on an RTX 3060 and llvmpipe, and with the Khronos
+  validation layer. Unit test `render_counters_label_shows_each_counter`.
+  Known limits: indirect triangles arrive a frame or two late; GPU memory
+  leaves out vulkano's dedicated allocations (large images) and other
+  allocators such as the egui painter's.
+- [x] Named GPU allocations/resources where practical.
+  `name_object` sets a `VK_EXT_debug_utils` object name whenever the
+  instance enables the extension. Named: the scene HDR and depth targets
+  (with "(MSAA)" on the multisampled ones), the shadow map, the depth
+  pyramid, every texture image and mesh vertex/index buffer (by asset path,
+  or `#<handle key>` for assets built in code), the lights and GPU physics
+  buffers, every render pass and pipeline, and the timestamp query pools.
+  Evidence: headless GPU tests enable `ext_debug_utils` whenever the driver
+  has it, and `name_object` has a `debug_assert` on the driver's result, so
+  all 249 tests (RTX 3060 and llvmpipe) name every object without a
+  rejection. The Khronos validation layer reports nothing on the
+  `scene_renderer` tests. Unit test
+  `asset_names_use_the_path_or_the_handle_key`.
+  Known limits: suballocator arenas (instance and visibility lists, cull
+  commands, per-frame uploads) stay unnamed. The windowed editor enables
+  `ext_debug_utils` only with validation (debug builds with the layer
+  installed, or `--features validation`). Names in RenderDoc or Nsight are
+  not checked here.
 
 ### Exit gate
 
@@ -1202,18 +1298,18 @@ Goal: let each body use the processing unit and solver that fits its job while p
 
 Milestone 8 defines the full determinism requirements and owns their acceptance gate. Three of those rules cannot be retrofitted without rewriting the solver, so they apply while this milestone is implemented:
 
-- [ ] Never accumulate simulation state through order-dependent atomic operations. Use per-body accumulation slots or fixed-order reductions. Atomics remain acceptable for counters that do not feed simulation results.
-- [ ] Give body iteration and constraint ordering a stable sort key that survives buffer compaction, re-sorting, and insertion order.
-- [ ] Source any randomness inside a solver from a seeded, tick-indexed stream. Never read a global or thread-local RNG from simulation code.
+- [x] Never accumulate simulation state through order-dependent atomic operations. Use per-body accumulation slots or fixed-order reductions. Atomics remain acceptable for counters that do not feed simulation results. Audit: the ECS physics shader integrates each body alone and uses atomics only for the event counter and overflow count; `cull.comp` uses one for the visible list. `basic.comp` solved grid contacts in atomic cell-slot order, and each contact changes `vel`/`pos` for the next, so results changed with the grid build's thread order. It now visits each cell in ascending body index. Verified: `compute_registry::tests::grid_contacts_do_not_depend_on_cell_insertion_order` runs one step with the cell listed forward and reversed and requires bit-identical output; it failed before the fix and passes on llvmpipe and the RTX 3060. Known limit: a cell over 128 bodies still drops an arbitrary set; overflow handling is a later item. Rules recorded in `AGENTS.md` "Physics determinism".
+- [x] Give body iteration and constraint ordering a stable sort key that survives buffer compaction, re-sorting, and insertion order. `basic.comp` orders contacts by body index (see above); `space.comp` already loops bodies in index order. GPU events reach Rust in atomic append order, so `route_gpu_physics_events` now sorts them by tick, `PhysicsId` slot and generation, event ID and flags; the slot is the stable key that survives buffer rebuilds. Verified: `runtime::tests::gpu_events_are_delivered_in_tick_and_body_order`.
+- [x] Source any randomness inside a solver from a seeded, tick-indexed stream. Never read a global or thread-local RNG from simulation code. Audit: no solver, physics shader or runtime physics code uses randomness today (`grep` for `rand`, `random`, `thread_rng` finds no use; the `rand` dependency in `Cargo.toml` is declared but unused). The rule is recorded in `AGENTS.md` so the first solver that needs randomness follows it.
 
 ### Ownership and public model
 
-- [ ] Replace the old effect-only distinction with `SimulationClass::{Static, Cpu, Gpu}`. The selected class says where the newest runtime physics state lives.
-- [ ] Add `PhysicsSyncMode::{None, Events, SelectedState, FullState}`. Synchronization is an explicit cost chosen per body or group, not a hidden full-scene copy.
+- [x] Replace the old effect-only distinction with `SimulationClass::{Static, Cpu, Gpu}`. The selected class says where the newest runtime physics state lives. `Gameplay` is now `Cpu` and `GpuDynamic` is now `Gpu`; `None` stays for bodies no solver touches. Old scene files load through `#[serde(alias)]`, and old Rust code compiles through deprecated associated constants. The `GpuEffectBody` marker is removed: the editor and the game runner inserted it exactly when `uses_gpu()` was true, and nothing read it. The Inspector names the classes "CPU" and "GPU". Verified: `scene_file::tests::scenes_saved_with_old_simulation_names_still_load` and the existing physics routing, extraction and scene round-trip tests.
+- [x] Add `PhysicsSyncMode::{None, Events, SelectedState, FullState}`. Synchronization is an explicit cost chosen per body or group, not a hidden full-scene copy. Evidence: per-body `PhysicsSyncMode` component (default `Events`, saved as `rusting.physics_sync`); `None` drops watch rules at extraction, only `SelectedState`/`FullState` bodies get a readback copy. `runtime::tests::sync_mode_controls_rules_and_state_mirror` and GPU test `scene_renderer::tests::only_state_synchronized_bodies_read_back_their_state` (llvmpipe and RTX 3060). Group-level selection is left to classes/prefabs setting the component.
 - [x] Give GPU-simulated bodies a stable, generation-checked `PhysicsId` that is valid in ECS, GPU buffers, and events even after bodies are removed or buffers are sorted. Extend the same ID to the command bridge when commands are added.
-- [ ] Keep authored settings and identity in ECS while recording when mirrored transform/velocity data was produced and how many frames old it is.
-- [ ] Allow CPU and GPU bodies in the same scene and allow static colliders to be consumed by both solvers.
-- [ ] Show simulation owner, synchronization mode, readback age, and approximate synchronization cost in the editor.
+- [x] Keep authored settings and identity in ECS while recording when mirrored transform/velocity data was produced and how many frames old it is. Evidence: `apply_gpu_state_samples` writes a `GpuStateMirror { tick, transform, velocities, custom_values }` and never touches the authored `Transform`; `GpuStateMirror::age_ticks` gives the age; stale generations are counted and older samples never rewind the mirror (`sync_mode_controls_rules_and_state_mirror`).
+- [x] Allow CPU and GPU bodies in the same scene and allow static colliders to be consumed by both solvers. Evidence: the CPU solver skips GPU bodies (`runtime::tests::cpu_physics_is_deterministic_and_ignores_gpu_bodies`) and uses `Static` colliders. Extraction sends every non-sensor CPU/static collider (`PhysicsWorld::gpu_colliders`) and each GPU body's own shape to the native shader, which pushes GPU bodies out of them with friction, restitution and collision layers (`runtime::tests::gpu_bodies_extract_their_collider_and_see_cpu_colliders`, GPU test `scene_renderer::tests::gpu_bodies_rest_on_cpu_colliders_unless_filtered_or_no_collision`, llvmpipe and RTX 3060). Limit: GPU bodies do not collide with each other yet.
+- [x] Show simulation owner, synchronization mode, readback age, and approximate synchronization cost in the editor. Evidence: the Inspector Physics section shows the owner (`Simulation`: CPU/GPU/Static), and for GPU bodies a `Sync` choice (undoable, stored as `rusting.physics_sync`), `Sync Cost` (bytes per tick from `PhysicsSyncMode::STATE_READBACK_BYTES`, compile-time checked against the GPU body layout), and `Last Readback` tick and age from `GpuStateMirror`. `editor::tests::inspector_shows_gpu_sync_mode_and_readback_age`. The editor preview does not simulate yet, so the age updates only where the mirror is applied (native Play).
 
 ### Programmable GPU condition and event bridge
 
@@ -1222,60 +1318,60 @@ Milestone 8 defines the full determinism requirements and owns their acceptance 
 - [x] Define event modes such as `OnEnter`, `OnExit`, `WhileTrue`, `Once`, and cooldown/rate-limited emission so conditions do not accidentally flood the readback buffer.
 - [x] Upload built-in per-body condition instructions and rule parameters as compact GPU buffers. CPU-only custom-value uploads remain part of the command bridge.
 - [x] Allow shared rules to target explicit multi-class object groups while keeping separate edge and cooldown state per body. Unrelated GPU bodies are not affected, and only matching body IDs and selected payloads return to Rust.
-- [ ] Add a custom condition-compute hook for arbitrary GLSL logic over GPU-accessible state. Custom physics and condition shaders use the same `emit_event(...)` ABI as built-in rules.
+- [x] Add a custom condition-compute hook for arbitrary GLSL logic over GPU-accessible state. Custom physics and condition shaders use the same `emit_event(...)` ABI as built-in rules. Evidence: `GpuConditionShaders` holds `GpuConditionShader { events, glsl }`; the GLSL defines `condition(inout PhysicsState body)` and runs over every GPU body after each fixed step. It includes the same `src/shaders/physics_abi.glsl` as the built-in shader (body layout, push constants, `emit_event(body, event_id, payload_kind, payload)`), and `EVENTS[i]` holds the registered IDs, so its events arrive as ordinary `GpuPhysicsEvent`s. The renderer compiles sources at runtime with the system `glslc` (no new crate; `RUSTING_GLSLC` overrides the path), caches them by source, and skips a shader that fails to compile, keeping the message in `SceneRenderer::condition_shader_errors`. GPU test `scene_renderer::tests::custom_condition_shaders_emit_events_and_skip_broken_sources` (llvmpipe and RTX 3060); `runtime::tests::condition_shaders_reach_the_render_world_with_registered_events`. Needs `glslc` installed at runtime; precompiled SPIR-V input is not supported yet.
 - [x] Allow events to return selected position, velocity, angular velocity, or custom-value payloads so a second state readback is often unnecessary. Add collision/contact payloads with the spatial solver.
-- [ ] Treat `Y < -100` only as the first end-to-end acceptance example. The implementation must not hard-code an axis, threshold, or event meaning.
+- [x] Treat `Y < -100` only as the first end-to-end acceptance example. The implementation must not hard-code an axis, threshold, or event meaning. Evidence: `-100` appears only in tests and examples; the shader reads any `GpuStateField` by code and compares with the uploaded threshold. GPU test `scene_renderer::tests::conditions_use_any_field_and_see_custom_value_commands` fires an `OnEnter` rule on `PositionX > 10 || Custom(2) >= 3`, once from the start pose and once after a `SetCustomValues` command (llvmpipe and RTX 3060).
 - [x] Compare previous and current condition results so edge-triggered events are emitted exactly when a condition changes state.
 - [x] Let the native physics compute shader append events with an atomic counter into a per-frame event buffer.
 - [x] Keep event output in per-frame mapped readback allocations so only emitted records cross into Rust; move the write target fully device-local if profiling shows mapped writes are costly on discrete GPUs.
 - [x] Consume completed readback buffers asynchronously after their frame fence signals. Normal frames never wait for unfinished physics work.
 - [x] Convert `PhysicsId` values back into live ECS entities and expose events to Rust systems through the engine event API.
-- [ ] Define event latency clearly: GPU events normally reach CPU gameplay one to three frames later. Logic requiring same-tick answers must use CPU simulation or an explicit blocking query.
-- [ ] Track event-buffer overflow, resize it within the configured memory budget, and provide an overflow fallback. Events must never disappear silently.
+- [x] Define event latency clearly: GPU events normally reach CPU gameplay one to three frames later. Logic requiring same-tick answers must use CPU simulation or an explicit blocking query. Evidence: `runtime::hybrid_physics` module docs, section "Latency" (events and `GpuStateMirror` carry the tick they describe; same-tick logic uses `SimulationClass::Cpu`). The blocking query is the open "explicit blocking readback API" item below.
+- [x] Track event-buffer overflow, resize it within the configured memory budget, and provide an overflow fallback. Events must never disappear silently. Evidence: the per-frame event buffer is sized rules × fixed steps in the frame (each rule fires at most once per tick), so it cannot overflow below the `MAX_PHYSICS_EVENTS` budget (12 MiB). Past the budget, lost events are counted in `RenderCapacityDiagnostics::physics_events_dropped`, logged, and sent to gameplay as `GpuPhysicsEventsLost` so it can resynchronize from body state. GPU test `scene_renderer::tests::event_buffer_fits_every_step_and_reports_losses_past_budget` (three ticks in one frame deliver all 300 events; with a 60-event budget, 40 are reported lost). The budget is a constant, not derived from device memory yet.
 
 ### CPU to GPU command bridge
 
-- [ ] Add a compact command stream for spawn, despawn, teleport, velocity change, force, impulse, wake, solver change, and watch-condition updates.
-- [ ] Upload commands in batches through each frame context instead of mapping or rewriting the complete physics buffer.
-- [ ] Apply commands before the fixed GPU step and reject commands whose body generation is stale.
-- [ ] Support CPU-controlled kinematic bodies that collide with GPU bodies without transferring every GPU body to the CPU.
-- [ ] Record command count and uploaded bytes for profiling.
+- [x] Add a compact command stream for spawn, despawn, teleport, velocity change, force, impulse, wake, solver change, and watch-condition updates. Evidence: `GpuPhysicsCommands::push(PhysicsId, GpuBodyCommand)` with `Teleport`, `SetVelocity`, `Impulse`, `Force` (one tick), and `SetCustomValues`, 80 bytes each. Spawn, despawn, solver, and watch changes go through the ECS components: extraction rebuilds the tables and `carry_regions` keeps surviving bodies' simulated state, so they need no command. Wake is left out until bodies can sleep. GPU test `scene_renderer::tests::commands_apply_once_before_the_step_and_reject_stale_bodies` (llvmpipe and RTX 3060) and `runtime::tests::gpu_commands_reach_the_render_world_once_per_batch`.
+- [x] Upload commands in batches through each frame context instead of mapping or rewriting the complete physics buffer. Evidence: one batch per frame in the frame context's transient allocator, bound as binding 5 of the physics shader; the state buffer is never rewritten for a command. GPU test `scene_renderer::tests::commands_apply_once_before_the_step_and_reject_stale_bodies` (llvmpipe and RTX 3060) and `runtime::tests::gpu_commands_reach_the_render_world_once_per_batch`.
+- [x] Apply commands before the fixed GPU step and reject commands whose body generation is stale. Evidence: the shader applies each body's commands (binary search in the index-sorted batch, submission order kept) before integrating on the frame's first step only; stale or unknown bodies are rejected on the CPU and counted in `RenderCapacityDiagnostics::physics_commands_rejected`, and the shader rechecks the generation. Commands wait while no fixed step runs and a batch is applied once. GPU test `scene_renderer::tests::commands_apply_once_before_the_step_and_reject_stale_bodies` (llvmpipe and RTX 3060) and `runtime::tests::gpu_commands_reach_the_render_world_once_per_batch`.
+- [x] Support CPU-controlled kinematic bodies that collide with GPU bodies without transferring every GPU body to the CPU. Evidence: kinematic CPU colliders are uploaded with their velocity each frame, and the GPU contact uses the relative velocity, so a moving wall carries GPU bodies without any GPU state coming back. GPU test `scene_renderer::tests::kinematic_cpu_colliders_push_gpu_bodies` (llvmpipe and RTX 3060). Limit: one-way; GPU bodies do not push CPU bodies back.
+- [x] Record command count and uploaded bytes for profiling. Evidence: `RenderCounters::physics_commands` and `physics_command_bytes`, asserted in GPU test `scene_renderer::tests::commands_apply_once_before_the_step_and_reject_stale_bodies` (llvmpipe.
 
 ### Selective state synchronization
 
-- [ ] Support asynchronous requests for selected transforms, velocities, sleeping state, or contact data by stable body ID.
-- [ ] Provide batched region/group snapshots for gameplay systems that need more than events.
-- [ ] Keep full-state readback available for debugging, save-state capture, editor inspection, and tests, but keep it off the normal gameplay path.
-- [ ] Triple-buffer readback storage with frame contexts so GPU writes, transfer copies, and CPU reads never race.
-- [ ] Add an explicit blocking readback API only for tooling and exceptional cases, with a name and warning that make its performance cost obvious.
-- [ ] Support play/stop snapshots without requiring continuous full-state synchronization.
+- [x] Support asynchronous requests for selected transforms, velocities, sleeping state, or contact data by stable body ID. Evidence: `GpuPhysicsCommands::push(id, GpuBodyCommand::ReadState)` reads that body's full state back once after the next step, arriving as a `GpuStateMirror` like per-tick sync; stale IDs are rejected. Sleeping and contact data do not exist on the GPU path yet. GPU test `scene_renderer::tests::one_shot_state_reads_return_requested_bodies_once` (llvmpipe and RTX 3060).
+- [x] Provide batched region/group snapshots for gameplay systems that need more than events. Evidence: `request_gpu_class_snapshot(world, class)` queues one `ReadState` per GPU body in an object class; the whole group reads back in one frame and arrives as `GpuStateMirror`s with the same tick. `runtime::tests::class_snapshots_request_one_read_per_member`; delivery is covered by GPU test `scene_renderer::tests::one_shot_state_reads_return_requested_bodies_once`. Regions are selected on the GPU instead: a `WhileTrue` rule with `inside` position conditions and a position payload, or a `GpuConditionShader`, returns only the bodies inside.
+- [x] Keep full-state readback available for debugging, save-state capture, editor inspection, and tests, but keep it off the normal gameplay path. Evidence: `GpuPhysicsCommands::read_all_states` is a one-shot flag (default off) that copies every body once; the per-tick path copies only `SelectedState`/`FullState` bodies. GPU test `scene_renderer::tests::one_shot_state_reads_return_requested_bodies_once` (llvmpipe and RTX 3060).
+- [x] Triple-buffer readback storage with frame contexts so GPU writes, transfer copies, and CPU reads never race. Evidence: event and state readback slices come from the per-frame-context transient allocator and are read only after that context's fence signals (`collect_physics_readbacks`); `only_state_synchronized_bodies_read_back_their_state` runs `2 * FRAMES_IN_FLIGHT` ticks and checks every sample is from its own tick.
+- [x] Add an explicit blocking readback API only for tooling and exceptional cases, with a name and warning that make its performance cost obvious. Evidence: `SceneRenderer::block_until_physics_readbacks_complete`, documented as slow and not for gameplay; GPU test `scene_renderer::tests::one_shot_state_reads_return_requested_bodies_once` (llvmpipe and RTX 3060) uses it instead of waiting on the frame.
+- [x] Support play/stop snapshots without requiring continuous full-state synchronization. Evidence: the authored ECS scene is the play snapshot, since GPU state only reaches `GpuStateMirror` and never the authored `Transform`. Stop sets `GpuPhysicsCommands::reset_to_authored`, which restarts every GPU body from its authored components with rule state cleared, and reads nothing back. A mid-play state captured once with `read_all_states` resumes through `GpuPhysicsCommands::restore` in the same batch as the reset. GPU test `scene_renderer::tests::reset_restarts_from_authored_state_and_restore_resumes_a_snapshot` (llvmpipe and RTX 3060); `runtime::tests::gpu_commands_reach_the_render_world_once_per_batch`.
 
 ### Self-written CPU physics and queries
 
-- [ ] Add an engine-owned CPU `PhysicsWorld` for bodies that require immediate gameplay answers.
-- [ ] Support fixed, dynamic, and kinematic rigid bodies plus boxes, spheres, capsules, convex meshes, and static triangle meshes.
-- [ ] Add triggers, collision layers, raycasts, shape casts, overlap queries, character movement, and the joints required by the vertical slice.
-- [ ] Add sleeping, continuous collision detection, stable contact generation, and iterative solving.
-- [ ] Allow selected GPU events to create, update, or remove CPU proxy bodies when gameplay needs an approximate local query representation.
+- [x] Add an engine-owned CPU `PhysicsWorld` for bodies that require immediate gameplay answers. Evidence: `runtime::cpu_physics` runs in every `App`'s `FixedUpdate` for `SimulationClass::Cpu` bodies, with `Static` bodies as colliders. It integrates gravity and velocity, resolves contacts with 8 sequential-impulse iterations (restitution, friction, position correction), writes `Transform` and `RigidBody::linear_velocity` back on the same tick, and keeps a `PhysicsWorld` resource with `contacts()`, `raycast`, and `overlap_sphere`. `CollisionEvent` now comes from real contacts instead of bounding spheres. GPU bodies are ignored. Tests: `runtime::tests::cpu_boxes_fall_and_rest_in_a_stack_on_static_ground`, `cpu_restitution_bounces_and_sensors_only_report`, `cpu_physics_is_deterministic_and_ignores_gpu_bodies`, and the pair and ray tests in `runtime::cpu_physics::tests`. Limits: contacts apply no torque yet and child bodies are treated as fixed colliders. The pair search is now a sort-and-sweep broad phase (see the GPU solvers section).
+- [x] Support fixed, dynamic, and kinematic rigid bodies plus boxes, spheres, capsules, convex meshes, and static triangle meshes. Evidence: fixed, dynamic, and kinematic bodies with box (oriented, SAT), sphere, and capsule colliders work (see `PhysicsWorld` above). `ColliderShape::ConvexMesh` uses the convex hull of the entity's `MeshRenderer` mesh and `ColliderShape::TriangleMesh` its triangles (static only; a body with it never moves), both scaled by the transform and cached per mesh revision. Pairs with a mesh collider use GJK on the shape cores plus EPA for overlaps; rays hit hull faces from outside and triangle meshes from either side; resting mesh contacts get up to four points. The Inspector offers both shapes. Tests: `runtime::cpu_physics::tests::mesh_colliders_match_primitives_and_report_normals_from_a_to_b`, `rays_hit_hulls_from_outside_and_triangle_meshes_from_either_side`, and `runtime::tests::cpu_convex_mesh_lands_flat_on_a_triangle_mesh_floor`. Limits: each triangle of a mesh is tested (no BVH yet), GPU bodies see a mesh collider as its bounding box, and `shape_cast`/`move_character` take primitive shapes only.
+- [x] Add triggers, collision layers, raycasts, shape casts, overlap queries, character movement, and the joints required by the vertical slice. Progress: triggers (`Collider::sensor` reports without a response), `PhysicsWorld::raycast`, and `PhysicsWorld::overlap_sphere` are done. `CollisionLayers` filter contacts and query masks (`runtime::tests::cpu_collision_layers_filter_pairs_and_queries`). `PhysicsWorld::shape_cast` sweeps an unrotated box, sphere or capsule and stops just before the first solid collider, and `PhysicsWorld::move_character` moves a character shape with collide-and-slide and reports `grounded` (`runtime::tests::cpu_shape_casts_stop_before_colliders_and_characters_slide`). Joints: the Milestone 7 vertical slice lists none, so none are required here; the full joint set is its own later item ("Joints: fixed, hinge, slider, ...").
+- [x] Add sleeping, continuous collision detection, stable contact generation, and iterative solving. Progress: iterative solving is done (sequential impulses with accumulated clamping; a three-box stack rests within 3 cm). Sleeping is done: still bodies get `Sleeping` after `SLEEP_STEPS` and wake on touch or edit (`runtime::tests::cpu_bodies_sleep_when_still_and_wake_on_touch_or_edit`). CCD for fast bodies uses a center-ray sweep (`runtime::tests::fast_cpu_bodies_do_not_tunnel_through_thin_walls`, which fails without the sweep). Contact manifolds are done: two boxes touching face to face get up to four points (incident face clipped to the reference face), and the solver applies impulses with angular response, per-point Coulomb friction, and warm starting from the last step (`runtime::tests::cpu_tilted_box_tips_over_onto_a_face`, `runtime::tests::cpu_sphere_sliding_on_the_ground_starts_rolling`; the stack test now also checks tilt below 0.01 rad).
+- [x] Allow selected GPU events to create, update, or remove CPU proxy bodies when gameplay needs an approximate local query representation. Evidence: `GpuQueryProxy` on a GPU body names a `place_on` event (with a `Position` payload) and an optional `remove_on` event; `sync_gpu_query_proxies` keeps one `Static` proxy entity marked `GpuProxyOf`, removes it with the body or the component, and GPU bodies skip proxies. Test `gpu_events_place_move_and_remove_a_cpu_query_proxy` routes raw events and raycasts the proxy after it is placed, moved and removed. Limit: the proxy pose is as old as the event.
 
 ### GPU solvers and custom allocation
 
-- [ ] Connect per-object `ComputeShaderType` selection to the ECS/editor game runner instead of only the compatibility `Engine` path.
-- [ ] Preserve mixed `Static`, `NoCollision`, simplified, full, spatial-grid, and custom compute batches in one scene. A scene-wide override remains a debugging tool only.
-- [ ] Rename the stable form of `ComputeShaderType::Test` to describe its actual solver while keeping a temporary compatibility alias.
-- [ ] Add a true spatial broad phase to every collision solver before claiming sub-quadratic collision complexity.
-- [ ] Replace fixed hash capacities with device-budgeted growable buffers.
-- [ ] Track grid-cell overflow, hash collisions, oversized-body count, and total fallback work.
-- [ ] Implement a tested overflow fallback that preserves every body.
-- [ ] Define a versioned custom-compute ABI for instance state, commands, condition inputs, custom values, and event output.
-- [ ] Let custom shaders emit the same typed events as built-in solvers so Rust gameplay can react without downloading complete buffers.
+- [x] Connect per-object `ComputeShaderType` selection to the ECS/editor game runner instead of only the compatibility `Engine` path. Evidence: the ECS path selects per body through `PhysicsBody::solver` (the Inspector's GPU Solver), which the shared native shader reads from `custom_values.x`: Full, Simplified, NoCollision (skips collider contacts) and Space (point attractor). `Custom` now works too: the body's hook file defines `void solve(inout PhysicsState body)`, extraction reads each distinct file once (`RenderWorld::gpu_solver_shaders`), and the renderer compiles it like a condition shader that runs only for bodies whose `properties.w` holds that file's `custom_solver_id`; the built-in step leaves their motion alone. The Inspector's Open in Code Editor starts a missing file from a template. GPU test `scene_renderer::tests::custom_solvers_move_only_their_own_bodies` (llvmpipe and RTX 3060) and `runtime::tests::custom_solver_files_reach_the_render_world_once_per_path`. Limits: Simplified behaves like Full, and solver files reload only when GPU bodies are re-extracted.
+- [x] Preserve mixed `Static`, `NoCollision`, simplified, full, spatial-grid, and custom compute batches in one scene. A scene-wide override remains a debugging tool only. Evidence: in the ECS path Static colliders and NoCollision, Full, Simplified, Space and Custom GPU bodies mix in one scene (`gpu_bodies_rest_on_cpu_colliders_unless_filtered_or_no_collision`, `custom_solvers_move_only_their_own_bodies`), and Full, Simplified and Space bodies now also collide with each other through a spatial-hash grid (`src/shaders/compute/physics_contacts.comp`) while NoCollision and Custom bodies skip it. GPU test `scene_renderer::tests::gpu_bodies_collide_with_each_other_through_grid_and_fallback` (llvmpipe).
+- [x] Rename the stable form of `ComputeShaderType::Test` to describe its actual solver while keeping a temporary compatibility alias. Evidence: the variant is now `ComputeShaderType::GridCollision` (the spatial-hash collision solver in `basic.comp`); `ComputeShaderType::Test` remains as a deprecated associated constant that still works in expressions and patterns (`compute_registry::tests::old_test_name_still_selects_the_grid_solver`). Examples use the new name.
+- [ ] Add a true spatial broad phase to every collision solver before claiming sub-quadratic collision complexity. Progress: the CPU `PhysicsWorld` sorts bounding spheres along X and sweeps (sort-and-sweep), with the exact pair test after it; `runtime::cpu_physics::tests::broad_phase_finds_the_same_pairs_as_testing_every_pair` checks it against every-pair testing on 200 scattered bodies. A column of bodies that all overlap in X still costs O(n²). The native GPU shader tests each body against every CPU collider (O(bodies × colliders)); its body-to-body stage uses a spatial hash with a cell size taken from the body sizes (`contact_grid_cell_size`), so bodies test only the 27 neighbouring cells plus the fallback list. The legacy `GridCollision` shader uses a spatial hash; the other legacy shaders do not.
+- [ ] Replace fixed hash capacities with device-budgeted growable buffers. Progress: the ECS contact grid (`PhysicsContactGrid`) is device-local, sized from the body count (two hash cells per body) and grows by doubling. Its hash (counts and slots) is capped at a sixteenth of the largest device-local heap (`PhysicsContactGrid::hash_cells`, unit test `contact_grid_hash_stays_inside_its_memory_budget`); bodies that do not fit a smaller hash spill into the fallback list, which always holds every body. GPU test `gpu_bodies_collide_with_each_other_through_grid_and_fallback` reruns with a zero budget (one hash cell) and gets bit-identical results, with the spill reported as grid overflow. Blocked: the legacy `GridCollision` path keeps its fixed `HASH_SIZE`; it belongs to the compatibility facade that the grid-limit item in Milestone 0 defers to the Milestone 1 replacement.
+- [x] Track grid-cell overflow, hash collisions, oversized-body count, and total fallback work. Evidence: the contact passes add them to `contacts` in the event header, and `RenderCapacityDiagnostics` reports `physics_grid_overflow`, `physics_oversized_bodies`, `physics_grid_hash_collisions` and `physics_fallback_tests` for the latest completed physics frame. `gpu_bodies_collide_with_each_other_through_grid_and_fallback` asserts overflow, oversized and fallback counts; `hybrid_physics_gpu_layouts_match_shader_structs` checks the header layout. Limit: the legacy `GridCollision` path is not tracked.
+- [x] Implement a tested overflow fallback that preserves every body. Evidence: in the ECS contact grid, a body whose cell is full or which is bigger than one cell goes to a fallback list that every body tests, and oversized bodies test every body, so no contact is skipped. `gpu_bodies_collide_with_each_other_through_grid_and_fallback` crowds twelve overlapping pebbles into one eight-slot cell and puts a small sphere on an oversized one: every pebble separates, the small sphere rests on top, and a second run matches bit for bit. Limit: the legacy `GridCollision` shader still drops bodies past `MAX_PER_CELL`.
+- [x] Define a versioned custom-compute ABI for instance state, commands, condition inputs, custom values, and event output. Evidence: `src/shaders/physics_abi.glsl` is included by the built-in shader and every custom condition shader. It holds the `PhysicsState` layout (with `custom_values`), the `BodyCommand` layout and `COMMAND_*` kinds, the `PhysicsEvent` layout, bindings 0/3/4, the push constants, and `emit_event`, and it defines `RUSTING_PHYSICS_ABI_VERSION` so a shader can `#error` on a mismatch. Rust exposes the same number as `runtime::GPU_PHYSICS_ABI_VERSION`. GPU test `scene_renderer::tests::hybrid_physics_gpu_layouts_match_shader_structs` checks every Rust mirror against the reflected shader structs and the version against the GLSL define. Built-in condition instructions and rule state stay private to the built-in shader; custom shaders receive their inputs as `custom_values` and push constants.
+- [x] Let custom shaders emit the same typed events as built-in solvers so Rust gameplay can react without downloading complete buffers. Evidence: custom condition shaders call the shared `emit_event` with IDs from `EVENTS[i]`, registered by name in `GpuEventRegistry`, and the events arrive as ordinary `GpuPhysicsEvent`s. GPU test `scene_renderer::tests::custom_condition_shaders_emit_events_and_skip_broken_sources` (llvmpipe and RTX 3060).
 
 ### Profiling and automatic allocation
 
-- [ ] Measure CPU physics time, GPU physics time, dispatch count, command bytes, event bytes, selected-state bytes, synchronization latency, and overflow counts.
-- [ ] Add repeatable 1K, 10K, and 100K body benchmark scenes covering falling, stacking, debris, and mixed solvers.
-- [ ] Add an optional `Auto` allocation policy that uses body requirements, query needs, hardware capabilities, transfer cost, and measured timings.
-- [ ] Keep manual CPU/GPU and solver selection available; automatic allocation must be observable and overridable.
+- [x] Measure CPU physics time, GPU physics time, dispatch count, command bytes, event bytes, selected-state bytes, synchronization latency, and overflow counts. Evidence: CPU physics time is `CpuFrameTimings::physics` and GPU physics time the `FramePass::Physics` timestamp pair; `RenderCounters` adds `physics_dispatches`, `physics_commands`/`physics_command_bytes`, `physics_event_bytes`, `physics_state_bytes` and `physics_readback_latency_frames`, and `RenderCapacityDiagnostics` holds event loss and contact-grid overflow, oversized, hash-collision and fallback counts. The editor's Stats panel shows them on a "GPU Physics" line (`editor::view::gizmo_tests::physics_counters_label_shows_traffic_and_fallbacks`); `gpu_bodies_collide_with_each_other_through_grid_and_fallback` checks the dispatch, event-byte and latency counters on a real frame. Limit: latency is counted in rendered frames, not milliseconds.
+- [x] Add repeatable 1K, 10K, and 100K body benchmark scenes covering falling, stacking, debris, and mixed solvers. Evidence: `runtime::PhysicsBenchmark` (`Falling`, `Stacking`, `Debris`, `Mixed`) builds any body count as a pure function with no RNG; `runtime::physics_benchmark::tests` checks 1K/10K/100K counts, identical output across calls, no starting overlaps, and the Mixed solver interleave. `cargo run --release --example physics_bench -- <scene> <count>` runs one in the game window and prints ms/frame. GPU test `scene_renderer::tests::benchmark_scenes_run_on_the_gpu_and_repeat_exactly` (1K bodies, 90 ticks, headless Vulkan) requires colliding bodies to stay on the ground, ten-cube towers to stand, and Debris and Mixed to repeat bit for bit. It found two bugs, both fixed: towers sank through each other (the contact pass now uses shock propagation: a supported body below counts as immovable), and crowded cells broke determinism (contact sums are now fixed-point integers, so atomic list order cannot change them). Limit: 10K/100K frame times are real-hardware numbers and are not recorded here.
+- [x] Add an optional `Auto` allocation policy that uses body requirements, query needs, hardware capabilities, transfer cost, and measured timings. Evidence: the `runtime::AutoSimulation` component (scene key `rusting.auto_simulation`) opts a body in; `allocate_auto_simulation` runs in PostUpdate before GPU IDs are assigned. Requirements come first: non-dynamic bodies, no GPU backend, custom solvers (GPU), kinematic bodies, sensor and mesh colliders, and sync modes that read state back every tick (query needs and transfer cost) all force a class. Flexible bodies go to the GPU when there are at least `AutoAllocationPolicy::gpu_min_bodies` of them or when the last `CpuFrameTimings::physics` exceeded `cpu_physics_budget`, else to the CPU. Test `runtime::tests::auto_simulation_picks_cpu_or_gpu_and_stays_overridable` covers every reason. Limit: decisions are sticky; a decided body never migrates, and transfer cost is judged by sync mode, not by measured bytes.
+- [x] Keep manual CPU/GPU and solver selection available; automatic allocation must be observable and overridable. Evidence: bodies without `AutoSimulation` keep their manual `PhysicsBody::simulation` and solver; the decision and its `AllocationReason` are public on the component, and clearing it makes the body decide again (runtime test above). The Inspector's Physics section has an "Auto CPU/GPU" checkbox (undoable component add/remove) that shows the decision in place of the manual choice (`editor::tests::inspector_shows_the_auto_simulation_decision`).
 
 ### Exit gate
 
@@ -1316,19 +1412,69 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add a dockable area-tree layout with selectable editor types and project-local persistence.
 - [x] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass. Evidence: see Milestone 4 "Engine-owned egui compositing pass" (`EguiPainter` GPU tests, editor smoke run).
 - [x] Add a central editor-shortcut action map; `Numpad 0` toggles Scene View fly-camera pointer capture while Escape remains a normal UI key.
-- [ ] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map.
-- [ ] Route keyboard and mouse focus correctly between all viewport navigation modes and UI.
-- [ ] Add DPI scaling, font configuration, and theme persistence.
+- [x] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map. Evidence: the "Keyboard Shortcuts" area type lists every action by context (Editor, Scene View, Transform, Fly Camera); clicking a key waits for the next key press, Escape cancels, and a key taken from another action in the same context leaves that action unbound. The map is saved to `editor_shortcuts.json` in the user config folder and loaded over the defaults at startup. Undo, Redo, Save scene, Delete selection and Rename are now `EditorAction`s (Ctrl+Z, Ctrl+Shift+Z, Ctrl+S, Delete, F2) that the window-event handler queues and the view runs like the menu entries; the Hierarchy's hard-coded Delete/X/F2 keys are gone. Tests: `editor::shortcuts::tests::{editor_actions_need_their_exact_modifiers, captured_key_binds_the_waiting_action_and_escape_cancels, saved_shortcuts_load_over_the_defaults}`, `editor::tests::{queued_shortcuts_delete_and_undo_like_the_menu, shortcuts_area_lists_every_action_with_its_key}`; the editor starts cleanly. Limits: one key per action, so X no longer deletes by default; widget-local keys (Enter/Escape in the rename field, Escape to cancel a gizmo drag) stay fixed. Follow-ups are in `docs/editor-overhaul.md`.
+- [x] Route keyboard and mouse focus correctly between all viewport navigation modes and UI. Evidence: the Scene View takes pointer events only when egui's topmost layer under the cursor is the viewport (`EditorViewport::hovered`, test `editor::shortcuts::tests::covered_viewport_does_not_take_pointer_events`), and keys only when no text field wants them. Losing window focus ends fly and orbit navigation (`release_editor_navigation`). Pointer capture falls back from `Locked` to `Confined` on Windows and X11. While fly or orbit navigation is active, the editor now keeps presses, pointer motion, the wheel and text away from egui, so they cannot click, scroll or type into UI under the hidden cursor; releases still pass, so egui never keeps a button held (`ui_receives_during_navigation`, test `navigation_keeps_presses_and_motion_away_from_the_ui`). The view also drops text-field focus while navigating. Editor commands run only when no text field has focus and no navigation or transform is active. Limit: the grab fallback and focus loss need a real window to verify by hand.
+- [x] Add DPI scaling, font configuration, and theme persistence.
+  Evidence: OS display scale reaches egui through egui-winit (initial
+  `scale_factor` plus `ScaleFactorChanged`); `EditorPreferences` gained
+  `font_scale` beside `ui_scale`, View menu has TEXT SIZE choices, and both
+  persist in `editor_preferences.json` without dropping each other
+  (`editor_preferences_round_trip_and_fall_back_to_defaults`,
+  `font_scale_multiplies_every_default_text_size`). Limits: one built-in
+  palette, so there is no theme choice to persist yet; widgets that build
+  their own `FontId` keep a fixed size.
 
 ### Core panels
 
 - [x] Add project asset file import, filtering, typed texture loading, glTF primitive import, and selected-object assignment.
 - [x] Persist imported glTF geometry as reloadable engine-native `.rmesh` assets.
-- [ ] Scene viewport rendered to an editor texture.
-- [ ] Entity hierarchy with filtering, selection, reparenting, and drag/drop.
-- [ ] Component inspector driven by an allowlisted reflection/editor registry.
-- [ ] Asset browser with folders, thumbnails, filtering, and drag/drop assignment.
-- [ ] Console with structured logs, filtering, warnings, and asset/validation errors.
+- [x] Scene viewport rendered to an editor texture.
+  Evidence: the editor renders the live 3D view into an offscreen image
+  sized to the view (`scene_view_target` in `src/bin/editor.rs`) and egui
+  draws it as `SCENE_VIEW_TEXTURE` through
+  `EguiPainter::set_native_texture`
+  (`native_textures_show_an_image_rendered_elsewhere`, gpu-tests;
+  `scene_area_draws_the_offscreen_view_image_over_its_viewport`). Editor
+  smoke run is clean. Limits: one live view as before; with no 3D area the
+  scene still renders into the window under the panels, so GPU physics keeps
+  running.
+- [x] Entity hierarchy with filtering, selection, reparenting, and drag/drop.
+  Evidence: search keeps matches and their ancestors
+  (`search_keeps_matches_and_their_ancestors_only`), Ctrl/Shift
+  multi-select with a primary object
+  (`clicks_select_toggle_and_extend_with_a_primary_object`), drag/drop
+  rejects cycles (`drag_parenting_rejects_self_and_descendant_cycles`), and
+  dragging a selected row reparents the whole selection in one undoable
+  scene edit that keeps world positions and nested children
+  (`reparenting_a_selection_keeps_world_positions_and_nested_children`).
+  Limits: no sibling reordering; after a reparent only the first moved
+  object stays selected.
+- [x] Component inspector driven by an allowlisted reflection/editor registry.
+  Evidence: only components in the `SceneComponentRegistry` allowlist reach
+  the Inspector; `InspectorRegistry::register::<T>(name, draw)` gives one a
+  typed section, and the rest are edited as JSON fields (serde is the
+  reflection). Typed edits go through the registry and the Inspector undo
+  snapshot (`registered_inspectors_draw_and_edit_their_component`). Limits:
+  built-in components (Transform, lights, physics) keep their hand-written
+  sections instead of registry entries.
+- [x] Asset browser with folders, thumbnails, filtering, and drag/drop assignment.
+  Evidence: the Assets area is a foldable FileSystem tree with a filter
+  (`rows_put_folders_first_hide_caches_and_fold`). Image rows show a decoded
+  preview, two new decodes per frame, with a larger one on hover
+  (`image_rows_decode_a_few_thumbnails_per_frame`). Models drag into the
+  Scene View; images drag onto a Hierarchy object (base color) or an
+  Inspector texture slot, as one Undo step each
+  (`dropping_an_image_on_hierarchy_rows_and_texture_slots_assigns_it`).
+  Limits: list view only (no grid), previews decode on the UI thread and do
+  not refresh when the file changes, and dropped models land at the origin.
+- [x] Console with structured logs, filtering, warnings, and asset/validation errors.
+  Evidence: `ConsoleEntry` carries a level, a source ("Assets", "Build",
+  "Scene", "Code") and a repeat count; the Console area has Info/Warnings/
+  Errors toggles with counts, a text filter, and Clear. Asset request
+  results, hot reload failures, and scene load/save/validation status lines
+  are logged (`console_groups_repeats_filters_and_records_status_lines`).
+  Limits: status lines get their level from keywords, the log keeps the
+  last 2000 entries, and engine code outside the editor has no log sink yet.
 - [ ] Profiler with CPU spans, GPU pass timings, counters, and memory usage.
 - [ ] Add dedicated render settings and physics diagnostics panels.
 - [x] Add a typed physics inspector for simulation ownership, GPU solver profile, rigid body, and collider settings.

@@ -17,10 +17,11 @@ pub mod shaders;
 pub mod tests;
 
 pub use assets::{
-    spawn_gltf_nodes, AlphaMode, AssetPlugin, AssetServer, Handle,
-    ImportedGltfLight, ImportedGltfNode, ImportedGltfPrimitive, MaterialAsset,
-    MaterialModel, MeshAsset, PrimitiveShape, SceneAsset, TextureAsset,
-    TextureFilter, TextureSampler, TextureWrap,
+    spawn_gltf_nodes, spawn_gltf_nodes_in_world, AlphaMode, AssetPlugin,
+    AssetServer, Handle, ImportedGltfLight, ImportedGltfNode,
+    ImportedGltfPrimitive, MaterialAsset, MaterialModel, MeshAsset,
+    PrimitiveShape, SceneAsset, TextureAsset, TextureFilter, TextureSampler,
+    TextureWrap,
 };
 pub use core::collisions::CollisionType;
 pub use core::{Material, MaterialBuilder, Physics, Transform};

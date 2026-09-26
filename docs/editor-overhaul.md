@@ -50,15 +50,17 @@ Done (unit tests in `editor::hierarchy`, `editor::inspector::{widgets, json}`):
 - Palette, compact density, flat list rows, area chrome.
 - Hierarchy: search that keeps ancestors of matches, per-type icons, eye
   toggle (`EntityRequest::SetVisible`, undoable), double-click / F2 rename,
-  Delete or X deletes the selection, multi-select with Ctrl and Shift and a
+  Delete deletes the selection, dragging a selected row reparents the
+  whole selection, multi-select with Ctrl and Shift and a
   primary object (`EditorState::selection` + `selected`), delete and
   duplicate act on the whole selection.
 - Inspector module with property rows, axis-colored vec3, color, angle,
   choice, and Godot-style collapsible sections; custom JSON components are
   edited as typed fields live, and drags coalesce into one Undo step.
 
-- UI scale persists per user (`EditorPreferences`, View > UI Scale). There
-  is one palette, so no theme choice is stored yet.
+- UI scale and text size persist per user (`EditorPreferences`, View >
+  UI Scale / Text Size). There is one palette, so no theme choice is stored
+  yet. Widgets with a hard-coded `FontId` ignore the text size.
 - Editor-type icon in each area header.
 - Hiding a parent hides its children in rendering.
 - Viewport shows bounds for every selected object (primary in yellow, others
@@ -89,6 +91,24 @@ Done (unit tests in `editor::hierarchy`, `editor::inspector::{widgets, json}`):
   point light circles, spot cone) in the selection colors. Clicking within
   6 points of a shape selects the object (unit test
   `clicks_near_light_and_camera_shapes_select_them`).
+- glTF models are added to the scene like Blender's importer: one new empty
+  object named after the file holds the file's node tree (names, local
+  transforms, meshes, materials, cameras, lights). "Add to Scene" in the
+  Assets panel and "Import Files..." both do this, select the new root, and
+  are undoable. The old "Imported glTF primitives / Use on Selected" list is
+  gone. Primitives without normals get flat face normals, as glTF requires
+  (unit test `added_models_keep_their_node_tree_under_one_saved_root`).
+- Assets area is a Godot-style FileSystem tree (`editor::assets_panel`):
+  folders first and foldable, type icons, colored type badges, a filter
+  that opens folders on the way to matches, and hidden `.rmesh`/`.rtexture`
+  caches. Double-click adds a model to the scene or puts an image on the
+  selected object as its base color; right-click lists the actions; models
+  drag into the Scene View. The "Loaded textures" text list is gone (unit
+  test `rows_put_folders_first_hide_caches_and_fold`).
+- Image rows show a thumbnail (larger on hover) and drag onto a Hierarchy
+  object (base color) or an Inspector texture slot (unit tests
+  `image_rows_decode_a_few_thumbnails_per_frame`,
+  `dropping_an_image_on_hierarchy_rows_and_texture_slots_assigns_it`).
 
 Open:
 
@@ -104,7 +124,6 @@ item are named in parentheses.
 
 ### Scene editing UX
 
-- Scene viewport rendered to an editor texture (M6).
 - Frame all (Home) and Blender numpad views (front, side, top) (M6).
 - Selection outline readable behind other geometry (M6).
 - Camera and light shapes: the camera frame is fixed at 16:9, the point
@@ -112,14 +131,15 @@ item are named in parentheses.
   per-type icons. Hidden objects still draw their shape.
 - Gizmo polish: local/global modes, snapping, visual restyle (M6).
 - Multiple viewports and orthographic views (M20).
-- Route keyboard and mouse focus between viewport navigation and UI (M6).
 
 ### Asset workflow
 
-- Asset browser with folders, thumbnails, filtering, and drag and drop onto
-  the viewport, the Hierarchy, and Inspector handle fields (M6).
-- Wire editor glTF import to the full node-scene import (hierarchy, cameras,
-  lights) from Milestone 2.
+- Asset browser: a grid view, thumbnails decoded on a worker and refreshed
+  when the file changes, and dropped models placed under the cursor instead
+  of at the origin (M6).
+- glTF import: vertex colors (`COLOR_0`), `KHR_texture_transform`, and
+  import options (scale, up axis, "apply transforms") are not read.
+  Re-adding a file imports its meshes again instead of sharing them.
 - Assign meshes, materials, textures, and physics shapes by typed handle (M6).
 - Per-asset import settings and re-import (M20).
 - Image textures always load as sRGB, both from the Inspector and from
@@ -133,15 +153,18 @@ item are named in parentheses.
 
 ### Panels and tools
 
-- Console with structured logs, filtering, and warnings (M6).
+- Console: engine code (renderer, physics, runtime) has no log sink, so
+  only editor messages reach it. Status lines get their level from
+  keywords; give `scene_message` a level instead.
 - Profiler with CPU spans, GPU pass timings, counters, and memory (M6, M20).
 - Render settings panel (quality profile, capabilities) and physics
   diagnostics panel (M6). It should show `RenderCapacityDiagnostics`,
   including the missing mesh, material, and texture counts.
 - Environment panel for the scene-wide `AmbientLight`, `SkyLight`, and
   `ToneMapping` components, like Godot's `WorldEnvironment` (M6).
-- Settings panel for rebinding and persisting shortcuts; every command routed
-  through the action map (M6).
+- Shortcut follow-ups: show each binding next to its Edit menu entry, allow
+  more than one key per action (Blender deletes with both X and Delete), and
+  make modal keys (Escape cancels a gizmo drag) rebindable.
 - Project settings and input map editors (M20).
 - Project-wide search (M20).
 
@@ -188,3 +211,8 @@ Items the audit found but left open, with the reason for each.
 - Enable device features at device creation instead of assuming them.
 - Cache the Hierarchy tree and rebuild it only on change detection.
 - Check the resource-state hazard with validation layers on real hardware.
+- Use the GPU pose in the editor during Play. Bodies with
+  `PhysicsSyncMode::SelectedState` or `FullState` get a `GpuStateMirror`,
+  but picking, focus, the gizmo, and Save still read the authored
+  `Transform`. Picking and focus should prefer the mirror when present; a
+  "Keep simulated pose" action should copy it into `Transform` through undo.

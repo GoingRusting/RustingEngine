@@ -1,15 +1,18 @@
 //! Central editor shortcuts and Scene View fly-camera input.
 //!
-//! Every editor command gets an action name before it gets a key. A future
-//! Settings panel can change the map without changing window-event code.
+//! Every editor command gets an action name before it gets a key. The
+//! Keyboard Shortcuts area rebinds them and saves the map in the user's
+//! config folder.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bevy_ecs::prelude::{Resource, World};
 use nalgebra::{Rotation3, Vector3};
-use winit::event::{ElementState, KeyEvent, MouseButton};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use serde::{Deserialize, Serialize};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::{CursorGrabMode, Window};
 
 use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
@@ -25,19 +28,78 @@ use super::{
 /// the scale gizmo in Scene View and moves backward while flying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShortcutContext {
+    /// Whole-editor commands, available whenever no text field has focus.
+    Editor,
     SceneView,
     TransformModal,
     FlyCamera,
 }
 
 /// Named editor commands that can receive user-configurable shortcuts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShortcutAction {
+    Editor(EditorAction),
     SceneView(SceneViewAction),
 }
 
+impl ShortcutAction {
+    #[must_use]
+    pub const fn context(self) -> ShortcutContext {
+        match self {
+            Self::Editor(_) => ShortcutContext::Editor,
+            Self::SceneView(action) => action.context(),
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Editor(action) => action.label(),
+            Self::SceneView(action) => action.label(),
+        }
+    }
+}
+
+/// Whole-editor commands. The window-event handler queues them in
+/// [`EditorCommandQueue`] and the editor view runs them next frame, the same
+/// way as the matching menu entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EditorAction {
+    Undo,
+    Redo,
+    SaveScene,
+    DeleteSelection,
+    RenameSelection,
+}
+
+impl EditorAction {
+    /// Stable display order used by shortcut settings and tests.
+    pub const ALL: [Self; 5] = [
+        Self::Undo,
+        Self::Redo,
+        Self::SaveScene,
+        Self::DeleteSelection,
+        Self::RenameSelection,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::SaveScene => "Save scene",
+            Self::DeleteSelection => "Delete selection",
+            Self::RenameSelection => "Rename selected object",
+        }
+    }
+}
+
+/// Editor commands pressed since the editor view last drew.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct EditorCommandQueue(pub Vec<EditorAction>);
+
 /// Commands that are meaningful while the Scene View owns keyboard input.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SceneViewAction {
     /// Captures or releases the pointer for Scene View FPS navigation.
     ToggleFly,
@@ -114,19 +176,101 @@ impl SceneViewAction {
 }
 
 /// One keyboard binding stored independently from the action it triggers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyBinding {
     /// Physical key, so the default works consistently across keyboard layouts.
     pub key: KeyCode,
+    /// Ctrl (Command on macOS) must be held. Scene View and fly bindings
+    /// ignore modifiers, because Shift and Ctrl are fly keys themselves.
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub shift: bool,
+}
+
+impl KeyBinding {
+    /// A binding without modifiers.
+    #[must_use]
+    pub const fn key(key: KeyCode) -> Self {
+        Self {
+            key,
+            ctrl: false,
+            shift: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn ctrl(key: KeyCode) -> Self {
+        Self {
+            key,
+            ctrl: true,
+            shift: false,
+        }
+    }
+
+    /// Takes the modifiers held with `key` when they matter in `context`.
+    #[must_use]
+    pub fn pressed(
+        key: KeyCode,
+        modifiers: ModifiersState,
+        context: ShortcutContext,
+    ) -> Self {
+        let editor = context == ShortcutContext::Editor;
+        Self {
+            key,
+            ctrl: editor && (modifiers.control_key() || modifiers.super_key()),
+            shift: editor && modifiers.shift_key(),
+        }
+    }
+
+    /// Text such as `Ctrl+Shift+Z` for settings and tooltips.
+    #[must_use]
+    pub fn label(self) -> String {
+        let key = format!("{:?}", self.key);
+        let key = key
+            .strip_prefix("Key")
+            .or_else(|| key.strip_prefix("Digit"))
+            .unwrap_or(&key);
+        format!(
+            "{}{}{key}",
+            if self.ctrl { "Ctrl+" } else { "" },
+            if self.shift { "Shift+" } else { "" }
+        )
+    }
+}
+
+/// Keys that only modify another key; an Editor binding waits past them.
+#[must_use]
+pub fn is_modifier_key(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::ShiftLeft
+            | KeyCode::ShiftRight
+            | KeyCode::ControlLeft
+            | KeyCode::ControlRight
+            | KeyCode::AltLeft
+            | KeyCode::AltRight
+            | KeyCode::SuperLeft
+            | KeyCode::SuperRight
+    )
 }
 
 /// The one source of truth for editor keyboard bindings.
 ///
-/// The future Settings panel will edit and persist this resource instead of
-/// scattering key checks over individual panels and window events.
+/// The Keyboard Shortcuts area edits it and saves it to
+/// `editor_shortcuts.json` in the user's config folder.
 #[derive(Resource, Clone, Debug)]
 pub struct EditorShortcuts {
     bindings: HashMap<ShortcutAction, KeyBinding>,
+    /// Action waiting for its new key; the next key press binds it and
+    /// Escape cancels.
+    pub capturing: Option<ShortcutAction>,
+}
+
+/// Saved form of [`EditorShortcuts`]: every binding, in no special order.
+#[derive(Serialize, Deserialize)]
+struct EditorShortcutsFile {
+    bindings: Vec<(ShortcutAction, KeyBinding)>,
 }
 
 impl Default for EditorShortcuts {
@@ -159,10 +303,34 @@ impl Default for EditorShortcuts {
             (SceneViewAction::TransformAxis(GizmoAxis::Z), KeyCode::KeyZ),
         ];
         for (action, key) in defaults {
-            bindings
-                .insert(ShortcutAction::SceneView(action), KeyBinding { key });
+            bindings.insert(
+                ShortcutAction::SceneView(action),
+                KeyBinding::key(key),
+            );
         }
-        Self { bindings }
+        let editor = [
+            (EditorAction::Undo, KeyBinding::ctrl(KeyCode::KeyZ)),
+            (
+                EditorAction::Redo,
+                KeyBinding {
+                    shift: true,
+                    ..KeyBinding::ctrl(KeyCode::KeyZ)
+                },
+            ),
+            (EditorAction::SaveScene, KeyBinding::ctrl(KeyCode::KeyS)),
+            (
+                EditorAction::DeleteSelection,
+                KeyBinding::key(KeyCode::Delete),
+            ),
+            (EditorAction::RenameSelection, KeyBinding::key(KeyCode::F2)),
+        ];
+        for (action, binding) in editor {
+            bindings.insert(ShortcutAction::Editor(action), binding);
+        }
+        Self {
+            bindings,
+            capturing: None,
+        }
     }
 }
 
@@ -173,7 +341,8 @@ impl EditorShortcuts {
         self.bindings.get(&action).copied()
     }
 
-    /// Changes an action binding. Settings UI will call this method later.
+    /// Changes an action binding and returns the action in the same
+    /// context that lost the key, which is left unbound.
     pub fn set(
         &mut self,
         action: ShortcutAction,
@@ -181,12 +350,10 @@ impl EditorShortcuts {
     ) -> Option<ShortcutAction> {
         // Only duplicates within the action's context conflict. The same key
         // remains available in another context.
-        let ShortcutAction::SceneView(new_action) = action;
         let replaced = self.bindings.iter().find_map(|(candidate, binding)| {
-            let ShortcutAction::SceneView(candidate_action) = *candidate;
             (*candidate != action
-                && candidate_action.context() == new_action.context()
-                && binding.key == shortcut.key)
+                && candidate.context() == action.context()
+                && *binding == shortcut)
                 .then_some(*candidate)
         });
         if let Some(replaced) = replaced {
@@ -205,16 +372,86 @@ impl EditorShortcuts {
         context: ShortcutContext,
         key: KeyCode,
     ) -> Option<SceneViewAction> {
-        self.bindings.iter().find_map(|(action, binding)| {
-            let ShortcutAction::SceneView(action) = *action;
-            (binding.key == key && action.context() == context)
-                .then_some(action)
-        })
+        self.bindings
+            .iter()
+            .find_map(|(action, binding)| match *action {
+                ShortcutAction::SceneView(action)
+                    if binding.key == key && action.context() == context =>
+                {
+                    Some(action)
+                }
+                _ => None,
+            })
+    }
+
+    /// Resolves a key and its held modifiers to a whole-editor command.
+    #[must_use]
+    pub fn editor_action(
+        &self,
+        key: KeyCode,
+        modifiers: ModifiersState,
+    ) -> Option<EditorAction> {
+        let pressed =
+            KeyBinding::pressed(key, modifiers, ShortcutContext::Editor);
+        self.bindings
+            .iter()
+            .find_map(|(action, binding)| match *action {
+                ShortcutAction::Editor(action) if *binding == pressed => {
+                    Some(action)
+                }
+                _ => None,
+            })
+    }
+
+    fn path() -> PathBuf {
+        super::project::user_config_dir().join("editor_shortcuts.json")
+    }
+
+    /// Reads the user's shortcuts over the defaults; a missing or broken
+    /// file gives the defaults. Actions added after the file was saved keep
+    /// their default keys unless a saved binding took them.
+    #[must_use]
+    pub fn load() -> Self {
+        Self::load_from(&Self::path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        let mut shortcuts = Self::default();
+        let saved = std::fs::read(path).ok().and_then(|bytes| {
+            serde_json::from_slice::<EditorShortcutsFile>(&bytes).ok()
+        });
+        for (action, binding) in
+            saved.map(|file| file.bindings).unwrap_or_default()
+        {
+            shortcuts.set(action, binding);
+        }
+        shortcuts
+    }
+
+    pub fn save(&self) -> Result<(), super::ProjectError> {
+        self.save_to(&Self::path())
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), super::ProjectError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = EditorShortcutsFile {
+            bindings: self
+                .bindings
+                .iter()
+                .map(|(action, binding)| (*action, *binding))
+                .collect(),
+        };
+        crate::runtime::write_atomic(path, &serde_json::to_vec_pretty(&file)?)?;
+        Ok(())
     }
 }
 
 /// Transform operation selected for the Scene View gizmo.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize,
+)]
 pub enum TransformModes {
     Move,
     Rotate,
@@ -317,12 +554,26 @@ pub fn handle_keyboard_input(
     world: &mut World,
     window: &Window,
     event: &KeyEvent,
+    modifiers: ModifiersState,
     ui_wants_keyboard: bool,
 ) -> bool {
     let PhysicalKey::Code(key) = event.physical_key else {
         return false;
     };
     let is_pressed = event.state == ElementState::Pressed;
+    if is_pressed && !event.repeat {
+        if let Some(bound) = capture_shortcut(world, key, modifiers) {
+            if bound {
+                if let Err(error) = world.resource::<EditorShortcuts>().save() {
+                    world.resource_mut::<super::EditorConsole>().push(
+                        super::ConsoleLevel::Error,
+                        format!("Could not save shortcuts: {error}"),
+                    );
+                }
+            }
+            return true;
+        }
+    }
     let is_fly_active = world.resource::<EditorFlyCamera>().active;
     let scene_view_is_active =
         world.resource::<EditorState>().workspace == EditorWorkspace::Scene;
@@ -330,6 +581,17 @@ pub fn handle_keyboard_input(
         .get_resource::<EditorGizmoDrag>()
         .is_some_and(EditorGizmoDrag::is_active)
         || world.resource::<EditorTransformMode>().start_requested;
+    if is_pressed && !ui_wants_keyboard && !is_fly_active && !transform_active {
+        let command = world
+            .resource::<EditorShortcuts>()
+            .editor_action(key, modifiers);
+        if let Some(command) = command {
+            if !event.repeat {
+                world.resource_mut::<EditorCommandQueue>().0.push(command);
+            }
+            return true;
+        }
+    }
     let (scene_action, transform_action, fly_action) = {
         let shortcuts = world.resource::<EditorShortcuts>();
         (
@@ -405,6 +667,66 @@ pub fn handle_keyboard_input(
         fly.pressed_actions.remove(&action);
     }
     true
+}
+
+/// True while fly or orbit navigation owns the pointer and keyboard.
+#[must_use]
+pub fn editor_navigation_active(world: &World) -> bool {
+    world
+        .get_resource::<EditorFlyCamera>()
+        .is_some_and(|fly| fly.active || fly.drag.is_some())
+}
+
+/// Whether egui may see `event` while navigation owns input. Presses,
+/// pointer motion, the wheel and text stay with the viewport, so they cannot
+/// click, scroll or type into the UI under the hidden cursor. Releases and
+/// window events still pass, so egui never keeps a key or button held.
+#[must_use]
+pub fn ui_receives_during_navigation(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::CursorMoved { .. }
+        | WindowEvent::MouseWheel { .. }
+        | WindowEvent::Ime(_)
+        | WindowEvent::Touch(_) => false,
+        WindowEvent::MouseInput { state, .. } => {
+            *state == ElementState::Released
+        }
+        WindowEvent::KeyboardInput { event, .. } => {
+            event.state == ElementState::Released
+        }
+        _ => true,
+    }
+}
+
+/// Binds a pressed key to the action the Keyboard Shortcuts area is waiting
+/// on. Returns `None` when nothing is waiting, else whether a key was bound
+/// (Escape cancels; a lone modifier keeps an Editor action waiting).
+pub(crate) fn capture_shortcut(
+    world: &mut World,
+    key: KeyCode,
+    modifiers: ModifiersState,
+) -> Option<bool> {
+    let mut shortcuts = world.resource_mut::<EditorShortcuts>();
+    let action = shortcuts.capturing?;
+    if key == KeyCode::Escape {
+        shortcuts.capturing = None;
+        return Some(false);
+    }
+    // Ctrl+Z is pressed as Ctrl, then Z: wait for the real key.
+    if action.context() == ShortcutContext::Editor && is_modifier_key(key) {
+        return Some(false);
+    }
+    shortcuts.capturing = None;
+    let binding = KeyBinding::pressed(key, modifiers, action.context());
+    let replaced = shortcuts.set(action, binding);
+    let mut message = format!("{} is now {}", action.label(), binding.label());
+    if let Some(replaced) = replaced {
+        message.push_str(&format!("; {} is unbound", replaced.label()));
+    }
+    world
+        .resource_mut::<super::EditorConsole>()
+        .push(super::ConsoleLevel::Info, message);
+    Some(true)
 }
 
 /// Holds the fly camera while the secondary mouse button is down in Scene
@@ -545,11 +867,7 @@ pub fn camera_to_object(world: &mut World) {
             .get::<MeshRenderer>(selected)
             .copied()
             .and_then(|renderer| {
-                world
-                    .resource::<AssetServer>()
-                    .meshes
-                    .get(renderer.mesh)
-                    .and_then(crate::editor::overlay::mesh_bounds)
+                world.resource::<AssetServer>().mesh_bounds(renderer.mesh)
             });
     let (target, radius) = world_bounds(global.matrix, bounds);
 
@@ -838,9 +1156,234 @@ fn set_fly_camera_active(world: &mut World, window: &Window, active: bool) {
     capture_pointer(window, active);
 }
 
+/// Keyboard Shortcuts area: one Godot-style section per context and one
+/// row per action. Clicking a key starts capture; the window-event handler
+/// binds the next key press. Returns true when the map was reset, so the
+/// caller saves it.
+pub(super) fn draw_shortcuts_area(
+    ui: &mut egui::Ui,
+    shortcuts: &mut EditorShortcuts,
+) -> bool {
+    use super::gui_elements::EditorTheme;
+    use super::inspector::widgets::{property_row, section};
+
+    let groups = [
+        ("Editor", ShortcutContext::Editor),
+        ("Scene View", ShortcutContext::SceneView),
+        ("Transform", ShortcutContext::TransformModal),
+        ("Fly Camera", ShortcutContext::FlyCamera),
+    ];
+    let actions = EditorAction::ALL
+        .map(ShortcutAction::Editor)
+        .into_iter()
+        .chain(SceneViewAction::ALL.map(ShortcutAction::SceneView));
+    let actions: Vec<_> = actions.collect();
+    let mut reset = false;
+    egui::ScrollArea::vertical()
+        .id_salt("shortcuts_area_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.colored_label(
+                EditorTheme::TEXT_MUTED,
+                "Click a shortcut, then press the new key. Escape cancels.",
+            );
+            for (title, context) in groups {
+                section(ui, title, false, |ui| {
+                    for &action in actions
+                        .iter()
+                        .filter(|action| action.context() == context)
+                    {
+                        let capturing = shortcuts.capturing == Some(action);
+                        let text = if capturing {
+                            "Press a key...".to_owned()
+                        } else {
+                            shortcuts.get(action).map_or_else(
+                                || "Unbound".to_owned(),
+                                KeyBinding::label,
+                            )
+                        };
+                        let clicked = property_row(ui, action.label(), |ui| {
+                            ui.add_sized(
+                                [ui.available_width(), EditorTheme::ROW_HEIGHT],
+                                egui::Button::new(text).selected(capturing),
+                            )
+                            .clicked()
+                        });
+                        if clicked {
+                            shortcuts.capturing =
+                                (!capturing).then_some(action);
+                        }
+                    }
+                });
+            }
+            if ui.button("Reset to Defaults").clicked() {
+                *shortcuts = EditorShortcuts::default();
+                reset = true;
+            }
+        });
+    reset
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_keeps_presses_and_motion_away_from_the_ui() {
+        let mut world = World::new();
+        assert!(!editor_navigation_active(&world));
+        world.insert_resource(EditorFlyCamera::default());
+        assert!(!editor_navigation_active(&world));
+        world.resource_mut::<EditorFlyCamera>().drag =
+            Some(NavigationDrag::Orbit);
+        assert!(editor_navigation_active(&world));
+
+        let device_id = winit::event::DeviceId::dummy();
+        let button = |state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        };
+        assert!(!ui_receives_during_navigation(&button(
+            ElementState::Pressed
+        )));
+        assert!(ui_receives_during_navigation(&button(
+            ElementState::Released
+        )));
+        assert!(!ui_receives_during_navigation(&WindowEvent::CursorMoved {
+            device_id,
+            position: winit::dpi::PhysicalPosition::new(1.0, 2.0),
+        }));
+        assert!(ui_receives_during_navigation(&WindowEvent::Focused(false)));
+    }
+
+    #[test]
+    fn editor_actions_need_their_exact_modifiers() {
+        let shortcuts = EditorShortcuts::default();
+        let ctrl = ModifiersState::CONTROL;
+        let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyZ, ctrl),
+            Some(EditorAction::Undo)
+        );
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyZ, ctrl_shift),
+            Some(EditorAction::Redo)
+        );
+        // Command on macOS counts as Ctrl.
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyS, ModifiersState::SUPER),
+            Some(EditorAction::SaveScene)
+        );
+        // Plain Z and S stay Scene View keys.
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyZ, ModifiersState::empty()),
+            None
+        );
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::Delete, ModifiersState::empty()),
+            Some(EditorAction::DeleteSelection)
+        );
+        for action in EditorAction::ALL {
+            assert!(shortcuts.get(ShortcutAction::Editor(action)).is_some());
+        }
+        assert_eq!(
+            shortcuts
+                .get(ShortcutAction::Editor(EditorAction::Redo))
+                .unwrap()
+                .label(),
+            "Ctrl+Shift+Z"
+        );
+        assert_eq!(KeyBinding::key(KeyCode::Digit1).label(), "1");
+    }
+
+    #[test]
+    fn captured_key_binds_the_waiting_action_and_escape_cancels() {
+        let mut world = World::new();
+        world.insert_resource(EditorShortcuts::default());
+        world.insert_resource(super::super::EditorConsole::default());
+        let ctrl = ModifiersState::CONTROL;
+        assert_eq!(capture_shortcut(&mut world, KeyCode::KeyY, ctrl), None);
+
+        let undo = ShortcutAction::Editor(EditorAction::Undo);
+        world.resource_mut::<EditorShortcuts>().capturing = Some(undo);
+        // Holding Ctrl first keeps the action waiting for the real key.
+        assert_eq!(
+            capture_shortcut(&mut world, KeyCode::ControlLeft, ctrl),
+            Some(false)
+        );
+        assert_eq!(
+            capture_shortcut(&mut world, KeyCode::KeyY, ctrl),
+            Some(true)
+        );
+        let shortcuts = world.resource::<EditorShortcuts>();
+        assert_eq!(shortcuts.capturing, None);
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyY, ctrl),
+            Some(EditorAction::Undo)
+        );
+        assert_eq!(shortcuts.editor_action(KeyCode::KeyZ, ctrl), None);
+
+        // Scene View keys ignore modifiers, so Shift stays a plain key.
+        let sprint = ShortcutAction::SceneView(SceneViewAction::FlySprint);
+        world.resource_mut::<EditorShortcuts>().capturing = Some(sprint);
+        capture_shortcut(
+            &mut world,
+            KeyCode::ShiftRight,
+            ModifiersState::SHIFT,
+        );
+        assert_eq!(
+            world.resource::<EditorShortcuts>().get(sprint),
+            Some(KeyBinding::key(KeyCode::ShiftRight))
+        );
+
+        world.resource_mut::<EditorShortcuts>().capturing = Some(undo);
+        assert_eq!(
+            capture_shortcut(
+                &mut world,
+                KeyCode::Escape,
+                ModifiersState::empty()
+            ),
+            Some(false)
+        );
+        let shortcuts = world.resource::<EditorShortcuts>();
+        assert_eq!(shortcuts.capturing, None);
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyY, ctrl),
+            Some(EditorAction::Undo)
+        );
+    }
+
+    #[test]
+    fn saved_shortcuts_load_over_the_defaults() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting_shortcuts_{}", uuid::Uuid::new_v4()));
+        let path = folder.join("editor_shortcuts.json");
+        let defaults = EditorShortcuts::default();
+        let same = |a: &EditorShortcuts, b: &EditorShortcuts| {
+            EditorAction::ALL
+                .map(ShortcutAction::Editor)
+                .into_iter()
+                .chain(SceneViewAction::ALL.map(ShortcutAction::SceneView))
+                .all(|action| a.get(action) == b.get(action))
+        };
+        assert!(same(&EditorShortcuts::load_from(&path), &defaults));
+
+        let mut changed = EditorShortcuts::default();
+        let forward = ShortcutAction::SceneView(SceneViewAction::FlyForward);
+        changed.set(forward, KeyBinding::key(KeyCode::Space));
+        changed.save_to(&path).unwrap();
+        let loaded = EditorShortcuts::load_from(&path);
+        assert!(same(&loaded, &changed));
+        assert_eq!(
+            loaded.get(ShortcutAction::SceneView(SceneViewAction::FlyUp)),
+            None
+        );
+
+        std::fs::write(&path, "not json").unwrap();
+        assert!(same(&EditorShortcuts::load_from(&path), &defaults));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn covered_viewport_does_not_take_pointer_events() {
@@ -866,9 +1409,7 @@ mod tests {
         assert_eq!(
             shortcuts
                 .get(ShortcutAction::SceneView(SceneViewAction::ToggleFly)),
-            Some(KeyBinding {
-                key: KeyCode::Numpad0,
-            }),
+            Some(KeyBinding::key(KeyCode::Numpad0)),
         );
     }
 
@@ -880,7 +1421,9 @@ mod tests {
             let binding = shortcuts
                 .get(action)
                 .unwrap_or_else(|| panic!("{action:?} has no default binding"));
-            let ShortcutAction::SceneView(scene_action) = action;
+            let ShortcutAction::SceneView(scene_action) = action else {
+                unreachable!()
+            };
             assert_eq!(
                 shortcuts
                     .scene_view_action(scene_action.context(), binding.key,),
@@ -894,9 +1437,7 @@ mod tests {
         let mut shortcuts = EditorShortcuts::default();
         let replaced = shortcuts.set(
             ShortcutAction::SceneView(SceneViewAction::FlyForward),
-            KeyBinding {
-                key: KeyCode::Space,
-            },
+            KeyBinding::key(KeyCode::Space),
         );
 
         assert_eq!(
@@ -937,7 +1478,7 @@ mod tests {
             ShortcutAction::SceneView(SceneViewAction::TransformModes(
                 TransformModes::Move,
             )),
-            KeyBinding { key: KeyCode::KeyS },
+            KeyBinding::key(KeyCode::KeyS),
         );
 
         assert_eq!(

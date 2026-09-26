@@ -3,6 +3,7 @@
 //! The window runner calls [`draw_editor_view`] inside its egui frame and
 //! composites the resulting shapes over the Vulkan scene.
 
+mod assets_panel;
 mod dock;
 mod file_dialogs;
 pub mod gui_elements;
@@ -20,6 +21,7 @@ pub use dock::{EditorDockNode, EditorPanel, EditorSplitAxis};
 use file_dialogs::{DialogPurpose, FileDialogs};
 use hierarchy::{collect_entities, draw_hierarchy_area};
 pub use icons::EditorIcon;
+pub use inspector::InspectorRegistry;
 use inspector::{draw_inspector_area, ComponentEdit};
 pub use view::draw_editor_view;
 
@@ -29,10 +31,12 @@ pub use project::{
     PROJECT_FORMAT_VERSION,
 };
 pub use shortcuts::{
-    add_mouse_delta, handle_keyboard_input, handle_mouse_button_input,
-    handle_mouse_wheel, release_editor_navigation, update_fly_camera,
-    EditorFlyCamera, EditorShortcuts, EditorTransformMode, KeyBinding,
-    SceneViewAction, ShortcutAction, ShortcutContext, TransformModes,
+    add_mouse_delta, editor_navigation_active, handle_keyboard_input,
+    handle_mouse_button_input, handle_mouse_wheel, release_editor_navigation,
+    ui_receives_during_navigation, update_fly_camera, EditorAction,
+    EditorCommandQueue, EditorFlyCamera, EditorShortcuts, EditorTransformMode,
+    KeyBinding, SceneViewAction, ShortcutAction, ShortcutContext,
+    TransformModes,
 };
 
 use bevy_ecs::entity::Entity;
@@ -53,10 +57,7 @@ use crate::runtime::{
     SceneDocument, SceneId, SceneLoadMode, SpotLight, Visibility,
 };
 use crate::Transform;
-use crate::{
-    AssetServer, Handle, ImportedGltfPrimitive, MaterialAsset, MeshAsset,
-    PrimitiveShape, TextureAsset,
-};
+use crate::{AssetServer, MaterialAsset, PrimitiveShape};
 
 /// True when the editor must redraw every frame: the game is playing or the
 /// fly camera moves without window events. Otherwise it redraws only on input,
@@ -176,10 +177,27 @@ pub fn load_editor_scene(
 }
 
 /// Applies the editor's compact dark workspace theme to an egui context.
-/// Also restores the user's saved UI scale.
+/// Also restores the user's saved UI scale and text size. The OS display
+/// scale comes from the window through egui-winit and multiplies both.
 pub fn configure_editor_style(context: &Context) {
+    let preferences = EditorPreferences::load();
     gui_elements::EditorTheme::apply(context);
-    context.set_zoom_factor(EditorPreferences::load().ui_scale);
+    context.set_zoom_factor(preferences.ui_scale);
+    apply_font_scale(context, preferences.font_scale);
+}
+
+/// Sets every egui text style to `scale` times its default size.
+/// ponytail: widgets that build their own `FontId` keep a fixed size; route
+/// them through text styles if they must follow this setting.
+pub fn apply_font_scale(context: &Context, scale: f32) {
+    let defaults = egui::Style::default().text_styles;
+    context.style_mut(|style| {
+        for (text_style, font) in &mut style.text_styles {
+            if let Some(default) = defaults.get(text_style) {
+                font.size = default.size * scale;
+            }
+        }
+    });
 }
 
 /// Editor interaction mode. Edit state never advances gameplay fixed updates.
@@ -285,6 +303,9 @@ pub struct EditorState {
     pub next_area_id: u64,
 }
 
+/// egui texture that shows the offscreen image the live 3D view renders into.
+pub const SCENE_VIEW_TEXTURE: egui::TextureId = egui::TextureId::User(0);
+
 /// Physical pixel rectangle occupied by the editor's live scene view.
 ///
 /// This is intentionally editor-owned layout data. The window runner converts
@@ -318,7 +339,16 @@ pub struct EditorGizmoSettings {
     pub shading: SceneDebugView,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum GizmoAxis {
     X,
     Y,
@@ -462,8 +492,12 @@ fn set_open_project_paths(state: &mut EditorState, project: &OpenProject) {
 pub struct ConsoleEntry {
     /// Controls the color and importance of this message.
     pub level: ConsoleLevel,
+    /// Part of the editor or engine that reported it, such as "Assets".
+    pub source: &'static str,
     /// Text shown in the Console area.
     pub message: String,
+    /// How many times in a row the same message arrived.
+    pub count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -480,14 +514,49 @@ pub enum ConsoleLevel {
 pub struct EditorConsole {
     /// Messages kept in the order they were added.
     entries: Vec<ConsoleEntry>,
+    /// Console area text filter.
+    filter: String,
+    /// Levels the Console area hides, indexed by `ConsoleLevel as usize`.
+    hidden: [bool; 3],
+    /// Scene and Code status lines already copied into the console.
+    status_seen: [Option<String>; 2],
 }
 
 impl EditorConsole {
-    /// Adds one message to the bottom of the Console area.
+    /// Oldest messages are dropped past this count.
+    pub const CAPACITY: usize = 2000;
+
+    /// Adds one editor message to the bottom of the Console area.
     pub fn push(&mut self, level: ConsoleLevel, message: impl Into<String>) {
+        self.push_from(level, "Editor", message);
+    }
+
+    /// Adds one message from `source`. A repeat of the last message only
+    /// raises its count.
+    pub fn push_from(
+        &mut self,
+        level: ConsoleLevel,
+        source: &'static str,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        if let Some(last) = self.entries.last_mut() {
+            if last.level == level
+                && last.source == source
+                && last.message == message
+            {
+                last.count += 1;
+                return;
+            }
+        }
+        if self.entries.len() == Self::CAPACITY {
+            self.entries.remove(0);
+        }
         self.entries.push(ConsoleEntry {
             level,
-            message: message.into(),
+            source,
+            message,
+            count: 1,
         });
     }
 
@@ -526,6 +595,8 @@ impl Plugin for EditorPlugin {
             .insert_resource(EditorGizmoDrag::default())
             .insert_resource(EditorDebugOverlay::default())
             .insert_resource(EditorShortcuts::default())
+            .insert_resource(EditorCommandQueue::default())
+            .insert_resource(InspectorRegistry::default())
             .insert_resource(EditorTransformMode::default())
             .insert_resource(EditorFlyCamera::default())
             .insert_resource(EditorConsole::default())
@@ -563,13 +634,15 @@ struct PendingDestructiveAction {
     request: Option<DestructiveRequest>,
 }
 
-/// Asset Browser filter, imported sub-assets, and its last status message.
+/// Assets area filter, tree state, and its last status message.
 #[derive(Resource, Clone, Default)]
 struct EditorAssetState {
     /// Text used to filter project asset paths.
     filter: String,
-    /// glTF primitives imported during this editor session.
-    gltf_primitives: Vec<ImportedGltfPrimitive>,
+    /// Highlighted file or folder in the Assets tree.
+    selected: Option<PathBuf>,
+    /// Folders folded shut in the Assets tree.
+    collapsed: std::collections::HashSet<PathBuf>,
     /// Result of the latest import or assignment.
     message: Option<String>,
     /// Cached `project_asset_files` result, so the disk is not walked every
@@ -577,6 +650,8 @@ struct EditorAssetState {
     files: Vec<PathBuf>,
     /// Project root and time of the last scan; `None` forces a rescan.
     files_scanned: Option<(String, std::time::Instant)>,
+    /// Image previews by path; `None` marks a file that failed to decode.
+    thumbnails: std::collections::HashMap<PathBuf, Option<egui::TextureHandle>>,
 }
 
 impl EditorAssetState {
@@ -608,7 +683,26 @@ enum BuildRequest {
         project_name: String,
         binary_name: String,
         cooked_scene: PathBuf,
+        /// Cargo target triple to cross-build for; `None` builds for this
+        /// system.
+        target: Option<&'static str>,
     },
+}
+
+/// Windows target used when exporting from another system. The GNU flavor
+/// only needs `rustup target add` and mingw-w64, not the MSVC tools.
+pub(super) const WINDOWS_TARGET: &str = "x86_64-pc-windows-gnu";
+
+/// File name of the game executable built for `target`.
+fn executable_name(binary_name: &str, target: Option<&str>) -> String {
+    let windows = target.map_or(cfg!(target_os = "windows"), |target| {
+        target.contains("windows")
+    });
+    if windows {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.to_owned()
+    }
 }
 
 /// Result sent from the Cargo worker back to the main editor thread.
@@ -664,7 +758,17 @@ impl EditorBuildState {
             BuildRequest::BuildAndRun { profile } => {
                 format!("Building {} game...", profile.label())
             }
-            BuildRequest::Export { .. } => "Building game for export...".into(),
+            BuildRequest::Export { target: None, .. } => {
+                "Building game for export...".into()
+            }
+            BuildRequest::Export {
+                target: Some(target),
+                ..
+            } => format!(
+                "Building game for {target} export. This needs \
+                 `rustup target add {target}` and a matching linker \
+                 (mingw-w64 for Windows)...\n"
+            ),
         };
         self.console_cursor = 0;
         self.stop = std::sync::Arc::default();
@@ -689,6 +793,24 @@ impl EditorBuildState {
                 .args(["--message-format", "short", "--manifest-path"])
                 .arg(&manifest)
                 .current_dir(&project_root);
+            if let BuildRequest::Export {
+                target: Some(target),
+                ..
+            } = &request
+            {
+                cargo.args(["--target", target]);
+                if target.contains("windows-gnu") {
+                    // Players should not get a console window beside the
+                    // game.
+                    cargo.env(
+                        format!(
+                            "CARGO_TARGET_{}_RUSTFLAGS",
+                            target.to_uppercase().replace('-', "_")
+                        ),
+                        "-Clink-arg=-mwindows",
+                    );
+                }
+            }
             let finished = match run_streamed(&mut cargo, &sender, &stop) {
                 Ok(None) => BuildFinished {
                     success: false,
@@ -711,6 +833,7 @@ impl EditorBuildState {
                             project_name,
                             binary_name,
                             cooked_scene,
+                            target,
                         } = &request
                         {
                             match export_built_game(
@@ -720,6 +843,7 @@ impl EditorBuildState {
                                 project_name,
                                 binary_name,
                                 cooked_scene,
+                                *target,
                             ) {
                                 Ok(path) => {
                                     let _ = sender.send(
@@ -949,6 +1073,7 @@ fn export_built_game(
     project_name: &str,
     binary_name: &str,
     cooked_scene: &std::path::Path,
+    target: Option<&str>,
 ) -> Result<PathBuf, String> {
     if !parent.is_dir() {
         return Err(format!("{} is not a folder", parent.display()));
@@ -965,17 +1090,14 @@ fn export_built_game(
     }
     let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)
         .map_err(|error| format!("Invalid Cargo metadata: {error}"))?;
-    let target = metadata
+    let target_directory = metadata
         .get("target_directory")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "Cargo metadata has no target directory".to_owned())?;
-    let executable_name = if cfg!(target_os = "windows") {
-        format!("{binary_name}.exe")
-    } else {
-        binary_name.to_owned()
-    };
-    let executable =
-        PathBuf::from(target).join("release").join(&executable_name);
+    let executable = PathBuf::from(target_directory)
+        .join(target.unwrap_or_default())
+        .join("release")
+        .join(executable_name(binary_name, target));
     if !executable.is_file() {
         return Err(format!(
             "Release executable {} was not produced",
@@ -989,6 +1111,7 @@ fn export_built_game(
         project_name,
         binary_name,
         cooked_scene,
+        target,
     )
 }
 
@@ -1000,12 +1123,9 @@ fn package_game_files(
     project_name: &str,
     binary_name: &str,
     cooked_scene: &std::path::Path,
+    target: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let executable_name = if cfg!(target_os = "windows") {
-        format!("{binary_name}.exe")
-    } else {
-        binary_name.to_owned()
-    };
+    let executable_name = executable_name(binary_name, target);
     let cooked_source = project_root.join(cooked_scene);
     if !cooked_source.is_file() {
         return Err(format!(
@@ -1015,7 +1135,11 @@ fn package_game_files(
     }
 
     // A unique final name avoids replacing an older playable export.
-    let safe_name = binary_name.replace('-', "_");
+    // Cross exports name their system, e.g. `game_windows_export`.
+    let safe_name = match target.and_then(|target| target.split('-').nth(2)) {
+        Some(system) => format!("{}_{system}", binary_name.replace('-', "_")),
+        None => binary_name.replace('-', "_"),
+    };
     let mut destination = parent.join(format!("{safe_name}_export"));
     for number in 2.. {
         if !destination.exists() {
@@ -1094,9 +1218,10 @@ fn copy_directory(
 enum AssetRequest {
     ImportFiles(Vec<PathBuf>),
     LoadTexture(PathBuf),
-    ImportGltf(PathBuf),
-    AssignTexture(Handle<TextureAsset>),
-    AssignPrimitive(Handle<MeshAsset>, Handle<MaterialAsset>),
+    /// Adds a project glTF file to the scene as one object tree.
+    AddModel(PathBuf),
+    /// Loads an image and uses it as the selected object's base color.
+    AssignTexture(PathBuf),
     /// Gives the selected renderer a fresh default material.
     NewMaterial,
     /// Picks an image file for one `inspector::TEXTURE_SLOTS` slot.
@@ -1128,7 +1253,7 @@ enum EntityRequest {
     /// Changes the display name stored in the scene.
     Rename(Entity, String),
     /// Moves one object below another object, or back to the scene root.
-    Reparent(Entity, Option<Entity>),
+    Reparent(Vec<Entity>, Option<Entity>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1170,6 +1295,10 @@ fn unique_object_name(world: &mut World, base: &str) -> String {
         .iter(world)
         .map(|name| name.0.clone())
         .collect::<std::collections::HashSet<_>>();
+    free_name(&names, base)
+}
+
+fn free_name(names: &std::collections::HashSet<String>, base: &str) -> String {
     if !names.contains(base) {
         return base.into();
     }
@@ -1180,6 +1309,59 @@ fn unique_object_name(world: &mut World, base: &str) -> String {
         }
     }
     unreachable!("a free object name always exists")
+}
+
+/// Adds a glTF file to the scene like Blender's importer: one new empty
+/// object named after the file, at the origin, holding the file's node tree
+/// with its names, local transforms, meshes, materials, cameras, and lights.
+/// Imported names that clash with existing objects get a number. Returns the
+/// new root object. The caller takes the undo snapshot.
+fn add_model_to_scene(
+    world: &mut World,
+    path: &std::path::Path,
+) -> Result<Entity, String> {
+    let nodes = world
+        .resource_mut::<AssetServer>()
+        .import_gltf_scene(path)
+        .map_err(|error| error.to_string())?;
+    let before = world
+        .query::<Entity>()
+        .iter(world)
+        .collect::<std::collections::HashSet<_>>();
+    let base = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Model");
+    let root_name = unique_object_name(world, base);
+    let root = world
+        .spawn((SceneId::new(), Name(root_name), Transform::default()))
+        .id();
+    let entities = crate::spawn_gltf_nodes_in_world(world, &nodes, None)
+        .map_err(|error| error.to_string())?;
+    for (node, &entity) in nodes.iter().zip(&entities) {
+        if node.parent.is_none() {
+            crate::runtime::hierarchy::set_parent(world, entity, root)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let mut query = world.query::<(Entity, &Name)>();
+    let mut names = std::collections::HashSet::new();
+    let mut added = Vec::new();
+    for (entity, name) in query.iter(world) {
+        if before.contains(&entity) || entity == root {
+            names.insert(name.0.clone());
+        } else {
+            added.push(entity);
+        }
+    }
+    for entity in added {
+        let base = world.get::<Name>(entity).map_or("", |name| &name.0);
+        let base = if base.is_empty() { "Node" } else { base };
+        let name = free_name(&names, base);
+        names.insert(name.clone());
+        world.entity_mut(entity).insert(Name(name));
+    }
+    Ok(root)
 }
 
 /// Returns normal files below a project's `assets` folder without following

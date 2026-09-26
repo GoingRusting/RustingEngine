@@ -26,6 +26,8 @@ pub enum EditorIcon {
     Gear,
     Console,
     Folder,
+    Image,
+    File,
 }
 
 pub(super) fn paint_editor_icon(
@@ -278,6 +280,54 @@ pub(super) fn paint_editor_icon(
                 ],
                 egui::Stroke::new(3.0_f32, color),
             );
+        }
+        EditorIcon::Image => {
+            let frame = egui::Rect::from_center_size(
+                center,
+                egui::vec2(radius * 2.2, radius * 1.8),
+            );
+            painter.rect_stroke(frame, 1.5, stroke, egui::StrokeKind::Inside);
+            // Mountain and sun, the usual picture sign.
+            let base = frame.bottom() - 2.0;
+            painter.line_segment(
+                [
+                    egui::pos2(frame.left() + 2.0, base),
+                    egui::pos2(center.x - radius * 0.2, center.y),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(center.x - radius * 0.2, center.y),
+                    egui::pos2(frame.right() - 2.0, base),
+                ],
+                stroke,
+            );
+            painter.circle_filled(
+                egui::pos2(
+                    center.x + radius * 0.5,
+                    frame.top() + radius * 0.55,
+                ),
+                radius * 0.22,
+                color,
+            );
+        }
+        EditorIcon::File => {
+            let page = egui::Rect::from_center_size(
+                center,
+                egui::vec2(radius * 1.6, radius * 2.1),
+            );
+            painter.rect_stroke(page, 1.5, stroke, egui::StrokeKind::Inside);
+            for row in 0..3 {
+                let y = page.top() + radius * (0.6 + row as f32 * 0.45);
+                painter.line_segment(
+                    [
+                        egui::pos2(page.left() + 3.0, y),
+                        egui::pos2(page.right() - 3.0, y),
+                    ],
+                    egui::Stroke::new(1.0_f32, color),
+                );
+            }
         }
         EditorIcon::Close => {
             let extent = egui::vec2(radius * 0.58, radius * 0.58);

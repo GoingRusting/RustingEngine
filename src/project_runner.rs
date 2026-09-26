@@ -9,7 +9,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Mut, Resource, World};
 use vulkano::format::Format;
 use vulkano::VulkanError;
-use vulkano_util::context::{VulkanoConfig, VulkanoContext};
+use vulkano_util::context::VulkanoContext;
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -20,9 +20,10 @@ use winit::window::WindowId;
 use crate::rendering::frame_pacer::{select_present_mode, FramePacer};
 use crate::rendering::scene_renderer::{SceneRenderOptions, SceneRenderer};
 use crate::runtime::{
-    load_scene, route_gpu_physics_events, AppError, EventQueue, FrameTime,
-    GpuEventRegistry, GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule,
-    GpuPhysicsWatch, HybridPhysicsPlugin, Name, PhysicsBackendStatus, Plugin,
+    apply_gpu_state_samples, load_scene, route_gpu_physics_events, AppError,
+    EventQueue, FrameTime, GpuEventRegistry, GpuPhysicsClassWatches,
+    GpuPhysicsEvent, GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch,
+    HybridPhysicsPlugin, Name, PhysicsBackendStatus, Plugin,
     RenderExtractPlugin, RenderSettings, RenderWorld, RuntimeInput,
     SceneLoadMode, ScheduleStage,
 };
@@ -334,14 +335,13 @@ impl GameScene<'_> {
         for entity in &entities {
             self.world.entity_mut(*entity).insert((
                 crate::runtime::PhysicsBody {
-                    simulation: crate::runtime::SimulationClass::GpuDynamic,
+                    simulation: crate::runtime::SimulationClass::Gpu,
                     solver: settings.solver,
                     custom_shader: settings.custom_shader.clone(),
                 },
                 settings.rigid_body,
                 settings.collider,
                 settings.collision_layers,
-                crate::runtime::GpuEffectBody,
             ));
         }
         entities.len()
@@ -644,7 +644,7 @@ impl ProjectApplication {
             .gpu_dynamic_available = true;
         Ok(Self {
             title,
-            vulkan: VulkanoContext::new(VulkanoConfig::default()),
+            vulkan: VulkanoContext::new(crate::rendering::vulkano_config()),
             windows: VulkanoWindows::default(),
             scene_renderer: None,
             runtime,
@@ -755,18 +755,26 @@ impl ApplicationHandler for ProjectApplication {
                     ]);
             }
             WindowEvent::RedrawRequested => {
-                // Completed GPU events enter ECS before this frame starts, so
-                // Rust update systems can read them from the normal event API.
-                let raw_events = self
-                    .scene_renderer
-                    .as_mut()
-                    .unwrap()
-                    .take_completed_physics_events();
+                // Completed GPU events and synchronized state enter ECS before
+                // this frame starts, so Rust update systems can read them.
+                let scene_renderer = self.scene_renderer.as_mut().unwrap();
+                let raw_events = scene_renderer.take_completed_physics_events();
+                let states = scene_renderer.take_completed_physics_states();
+                let lost = scene_renderer.take_physics_events_lost();
+                if lost > 0 {
+                    self.runtime
+                        .world_mut()
+                        .resource_mut::<EventQueue<GpuPhysicsEventsLost>>()
+                        .send(GpuPhysicsEventsLost { count: lost });
+                }
                 if !raw_events.is_empty() {
                     route_gpu_physics_events(
                         self.runtime.world_mut(),
                         &raw_events,
                     );
+                }
+                if !states.is_empty() {
+                    apply_gpu_state_samples(self.runtime.world_mut(), &states);
                 }
                 // Delta time tells gameplay how much real time passed.
                 let now = Instant::now();
@@ -995,7 +1003,7 @@ mod tests {
             Name("Cube".into()),
             Transform::default(),
             crate::runtime::PhysicsBody {
-                simulation: crate::runtime::SimulationClass::GpuDynamic,
+                simulation: crate::runtime::SimulationClass::Gpu,
                 ..Default::default()
             },
         ));

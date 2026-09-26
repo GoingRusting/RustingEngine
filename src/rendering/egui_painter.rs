@@ -223,6 +223,38 @@ impl EguiPainter {
             .max_image_dimension2_d as usize
     }
 
+    /// Shows `view` wherever egui draws texture `id` (use a
+    /// `TextureId::User`), such as a 3D view rendered offscreen. Setting the
+    /// same image again is free; a new image replaces the old one, which the
+    /// recorded command buffers keep alive until they finish.
+    pub fn set_native_texture(
+        &mut self,
+        id: TextureId,
+        view: Arc<ImageView>,
+    ) -> Result<(), EguiPaintError> {
+        if self
+            .textures
+            .get(&id)
+            .is_some_and(|texture| Arc::ptr_eq(&texture.image, view.image()))
+        {
+            return Ok(());
+        }
+        let image = view.image().clone();
+        let set = DescriptorSet::new(
+            self.descriptor_allocator.clone(),
+            self.pipeline.layout().set_layouts()[0].clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0,
+                view,
+                self.sampler(TextureOptions::LINEAR)?,
+            )],
+            [],
+        )
+        .map_err(fail)?;
+        self.textures.insert(id, EguiTexture { image, set });
+        Ok(())
+    }
+
     /// Applies `textures`, then draws `primitives` over `target` after
     /// `before`. Freed textures are dropped after the draw is recorded.
     pub fn paint(
@@ -830,5 +862,77 @@ mod tests {
             &TexturesDelta::default(),
         );
         assert_eq!(target.pixel([4, 4]), [255, 255, 255]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn native_textures_show_an_image_rendered_elsewhere() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut target = Target::new();
+        // A 2x2 image cleared on the GPU, as the scene renderer leaves its
+        // offscreen view.
+        let native = |color: [f32; 4]| {
+            let image = Image::new(
+                target.memory_allocator.clone(),
+                ImageCreateInfo {
+                    format: OFFSCREEN_COLOR_FORMAT,
+                    extent: [2, 2, 1],
+                    usage: ImageUsage::SAMPLED | ImageUsage::TRANSFER_DST,
+                    ..Default::default()
+                },
+                AllocationCreateInfo::default(),
+            )
+            .unwrap();
+            let mut commands = AutoCommandBufferBuilder::primary(
+                target.painter.command_allocator.clone(),
+                target.base.queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+            commands
+                .clear_color_image(ClearColorImageInfo {
+                    clear_value: color.into(),
+                    ..ClearColorImageInfo::image(image.clone())
+                })
+                .unwrap();
+            vulkano::sync::now(target.base.device.clone())
+                .then_execute(
+                    target.base.queue.clone(),
+                    commands.build().unwrap(),
+                )
+                .unwrap()
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            ImageView::new_default(image).unwrap()
+        };
+        let red = native([1.0, 0.0, 0.0, 1.0]);
+        let green = native([0.0, 1.0, 0.0, 1.0]);
+        let id = TextureId::User(0);
+        let left = points([0.0, 0.0], [4.0, 8.0]);
+        let draw = rect(id, left, Pos2::new(0.5, 0.5), Color32::WHITE, left);
+        target.painter.set_native_texture(id, red.clone()).unwrap();
+        target.painter.set_native_texture(id, red).unwrap();
+        target.paint(
+            1.0,
+            std::slice::from_ref(&draw),
+            &TexturesDelta::default(),
+        );
+        assert_eq!(target.pixel([1, 4]), [255, 0, 0]);
+        assert_eq!(target.pixel([6, 4]), [0, 0, 255], "outside the rect");
+        target.painter.set_native_texture(id, green).unwrap();
+        target.paint(
+            1.0,
+            std::slice::from_ref(&draw),
+            &TexturesDelta::default(),
+        );
+        assert_eq!(target.pixel([1, 4]), [0, 255, 0], "replaced image");
     }
 }

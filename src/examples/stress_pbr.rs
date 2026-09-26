@@ -71,7 +71,7 @@ pub fn main() {
     //                 },
     //                 mat,
     //                 &Physics::default()
-    //                     .compute_shader(ComputeShaderType::Test)
+    //                     .compute_shader(ComputeShaderType::GridCollision)
     //                     .mass(1.0)
     //                     .collision_type(CollisionType::Sphere)
     //                     .gravity_scale(1.0),
@@ -91,7 +91,7 @@ pub fn main() {
     //         .model(MaterialModel::Pbr)
     //         .build(),
     //     &Physics::default()
-    //         .compute_shader(ComputeShaderType::Test)
+    //         .compute_shader(ComputeShaderType::GridCollision)
     //         .mass(10000.0)
     //         .gravity_scale(10.0)
     //         .collision_type(CollisionType::Sphere),
@@ -99,6 +99,6 @@ pub fn main() {
     // );
 
     engine.set_scene_shader(MaterialModel::Pbr);
-    engine.set_scene_physic(ComputeShaderType::Test);
+    engine.set_scene_physic(ComputeShaderType::GridCollision);
     engine.run();
 }

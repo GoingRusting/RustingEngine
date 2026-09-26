@@ -11,6 +11,21 @@ use super::*;
 use crate::editor::overlay::{add_axis, add_bound_box};
 use crate::runtime::{CullingMode, QualityProfile};
 
+/// Starting point for a `PhysicsSolver::Custom` hook file. The engine
+/// prepends the physics ABI (`src/shaders/physics_abi.glsl`) and calls
+/// `solve` once per fixed tick for each body that selected this file.
+const CUSTOM_SOLVER_TEMPLATE: &str = "\
+// Custom GPU solver. `solve` runs once per fixed tick for every body that
+// selected this file, after queued commands. Watch rules see the body as it
+// was before `solve`. `body` follows `PhysicsState`; `pc.dt` is the step.
+void solve(inout PhysicsState body) {
+    if (body.properties.z != 1.0) return; // dynamic bodies only
+    body.velocity.xyz += vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z)
+        * body.properties.y * pc.dt;
+    body.model[3].xyz += body.velocity.xyz * pc.dt;
+}
+";
+
 /// Draws the interactive editor into an already-open egui frame.
 ///
 /// Window runners use this entry point after forwarding winit input to egui.
@@ -19,6 +34,20 @@ use crate::runtime::{CullingMode, QualityProfile};
 /// * `world` - ECS world containing scene objects and editor resources.
 /// * `context` - Current egui frame used to draw all controls.
 pub fn draw_editor_view(world: &mut World, context: &Context) {
+    // Navigation owns the keyboard; a text field must not keep focus and
+    // take the keys back when it ends.
+    if editor_navigation_active(world) {
+        context.memory_mut(egui::Memory::stop_text_input);
+    }
+    // The window image is not cleared under the UI, so every pixel starts
+    // with the workspace background.
+    context
+        .layer_painter(egui::LayerId::background())
+        .rect_filled(
+            context.screen_rect(),
+            0.0,
+            gui_elements::EditorTheme::BACKGROUND,
+        );
     // Move editor values that egui will change during this frame out of the
     // world. They are inserted back at the end; cloning them every frame
     // copied the whole Undo history.
@@ -41,30 +70,34 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         })
         .unwrap_or_default();
     for path in reloaded {
-        world.resource_mut::<EditorConsole>().push(
+        world.resource_mut::<EditorConsole>().push_from(
             ConsoleLevel::Info,
+            "Assets",
             format!("Hot reloaded {}", path.display()),
         );
     }
     for failure in reload_failures {
-        world.resource_mut::<EditorConsole>().push(
+        world.resource_mut::<EditorConsole>().push_from(
             ConsoleLevel::Error,
+            "Assets",
             format!("Hot reload failed, keeping the last version: {failure}"),
         );
     }
     if !build_console_output.is_empty() {
-        world.resource_mut::<EditorConsole>().push(
+        world.resource_mut::<EditorConsole>().push_from(
             ConsoleLevel::Info,
+            "Build",
             format!("Cargo Output\n{build_console_output}"),
         );
     }
     if let Some(success) = build_finished {
-        world.resource_mut::<EditorConsole>().push(
+        world.resource_mut::<EditorConsole>().push_from(
             if success {
                 ConsoleLevel::Info
             } else {
                 ConsoleLevel::Error
             },
+            "Build",
             if success {
                 "Build or game task finished successfully"
             } else {
@@ -75,16 +108,6 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let entities = collect_entities(world);
     editor_assets.refresh_files(&state.project_root);
     let asset_files = std::mem::take(&mut editor_assets.files);
-    let loaded_textures = world
-        .get_resource::<AssetServer>()
-        .map(|assets| {
-            assets
-                .textures
-                .paths()
-                .map(|(handle, path)| (handle, path.to_path_buf()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let mut render_settings = world.resource::<RenderSettings>().clone();
     let original_scene_render =
         (render_settings.quality, render_settings.culling);
@@ -106,6 +129,22 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         .map(|render_world| render_world.report);
     let culling_stats = world
         .get_resource::<crate::rendering::scene_renderer::CullingStats>()
+        .copied();
+    let gpu_pass_times = world
+        .get_resource::<crate::rendering::scene_renderer::GpuPassTimes>()
+        .filter(|times| !times.0.is_empty())
+        .map(gpu_pass_times_label);
+    let render_counters = world
+        .get_resource::<crate::rendering::scene_renderer::RenderCounters>()
+        .copied();
+    let physics_label = render_counters.zip(
+        world
+            .get_resource::<crate::rendering::scene_renderer::RenderCapacityDiagnostics>()
+            .copied(),
+    )
+    .map(|(counters, capacity)| physics_counters_label(&counters, &capacity));
+    let cpu_timings = world
+        .get_resource::<crate::runtime::CpuFrameTimings>()
         .copied();
     let mut edited_transform = state
         .selected
@@ -218,6 +257,33 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut asset_request = None;
     let mut build_request = None;
     let mut export_destination = None;
+    // Keyboard shortcuts queued by the window-event handler run like the
+    // matching menu entries.
+    let commands = world
+        .get_resource_mut::<EditorCommandQueue>()
+        .map(|mut queue| std::mem::take(&mut queue.0))
+        .unwrap_or_default();
+    for command in commands {
+        match command {
+            EditorAction::Undo => undo_clicked = true,
+            EditorAction::Redo => redo_clicked = true,
+            EditorAction::SaveScene => save_clicked = true,
+            EditorAction::DeleteSelection if !state.selection.is_empty() => {
+                entity_request =
+                    Some(EntityRequest::Delete(state.selection.clone()));
+            }
+            EditorAction::RenameSelection => {
+                if let Some(entity) = state.selected {
+                    state.rename_draft = world
+                        .get::<Name>(entity)
+                        .map(|name| name.0.clone())
+                        .unwrap_or_default();
+                    state.rename_target = Some(entity);
+                }
+            }
+            EditorAction::DeleteSelection => {}
+        }
+    }
     let has_open_project = !state.project_root.is_empty()
         && std::path::Path::new(&state.project_root)
             .join("project.json")
@@ -253,7 +319,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 save_before_continue_to = Some(first);
             }
             DialogPurpose::SaveSceneAs => save_as_path = first,
-            DialogPurpose::ExportGame => export_destination = first,
+            DialogPurpose::ExportGame { target } => {
+                export_destination = first.map(|parent| (parent, target));
+            }
             DialogPurpose::ImportFiles if !paths.is_empty() => {
                 asset_request = Some(AssetRequest::ImportFiles(paths));
             }
@@ -461,11 +529,45 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     .clicked()
                                     {
                                         ui.ctx().set_zoom_factor(scale);
-                                        let preferences =
-                                            EditorPreferences { ui_scale: scale };
+                                        let mut preferences =
+                                            EditorPreferences::load();
+                                        preferences.ui_scale = scale;
                                         if let Err(error) = preferences.save() {
                                             state.scene_message = Some(format!(
                                                 "Could not save UI scale: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
+                                gui_elements::EditorTheme::menu_section(
+                                    ui, "TEXT SIZE",
+                                );
+                                let body = ui
+                                    .style()
+                                    .text_styles
+                                    .get(&egui::TextStyle::Body)
+                                    .map_or(0.0, |font| font.size);
+                                let default_body = egui::Style::default()
+                                    .text_styles
+                                    .get(&egui::TextStyle::Body)
+                                    .map_or(1.0, |font| font.size);
+                                for scale in EditorPreferences::FONT_SCALES {
+                                    if gui_elements::EditorTheme::menu_choice(
+                                        ui,
+                                        &format!("{:.0}%", scale * 100.0),
+                                        (body - default_body * scale).abs()
+                                            < 0.01,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        super::apply_font_scale(ui.ctx(), scale);
+                                        let mut preferences =
+                                            EditorPreferences::load();
+                                        preferences.font_scale = scale;
+                                        if let Err(error) = preferences.save() {
+                                            state.scene_message = Some(format!(
+                                                "Could not save text size: {error}"
                                             ));
                                         }
                                     }
@@ -725,6 +827,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             &entities,
                             &mut state,
                             &mut entity_request,
+                            &mut asset_request,
                             &mut edited_transform,
                             &mut edited_camera,
                             &mut edited_physics,
@@ -768,6 +871,15 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         }
                         if viewport_rect.is_none() {
                             let rect = ui.available_rect_before_wrap();
+                            ui.painter().image(
+                                super::SCENE_VIEW_TEXTURE,
+                                rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
                             if workspace == EditorWorkspace::Scene {
                                 let response = ui.interact(
                                     rect,
@@ -776,6 +888,30 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 );
                                 scene_hover_position = response.hover_pos();
                                 scene_hovered = response.contains_pointer();
+                                // ponytail: dropped models land at the
+                                // origin; place them under the cursor once
+                                // picking returns surface hit points.
+                                if response
+                                    .dnd_hover_payload::<assets_panel::ModelDrag>()
+                                    .is_some()
+                                {
+                                    ui.painter().rect_stroke(
+                                        rect.shrink(1.0),
+                                        0.0,
+                                        egui::Stroke::new(
+                                            2.0_f32,
+                                            gui_elements::EditorTheme::ACCENT_HOVER,
+                                        ),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                if let Some(model) = response
+                                    .dnd_release_payload::<assets_panel::ModelDrag>()
+                                {
+                                    asset_request = Some(AssetRequest::AddModel(
+                                        model.0.clone(),
+                                    ));
+                                }
                                 if response.clicked() {
                                     scene_click_position =
                                         response.interact_pointer_pos();
@@ -972,7 +1108,30 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             .clicked()
                         {
                             dialogs.pick_folder(
-                                DialogPurpose::ExportGame,
+                                DialogPurpose::ExportGame { target: None },
+                                rfd::AsyncFileDialog::new()
+                                    .set_title("Choose Export Parent Folder"),
+                            );
+                        }
+                        if !cfg!(target_os = "windows")
+                            && ui
+                                .add_enabled(
+                                    !build_running,
+                                    egui::Button::new(
+                                        "Export for Windows...",
+                                    ),
+                                )
+                                .on_hover_text(format!(
+                                    "Cross-build a Windows .exe. Needs \
+                                     `rustup target add {WINDOWS_TARGET}` \
+                                     and mingw-w64"
+                                ))
+                                .clicked()
+                        {
+                            dialogs.pick_folder(
+                                DialogPurpose::ExportGame {
+                                    target: Some(WINDOWS_TARGET),
+                                },
                                 rfd::AsyncFileDialog::new()
                                     .set_title("Choose Export Parent Folder"),
                             );
@@ -999,158 +1158,53 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         if let Some(stats) = culling_stats {
                             ui.label(culling_stats_label(&stats));
                         }
+                        if let Some(label) = &gpu_pass_times {
+                            ui.label(label);
+                        }
+                        if let Some(timings) = &cpu_timings {
+                            ui.label(cpu_timings_label(timings));
+                        }
+                        if let Some(counters) = &render_counters {
+                            ui.label(render_counters_label(counters));
+                        }
+                        if let Some(label) = &physics_label {
+                            ui.label(label);
+                        }
                             });
+                    }
+                    EditorPanel::Shortcuts => {
+                        let mut shortcuts =
+                            world.resource_mut::<EditorShortcuts>();
+                        if shortcuts::draw_shortcuts_area(ui, &mut shortcuts) {
+                            if let Err(error) = shortcuts.save() {
+                                state.scene_message = Some(format!(
+                                    "Could not save shortcuts: {error}"
+                                ));
+                            }
+                        }
                     }
                     EditorPanel::Console => {
-                        egui::ScrollArea::vertical()
-                            .id_salt("console_panel_scroll")
-                            .auto_shrink([false, false])
-                            .scroll_bar_visibility(
-                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                            )
-                            .show(ui, |ui| {
-                            if let Some(console) =
-                                world.get_resource::<EditorConsole>()
-                            {
-                                for entry in console.entries() {
-                                    let color = match entry.level {
-                                        ConsoleLevel::Info => {
-                                            ui.visuals().text_color()
-                                        }
-                                        ConsoleLevel::Warning => {
-                                            gui_elements::EditorTheme::WARNING
-                                        }
-                                        ConsoleLevel::Error => {
-                                            gui_elements::EditorTheme::ERROR
-                                        }
-                                    };
-                                    ui.colored_label(color, &entry.message);
-                                }
-                                if console.entries().is_empty() {
-                                    ui.label("No console messages.");
-                                }
-                            } else {
-                                ui.colored_label(
-                                    gui_elements::EditorTheme::ERROR,
-                                    "EditorConsole is unavailable. Install EditorPlugin.",
-                                );
-                            }
-                        });
-                    }
-                    EditorPanel::Assets => {
-                        egui::ScrollArea::both()
-                            .id_salt("assets_panel_scroll")
-                            .auto_shrink([false, false])
-                            .scroll_bar_visibility(
-                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                            )
-                            .show(ui, |ui| {
-                        if let Some((meshes, materials, textures, scenes)) =
-                            asset_counts
+                        if let Some(mut console) =
+                            world.get_resource_mut::<EditorConsole>()
                         {
-                            ui.label(format!(
-                                "Meshes {} | Materials {} | Textures {} | Scenes {}",
-                                meshes, materials, textures, scenes
-                            ));
-                        }
-                        if ui.button("Import Files...").clicked() {
-                            dialogs.pick_files(
-                                DialogPurpose::ImportFiles,
-                                rfd::AsyncFileDialog::new()
-                                    .set_title("Import Project Assets"),
+                            draw_console_area(ui, &mut console);
+                        } else {
+                            ui.colored_label(
+                                gui_elements::EditorTheme::ERROR,
+                                "EditorConsole is unavailable. Install EditorPlugin.",
                             );
                         }
-                        ui.horizontal(|ui| {
-                            ui.label("Filter");
-                            ui.text_edit_singleline(&mut editor_assets.filter);
-                        });
-                        if let Some(message) = &editor_assets.message {
-                            ui.small(message);
-                        }
-                        let filter = editor_assets.filter.to_lowercase();
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            ui.strong("Project files");
-                            for path in &asset_files {
-                                let relative = path
-                                    .strip_prefix(&state.project_root)
-                                    .unwrap_or(path);
-                                let label = editor_relative_path(relative);
-                                if !filter.is_empty()
-                                    && !label.to_lowercase().contains(&filter)
-                                {
-                                    continue;
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.monospace(&label);
-                                    match path
-                                        .extension()
-                                        .and_then(|value| value.to_str())
-                                        .map(str::to_ascii_lowercase)
-                                        .as_deref()
-                                    {
-                                        Some("png" | "jpg" | "jpeg" | "bmp" | "tga")
-                                            if ui.button("Load").clicked() =>
-                                        {
-                                            asset_request = Some(
-                                                AssetRequest::LoadTexture(
-                                                    path.clone(),
-                                                ),
-                                            );
-                                        }
-                                        Some("gltf" | "glb")
-                                            if ui.button("Import").clicked() =>
-                                        {
-                                            asset_request = Some(
-                                                AssetRequest::ImportGltf(
-                                                    path.clone(),
-                                                ),
-                                            );
-                                        }
-                                        _ => {}
-                                    }
-                                });
-                            }
-                            ui.separator();
-                            ui.strong("Loaded textures");
-                            for (handle, path) in &loaded_textures {
-                                ui.horizontal(|ui| {
-                                    ui.monospace(path.display().to_string());
-                                    if ui
-                                        .add_enabled(
-                                            state.selected.is_some(),
-                                            egui::Button::new("Use on Selected"),
-                                        )
-                                        .clicked()
-                                    {
-                                        asset_request = Some(
-                                            AssetRequest::AssignTexture(*handle),
-                                        );
-                                    }
-                                });
-                            }
-                            ui.separator();
-                            ui.strong("Imported glTF primitives");
-                            for primitive in &editor_assets.gltf_primitives {
-                                ui.horizontal(|ui| {
-                                    ui.label(&primitive.name);
-                                    if ui
-                                        .add_enabled(
-                                            state.selected.is_some(),
-                                            egui::Button::new("Use on Selected"),
-                                        )
-                                        .clicked()
-                                    {
-                                        asset_request = Some(
-                                            AssetRequest::AssignPrimitive(
-                                                primitive.mesh,
-                                                primitive.material,
-                                            ),
-                                        );
-                                    }
-                                });
-                            }
-                        });
-                            });
+                    }
+                    EditorPanel::Assets => {
+                        assets_panel::draw_assets_area(
+                            ui,
+                            &mut editor_assets,
+                            &state.project_root,
+                            &asset_files,
+                            state.selected.is_some(),
+                            &mut dialogs,
+                            &mut asset_request,
+                        );
                     }
                 },
             );
@@ -1580,10 +1634,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     RigidBody,
                     Collider,
                     CollisionLayers,
-                    crate::runtime::GpuEffectBody,
+                    crate::runtime::PhysicsSyncMode,
+                    crate::runtime::GpuStateMirror,
                 )>();
             } else if let Some(physics) = edited_physics {
-                let uses_gpu = physics.uses_gpu();
                 entity_mut.insert(physics);
                 if let Some(rigid_body) = edited_rigid_body {
                     entity_mut.insert(rigid_body);
@@ -1594,11 +1648,6 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 if add_physics && !entity_mut.contains::<CollisionLayers>() {
                     entity_mut.insert(CollisionLayers::default());
                 }
-                if uses_gpu {
-                    entity_mut.insert(crate::runtime::GpuEffectBody);
-                } else {
-                    entity_mut.remove::<crate::runtime::GpuEffectBody>();
-                }
             }
         }
     }
@@ -1608,12 +1657,21 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             .and_then(|entity| world.get::<PhysicsBody>(entity))
             .and_then(|physics| physics.custom_shader.clone())
         {
+            let exists = std::path::Path::new(&path).exists();
             state.code_path = path;
             state.workspace = EditorWorkspace::Code;
             state
                 .dock_layout
                 .set_panel(state.active_area, EditorPanel::Code);
-            load_code = true;
+            if exists {
+                load_code = true;
+            } else {
+                // A new solver starts from a template, saved on Save.
+                state.code_source = CUSTOM_SOLVER_TEMPLATE.into();
+                state.code_dirty = true;
+                state.code_message =
+                    Some(format!("New custom solver {}", state.code_path));
+            }
         }
     }
     if load_code {
@@ -1766,7 +1824,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             },
         ));
     }
-    if let Some(parent) = export_destination {
+    if let Some((parent, target)) = export_destination {
         let result = open_project(std::path::Path::new(&state.project_root))
             .map_err(|error| error.to_string())
             .and_then(|project| {
@@ -1791,6 +1849,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     project_name: project.manifest.name,
                     binary_name: project.manifest.binary_name,
                     cooked_scene: project.manifest.cooked_scene,
+                    target,
                 })
             });
         match result {
@@ -1971,81 +2030,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         entity.insert(Name(name));
                         Ok(Some(entity.id()))
                     }
-                    EntityRequest::Reparent(entity, parent) => {
-                        let reparented_transform = world
-                            .get::<GlobalTransform>(entity)
-                            .map(|child| Matrix4::from(child.matrix))
-                            .map(|child| {
-                                parent
-                                    .and_then(|parent| {
-                                        world.get::<GlobalTransform>(parent)
-                                    })
-                                    .and_then(|parent| {
-                                        Matrix4::from(parent.matrix)
-                                            .try_inverse()
-                                    })
-                                    .map_or(child, |inverse| inverse * child)
-                            })
-                            .map(Transform::from_matrix);
-                        let child_id = world
-                            .get::<SceneId>(entity)
-                            .copied()
-                            .ok_or_else(|| {
-                                "Selected object is not part of the saved scene"
-                                    .to_owned()
-                            })?;
-                        let parent_id = parent
-                            .map(|parent| {
-                                world
-                                    .get::<SceneId>(parent)
-                                    .copied()
-                                    .map(|id| id.0)
-                                    .ok_or_else(|| {
-                                        "Parent is not part of the saved scene"
-                                            .to_owned()
-                                    })
-                            })
-                            .transpose()?;
-                        let mut document = scene_document(world, "Main Scene")
-                            .map_err(|error| error.to_string())?;
-                        let parents = document
-                            .entities
-                            .iter()
-                            .map(|item| (item.id, item.parent))
-                            .collect::<std::collections::HashMap<_, _>>();
-                        let mut ancestor = parent_id;
-                        let mut visited = std::collections::HashSet::new();
-                        while let Some(id) = ancestor {
-                            if id == child_id.0 || !visited.insert(id) {
-                                return Err(
-                                    "That parent would create a hierarchy cycle"
-                                        .into(),
-                                );
-                            }
-                            ancestor = parents.get(&id).copied().flatten();
-                        }
-                        let child = document
-                            .entities
-                            .iter_mut()
-                            .find(|item| item.id == child_id.0)
-                            .ok_or_else(|| {
-                                "Selected object was not found in the scene"
-                                    .to_owned()
-                            })?;
-                        child.parent = parent_id;
-                        if let Some(transform) = reparented_transform {
-                            child.transform = Some(transform.into());
-                        }
-                        crate::runtime::load_scene_document(
-                            world,
-                            &document,
-                            SceneLoadMode::Replace,
+                    EntityRequest::Reparent(entities, parent) => {
+                        super::hierarchy::reparent_entities(
+                            world, &entities, parent,
                         )
-                        .map_err(|error| error.to_string())?;
-                        let mut query = world.query::<(Entity, &SceneId)>();
-                        Ok(query.iter(world).find_map(|(entity, id)| {
-                            (id.0 == child_id.0).then_some(entity)
-                        }))
                     }
                     EntityRequest::Duplicate(entities) => {
                         let mut document = scene_document(world, "Main Scene")
@@ -2170,6 +2158,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 (|| -> Result<String, String> {
                     let mut imported_paths = Vec::new();
                     let mut prepared_count = 0;
+                    let mut snapshot_taken = false;
                     for source in paths {
                         let path = copy_into_project_assets(
                             &state.project_root,
@@ -2193,14 +2182,16 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 prepared_count += 1;
                             }
                             Some("gltf" | "glb") => {
-                                let primitives = world
-                                    .resource_mut::<AssetServer>()
-                                    .import_gltf(path)
-                                    .map_err(|error| error.to_string())?;
-                                prepared_count += primitives.len();
-                                editor_assets
-                                    .gltf_primitives
-                                    .extend(primitives);
+                                if !snapshot_taken {
+                                    remember_scene_before_edit(
+                                        world,
+                                        &mut history,
+                                    )?;
+                                    snapshot_taken = true;
+                                }
+                                let root = add_model_to_scene(world, path)?;
+                                select_added_model(&mut state, world, root);
+                                prepared_count += 1;
                             }
                             _ => {}
                         }
@@ -2216,52 +2207,41 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 .load_texture(&path)
                 .map(|_| format!("Loaded texture {}", path.display()))
                 .map_err(|error| error.to_string()),
-            AssetRequest::ImportGltf(path) => world
-                .resource_mut::<AssetServer>()
-                .import_gltf(&path)
-                .map(|primitives| {
-                    let count = primitives.len();
-                    editor_assets.gltf_primitives.retain(|old| {
-                        !primitives.iter().any(|new| new.mesh == old.mesh)
-                    });
-                    editor_assets.gltf_primitives.extend(primitives);
-                    format!(
-                        "Imported {count} glTF primitive(s) from {}",
-                        path.display()
-                    )
-                })
-                .map_err(|error| error.to_string()),
-            AssetRequest::AssignTexture(texture) => {
-                let selected = state
-                    .selected
-                    .ok_or_else(|| "Select a mesh object first".to_owned());
-                selected.and_then(|entity| {
-                    let mut renderer = world
-                        .get::<MeshRenderer>(entity)
-                        .copied()
-                        .ok_or_else(|| {
-                            "Selected object has no Mesh Renderer".to_owned()
-                        })?;
+            AssetRequest::AddModel(path) => (|| -> Result<String, String> {
+                remember_scene_before_edit(world, &mut history)?;
+                let root =
+                    add_model_to_scene(world, &path).inspect_err(|_| {
+                        // Nothing was added, so the snapshot is not an Undo step.
+                        history.undo.pop_back();
+                    })?;
+                select_added_model(&mut state, world, root);
+                Ok(format!("Added {} to the scene", path.display()))
+            })(),
+            AssetRequest::AssignTexture(path) => state
+                .selected
+                .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
+                .ok_or_else(|| "Select a mesh object first".to_owned())
+                .and_then(|entity| {
+                    let texture = world
+                        .resource_mut::<AssetServer>()
+                        .load_texture(&path)
+                        .map_err(|error| error.to_string())?;
                     remember_scene_before_edit(world, &mut history)?;
-                    let material = {
-                        let mut assets = world.resource_mut::<AssetServer>();
-                        if !assets.textures.contains(texture) {
-                            return Err("Texture is no longer loaded".into());
-                        }
-                        let mut material = assets
-                            .materials
-                            .get(renderer.material)
+                    let mut material = {
+                        let assets = world.resource::<AssetServer>();
+                        let renderer = world.get::<MeshRenderer>(entity);
+                        renderer
+                            .and_then(|renderer| {
+                                assets.materials.get(renderer.material)
+                            })
                             .cloned()
-                            .unwrap_or_default();
-                        material.base_color_texture = Some(texture);
-                        assets.materials.insert(material)
+                            .unwrap_or_default()
                     };
-                    renderer.material = material;
-                    world.entity_mut(entity).insert(renderer);
+                    material.base_color_texture = Some(texture);
+                    set_material(world, entity, material);
                     state.scene_dirty = true;
-                    Ok("Assigned texture to selected object".into())
-                })
-            }
+                    Ok(format!("Used {} as base color", path.display()))
+                }),
             AssetRequest::NewMaterial => state
                 .selected
                 .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
@@ -2327,37 +2307,17 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 Ok(format!("Loaded texture {}", path.display()))
             })(
             ),
-            AssetRequest::AssignPrimitive(mesh, material) => {
-                let selected = state
-                    .selected
-                    .ok_or_else(|| "Select a scene object first".to_owned());
-                selected.and_then(|entity| {
-                    {
-                        let assets = world.resource::<AssetServer>();
-                        if !assets.meshes.contains(mesh)
-                            || !assets.materials.contains(material)
-                        {
-                            return Err(
-                                "Imported glTF asset is no longer loaded"
-                                    .into(),
-                            );
-                        }
-                    }
-                    remember_scene_before_edit(world, &mut history)?;
-                    world.entity_mut(entity).insert((
-                        MeshRenderer {
-                            mesh,
-                            material,
-                            cast_shadows: true,
-                            receive_shadows: true,
-                        },
-                        Visibility::default(),
-                    ));
-                    state.scene_dirty = true;
-                    Ok("Assigned glTF primitive to selected object".into())
-                })
-            }
         };
+        if let Some(mut console) = world.get_resource_mut::<EditorConsole>() {
+            match &result {
+                Ok(message) => {
+                    console.push_from(ConsoleLevel::Info, "Assets", message)
+                }
+                Err(error) => {
+                    console.push_from(ConsoleLevel::Error, "Assets", error)
+                }
+            }
+        }
         editor_assets.message = Some(result.unwrap_or_else(|error| error));
     }
     if component_edits
@@ -2493,12 +2453,126 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
     *world.resource_mut::<EditorTransformMode>() = transform_mode;
     world.insert_resource(gizmo_drag);
+    if let Some(mut console) = world.get_resource_mut::<EditorConsole>() {
+        for (index, source, now) in [
+            (0, "Scene", &state.scene_message),
+            (1, "Code", &state.code_message),
+        ] {
+            if *now != console.status_seen[index] {
+                console.status_seen[index].clone_from(now);
+                if let Some(message) = now {
+                    console.push_from(status_level(message), source, message);
+                }
+            }
+        }
+    }
     world.insert_resource(state);
     world.insert_resource(history);
     world.insert_resource(pending_action);
     world.insert_resource(editor_assets);
     world.insert_resource(project_manager);
     world.insert_resource(dialogs);
+}
+
+/// Console area: level toggles with counts, a text filter, and the
+/// messages, newest at the bottom.
+fn draw_console_area(ui: &mut egui::Ui, console: &mut EditorConsole) {
+    use gui_elements::EditorTheme;
+    let levels = [
+        (ConsoleLevel::Info, "Info", EditorTheme::TEXT),
+        (ConsoleLevel::Warning, "Warnings", EditorTheme::WARNING),
+        (ConsoleLevel::Error, "Errors", EditorTheme::ERROR),
+    ];
+    let mut counts = [0_u32; 3];
+    for entry in &console.entries {
+        counts[entry.level as usize] += entry.count;
+    }
+    ui.horizontal(|ui| {
+        for ((level, label, color), count) in levels.iter().zip(counts) {
+            let shown = &mut console.hidden[*level as usize];
+            let text = egui::RichText::new(format!("{label} {count}")).color(
+                if *shown {
+                    EditorTheme::TEXT_MUTED
+                } else {
+                    *color
+                },
+            );
+            if ui.selectable_label(!*shown, text).clicked() {
+                *shown = !*shown;
+            }
+        }
+        if ui.button("Clear").clicked() {
+            console.entries.clear();
+        }
+        ui.add(
+            egui::TextEdit::singleline(&mut console.filter)
+                .hint_text("Filter messages")
+                .desired_width(f32::INFINITY),
+        );
+    });
+    let filter = console.filter.to_lowercase();
+    let visible: Vec<&ConsoleEntry> = console
+        .entries
+        .iter()
+        .filter(|entry| !console.hidden[entry.level as usize])
+        .filter(|entry| {
+            filter.is_empty()
+                || entry.message.to_lowercase().contains(&filter)
+                || entry.source.to_lowercase().contains(&filter)
+        })
+        .collect();
+    egui::ScrollArea::vertical()
+        .id_salt("console_panel_scroll")
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            if visible.is_empty() {
+                ui.colored_label(
+                    EditorTheme::TEXT_MUTED,
+                    if console.entries.is_empty() {
+                        "No console messages."
+                    } else {
+                        "No messages match the filter."
+                    },
+                );
+            }
+            for entry in visible {
+                let color = levels[entry.level as usize].2;
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        EditorTheme::TEXT_MUTED,
+                        format!("[{}]", entry.source),
+                    );
+                    ui.colored_label(color, &entry.message);
+                    if entry.count > 1 {
+                        ui.colored_label(
+                            EditorTheme::TEXT_MUTED,
+                            format!("x{}", entry.count),
+                        );
+                    }
+                });
+            }
+        });
+}
+
+/// Console level of a status line the editor wrote as plain text.
+// ponytail: keyword guess, because status lines are strings. Give the
+// status fields a level if a message is misfiled.
+fn status_level(message: &str) -> ConsoleLevel {
+    let lower = message.to_lowercase();
+    if ["fail", "could not", "cannot", "error", "invalid"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        ConsoleLevel::Error
+    } else if ["missing", "skipped", "not found", "warning"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        ConsoleLevel::Warning
+    } else {
+        ConsoleLevel::Info
+    }
 }
 
 fn take_resource<T: Resource>(world: &mut World) -> T {
@@ -3618,10 +3692,12 @@ fn gizmo_geometry(world: &World, entity: Entity) -> Option<GizmoGeometry> {
     let axis_length = world
         .get::<MeshRenderer>(entity)
         .and_then(|renderer| {
-            world.resource::<AssetServer>().meshes.get(renderer.mesh)
+            world.resource::<AssetServer>().mesh_bounds(renderer.mesh)
         })
-        .and_then(|mesh| {
-            crate::editor::overlay::mesh_world_radius_from_origin(mesh, matrix)
+        .map(|bounds| {
+            crate::editor::overlay::mesh_world_radius_from_origin(
+                bounds, matrix,
+            )
         })
         .map_or(1.0, |radius| (radius * 1.2).max(1.0));
     Some(GizmoGeometry {
@@ -3831,12 +3907,11 @@ fn build_scene_debug_overlay(
                     .and_then(|renderer| {
                         world
                             .resource::<AssetServer>()
-                            .meshes
-                            .get(renderer.mesh)
+                            .mesh_bounds(renderer.mesh)
                     })
-                    .and_then(|mesh| {
+                    .map(|bounds| {
                         crate::editor::overlay::mesh_world_radius_from_origin(
-                            mesh, matrix,
+                            bounds, matrix,
                         )
                     })
                     .map_or(1.0, |radius| (radius * 1.2).max(1.0));
@@ -4034,6 +4109,70 @@ fn culling_stats_label(
     )
 }
 
+/// One profiler line: total GPU frame time, then each pass's time.
+fn gpu_pass_times_label(
+    times: &crate::rendering::scene_renderer::GpuPassTimes,
+) -> String {
+    let ms = |time: std::time::Duration| time.as_secs_f64() * 1000.0;
+    let mut label = format!("GPU {:.3} ms", ms(times.total()));
+    for (pass, time) in &times.0 {
+        label += &format!(" | {} {:.3}", pass.label(), ms(*time));
+    }
+    label
+}
+
+/// One profiler line: CPU time per frame part, in milliseconds.
+fn cpu_timings_label(timings: &crate::runtime::CpuFrameTimings) -> String {
+    let ms = |time: std::time::Duration| time.as_secs_f64() * 1000.0;
+    format!(
+        "CPU Physics {:.3} | Extract {:.3} | Prepare {:.3} | Record {:.3} | Editor {:.3} ms",
+        ms(timings.physics),
+        ms(timings.extraction),
+        ms(timings.preparation),
+        ms(timings.recording),
+        ms(timings.editor)
+    )
+}
+
+/// One profiler line: the renderer's work counters.
+fn render_counters_label(
+    counters: &crate::rendering::scene_renderer::RenderCounters,
+) -> String {
+    let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    format!(
+        "Draws {} | Dispatches {} | Triangles {} | Visible {} | Upload {:.2} MiB | GPU memory {:.1} MiB",
+        counters.draws,
+        counters.dispatches,
+        counters.triangles,
+        counters.visible_instances,
+        mib(counters.upload_bytes),
+        mib(counters.gpu_memory_bytes)
+    )
+}
+
+/// One profiler line: GPU physics work, traffic and contact-grid fallbacks.
+/// CPU and GPU physics time are on the timing lines above it.
+fn physics_counters_label(
+    counters: &crate::rendering::scene_renderer::RenderCounters,
+    capacity: &crate::rendering::scene_renderer::RenderCapacityDiagnostics,
+) -> String {
+    let kib = |bytes: u64| bytes as f64 / 1024.0;
+    format!(
+        "GPU Physics: Dispatches {} | Commands {} ({:.1} KiB) | Events {:.1} KiB | States {:.1} KiB | Latency {} frames | Grid overflow {} | Oversized {} | Hash collisions {} | Fallback tests {} | Events lost {}",
+        counters.physics_dispatches,
+        counters.physics_commands,
+        kib(counters.physics_command_bytes),
+        kib(counters.physics_event_bytes),
+        kib(counters.physics_state_bytes),
+        counters.physics_readback_latency_frames,
+        capacity.physics_grid_overflow,
+        capacity.physics_oversized_bodies,
+        capacity.physics_grid_hash_collisions,
+        capacity.physics_fallback_tests,
+        capacity.physics_events_dropped
+    )
+}
+
 fn add_selected_bounds(
     overlay: &mut RenderDebugOverlay,
     world: &World,
@@ -4050,11 +4189,8 @@ fn add_selected_bounds(
         );
         return;
     }
-    let Some(mesh) = world.resource::<AssetServer>().meshes.get(renderer.mesh)
-    else {
-        return;
-    };
-    let Some((minimum, maximum)) = crate::editor::overlay::mesh_bounds(mesh)
+    let Some((minimum, maximum)) =
+        world.resource::<AssetServer>().mesh_bounds(renderer.mesh)
     else {
         return;
     };
@@ -4072,9 +4208,98 @@ fn normalized_axis(axis: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// Selects a model root that `add_model_to_scene` just added.
+fn select_added_model(state: &mut EditorState, world: &World, root: Entity) {
+    state.selected = Some(root);
+    state.selection = vec![root];
+    state.rename_draft = world
+        .get::<Name>(root)
+        .map(|name| name.0.clone())
+        .unwrap_or_default();
+    state.scene_dirty = true;
+}
+
 #[cfg(test)]
 mod gizmo_tests {
     use super::*;
+
+    #[test]
+    fn gpu_pass_times_label_shows_total_then_each_pass() {
+        use crate::rendering::frame_passes::FramePass;
+        use crate::rendering::scene_renderer::GpuPassTimes;
+        use std::time::Duration;
+        let times = GpuPassTimes(vec![
+            (FramePass::Shadow, Duration::from_micros(100)),
+            (FramePass::Scene, Duration::from_micros(1250)),
+        ]);
+        assert_eq!(
+            gpu_pass_times_label(&times),
+            "GPU 1.350 ms | Shadow 0.100 | Scene 1.250"
+        );
+    }
+
+    #[test]
+    fn physics_counters_label_shows_traffic_and_fallbacks() {
+        use crate::rendering::scene_renderer::{
+            RenderCapacityDiagnostics, RenderCounters,
+        };
+        let counters = RenderCounters {
+            physics_dispatches: 8,
+            physics_commands: 2,
+            physics_command_bytes: 160,
+            physics_event_bytes: 2048,
+            physics_state_bytes: 512,
+            physics_readback_latency_frames: 2,
+            ..RenderCounters::default()
+        };
+        let capacity = RenderCapacityDiagnostics {
+            physics_grid_overflow: 3,
+            physics_oversized_bodies: 1,
+            physics_grid_hash_collisions: 4,
+            physics_fallback_tests: 40,
+            physics_events_dropped: 5,
+            ..RenderCapacityDiagnostics::default()
+        };
+        assert_eq!(
+            physics_counters_label(&counters, &capacity),
+            "GPU Physics: Dispatches 8 | Commands 2 (0.2 KiB) | Events 2.0 KiB | States 0.5 KiB | Latency 2 frames | Grid overflow 3 | Oversized 1 | Hash collisions 4 | Fallback tests 40 | Events lost 5"
+        );
+    }
+
+    #[test]
+    fn render_counters_label_shows_each_counter() {
+        use crate::rendering::scene_renderer::RenderCounters;
+        let counters = RenderCounters {
+            draws: 12,
+            dispatches: 3,
+            triangles: 4096,
+            visible_instances: 40,
+            upload_bytes: 512 * 1024,
+            gpu_memory_bytes: 256 * 1024 * 1024,
+            ..RenderCounters::default()
+        };
+        assert_eq!(
+            render_counters_label(&counters),
+            "Draws 12 | Dispatches 3 | Triangles 4096 | Visible 40 | Upload 0.50 MiB | GPU memory 256.0 MiB"
+        );
+    }
+
+    #[test]
+    fn cpu_timings_label_shows_each_part() {
+        use crate::runtime::CpuFrameTimings;
+        use std::time::Duration;
+        let timings = CpuFrameTimings {
+            physics: Duration::from_micros(200),
+            extraction: Duration::from_micros(50),
+            preparation: Duration::from_micros(300),
+            recording: Duration::from_micros(400),
+            editor: Duration::from_micros(1500),
+        };
+        assert_eq!(
+            cpu_timings_label(&timings),
+            "CPU Physics 0.200 | Extract 0.050 | Prepare 0.300 | Record 0.400 | Editor 1.500 ms"
+        );
+    }
 
     #[test]
     fn culling_stats_label_shows_counts_and_time() {

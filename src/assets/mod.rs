@@ -1121,7 +1121,12 @@ pub struct AssetServer {
     pub builtin_primitives: HashMap<PrimitiveShape, Handle<MeshAsset>>,
     pub fallback_texture: Handle<TextureAsset>,
     pub fallback_material: Handle<MaterialAsset>,
+    /// Local mesh boxes by asset key and revision, so per-frame editor
+    /// callers do not rescan every vertex of a large mesh.
+    mesh_bounds_cache: Mutex<HashMap<(AssetKey, u64), Option<MeshBox>>>,
 }
+
+type MeshBox = ([f32; 3], [f32; 3]);
 
 /// One glTF primitive prepared for assignment in the editor.
 #[derive(Clone, Debug)]
@@ -1135,6 +1140,30 @@ pub struct ImportedGltfPrimitive {
 }
 
 impl AssetServer {
+    /// Smallest local box around every vertex of `handle`, computed once per
+    /// mesh revision.
+    #[must_use]
+    pub fn mesh_bounds(&self, handle: Handle<MeshAsset>) -> Option<MeshBox> {
+        let key = (AssetKey::from(handle), self.meshes.revision(handle)?);
+        let mut cache = self
+            .mesh_bounds_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(&bounds) = cache.get(&key) {
+            return bounds;
+        }
+        // ponytail: drops the whole cache when it grows; an LRU is only
+        // worth it if scenes cycle through more meshes than this.
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        let bounds =
+            crate::runtime::picking::mesh_bounds(self.meshes.get(handle)?)
+                .map(|(min, max)| (min.into(), max.into()));
+        cache.insert(key, bounds);
+        bounds
+    }
+
     #[must_use]
     pub fn builtin_primitive(
         &self,
@@ -1340,9 +1369,11 @@ impl AssetServer {
                         message: "glTF primitive has no positions".into(),
                     })?
                     .collect::<Vec<_>>();
-                let normals = reader
-                    .read_normals()
-                    .map(Iterator::collect)
+                let imported_normals =
+                    reader.read_normals().map(Iterator::collect::<Vec<_>>);
+                let flat = imported_normals.is_none();
+                // Replaced by flat face normals below.
+                let normals = imported_normals
                     .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
                 let uvs = reader
                     .read_tex_coords(0)
@@ -1375,7 +1406,7 @@ impl AssetServer {
                         tangent: tangents[index],
                     })
                     .collect::<Vec<_>>();
-                let indices: Vec<u32> =
+                let mut indices: Vec<u32> =
                     if let Some(values) = reader.read_indices() {
                         values.into_u32().collect()
                     } else {
@@ -1388,6 +1419,9 @@ impl AssetServer {
                         (0..vertex_count).collect()
                     };
                 check_mesh_indices(&source, &indices, vertices.len())?;
+                if flat {
+                    (vertices, indices) = flat_shaded(&vertices, &indices);
+                }
                 if generate {
                     generate_tangents(&mut vertices, &indices);
                 }
@@ -1637,6 +1671,32 @@ fn write_cooked_asset(
     std::fs::write(path, bytes).map_err(|value| error(value.to_string()))
 }
 
+/// Unshares a triangle list's vertices and gives each triangle its face
+/// normal. glTF asks for flat normals when a primitive has none.
+#[cfg(feature = "gltf")]
+fn flat_shaded(
+    vertices: &[MeshVertex],
+    indices: &[u32],
+) -> (Vec<MeshVertex>, Vec<u32>) {
+    use nalgebra::Vector3;
+    let mut flat = Vec::with_capacity(indices.len());
+    for triangle in indices.chunks_exact(3) {
+        let corners =
+            [0, 1, 2].map(|corner| vertices[triangle[corner] as usize]);
+        let [a, b, c] = corners.map(|vertex| Vector3::from(vertex.position));
+        let normal = (b - a)
+            .cross(&(c - a))
+            .try_normalize(f32::EPSILON)
+            .unwrap_or_else(Vector3::y);
+        flat.extend(corners.map(|vertex| MeshVertex {
+            normal: normal.into(),
+            ..vertex
+        }));
+    }
+    let count = flat.len() as u32;
+    (flat, (0..count).collect())
+}
+
 /// Spawns imported glTF nodes as entities with `Name`, `Transform`, parent
 /// links, cameras, and lights. A node's first primitive renders on the node
 /// itself; extra primitives become child entities. Returns one entity per
@@ -1647,6 +1707,17 @@ pub fn spawn_gltf_nodes(
     nodes: &[ImportedGltfNode],
     material_override: Option<Handle<MaterialAsset>>,
 ) -> Result<Vec<bevy_ecs::entity::Entity>, AppError> {
+    spawn_gltf_nodes_in_world(app.world_mut(), nodes, material_override)
+}
+
+/// [`spawn_gltf_nodes`] for code that holds a `World` instead of an `App`.
+/// Every spawned entity gets a new `SceneId`, so it saves with the scene.
+pub fn spawn_gltf_nodes_in_world(
+    world: &mut bevy_ecs::world::World,
+    nodes: &[ImportedGltfNode],
+    material_override: Option<Handle<MaterialAsset>>,
+) -> Result<Vec<bevy_ecs::entity::Entity>, AppError> {
+    use crate::runtime::SceneId;
     let renderer = |primitive: &ImportedGltfPrimitive| MeshRenderer {
         mesh: primitive.mesh,
         material: material_override.unwrap_or(primitive.material),
@@ -1656,8 +1727,11 @@ pub fn spawn_gltf_nodes(
     let entities = nodes
         .iter()
         .map(|node| {
-            let entity = app.spawn((Name(node.name.clone()), node.transform));
-            let mut world_entity = app.world_mut().entity_mut(entity);
+            let mut world_entity = world.spawn((
+                SceneId::new(),
+                Name(node.name.clone()),
+                node.transform,
+            ));
             if let Some(camera) = node.camera {
                 world_entity.insert(camera);
             }
@@ -1676,20 +1750,27 @@ pub fn spawn_gltf_nodes(
             if let Some(first) = node.primitives.first() {
                 world_entity.insert(renderer(first));
             }
-            entity
+            world_entity.id()
         })
         .collect::<Vec<_>>();
     for (node, &entity) in nodes.iter().zip(&entities) {
         if let Some(parent) = node.parent {
-            app.set_parent(entity, entities[parent])?;
+            crate::runtime::hierarchy::set_parent(
+                world,
+                entity,
+                entities[parent],
+            )?;
         }
         for primitive in node.primitives.iter().skip(1) {
-            let child = app.spawn((
-                Name(primitive.name.clone()),
-                crate::Transform::default(),
-                renderer(primitive),
-            ));
-            app.set_parent(child, entity)?;
+            let child = world
+                .spawn((
+                    SceneId::new(),
+                    Name(primitive.name.clone()),
+                    crate::Transform::default(),
+                    renderer(primitive),
+                ))
+                .id();
+            crate::runtime::hierarchy::set_parent(world, child, entity)?;
         }
     }
     Ok(entities)
@@ -1750,6 +1831,7 @@ impl Default for AssetServer {
             builtin_primitives,
             fallback_texture,
             fallback_material,
+            mesh_bounds_cache: Mutex::default(),
         }
     }
 }
@@ -2579,6 +2661,30 @@ mod tests {
         *assets.get_mut(handle).unwrap() = 2;
         assert!(assets.revision(handle).unwrap() > initial);
         assert_eq!(assets.get(handle), Some(&2));
+    }
+
+    #[test]
+    fn mesh_bounds_are_cached_until_the_mesh_changes() {
+        let mut server = AssetServer::default();
+        let vertex = |x| MeshVertex {
+            position: [x, 0.0, 0.0],
+            ..MeshVertex::default()
+        };
+        let handle = server.meshes.insert(MeshAsset {
+            vertices: vec![vertex(-1.0), vertex(2.0)],
+            indices: Vec::new(),
+        });
+        assert_eq!(
+            server.mesh_bounds(handle),
+            Some(([-1.0, 0.0, 0.0], [2.0, 0.0, 0.0]))
+        );
+        server
+            .meshes
+            .get_mut(handle)
+            .unwrap()
+            .vertices
+            .push(vertex(5.0));
+        assert_eq!(server.mesh_bounds(handle).unwrap().1, [5.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -1,0 +1,211 @@
+#version 450
+// GPU body-to-body contacts for the built-in ECS physics shader, in two
+// passes selected by a define. GRID_PASS copies every body into the
+// snapshot and files the bodies that collide into a spatial hash; the
+// contact pass then moves each dynamic body out of its neighbours, reading
+// only the snapshot, so the result does not depend on invocation order.
+// Bodies whose cell is full, and bodies too big for one cell, go to the
+// fallback list instead, which every body tests: no body is ever left out.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include <physics_abi.glsl>
+#include <physics_shapes.glsl>
+
+// Bodies per hash cell before the rest spill into the fallback list.
+const uint CELL_SLOTS = 8u;
+
+// Cell counts; the length is a power of two.
+layout(set = 0, binding = 8) buffer GridCounts { uint data[]; } grid_counts;
+layout(set = 0, binding = 9) buffer GridSlots { uint data[]; } grid_slots;
+// data[0] = fallback count, then the fallback body indices.
+layout(set = 0, binding = 10) buffer Fallback { uint data[]; } fallback;
+layout(set = 0, binding = 11) buffer Snapshot { PhysicsState data[]; } snapshot;
+
+// Full, Simplified and Space bodies with a solid shape touch each other;
+// NoCollision (2) and Custom (3) bodies do not.
+bool takes_part(PhysicsState body, BodyShape shape) {
+    float solver = body.custom_values.x;
+    return shape.shape.x < 2.5 && abs(solver - 2.0) > 0.5 && abs(solver - 3.0) > 0.5;
+}
+
+float inverse_mass(PhysicsState body) {
+    bool dynamic = body.properties.z > 0.5 && body.properties.z < 1.5 && body.properties.x > 0.0;
+    return dynamic ? 1.0 / body.properties.x : 0.0;
+}
+
+ivec3 cell_of(vec3 position) {
+    return ivec3(floor(position / pc.grid_cell_size));
+}
+
+uint hash_cell(ivec3 cell) {
+    uvec3 u = uvec3(cell);
+    return (u.x * 73856093u ^ u.y * 19349663u ^ u.z * 83492791u) & uint(grid_counts.data.length() - 1);
+}
+
+bool oversized(BodyShape shape) {
+    return bounding_radius(shape.shape) * 2.0 > pc.grid_cell_size;
+}
+
+#ifdef GRID_PASS
+
+void add_to_fallback(uint body_index) {
+    uint slot = atomicAdd(fallback.data[0], 1u);
+    fallback.data[1u + slot] = body_index;
+}
+
+void main() {
+    uint body_index = gl_GlobalInvocationID.x;
+    if (body_index >= pc.body_count) return;
+    PhysicsState body = bodies.data[body_index];
+    snapshot.data[body_index] = body;
+    BodyShape shape = body_shapes.data[body_index];
+    if (!takes_part(body, shape)) return;
+    if (oversized(shape)) {
+        atomicAdd(event_header.contacts.y, 1u);
+        add_to_fallback(body_index);
+        return;
+    }
+    uint cell = hash_cell(cell_of(body.model[3].xyz));
+    uint slot = atomicAdd(grid_counts.data[cell], 1u);
+    if (slot < CELL_SLOTS) {
+        grid_slots.data[cell * CELL_SLOTS + slot] = body_index;
+    } else {
+        atomicAdd(event_header.contacts.x, 1u);
+        add_to_fallback(body_index);
+    }
+}
+
+#else
+
+PhysicsState own;
+BodyShape own_shape;
+mat3 own_rotation;
+uint own_index;
+float own_inverse_mass;
+// Sums in fixed point: integer addition gives the same result in any
+// order, and the order differs between runs because the grid and fallback
+// lists fill in atomic order.
+ivec3 push;
+ivec3 velocity_change;
+bool touched;
+uint hash_collisions;
+uint fallback_tests;
+
+// 1/65536 m (or m/s) steps; a contribution is clamped to 256 so 128 of
+// them cannot overflow.
+const float FIXED_SCALE = 65536.0;
+
+ivec3 to_fixed(vec3 value) {
+    return ivec3(round(clamp(value, -256.0, 256.0) * FIXED_SCALE));
+}
+
+// Moves `own` out of `other_index` by its share of the overlap and removes
+// its share of the closing velocity, like a collider contact without torque.
+// ponytail: the overlap comes from own center to the other surface plus own
+// reach, exact for spheres and face contacts but loose on edges; add a
+// real narrow phase if stacks of rotated boxes need it.
+void touch(uint other_index) {
+    if (other_index == own_index) return;
+    PhysicsState other = snapshot.data[other_index];
+    BodyShape other_shape = body_shapes.data[other_index];
+    if ((own_shape.layers.x & other_shape.layers.y) == 0u || (other_shape.layers.x & own_shape.layers.y) == 0u) return;
+    vec3 offset = own.model[3].xyz - other.model[3].xyz;
+    float reach = bounding_radius(own_shape.shape) + bounding_radius(other_shape.shape);
+    if (dot(offset, offset) >= reach * reach) return;
+    vec3 normal;
+    float distance;
+    shape_distance(other_shape.shape, rotation_of(other.model), other.model[3].xyz, own.model[3].xyz, normal, distance);
+    float depth = support(own_shape.shape, own_rotation, normal) - distance;
+    if (depth <= 0.0) return;
+    touched = true;
+    float total = own_inverse_mass + inverse_mass(other);
+    if (total <= 0.0) return;
+    float share = own_inverse_mass / total;
+    // Shock propagation: a body below that was supported last step (touch
+    // flag in velocity.w) counts as immovable, and it ignores the body
+    // resting on it. One pass then holds a tall stack instead of splitting
+    // each correction in half and letting the weight sink through.
+    vec3 gravity = vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z);
+    if (dot(gravity, gravity) > 0.0) {
+        float up = dot(normal, -normalize(gravity));
+        if (up > 0.7 && other.velocity.w > 0.5 && own_inverse_mass > 0.0) share = 1.0;
+        else if (up < -0.7 && own.velocity.w > 0.5) share = 0.0;
+    }
+    push += to_fixed(normal * depth * share);
+    vec3 other_velocity = other.velocity.xyz;
+    // A supporting body sinks only because this pass lags a step; matching
+    // that sink would add g * dt of fall per level of a stack.
+    if (share == 1.0) other_velocity -= normal * min(dot(other_velocity, normal), 0.0);
+    vec3 relative = own.velocity.xyz - other_velocity;
+    float closing = dot(relative, normal);
+    if (closing >= 0.0) return;
+    // Bounce only above 1 m/s so resting contacts settle.
+    float restitution = closing < -1.0 ? max(own_shape.material.y, other_shape.material.y) : 0.0;
+    vec3 change = -normal * closing * (1.0 + restitution);
+    vec3 tangent = relative - normal * closing;
+    float tangent_speed = length(tangent);
+    if (tangent_speed > 0.000001) {
+        float friction = sqrt(own_shape.material.x * other_shape.material.x);
+        change -= tangent / tangent_speed * min(tangent_speed, -friction * closing);
+    }
+    velocity_change += to_fixed(change * share);
+}
+
+void touch_in_cell(uint other_index, ivec3 cell) {
+    if (cell_of(snapshot.data[other_index].model[3].xyz) != cell) hash_collisions++;
+    touch(other_index);
+}
+
+void touch_fallback(uint other_index) {
+    fallback_tests++;
+    touch(other_index);
+}
+
+void main() {
+    own_index = gl_GlobalInvocationID.x;
+    if (own_index >= pc.body_count) return;
+    own = snapshot.data[own_index];
+    own_shape = body_shapes.data[own_index];
+    touched = false;
+    hash_collisions = 0u;
+    fallback_tests = 0u;
+    push = ivec3(0);
+    velocity_change = ivec3(0);
+    if (takes_part(own, own_shape)) {
+        own_rotation = rotation_of(own.model);
+        own_inverse_mass = inverse_mass(own);
+        if (oversized(own_shape)) {
+            // Too big for the grid: test every body.
+            for (uint other = 0u; other < pc.body_count; other++) {
+                if (takes_part(snapshot.data[other], body_shapes.data[other])) touch_fallback(other);
+            }
+        } else {
+            ivec3 cell = cell_of(own.model[3].xyz);
+            uint visited[27];
+            uint visited_count = 0u;
+            for (int z = -1; z <= 1; z++) {
+                for (int y = -1; y <= 1; y++) {
+                    for (int x = -1; x <= 1; x++) {
+                        uint hash = hash_cell(cell + ivec3(x, y, z));
+                        // Two neighbour cells can share a hash; visit it once.
+                        bool seen = false;
+                        for (uint index = 0u; index < visited_count; index++) seen = seen || visited[index] == hash;
+                        if (seen) continue;
+                        visited[visited_count++] = hash;
+                        uint count = min(grid_counts.data[hash], CELL_SLOTS);
+                        for (uint entry = 0u; entry < count; entry++) touch_in_cell(grid_slots.data[hash * CELL_SLOTS + entry], cell + ivec3(x, y, z));
+                    }
+                }
+            }
+            for (uint entry = 0u; entry < fallback.data[0]; entry++) touch_fallback(fallback.data[1u + entry]);
+        }
+    }
+    if (hash_collisions > 0u) atomicAdd(event_header.contacts.z, hash_collisions);
+    if (fallback_tests > 0u) atomicAdd(event_header.contacts.w, fallback_tests);
+    // Every body is written so the contact flag starts each step fresh; the
+    // main pass adds collider contacts to it.
+    bodies.data[own_index].model[3].xyz = own.model[3].xyz + vec3(push) / FIXED_SCALE;
+    bodies.data[own_index].velocity = vec4(own.velocity.xyz + vec3(velocity_change) / FIXED_SCALE, touched ? 1.0 : 0.0);
+}
+
+#endif

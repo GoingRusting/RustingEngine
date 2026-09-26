@@ -21,10 +21,12 @@ pub enum EditorPanel {
     Console,
     /// List of assets loaded by the engine.
     Assets,
+    /// Rebinds editor keyboard shortcuts.
+    Shortcuts,
 }
 
 impl EditorPanel {
-    pub(super) const ALL: [Self; 8] = [
+    pub(super) const ALL: [Self; 9] = [
         Self::Scene,
         Self::Game,
         Self::Code,
@@ -33,6 +35,7 @@ impl EditorPanel {
         Self::Project,
         Self::Console,
         Self::Assets,
+        Self::Shortcuts,
     ];
 
     pub(super) fn icon(self) -> super::EditorIcon {
@@ -46,6 +49,7 @@ impl EditorPanel {
             Self::Project => EditorIcon::Gear,
             Self::Console => EditorIcon::Console,
             Self::Assets => EditorIcon::Folder,
+            Self::Shortcuts => EditorIcon::Gear,
         }
     }
 
@@ -59,6 +63,7 @@ impl EditorPanel {
             Self::Project => "Project Settings",
             Self::Console => "Console",
             Self::Assets => "Assets",
+            Self::Shortcuts => "Keyboard Shortcuts",
         }
     }
 }

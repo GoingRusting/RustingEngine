@@ -1,7 +1,6 @@
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Component, With, World};
 
-use crate::assets::MeshAsset;
 use crate::rendering::debug_overlay::RenderDebugOverlay;
 use crate::runtime::{
     Camera, DirectionalLight, GlobalTransform, PointLight, Projection,
@@ -197,27 +196,13 @@ fn normalize(value: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// Returns the smallest local box containing every mesh vertex.
-pub fn mesh_bounds(mesh: &MeshAsset) -> Option<([f32; 3], [f32; 3])> {
-    let first = mesh.vertices.first()?.position;
-    let mut minimum = first;
-    let mut maximum = first;
-    for vertex in &mesh.vertices[1..] {
-        for axis in 0..3 {
-            minimum[axis] = minimum[axis].min(vertex.position[axis]);
-            maximum[axis] = maximum[axis].max(vertex.position[axis]);
-        }
-    }
-    Some((minimum, maximum))
-}
-
-/// Finds the farthest transformed mesh corner from the object's origin.
-/// The selected axes use this to extend beyond large or heavily scaled meshes.
+/// Finds the farthest transformed corner of a local mesh box from the
+/// object's origin. The selected axes use this to extend beyond large or
+/// heavily scaled meshes.
 pub fn mesh_world_radius_from_origin(
-    mesh: &MeshAsset,
+    (minimum, maximum): ([f32; 3], [f32; 3]),
     matrix: [[f32; 4]; 4],
-) -> Option<f32> {
-    let (minimum, maximum) = mesh_bounds(mesh)?;
+) -> f32 {
     let origin = [matrix[3][0], matrix[3][1], matrix[3][2]];
     let mut radius: f32 = 0.0;
     for x in [minimum[0], maximum[0]] {
@@ -238,7 +223,7 @@ pub fn mesh_world_radius_from_origin(
             }
         }
     }
-    Some(radius)
+    radius
 }
 
 /// Adds a box around the selected mesh.
@@ -346,7 +331,6 @@ fn transform_point(matrix: [[f32; 4]; 4], point: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::MeshVertex;
 
     #[test]
     fn axis_uses_requested_world_length() {
@@ -365,24 +349,12 @@ mod tests {
 
     #[test]
     fn mesh_radius_includes_object_scale() {
-        let mesh = MeshAsset {
-            vertices: vec![
-                MeshVertex {
-                    position: [-1.0, -1.0, -1.0],
-                    ..MeshVertex::default()
-                },
-                MeshVertex {
-                    position: [1.0, 1.0, 1.0],
-                    ..MeshVertex::default()
-                },
-            ],
-            indices: Vec::new(),
-        };
         let matrix = crate::Transform::default()
             .with_scale(10.0, 10.0, 10.0)
             .to_matrix();
 
-        let radius = mesh_world_radius_from_origin(&mesh, matrix).unwrap();
+        let radius =
+            mesh_world_radius_from_origin(([-1.0; 3], [1.0; 3]), matrix);
         assert!((radius - 300.0_f32.sqrt()).abs() < 0.001);
     }
 

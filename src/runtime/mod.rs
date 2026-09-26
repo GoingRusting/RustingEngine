@@ -5,12 +5,13 @@
 
 mod actions;
 mod click;
-mod collision;
 mod components;
+mod cpu_physics;
 mod events;
-mod hierarchy;
+pub(crate) mod hierarchy;
 mod hybrid_physics;
 mod input;
+mod physics_benchmark;
 pub mod picking;
 mod render_world;
 mod scene_file;
@@ -20,12 +21,19 @@ mod time;
 
 pub use actions::{ActionMap, InputBinding};
 pub use click::ClickEvent;
-pub use collision::CollisionEvent;
 pub use components::*;
+pub(crate) use cpu_physics::gpu_shape_words;
+pub use cpu_physics::{
+    CharacterMove, CollisionEvent, Contact, GpuCollider, PhysicsWorld, RayHit,
+    Sleeping, SLEEP_STEPS,
+};
 pub use events::EventQueue;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
 pub use input::{KeyCode, MouseButton, RuntimeInput};
+pub use physics_benchmark::{
+    BenchmarkBody, PhysicsBenchmark, BENCHMARK_TOWER_HEIGHT,
+};
 pub use render_world::*;
 pub use rusting_core::schedule::{FrameReport, ScheduleStage};
 pub use scene_file::*;
@@ -149,8 +157,13 @@ impl Default for App {
         world.insert_resource(HierarchyDiagnostics::default());
         world.insert_resource(RenderSettings::default());
         world.insert_resource(PhysicsSettings::default());
-        world.insert_resource(PhysicsBackendStatus::default());
+        world.insert_resource(PhysicsBackendStatus {
+            gameplay_available: true,
+            ..PhysicsBackendStatus::default()
+        });
+        world.init_resource::<PhysicsWorld>();
         world.insert_resource(SceneComponentRegistry::default());
+        world.init_resource::<CpuFrameTimings>();
         input::install(&mut world);
         actions::install(&mut world);
 
@@ -173,7 +186,7 @@ impl Default for App {
         app.add_event::<CollisionEvent>();
         app.add_system(
             ScheduleStage::FixedUpdate,
-            collision::detect_collisions,
+            cpu_physics::step_cpu_physics,
         );
         app
     }
@@ -321,12 +334,22 @@ impl App {
         }
 
         let fixed_steps = time::advance(&mut self.world, real_delta)?;
+        let start = Instant::now();
         for _ in 0..fixed_steps {
             self.fixed_update.run(&mut self.world);
         }
+        let physics = start.elapsed();
         self.update.run(&mut self.world);
         self.post_update.run(&mut self.world);
+        let start = Instant::now();
         self.render_extract.run(&mut self.world);
+        let extraction = start.elapsed();
+        if let Some(mut timings) =
+            self.world.get_resource_mut::<CpuFrameTimings>()
+        {
+            timings.physics = physics;
+            timings.extraction = extraction;
+        }
 
         Ok(FrameReport {
             fixed_steps,
@@ -355,6 +378,20 @@ impl App {
             ScheduleStage::RenderExtract => &mut self.render_extract,
         }
     }
+}
+
+/// CPU time spent in each part of the last frame, for the profiler.
+///
+/// [`App::update`] fills `physics` (every `FixedUpdate` step, where physics
+/// runs) and `extraction` (the `RenderExtract` schedule). The renderer fills
+/// `preparation` and `recording`, and a host with a UI fills `editor`.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuFrameTimings {
+    pub physics: Duration,
+    pub extraction: Duration,
+    pub preparation: Duration,
+    pub recording: Duration,
+    pub editor: Duration,
 }
 
 /// Fallible builder for the ECS runtime.

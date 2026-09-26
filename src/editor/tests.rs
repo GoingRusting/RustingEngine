@@ -531,6 +531,7 @@ fn export_package_contains_executable_scene_assets_and_readme() {
         "Fake Game",
         "fake_game",
         std::path::Path::new("build/main.rscene.bin"),
+        None,
     )
     .unwrap();
 
@@ -543,6 +544,20 @@ fn export_package_contains_executable_scene_assets_and_readme() {
     assert!(exported.join("build/main.rscene.bin").is_file());
     assert!(exported.join("assets/texture.png").is_file());
     assert!(exported.join("README.txt").is_file());
+
+    // A Windows export from any system gets an .exe in its own folder.
+    let windows = package_game_files(
+        &project,
+        &executable,
+        &exports,
+        "Fake Game",
+        "fake_game",
+        std::path::Path::new("build/main.rscene.bin"),
+        Some(super::WINDOWS_TARGET),
+    )
+    .unwrap();
+    assert!(windows.ends_with("fake_game_windows_export"));
+    assert!(windows.join("fake_game.exe").is_file());
     std::fs::remove_dir_all(folder).unwrap();
 }
 
@@ -659,4 +674,622 @@ fn editor_scene_restores_camera_pose_and_selection_after_reload() {
     load_editor_scene(world, &mut state, &path).unwrap();
     assert!(state.selection.is_empty() && state.selected.is_none());
     std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn added_models_keep_their_node_tree_under_one_saved_root() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-model-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    // One triangle without normals, so the import has to make flat ones.
+    let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    std::fs::write(folder.join("tri.bin"), &positions).unwrap();
+    let path = folder.join("crate.gltf");
+    std::fs::write(
+        &path,
+        r#"{
+          "asset": {"version": "2.0"},
+          "buffers": [{"uri": "tri.bin", "byteLength": 36}],
+          "bufferViews": [{"buffer": 0, "byteLength": 36}],
+          "accessors": [{"bufferView": 0, "componentType": 5126,
+            "count": 3, "type": "VEC3",
+            "min": [0, 0, 0], "max": [1, 1, 0]}],
+          "cameras": [{"type": "perspective",
+            "perspective": {"yfov": 1.0, "znear": 0.1}}],
+          "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+          "nodes": [
+            {"name": "Body", "mesh": 0, "children": [1],
+             "translation": [0, 2, 0]},
+            {"name": "Body", "camera": 0}],
+          "scenes": [{"nodes": [0]}]
+        }"#,
+    )
+    .unwrap();
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+
+    let first = add_model_to_scene(world, &path).unwrap();
+    let second = add_model_to_scene(world, &path).unwrap();
+
+    assert_eq!(world.get::<Name>(first).unwrap().0, "crate");
+    assert_eq!(world.get::<Name>(second).unwrap().0, "crate 2");
+    let mut objects = world.query::<(Entity, &Name, Option<&Parent>)>();
+    let objects = objects
+        .iter(world)
+        .map(|(entity, name, parent)| {
+            (entity, name.0.clone(), parent.map(|p| p.0))
+        })
+        .collect::<Vec<_>>();
+    // Two roots, and a body and a camera under each; every name is unique.
+    assert_eq!(objects.len(), 6);
+    let mut names = objects.iter().map(|(_, name, _)| name).collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 6);
+    for root in [first, second] {
+        let body = objects
+            .iter()
+            .find(|(_, _, parent)| *parent == Some(root))
+            .unwrap()
+            .0;
+        assert_eq!(
+            world.get::<Transform>(body).unwrap().position,
+            [0.0, 2.0, 0.0]
+        );
+        let camera = objects
+            .iter()
+            .find(|(_, _, parent)| *parent == Some(body))
+            .unwrap()
+            .0;
+        assert!(world.get::<Camera>(camera).is_some());
+        let mesh = world.get::<MeshRenderer>(body).unwrap().mesh;
+        let assets = world.resource::<AssetServer>();
+        for vertex in &assets.meshes.get(mesh).unwrap().vertices {
+            assert_eq!(vertex.normal, [0.0, 0.0, 1.0]);
+        }
+    }
+    // Every object saves with the scene.
+    let mut ids = world.query::<&SceneId>();
+    assert_eq!(ids.iter(world).count(), 6);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[test]
+fn inspector_shows_gpu_sync_mode_and_readback_age() {
+    use crate::runtime::{
+        FrameTime, GpuStateMirror, PhysicsBody, PhysicsSyncMode,
+        SimulationClass,
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let entity = app.spawn((
+        Name("Crate".into()),
+        Transform::default(),
+        PhysicsBody {
+            simulation: SimulationClass::Gpu,
+            ..PhysicsBody::default()
+        },
+        PhysicsSyncMode::SelectedState,
+        GpuStateMirror {
+            tick: 3,
+            transform: Transform::default(),
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            custom_values: None,
+        },
+    ));
+    app.world_mut().resource_mut::<FrameTime>().fixed_tick = 5;
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.selected = Some(entity);
+        state.dock_layout = EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Inspector,
+        };
+    }
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+
+    let mut texts = String::new();
+    for clipped in &output.shapes {
+        if let egui::Shape::Text(text) = &clipped.shape {
+            texts.push_str(text.galley.text());
+            texts.push('\n');
+        }
+    }
+    assert!(texts.contains("Selected State"), "{texts}");
+    assert!(texts.contains("tick 3 (2 ticks old)"), "{texts}");
+    // The dedicated row replaces the raw registered-component section.
+    assert!(!texts.contains("rusting.physics_sync"), "{texts}");
+}
+
+#[test]
+fn inspector_shows_the_auto_simulation_decision() {
+    use crate::runtime::{
+        AllocationDecision, AllocationReason, AutoSimulation, PhysicsBody,
+        SimulationClass,
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let entity = app.spawn((
+        Name("Crate".into()),
+        Transform::default(),
+        PhysicsBody {
+            simulation: SimulationClass::Gpu,
+            ..PhysicsBody::default()
+        },
+        AutoSimulation {
+            decision: Some(AllocationDecision {
+                class: SimulationClass::Gpu,
+                reason: AllocationReason::ManyBodies,
+            }),
+        },
+    ));
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.selected = Some(entity);
+        state.dock_layout = EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Inspector,
+        };
+    }
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+
+    let mut texts = String::new();
+    for clipped in &output.shapes {
+        if let egui::Shape::Text(text) = &clipped.shape {
+            texts.push_str(text.galley.text());
+            texts.push('\n');
+        }
+    }
+    assert!(texts.contains("Auto CPU/GPU"), "{texts}");
+    assert!(texts.contains("Gpu (ManyBodies)"), "{texts}");
+    assert!(!texts.contains("rusting.auto_simulation"), "{texts}");
+}
+
+#[test]
+fn queued_shortcuts_delete_and_undo_like_the_menu() {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let entity = app.spawn((
+        Name("Crate".into()),
+        Transform::default(),
+        crate::runtime::SceneId(uuid::Uuid::new_v4()),
+    ));
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.selected = Some(entity);
+        state.selection = vec![entity];
+    }
+    let count = |app: &mut App| {
+        let world = app.world_mut();
+        world.query::<&Name>().iter(world).count()
+    };
+    let frame = |app: &mut App, command| {
+        app.world_mut()
+            .resource_mut::<EditorCommandQueue>()
+            .0
+            .push(command);
+        let context = Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            draw_editor_view(app.world_mut(), context);
+        });
+    };
+    frame(&mut app, EditorAction::DeleteSelection);
+    assert_eq!(
+        count(&mut app),
+        0,
+        "{:?}",
+        app.world().resource::<EditorState>().scene_message
+    );
+    assert!(app.world().resource::<EditorCommandQueue>().0.is_empty());
+    frame(&mut app, EditorAction::Undo);
+    assert_eq!(count(&mut app), 1);
+
+    let entity = {
+        let world = app.world_mut();
+        world
+            .query::<(bevy_ecs::entity::Entity, &Name)>()
+            .iter(world)
+            .next()
+            .unwrap()
+            .0
+    };
+    app.world_mut().resource_mut::<EditorState>().selected = Some(entity);
+    frame(&mut app, EditorAction::RenameSelection);
+    let state = app.world().resource::<EditorState>();
+    assert_eq!(state.rename_target, Some(entity));
+    assert_eq!(state.rename_draft, "Crate");
+}
+
+#[test]
+fn shortcuts_area_lists_every_action_with_its_key() {
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    app.world_mut().resource_mut::<EditorState>().dock_layout =
+        EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Shortcuts,
+        };
+    app.world_mut().resource_mut::<EditorShortcuts>().capturing =
+        Some(ShortcutAction::Editor(EditorAction::Redo));
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+    let mut texts = String::new();
+    for clipped in &output.shapes {
+        if let egui::Shape::Text(text) = &clipped.shape {
+            texts.push_str(text.galley.text());
+            texts.push('\n');
+        }
+    }
+    for expected in [
+        "Keyboard Shortcuts",
+        "Undo",
+        "Ctrl+Z",
+        "Press a key...",
+        "Fly Camera",
+        "Numpad0",
+    ] {
+        assert!(texts.contains(expected), "{expected} missing from {texts}");
+    }
+}
+
+#[test]
+fn font_scale_multiplies_every_default_text_size() {
+    let context = egui::Context::default();
+    super::configure_editor_style(&context);
+    super::apply_font_scale(&context, 1.5);
+    super::apply_font_scale(&context, 1.3);
+    let defaults = egui::Style::default().text_styles;
+    context
+        .style()
+        .text_styles
+        .iter()
+        .for_each(|(style, font)| {
+            assert!((font.size - defaults[style].size * 1.3).abs() < 1e-4);
+        });
+}
+
+#[test]
+fn scene_area_draws_the_offscreen_view_image_over_its_viewport() {
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    app.world_mut().resource_mut::<EditorState>().dock_layout =
+        EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Scene,
+        };
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+    let image = output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.fill_texture_id() == super::SCENE_VIEW_TEXTURE =>
+            {
+                Some(rect.rect)
+            }
+            egui::Shape::Mesh(mesh)
+                if mesh.texture_id == super::SCENE_VIEW_TEXTURE =>
+            {
+                Some(egui::Rect::from_points(
+                    &mesh.vertices.iter().map(|v| v.pos).collect::<Vec<_>>(),
+                ))
+            }
+            _ => None,
+        })
+        .expect("scene view image is drawn");
+    let viewport = *app.world().resource::<EditorViewport>();
+    assert!(viewport.valid);
+    // One point is one pixel here; the viewport rounds outward.
+    assert_eq!(
+        viewport.offset,
+        [image.min.x.floor() as u32, image.min.y.floor() as u32]
+    );
+    assert_eq!(viewport.extent[0], image.width().ceil() as u32);
+}
+
+#[test]
+fn reparenting_a_selection_keeps_world_positions_and_nested_children() {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let scene_object = |app: &mut App, name: &str, position| {
+        app.spawn((
+            Name(name.into()),
+            Transform::new(position),
+            crate::runtime::SceneId(uuid::Uuid::new_v4()),
+        ))
+    };
+    let target = scene_object(&mut app, "Target", [5.0, 0.0, 0.0]);
+    let a = scene_object(&mut app, "A", [1.0, 2.0, 0.0]);
+    let b = scene_object(&mut app, "B", [0.0, 0.0, 3.0]);
+    let b_child = scene_object(&mut app, "B Child", [0.0, 1.0, 0.0]);
+    app.world_mut()
+        .entity_mut(b_child)
+        .insert(crate::runtime::Parent(b));
+    crate::runtime::propagate_transforms(app.world_mut());
+
+    let moved = super::hierarchy::reparent_entities(
+        app.world_mut(),
+        &[a, b, b_child],
+        Some(target),
+    )
+    .unwrap()
+    .unwrap();
+    crate::runtime::propagate_transforms(app.world_mut());
+    let world = app.world_mut();
+    let by_name = |world: &mut World, name: &str| {
+        let mut query = world.query::<(Entity, &Name)>();
+        query
+            .iter(world)
+            .find_map(|(entity, found)| (found.0 == name).then_some(entity))
+            .unwrap()
+    };
+    let target = by_name(world, "Target");
+    assert_eq!(world.get::<Name>(moved).unwrap().0, "A");
+    for (name, parent, position) in [
+        ("A", target, [1.0, 2.0, 0.0]),
+        ("B", target, [0.0, 0.0, 3.0]),
+        ("B Child", by_name(world, "B"), [0.0, 1.0, 3.0]),
+    ] {
+        let entity = by_name(world, name);
+        assert_eq!(
+            world.get::<crate::runtime::Parent>(entity).unwrap().0,
+            parent
+        );
+        let global = world
+            .get::<crate::runtime::GlobalTransform>(entity)
+            .unwrap();
+        for (actual, expected) in global.matrix[3].iter().zip(position) {
+            assert!((actual - expected).abs() < 1e-5, "{name}");
+        }
+    }
+    let target_child = by_name(world, "B");
+    assert!(super::hierarchy::reparent_entities(
+        world,
+        &[target],
+        Some(target_child)
+    )
+    .is_err());
+}
+
+#[test]
+fn registered_inspectors_draw_and_edit_their_component() {
+    #[derive(
+        bevy_ecs::component::Component,
+        serde::Serialize,
+        serde::Deserialize,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    struct Health {
+        points: u32,
+    }
+    fn draw_health(ui: &mut egui::Ui, health: &mut Health) -> bool {
+        ui.label(format!("Typed health {}", health.points));
+        health.points += 1;
+        true
+    }
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    app.register_scene_component::<Health>("game.health")
+        .unwrap();
+    app.world_mut()
+        .resource_mut::<super::InspectorRegistry>()
+        .register("game.health", draw_health);
+    let entity = app.spawn((
+        Name("Hero".into()),
+        Transform::default(),
+        Health { points: 7 },
+    ));
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.selected = Some(entity);
+        state.dock_layout = EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Inspector,
+        };
+    }
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+    let texts = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(texts.contains("Typed health 7"), "{texts}");
+    // The generic JSON editor would show the field name as a row label.
+    assert!(!texts.contains("points"), "{texts}");
+    assert_eq!(
+        app.world().get::<Health>(entity),
+        Some(&Health { points: 8 })
+    );
+}
+
+#[test]
+fn dropping_an_image_on_hierarchy_rows_and_texture_slots_assigns_it() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-drop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let image_path = folder.join("bricks.png");
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 20, 20, 255]))
+        .save(&image_path)
+        .unwrap();
+
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let (mesh, material) = {
+        let assets = app.world().resource::<AssetServer>();
+        (assets.fallback_mesh, assets.fallback_material)
+    };
+    let entity = app.spawn((
+        Name("Crate".into()),
+        Transform::default(),
+        SceneId(uuid::Uuid::new_v4()),
+        MeshRenderer {
+            mesh,
+            material,
+            cast_shadows: true,
+            receive_shadows: true,
+        },
+    ));
+    let texture_of = |world: &World, slot: usize| {
+        let material = world.get::<MeshRenderer>(entity).unwrap().material;
+        let mut material = world
+            .resource::<AssetServer>()
+            .materials
+            .get(material)
+            .cloned()
+            .unwrap();
+        *super::inspector::texture_slots(&mut material)[slot]
+    };
+
+    // Releases an image drag over the first text shape reading `target`.
+    let drop_on = |app: &mut App, panel: EditorPanel, target: &str| {
+        {
+            let mut state = app.world_mut().resource_mut::<EditorState>();
+            state.selected = Some(entity);
+            state.dock_layout = EditorDockNode::Area { id: 1, panel };
+        }
+        let context = Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            draw_editor_view(app.world_mut(), context);
+        });
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == target => {
+                    Some(text.pos + text.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {target} text"));
+        egui::DragAndDrop::set_payload(
+            &context,
+            super::assets_panel::ImageDrag(image_path.clone()),
+        );
+        let input = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let _ = context.run(input, |context| {
+            draw_editor_view(app.world_mut(), context);
+        });
+    };
+
+    drop_on(&mut app, EditorPanel::Hierarchy, "Crate");
+    assert!(texture_of(app.world(), 0).is_some());
+    assert!(texture_of(app.world(), 1).is_none());
+    drop_on(&mut app, EditorPanel::Inspector, "Normal Map");
+    assert!(texture_of(app.world(), 1).is_some());
+    // Each drop is its own Undo step.
+    assert_eq!(app.world().resource::<EditorHistory>().undo.len(), 2);
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn console_groups_repeats_filters_and_records_status_lines() {
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    {
+        let mut console = app.world_mut().resource_mut::<EditorConsole>();
+        console.push_from(ConsoleLevel::Warning, "Assets", "Texture missing");
+        console.push_from(ConsoleLevel::Warning, "Assets", "Texture missing");
+        console.push_from(ConsoleLevel::Info, "Build", "Build finished");
+        assert_eq!(console.entries().len(), 2);
+        assert_eq!(console.entries()[0].count, 2);
+    }
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.dock_layout = EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Console,
+        };
+        state.scene_message = Some("Save As failed: disk full".into());
+    }
+    let texts = |app: &mut App| {
+        let output = Context::default().run(egui::RawInput::default(), |c| {
+            draw_editor_view(app.world_mut(), c);
+        });
+        let mut texts = String::new();
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                texts.push_str(text.galley.text());
+                texts.push('\n');
+            }
+        }
+        texts
+    };
+    // A status line is copied into the Console once, with a guessed level.
+    let _ = texts(&mut app);
+    let first = texts(&mut app);
+    assert!(first.contains("Warnings 2"), "{first}");
+    assert!(first.contains("Errors 1"), "{first}");
+    assert!(first.contains("x2"), "{first}");
+    assert!(first.contains("disk full"), "{first}");
+
+    app.world_mut().resource_mut::<EditorState>().scene_message =
+        Some("Undo failed: no snapshot".into());
+    let _ = texts(&mut app);
+    let last = app
+        .world()
+        .resource::<EditorConsole>()
+        .entries()
+        .last()
+        .cloned();
+    assert_eq!(
+        last.map(|entry| (entry.level, entry.source)),
+        Some((ConsoleLevel::Error, "Scene"))
+    );
+
+    app.world_mut().resource_mut::<EditorConsole>().filter = "build".into();
+    let filtered = texts(&mut app);
+    assert!(filtered.contains("Build finished"), "{filtered}");
+    assert!(!filtered.contains("Texture missing"), "{filtered}");
+    let mut console = app.world_mut().resource_mut::<EditorConsole>();
+    console.filter.clear();
+    console.hidden[ConsoleLevel::Info as usize] = true;
+    let hidden = texts(&mut app);
+    assert!(!hidden.contains("Build finished"), "{hidden}");
+    assert!(hidden.contains("Texture missing"), "{hidden}");
 }

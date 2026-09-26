@@ -4,10 +4,12 @@ use std::time::{Duration, Instant};
 use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
     add_mouse_delta, configure_editor_style, draw_editor_view,
-    editor_debug_view, editor_needs_continuous_redraw, handle_keyboard_input,
+    editor_debug_view, editor_navigation_active,
+    editor_needs_continuous_redraw, handle_keyboard_input,
     handle_mouse_button_input, handle_mouse_wheel, load_editor_scene,
-    release_editor_navigation, update_fly_camera, EditorDebugOverlay,
-    EditorPlugin, EditorState, EditorViewport, EditorWorkspace,
+    release_editor_navigation, ui_receives_during_navigation,
+    update_fly_camera, EditorDebugOverlay, EditorPlugin, EditorShortcuts,
+    EditorState, EditorViewport, EditorWorkspace, SCENE_VIEW_TEXTURE,
 };
 use rusting_engine::rendering::egui_painter::EguiPainter;
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
@@ -15,15 +17,18 @@ use rusting_engine::rendering::scene_renderer::{
     SceneRenderOptions, SceneRenderer, SceneViewport,
 };
 use rusting_engine::runtime::{
-    extract_render_world, Camera, MeshRenderer, Name, RenderCameraOverride,
-    RenderWorld, TimeControl,
+    extract_render_world, Camera, CpuFrameTimings, MeshRenderer, Name,
+    RenderCameraOverride, RenderWorld, TimeControl,
 };
 use rusting_engine::{
     App as RuntimeApp, AssetPlugin, AssetServer, MaterialAsset, Transform,
 };
 use vulkano::format::Format;
+use vulkano::image::view::ImageView;
+use vulkano::image::{Image, ImageCreateInfo, ImageUsage};
+use vulkano::memory::allocator::AllocationCreateInfo;
 use vulkano::VulkanError;
-use vulkano_util::context::{VulkanoConfig, VulkanoContext};
+use vulkano_util::context::VulkanoContext;
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, MouseScrollDelta, WindowEvent};
@@ -51,6 +56,9 @@ struct EditorApplication {
     gui: Option<Gui>,
     /// 3D renderer created after the swapchain format is known.
     scene_renderer: Option<SceneRenderer>,
+    /// Offscreen image the live 3D view renders into; egui shows it as
+    /// [`SCENE_VIEW_TEXTURE`]. Recreated when the view changes size.
+    scene_target: Option<Arc<ImageView>>,
     /// ECS world containing scene objects and editor state.
     runtime: RuntimeApp,
     /// Time of the previous frame, used to calculate delta time.
@@ -61,6 +69,8 @@ struct EditorApplication {
     applied_vsync: Option<bool>,
     /// Latest physical cursor coordinates used to enter fly mode from Scene View.
     cursor_position: [f64; 2],
+    /// Modifier keys held now, for Ctrl/Shift editor shortcuts.
+    modifiers: winit::keyboard::ModifiersState,
     /// True after a window event that the next frame must show.
     input_pending: bool,
     /// Earliest time egui asked to repaint, set by its repaint callback.
@@ -179,15 +189,19 @@ impl EditorApplication {
         }
 
         Self {
-            vulkan: VulkanoContext::new(VulkanoConfig::default()),
+            vulkan: VulkanoContext::new(
+                rusting_engine::rendering::vulkano_config(),
+            ),
             windows: VulkanoWindows::default(),
             gui: None,
             scene_renderer: None,
+            scene_target: None,
             runtime,
             previous_frame: Instant::now(),
             frame_pacer: FramePacer::default(),
             applied_vsync: None,
             cursor_position: [0.0; 2],
+            modifiers: winit::keyboard::ModifiersState::empty(),
             input_pending: true,
             egui_repaint_at: Arc::default(),
             idle_redraw_at: Instant::now(),
@@ -268,6 +282,9 @@ impl ApplicationHandler for EditorApplication {
             pixels_per_point: 1.0,
         };
         configure_editor_style(&gui.context);
+        self.runtime
+            .world_mut()
+            .insert_resource(EditorShortcuts::load());
         let repaint_at = Arc::clone(&self.egui_repaint_at);
         gui.context.set_request_repaint_callback(move |info| {
             let at = Instant::now() + info.delay;
@@ -288,8 +305,12 @@ impl ApplicationHandler for EditorApplication {
             return;
         };
         let renderer = self.windows.get_renderer_mut(window_id).unwrap();
-        // Give keyboard, mouse, and clipboard events to egui first.
-        let _ = gui.input.on_window_event(renderer.window(), &event);
+        // Give keyboard, mouse, and clipboard events to egui first, except
+        // the ones fly or orbit navigation owns.
+        let was_navigating = editor_navigation_active(self.runtime.world());
+        if !was_navigating || ui_receives_during_navigation(&event) {
+            let _ = gui.input.on_window_event(renderer.window(), &event);
+        }
         if !matches!(event, WindowEvent::RedrawRequested) {
             self.input_pending = true;
         }
@@ -302,12 +323,16 @@ impl ApplicationHandler for EditorApplication {
                     renderer.window(),
                 );
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let ui_wants_keyboard = gui.context.wants_keyboard_input();
                 handle_keyboard_input(
                     self.runtime.world_mut(),
                     renderer.window(),
                     &event,
+                    self.modifiers,
                     ui_wants_keyboard,
                 );
             }
@@ -365,6 +390,7 @@ impl ApplicationHandler for EditorApplication {
                 }
 
                 // GUI changes ECS values and reports the live 3D rectangle.
+                let editor_start = Instant::now();
                 let raw_input = gui.input.take_egui_input(renderer.window());
                 let output = gui.context.run(raw_input, |context| {
                     draw_editor_view(self.runtime.world_mut(), context);
@@ -378,7 +404,16 @@ impl ApplicationHandler for EditorApplication {
                 gui.primitives = gui
                     .context
                     .tessellate(output.shapes, output.pixels_per_point);
+                let extraction_start = Instant::now();
                 extract_render_world(self.runtime.world_mut());
+                {
+                    let world = self.runtime.world_mut();
+                    let mut timings = world.resource_mut::<CpuFrameTimings>();
+                    timings.editor =
+                        extraction_start.duration_since(editor_start);
+                    // The GUI edits the scene, so extraction runs again here.
+                    timings.extraction += extraction_start.elapsed();
+                }
                 let vsync = self
                     .runtime
                     .world()
@@ -395,17 +430,58 @@ impl ApplicationHandler for EditorApplication {
                 // Draw Vulkan scene first, egui second, and then present.
                 match renderer.acquire(None, |_| {}) {
                     Ok(future) => {
-                        let target_extent = renderer.swapchain_image_size();
                         let editor_viewport =
                             *self.runtime.world().resource::<EditorViewport>();
-                        let viewport = if editor_viewport.valid {
-                            SceneViewport {
-                                offset: editor_viewport.offset,
-                                extent: editor_viewport.extent,
+                        // The live view renders offscreen and egui draws the
+                        // image in its area. Without one, the scene still
+                        // renders (GPU physics runs in that pass) into the
+                        // window, under the opaque editor panels.
+                        let (scene_target, target_extent) = if editor_viewport
+                            .valid
+                            && editor_viewport
+                                .extent
+                                .iter()
+                                .all(|side| *side > 0)
+                        {
+                            let target = match self.scene_target.take() {
+                                Some(target)
+                                    if target.image().extent()[..2]
+                                        == editor_viewport.extent =>
+                                {
+                                    target
+                                }
+                                _ => match scene_view_target(
+                                    &self.vulkan,
+                                    renderer.swapchain_format(),
+                                    editor_viewport.extent,
+                                ) {
+                                    Ok(target) => target,
+                                    Err(error) => {
+                                        eprintln!("failed to create the scene view image: {error}");
+                                        event_loop.exit();
+                                        return;
+                                    }
+                                },
+                            };
+                            if let Err(error) = gui.painter.set_native_texture(
+                                SCENE_VIEW_TEXTURE,
+                                target.clone(),
+                            ) {
+                                eprintln!(
+                                    "failed to show the scene view: {error}"
+                                );
+                                event_loop.exit();
+                                return;
                             }
+                            self.scene_target = Some(target.clone());
+                            (target, editor_viewport.extent)
                         } else {
-                            SceneViewport::full(target_extent)
+                            (
+                                renderer.swapchain_image_view(),
+                                renderer.swapchain_image_size(),
+                            )
                         };
+                        let viewport = SceneViewport::full(target_extent);
                         let world = self.runtime.world();
                         let scene_view =
                             world.resource::<EditorState>().workspace
@@ -413,7 +489,7 @@ impl ApplicationHandler for EditorApplication {
                         let future =
                             match self.scene_renderer.as_mut().unwrap().render(
                                 future,
-                                renderer.swapchain_image_view(),
+                                scene_target,
                                 target_extent,
                                 SceneRenderOptions {
                                     viewport,
@@ -437,12 +513,22 @@ impl ApplicationHandler for EditorApplication {
                                 }
                             };
                         // The UI shows these on the next frame.
-                        let culling = self
-                            .scene_renderer
-                            .as_mut()
-                            .unwrap()
-                            .culling_stats();
+                        let scene_renderer =
+                            self.scene_renderer.as_mut().unwrap();
+                        let culling = scene_renderer.culling_stats();
+                        let pass_times = scene_renderer.gpu_pass_times();
+                        let counters = scene_renderer.render_counters();
+                        let capacity = scene_renderer.capacity_diagnostics();
+                        self.runtime.world_mut().insert_resource(counters);
+                        self.runtime.world_mut().insert_resource(capacity);
                         self.runtime.world_mut().insert_resource(culling);
+                        self.runtime.world_mut().insert_resource(pass_times);
+                        scene_renderer.write_cpu_timings(
+                            &mut self
+                                .runtime
+                                .world_mut()
+                                .resource_mut::<CpuFrameTimings>(),
+                        );
                         let future = match gui.painter.paint(
                             future,
                             renderer.swapchain_image_view(),
@@ -508,6 +594,26 @@ impl ApplicationHandler for EditorApplication {
             event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
     }
+}
+
+/// Creates the offscreen image the live 3D view renders into. It uses the
+/// swapchain format because the scene renderer's pipelines are built for it.
+fn scene_view_target(
+    vulkan: &VulkanoContext,
+    format: Format,
+    extent: [u32; 2],
+) -> Result<Arc<ImageView>, Box<dyn std::error::Error>> {
+    let image = Image::new(
+        vulkan.memory_allocator().clone(),
+        ImageCreateInfo {
+            format,
+            extent: [extent[0], extent[1], 1],
+            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )?;
+    Ok(ImageView::new_default(image)?)
 }
 
 fn main() -> Result<(), winit::error::EventLoopError> {

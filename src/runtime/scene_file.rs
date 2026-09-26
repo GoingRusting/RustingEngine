@@ -642,6 +642,10 @@ pub const SKY_LIGHT_COMPONENT: &str = "rusting.sky_light";
 pub const TONE_MAPPING_COMPONENT: &str = "rusting.tone_mapping";
 /// Registry name of the built-in render-only visibility bounds.
 pub const RENDER_BOUNDS_COMPONENT: &str = "rusting.render_bounds";
+/// Registry name of the built-in per-body GPU synchronization mode.
+pub const PHYSICS_SYNC_COMPONENT: &str = "rusting.physics_sync";
+/// Registry name of the built-in automatic CPU/GPU allocation marker.
+pub const AUTO_SIMULATION_COMPONENT: &str = "rusting.auto_simulation";
 
 impl Default for SceneComponentRegistry {
     fn default() -> Self {
@@ -659,6 +663,12 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<RenderBounds>(RENDER_BOUNDS_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::PhysicsSyncMode>(PHYSICS_SYNC_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::AutoSimulation>(AUTO_SIMULATION_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
     }
@@ -1451,7 +1461,10 @@ fn scene_material(
     assets: &AssetServer,
 ) -> Result<SceneMaterialData, SceneIoError> {
     let texture_path = |texture: Option<Handle<TextureAsset>>| {
+        // The built-in white texture has no file. The renderer binds white
+        // for a missing map, so saving it as no texture looks the same.
         texture
+            .filter(|handle| *handle != assets.fallback_texture)
             .map(|handle| {
                 assets
                     .textures
@@ -1678,6 +1691,40 @@ mod tests {
     }
 
     #[test]
+    fn copies_of_the_builtin_error_material_still_save() {
+        // Editing an object that uses the error material copies it, and the
+        // copy keeps the built-in white texture, which has no file.
+        let mut app = scene_app();
+        let (mesh, material) = {
+            let mut assets = app.world_mut().resource_mut::<AssetServer>();
+            let copy = assets
+                .materials
+                .get(assets.fallback_material)
+                .cloned()
+                .unwrap();
+            (assets.fallback_mesh, assets.materials.insert(copy))
+        };
+        app.spawn((
+            SceneId::new(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ));
+        let document = scene_document(app.world_mut(), "Main").unwrap();
+        let Some(SceneMeshRenderer {
+            material: SceneMaterial::Inline(material),
+            ..
+        }) = &document.entities[0].mesh_renderer
+        else {
+            panic!("expected an inline material");
+        };
+        assert_eq!(material.base_color_texture, None);
+    }
+
+    #[test]
     fn scene_round_trip_preserves_hierarchy_assets_and_registered_components() {
         let mut app = scene_app();
         let (mesh, material) = {
@@ -1700,7 +1747,7 @@ mod tests {
             },
             GameplayTag { speed: 2.5 },
             PhysicsBody {
-                simulation: SimulationClass::GpuDynamic,
+                simulation: SimulationClass::Gpu,
                 solver: PhysicsSolver::Simplified,
                 custom_shader: None,
             },
@@ -1757,7 +1804,7 @@ mod tests {
         assert!(parent.is_some());
         assert_eq!(
             physics.map(|physics| physics.simulation),
-            Some(SimulationClass::GpuDynamic)
+            Some(SimulationClass::Gpu)
         );
         assert_eq!(rigid_body.map(|body| body.mass), Some(12.0));
         assert_eq!(collider.map(|collider| collider.restitution), Some(0.75));
@@ -2242,6 +2289,17 @@ mod tests {
             scene_document(app.world_mut(), "Duplicates"),
             Err(SceneIoError::DuplicateName(name)) if name == "Cube"
         ));
+    }
+
+    #[test]
+    fn scenes_saved_with_old_simulation_names_still_load() {
+        let old: Vec<SimulationClass> =
+            serde_json::from_str(r#"["Gameplay", "GpuDynamic"]"#).unwrap();
+        assert_eq!(old, [SimulationClass::Cpu, SimulationClass::Gpu]);
+        assert_eq!(
+            serde_json::to_string(&SimulationClass::Gpu).unwrap(),
+            r#""Gpu""#
+        );
     }
 
     #[test]

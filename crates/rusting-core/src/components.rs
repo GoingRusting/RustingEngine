@@ -404,20 +404,30 @@ impl Default for PhysicsSettings {
     }
 }
 
-/// Marks simulation that can never synchronously drive gameplay state.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GpuEffectBody;
-
-/// Selects which simulation backend owns an entity.
+/// Says where the newest runtime physics state of an entity lives.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
 )]
 pub enum SimulationClass {
+    /// No simulation; the body is ignored by every solver.
     None,
+    /// Never moves; a collider for both the CPU and the GPU solvers.
     Static,
+    /// Simulated on the CPU, so gameplay reads current state directly.
     #[default]
-    Gameplay,
-    GpuDynamic,
+    #[serde(alias = "Gameplay")]
+    Cpu,
+    /// Simulated on the GPU; the CPU sees events and selected readbacks.
+    #[serde(alias = "GpuDynamic")]
+    Gpu,
+}
+
+#[allow(non_upper_case_globals)]
+impl SimulationClass {
+    #[deprecated(note = "renamed to `SimulationClass::Cpu`")]
+    pub const Gameplay: Self = Self::Cpu;
+    #[deprecated(note = "renamed to `SimulationClass::Gpu`")]
+    pub const GpuDynamic: Self = Self::Gpu;
 }
 
 /// Built-in GPU compute profile, or a project-provided compute shader.
@@ -448,7 +458,7 @@ pub struct PhysicsBody {
 impl Default for PhysicsBody {
     fn default() -> Self {
         Self {
-            simulation: SimulationClass::Gameplay,
+            simulation: SimulationClass::Cpu,
             solver: PhysicsSolver::Full,
             custom_shader: None,
         }
@@ -458,15 +468,12 @@ impl Default for PhysicsBody {
 impl PhysicsBody {
     #[must_use]
     pub fn participates_in_dynamic_simulation(&self) -> bool {
-        matches!(
-            self.simulation,
-            SimulationClass::Gameplay | SimulationClass::GpuDynamic
-        )
+        matches!(self.simulation, SimulationClass::Cpu | SimulationClass::Gpu)
     }
 
     #[must_use]
     pub fn uses_gpu(&self) -> bool {
-        self.simulation == SimulationClass::GpuDynamic
+        self.simulation == SimulationClass::Gpu
     }
 }
 
@@ -511,9 +518,22 @@ impl Default for RigidBody {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum ColliderShape {
-    Box { half_extents: [f32; 3] },
-    Sphere { radius: f32 },
-    Capsule { half_height: f32, radius: f32 },
+    Box {
+        half_extents: [f32; 3],
+    },
+    Sphere {
+        radius: f32,
+    },
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
+    /// The convex hull of the entity's `MeshRenderer` mesh, scaled by its
+    /// transform. Dynamic bodies may use it.
+    ConvexMesh,
+    /// The triangles of the entity's `MeshRenderer` mesh, scaled by its
+    /// transform. Static only: a body with it never moves.
+    TriangleMesh,
 }
 
 #[derive(Component, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -579,7 +599,6 @@ mod tests {
         assert_component::<ToneMapping>();
         assert_component::<RenderBounds>();
         assert_component::<Visibility>();
-        assert_component::<GpuEffectBody>();
         assert_component::<PhysicsBody>();
         assert_component::<RigidBodyKind>();
         assert_component::<RigidBody>();
@@ -666,7 +685,7 @@ mod tests {
         assert!(body.participates_in_dynamic_simulation());
         assert!(!body.uses_gpu());
 
-        body.simulation = SimulationClass::GpuDynamic;
+        body.simulation = SimulationClass::Gpu;
         assert!(body.participates_in_dynamic_simulation());
         assert!(body.uses_gpu());
 

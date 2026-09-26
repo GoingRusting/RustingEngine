@@ -1,83 +1,200 @@
 # Changelog
 
-## [1.2.0] - 2026-09-25
-
-### Changed
-
-- **Breaking:** public `ShaderType` is replaced by `MaterialModel::{Pbr, Unlit}`; `MaterialBuilder::shader` is now `MaterialBuilder::model`, and `Engine::set_scene_shader` takes a `MaterialModel`
-- Scene format version 6: scenes store their render settings (quality profile and culling mode). Older scenes (versions 0-5) still load; version 6 scenes do not open in older builds
-- `rusting-core` 0.1.1: `QualityProfile` and `CullingMode` are serializable
-- The editor composites egui with an engine-owned painter (`rendering::egui_painter`) instead of the bootstrap Vulkan integration
-- Native file dialogs in the editor run on a worker thread, so the window is no longer reported as "not responding" while a dialog is open
+## [1.3.0] - 2026-09-26
 
 ### Added
 
-- Renderer: opaque forward PBR pass with base color, normal, metallic-roughness, occlusion, and emissive maps; alpha cutoff and alpha blending with back-to-front sorting of transparent objects; HDR target with a tone-mapping pass; sky/environment ambient lighting; several point lights; material and texture fallbacks
-- Directional shadow map whose resolution and distance scale with the quality profile (Eco 1024 px / 30 units, Balanced 2048 / 50, High 4096 / 80)
-- Culling: `RenderBounds` component (sphere or box, generated automatically with an editor override), `CullingMode::{Auto, Disabled, Frustum, FrustumAndOcclusion}`, CPU or GPU frustum culling chosen by scene size and device, GPU culling straight from GPU physics transforms into indirect draws, and hierarchical-Z occlusion culling
-- LOD asset groups (`.rlod`) with distance-based level selection
-- Declared frame pass schedule (`rendering::frame_passes`) with explicit resource transitions and debug labels per pass
-- Editor: "Scene Rendering" section in the Project panel to choose Quality and Culling per scene (undoable, saved with the scene)
-- Editor: Inspector "Material" section: model, alpha mode, base color, opacity, metallic, roughness, emissive, and five texture slots. Each slot picks a loaded texture or loads an image file into the project; "New Material" gives an object its own material. Shared materials are copied before editing
-- Editor: Blender-style wire shapes for cameras (frustum with up triangle) and lights (sun, point, spot) in the Scene View; click a shape to select the object
-- Editor: Render Bounds editing and preview in the Inspector and viewport; culling counts and time in the stats area
-- Editor: per-scene editor camera pose and selection are saved beside the scene; asset hot reload success and failure are shown in the console
+- Added a real Console panel with message filtering, log levels, repeated message counts and Clear button.
+- Assets panel now shows image previews.
+- Images can now be dragged directly onto objects and material texture slots.
+- Inspector can now have custom sections for different component types instead of showing everything as raw data.
+- Added editor text size setting. UI scale and text size are saved automatically.
+- Added fully customizable keyboard shortcuts. Almost every editor action can now be rebound.
+- Added Undo, Redo, Save, Delete and Rename shortcuts across the editor.
+- Added automatic CPU/GPU physics mode. The engine can decide which one is better depending on the object and current scene.
+- Added physics benchmark scenes for testing falling objects, stacks, debris and mixed scenes with different object counts.
+- Added much more detailed renderer and physics performance statistics to the editor.
+- GPU physics now has safer memory limits. If there are too many objects, the engine uses a slower fallback instead of breaking collisions.
+- GPU objects can now properly collide with each other.
+- GPU physics stacks are much more stable.
+- Added GPU physics support for raycasts and interaction with CPU physics objects.
+- Added Convex Mesh and Triangle Mesh colliders.
+- Static level geometry can now use its real mesh for accurate collisions.
+- CPU physics objects can now properly rotate from collisions and friction.
+- Spheres can roll naturally.
+- Box collisions are much more stable, especially for stacking.
+- Added multiple GPU physics sync modes, so games can choose how much physics data should be copied back from the GPU.
+- GPU objects can now receive commands like teleport, force, impulse and velocity changes.
+- GPU physics state can now be manually read, saved, restored or reset.
+- Added detection for lost GPU physics events when event memory becomes full.
+- Custom GPU physics conditions can now be written with GLSL shaders.
+- Added versioning for the GPU physics shader API to make custom shaders safer between engine updates.
+- Added one-frame state snapshots for groups of GPU physics objects.
+- Added shape casts for boxes, spheres and capsules.
+- Added basic character movement with collision sliding and floor detection.
+- CPU physics now uses a much faster collision search for large scenes.
+- Custom GPU physics solvers now work during normal gameplay.
+- Custom physics shaders can completely control how selected GPU objects move.
+- GPU objects can now collide with CPU objects and static level geometry.
+- GPU collisions support friction, bounce and collision layers.
+- Added full CPU rigid body simulation for boxes, spheres and capsules.
+- CPU objects can now fall, bounce, rest, sleep and wake up.
+- Added proper raycast and overlap queries for CPU physics.
+- Fast CPU objects now use collision protection to reduce tunneling through thin walls.
+- Added Windows export from Linux and macOS.
+- Added better Vulkan debugging information for graphics debugging tools.
+- Added renderer statistics for draw calls, triangles, visible objects, uploads and GPU memory.
+- Added CPU frame timing statistics for physics, rendering preparation and editor UI.
+- Added GPU timing statistics for individual rendering stages.
+- Added MSAA anti-aliasing to improve edge quality.
+- Added anisotropic texture filtering for sharper textures viewed at an angle.
+- Improved glTF scene spawning so imported objects receive proper scene IDs.
+
+### Changed
+
+- Dragging multiple selected objects in the Hierarchy now moves the entire selection together.
+- The Scene View is now rendered as a normal editor panel, so menus and popups display correctly over it.
+- Keyboard shortcut handling has been improved across the whole editor.
+- The old GPU physics test solver is now called Grid Collision.
+- Physics modes were renamed to simpler names: CPU and GPU.
+- glTF import now adds the complete model hierarchy to the scene, including meshes, materials, cameras and lights.
+- Imported glTF models now behave much more like normal scene objects.
+- Assets panel has been redesigned into a file tree similar to Godot's FileSystem panel.
+- Models can be double-clicked or dragged into the Scene View.
+- Images can be dragged directly onto selected objects.
+- Reusing an image no longer creates unnecessary duplicate materials.
+
+### Fixed
+
+- Fixed editor actions breaking when using the built-in white/error material.
+- Fixed shadow acne that caused stripes and triangles on lit surfaces.
+- Camera movement no longer accidentally clicks or types into editor UI.
+- Fixed GPU physics stacks slowly sinking through each other.
+- Improved GPU collision consistency and stability.
+- Fixed GPU physics events disappearing when several physics updates happened during one frame.
+- Fixed major editor slowdown when selecting objects with very large meshes.
+- Fixed incorrect lighting on glTF models that do not include normal data.
+- Fixed GPU grid collisions producing different results between runs.
+- GPU physics events now arrive in a consistent order.
+- Improved performance of GPU physics event rules.
+
+---
+
+## [1.2.0] - 2026-09-25
+
+### Added
+
+- Added a much more complete PBR renderer.
+- Materials now support base color, normal maps, metallic/roughness, ambient occlusion and emissive textures.
+- Added transparent and cutout materials.
+- Added HDR rendering and tone mapping.
+- Added environment lighting and support for multiple point lights.
+- Added directional light shadows with quality settings.
+- Added automatic visibility culling to improve performance in large scenes.
+- The engine can choose between CPU and GPU culling depending on scene size and hardware.
+- Added occlusion culling so objects hidden behind other objects can be skipped.
+- Added LOD support for using simpler models at long distances.
+- Added a clearer rendering pipeline with separate rendering stages.
+- Added scene Quality and Culling settings to the editor.
+- Added a full Material section to the Inspector.
+- Materials can now be edited directly from the editor.
+- Added Blender-style camera and light icons inside the Scene View.
+- Cameras and lights can now be selected directly from their viewport icons.
+- Added editable render bounds for controlling object culling.
+- Added culling statistics to the editor.
+- The editor now remembers the camera position and selected objects for every scene.
+- Asset reload success and errors are now shown in the Console.
+
+### Changed
+
+- Material shader settings were simplified into PBR and Unlit material types.
+- Scenes now save their rendering quality and culling settings.
+- Older scenes still load correctly.
+- The editor rendering system was reworked to give the engine more control over the UI.
+- File dialogs now run separately, so the editor no longer looks frozen while they are open.
 
 ### Known issues
 
-- Image textures always load as sRGB, so normal, metallic-roughness, and occlusion maps loaded from image files look wrong; glTF-imported maps are not affected
+- Image files manually added as normal, metallic or occlusion textures may use the wrong color space. Textures imported through glTF work correctly.
+
+---
 
 ## [1.1.3] - 2026-09-24
 
-### Changed
-
-- Time, input, hierarchy, events, and schedule stages moved from `src/runtime/` into the `rusting-core` crate; `runtime` re-exports them
-- `gltf` is now an optional cargo feature (default, implied by `editor`) that gates the glTF loader, `Engine::add_gltf`, `AssetServer::import_gltf`, and the `gltf_test` example; `validation` now forces the Khronos validation layer on in release builds too
-- Legacy `Engine` owns its camera and scene state directly instead of through `Arc<Mutex<_>>`
-- Roadmap and architecture rewritten around a Godot-class engine with physics as the flagship subsystem; Sundering moved to Milestones 24-29
-
 ### Added
 
-- Asset worker loading: `LoadState::Loading`, `Assets::load_async`, and `Assets::poll_loads`
-- Asset hot reload: file watching (`Assets::changed`), worker decode, and swap at safe frame boundaries; a failed reload keeps the last good value
-- glTF import: node hierarchy, cameras, lights (`KHR_lights_punctual`), sampler filtering/wrapping, tangents (imported or generated), alpha opaque/mask/blend, and preserved materials, deduplicated by synthesized asset path
-- Scene files serialize hierarchy, transforms, renderers, all light types, physics, and editor metadata
-- Renderer: explicit `FrameContext`s with per-frame fences, deferred GPU-resource destruction, no CPU `wait()` in the normal frame path, demand-based buffer growth with capacity diagnostics, capability detection with fallbacks, and `QualityProfile::{Auto, Eco, Balanced, High}`
-- Editor overhaul, wave 1 (Blender + Godot direction): new dark `EditorTheme` palette and compact area headers with editor-type icons; new Inspector module with property rows, axis-colored vec3, color, angle, and typed editing of custom JSON components; Hierarchy search, per-type icons, visibility toggle, inline rename, multi-select, and context menu; persisted UI scale; Blender-style viewport orbit/pan/dolly and focus
-- `docs/editor-overhaul.md` with the editor design and backlog
+- Added asynchronous asset loading.
+- Assets can now load without freezing the main engine thread.
+- Added automatic asset hot reload when project files change.
+- Broken asset reloads keep the previous working version instead of breaking the scene.
+- glTF import now supports full model hierarchies.
+- glTF cameras and lights are now imported.
+- Added better glTF material and texture support.
+- Added tangent generation for models that need it.
+- Added transparent glTF materials.
+- Scene files now save hierarchy, transforms, renderers, lights, physics and editor data.
+- Renderer resource management was heavily improved for smoother frame rendering.
+- Added automatic GPU buffer growth for larger scenes.
+- Added GPU capability detection and rendering quality profiles.
+- Major editor redesign inspired by Blender and Godot.
+- Added a new dark editor theme.
+- Added a better Inspector with easier editing of positions, rotations, colors and custom components.
+- Added Hierarchy search.
+- Added object type icons, visibility controls, inline rename, multi-selection and context menus.
+- Added adjustable editor UI scale.
+- Added Blender-style Scene View orbit, pan, zoom and focus controls.
+- Added new editor design and roadmap documentation.
+
+### Changed
+
+- Core engine systems such as time, input, hierarchy and events were moved into the shared core module.
+- glTF support can now be disabled when it is not needed.
+- Engine camera and scene handling was simplified internally.
+- Engine architecture and roadmap were rewritten around the new editor and physics direction.
+
+---
 
 ## [1.1.2] - 2026-09-15
 
-### Changed
-
-- `Engine::add_gltf` and `geometry::gltf_loader::load_gltf_scene` now return `Result<_, GltfLoadError>` instead of panicking on a missing/corrupt glTF file or a primitive without positions
-- `Engine::load_texture` now returns `Result<usize, TextureLoadError>` instead of panicking on a missing/corrupt image file
-- Render/physics GPU layout tests now assert against `vulkano_shaders`-reflected struct types instead of hardcoded offsets, so a shader-layout change fails the matching test instead of silently drifting
-
 ### Added
 
-- `RUSTING_VULKAN_DEVICE` env var to select the physical Vulkan device by index or case-insensitive name substring; startup now logs the selected device's name, vendor ID, driver version, and API version, and fails with a typed error listing every available device when the selector matches nothing
-- `rendering::init_vulkan_headless` creates a Vulkan instance, physical device, and logical device without a surface, swapchain, or window, for offscreen/compute work and tests on machines with no display
-- `swapchain::create_offscreen_target` creates a color+depth render target and framebuffer with no surface or swapchain, using the same formats as the windowed path
-- `readback::read_back_image` performs a fenced GPU image readback to CPU pixel bytes
-- `readback::read_back_buffer` performs a fenced GPU storage-buffer readback to CPU data, e.g. after a compute dispatch
-- `project_runner::run_project_headless` runs a cooked scene for a fixed number of ticks with no window or Vulkan device; `game` binary's new `--headless` flag uses it
-- `gpu-tests` cargo feature gates every GPU-dependent test behind an explicit opt-in (`cargo test --features gpu-tests`); a shared `rendering::test_support::headless_device()` fixture creates the headless device once per test binary instead of once per test
-- `rendering::test_support::dispatch_and_read_back` fixture covers upload-dispatch-readback-assert compute tests generically
-- `rendering::test_support::assert_matches_golden_image` compares a rendered image against a golden PNG with a per-channel tolerance, writing actual/expected/diff PNGs to an artifact directory on mismatch
-- Vulkan debug names (main queue) and a scoped command-buffer debug-utils label around `SceneRenderer::render`, active whenever `ext_debug_utils` is enabled
-- New `rusting-core` workspace crate; `Transform` and `CollisionType` now live there (re-exported at their original `crate::core::...` paths so no caller needs to change)
+- Added Vulkan GPU selection with `RUSTING_VULKAN_DEVICE`.
+- Engine startup now shows which GPU is being used.
+- Added clearer errors when a requested GPU cannot be found.
+- Added headless Vulkan support for rendering and compute without opening a window.
+- Added offscreen rendering support.
+- Added GPU image and buffer readback tools.
+- Added headless game execution for automated tests and servers.
+- Added optional GPU tests.
+- Added reusable GPU testing tools.
+- Added automatic rendered-image comparison tests.
+- Added better Vulkan debugging information.
+- Started moving shared engine types into the new `rusting-core` crate.
+
+### Changed
+
+- Loading broken or missing glTF models now returns a proper error instead of crashing.
+- Loading broken or missing textures now returns a proper error instead of crashing.
+- GPU layout tests now detect shader changes automatically instead of relying on manually written values.
+
+---
 
 ## [1.1.1] - 2026-09-12
 
 ### Added
 
-- Game events: `ClickEvent` (mouse-click picking against the active camera) and `CollisionEvent` (bounding-sphere overlap), both wired into every `App` by default
-- `RuntimeInput` resource for raw keyboard/mouse/cursor state, fed from real window events during Play
-- `ActionMap` resource for named input actions bound to keyboard/mouse (gamepad-ready)
-- Shared `runtime::picking` ray-casting module used by gameplay click picking
-- `unload_scene` runtime API to despawn a loaded scene without loading a replacement
-- glTF import now pulls in base-color, normal, metallic-roughness, occlusion, and emissive textures with correct sRGB/linear color space
+- Added gameplay click events for selecting objects with the mouse.
+- Added collision events.
+- Added runtime keyboard, mouse and cursor input.
+- Added named input actions, making gameplay controls easier to manage.
+- Input system is prepared for future gamepad support.
+- Added shared object picking for gameplay.
+- Added scene unloading without needing to immediately load another scene.
+- Improved glTF material import.
+- glTF models now correctly import base color, normal, metallic/roughness, occlusion and emissive textures.
+- glTF textures now use the correct color space.
+
+---
 
 ## [1.1.0] - 2026-08-31
 
@@ -101,6 +218,8 @@
 
 - Frame count from Header
 
+---
+
 ## [1.0.2] - 2026-08-30
 
 ### Added
@@ -115,6 +234,8 @@
 
 - Now fly mode active just by holding "Secondary button"(Mostly right click)
 
+---
+
 ## [1.0.1] - 2026-08-27
 
 ### Added
@@ -125,6 +246,8 @@
 - Shortcut system
 - Move camera to selected object on "F" in Scene view
 - FPS like camera fly on "Num 0" in Scene view
+
+---
 
 ## [1.0.0] - 2026-08-26
 
@@ -186,6 +309,8 @@
 - Saved and cooked asset paths are now portable between project and export folders
 - Old unversioned projects and scenes are now migrated safely
 
+---
+
 ## [0.1.47] - 2026-08-25
 
 ### Added
@@ -199,6 +324,8 @@
 
 - Gui design a bit improved
 
+---
+
 ## [0.1.46] - 2026-08-24
 
 ### Added
@@ -210,6 +337,8 @@
 
 - Rewriting architecture a bit to prepare for scaling
 
+---
+
 ## [0.1.45] - 2026-08-24
 
 ### Added
@@ -219,6 +348,8 @@
 - Added first version of egui editor with hierarchy, inspector, camera settings, play controls and live 3D Vulkan viewport
 - Added roadmap and architecture documentation for future engine implementation
 - Added more tests for runtime, assets, GPU layouts and perspective projection
+
+---
 
 ## [0.1.44] - 2026-08-24
 
@@ -230,6 +361,8 @@
 
 - A lot of different fixes to improve stability before big implementation
 
+---
+
 ## [0.1.43] - 2026-04-11
 
 ### Added
@@ -239,6 +372,8 @@
 ### Fixed
 
 - Now textures can be reused to save VRAM
+
+---
 
 ## [0.1.42] - 2026-04-11
 
@@ -251,11 +386,15 @@
 - Culling is now working much better, without bugs.
 - Fixing multi gltf model import, now each texture and model render good even if there are 10k gltf models. But each texture is separate, so you cant reuse texture without vram loss, I will fix it so fast as possible.
 
+---
+
 ## [0.1.41] - 2026-04-6
 
 ### Added
 
 - Added gltf models import, already with Materials, Textures and everything that needed
+
+---
 
 ## [0.1.4] - 2026-04-5
 
@@ -269,11 +408,15 @@
 
 - Culling is working well and give insane performance boost on big scenes where fragment/vertex shader is heavy. But it uses object center, so some object might disappear earlier as needed. I will fix it in next patch
 
+---
+
 ## [0.1.32] - 2026-04-5
 
 ### Added
 
 - Added culling( when mesh is not in view => dont render ), but its beta, so its working bad
+
+---
 
 ## [0.1.31] - 2026-04-4
 
@@ -284,6 +427,8 @@
 ### Fixed
 
 - Grid collision shader
+
+---
 
 ## [0.1.3] - 2026-04-3
 
@@ -296,6 +441,8 @@
 
 - Object collapse on stacking.
 
+---
+
 ## [0.1.1] - 2026-04-1
 
 ### Added
@@ -306,6 +453,8 @@
 ### Fixed
 
 - Better performance( main loop refactoring )
+
+---
 
 ## [0.1.0] - 2026-03-31
 

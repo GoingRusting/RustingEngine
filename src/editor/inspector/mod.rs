@@ -4,9 +4,13 @@
 mod json;
 pub mod widgets;
 
+use std::collections::BTreeMap;
+
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::World;
+use bevy_ecs::prelude::{Resource, World};
 use egui::DragValue;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::gui_elements::EditorTheme;
 use super::{AssetRequest, EditorState};
@@ -14,12 +18,55 @@ use crate::assets::{
     AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel, TextureAsset,
 };
 use crate::runtime::{
-    Camera, Collider, ColliderShape, DirectionalLight, MeshRenderer, Name,
-    ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
+    AutoSimulation, Camera, Collider, ColliderShape, DirectionalLight,
+    FrameTime, GpuStateMirror, MeshRenderer, Name, ObjectClasses,
+    PhysicsBackendStatus, PhysicsBody, PhysicsSolver, PhysicsSyncMode,
     PointLight, Projection, RenderBounds, RigidBody, RigidBodyKind,
-    SimulationClass, SpotLight,
+    SimulationClass, SpotLight, AUTO_SIMULATION_COMPONENT,
+    PHYSICS_SYNC_COMPONENT,
 };
 use crate::Transform;
+
+type ComponentInspector =
+    Box<dyn Fn(&mut egui::Ui, &str) -> Option<String> + Send + Sync>;
+
+/// Typed Inspector sections for scene components. Only components in the
+/// [`crate::runtime::SceneComponentRegistry`] allowlist reach the Inspector;
+/// one without an entry here is edited as generic JSON fields.
+#[derive(Resource, Default)]
+pub struct InspectorRegistry {
+    inspectors: BTreeMap<String, ComponentInspector>,
+}
+
+impl InspectorRegistry {
+    /// Draws the scene component registered as `name` with `draw`, which
+    /// returns true when it changed the value. The change is saved through
+    /// the scene registry, so it is undoable like any other edit.
+    pub fn register<T>(
+        &mut self,
+        name: impl Into<String>,
+        draw: fn(&mut egui::Ui, &mut T) -> bool,
+    ) where
+        T: Serialize + DeserializeOwned + 'static,
+    {
+        self.inspectors.insert(
+            name.into(),
+            Box::new(move |ui, serialized| {
+                let Ok(mut value) = serde_json::from_str::<T>(serialized)
+                else {
+                    ui.colored_label(
+                        EditorTheme::ERROR,
+                        "Value does not match its inspector type",
+                    );
+                    return None;
+                };
+                draw(ui, &mut value)
+                    .then(|| serde_json::to_string(&value).ok())
+                    .flatten()
+            }),
+        );
+    }
+}
 
 /// Custom component change requested by the Inspector, applied after drawing.
 pub(super) enum ComponentEdit {
@@ -38,11 +85,18 @@ pub(super) enum ComponentEdit {
     },
 }
 
+const SYNC_MODES: [(PhysicsSyncMode, &str); 4] = [
+    (PhysicsSyncMode::None, "None"),
+    (PhysicsSyncMode::Events, "Events"),
+    (PhysicsSyncMode::SelectedState, "Selected State"),
+    (PhysicsSyncMode::FullState, "Full State"),
+];
+
 const SIMULATION_CLASSES: [(SimulationClass, &str); 4] = [
     (SimulationClass::None, "No Physics"),
     (SimulationClass::Static, "Static"),
-    (SimulationClass::Gameplay, "Gameplay (CPU)"),
-    (SimulationClass::GpuDynamic, "GPU Dynamic"),
+    (SimulationClass::Cpu, "CPU"),
+    (SimulationClass::Gpu, "GPU"),
 ];
 
 // `PhysicsSolver::Space` is not offered for new bodies; it is still named in
@@ -163,14 +217,13 @@ pub(super) fn draw_inspector_area(
                     );
                     let mesh_box = world
                         .get_resource::<crate::assets::AssetServer>()
-                        .and_then(|assets| assets.meshes.get(renderer.mesh))
-                        .and_then(crate::editor::overlay::mesh_bounds);
+                        .and_then(|assets| assets.mesh_bounds(renderer.mesh));
                     edit_render_bounds(ui, edited_render_bounds, mesh_box);
                 });
             }
             if let Some(material) = edited_material {
                 widgets::section(ui, "Material", false, |ui| {
-                    draw_material(ui, world, material, asset_request);
+                    draw_material(ui, world, entity, material, asset_request);
                 });
             }
             if let Some(camera) = edited_camera {
@@ -227,8 +280,12 @@ pub(super) fn draw_inspector_area(
                 let removed = widgets::section(ui, "Physics", true, |ui| {
                     draw_physics(
                         ui,
+                        world,
+                        entity,
                         state,
                         physics_backends,
+                        custom_values,
+                        component_edits,
                         edited_physics,
                         edited_rigid_body,
                         edited_collider,
@@ -239,8 +296,24 @@ pub(super) fn draw_inspector_area(
                     *remove_physics = true;
                 }
             }
-            for (name, serialized) in custom_values {
+            for (name, serialized) in custom_values
+                .iter()
+                .filter(|(name, _)| !has_dedicated_editor(name))
+            {
+                let inspector = world
+                    .get_resource::<InspectorRegistry>()
+                    .and_then(|registry| registry.inspectors.get(name));
                 let removed = widgets::section(ui, name, true, |ui| {
+                    if let Some(inspector) = inspector {
+                        if let Some(value) = inspector(ui, serialized) {
+                            component_edits.push(ComponentEdit::Set {
+                                entity,
+                                name: name.clone(),
+                                value,
+                            });
+                        }
+                        return;
+                    }
                     match serde_json::from_str::<serde_json::Value>(serialized)
                     {
                         Ok(mut value) => {
@@ -272,7 +345,10 @@ pub(super) fn draw_inspector_area(
             let addable = registered_names
                 .iter()
                 .filter(|name| {
-                    !custom_values.iter().any(|(present, _)| present == *name)
+                    !has_dedicated_editor(name)
+                        && !custom_values
+                            .iter()
+                            .any(|(present, _)| present == *name)
                 })
                 .collect::<Vec<_>>();
             ui.menu_button("Add Component", |ui| {
@@ -393,11 +469,21 @@ fn draw_classes(
     });
 }
 
+/// Registered components that the Inspector edits in their own section
+/// rather than as raw values.
+fn has_dedicated_editor(name: &str) -> bool {
+    name == PHYSICS_SYNC_COMPONENT || name == AUTO_SIMULATION_COMPONENT
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_physics(
     ui: &mut egui::Ui,
+    world: &World,
+    entity: Entity,
     state: &EditorState,
     physics_backends: PhysicsBackendStatus,
+    custom_values: &[(String, String)],
+    component_edits: &mut Vec<ComponentEdit>,
     edited_physics: &mut Option<PhysicsBody>,
     edited_rigid_body: &mut Option<RigidBody>,
     edited_collider: &mut Option<Collider>,
@@ -406,12 +492,37 @@ fn draw_physics(
     let Some(physics) = edited_physics else {
         return;
     };
-    widgets::choice(
-        ui,
-        "Simulation",
-        &mut physics.simulation,
-        &SIMULATION_CLASSES,
-    );
+    let mut auto = custom_values
+        .iter()
+        .any(|(name, _)| name == AUTO_SIMULATION_COMPONENT);
+    if widgets::checkbox(ui, "Auto CPU/GPU", &mut auto) {
+        let name = AUTO_SIMULATION_COMPONENT.to_owned();
+        component_edits.push(if auto {
+            ComponentEdit::Add { entity, name }
+        } else {
+            ComponentEdit::Remove { entity, name }
+        });
+    }
+    if auto {
+        // The engine owns the class; show what it chose and why.
+        let chosen = world
+            .get::<AutoSimulation>(entity)
+            .and_then(|auto| auto.decision)
+            .map_or_else(
+                || "Decided when the scene runs".to_owned(),
+                |decision| {
+                    format!("{:?} ({:?})", decision.class, decision.reason)
+                },
+            );
+        widgets::value(ui, "Simulation", &chosen);
+    } else {
+        widgets::choice(
+            ui,
+            "Simulation",
+            &mut physics.simulation,
+            &SIMULATION_CLASSES,
+        );
+    }
     let note = |ui: &mut egui::Ui, color, text: &str| {
         widgets::property_row(ui, "", |ui| {
             ui.add(
@@ -436,7 +547,7 @@ fn draw_physics(
                 "Static collider; never dispatched per frame.",
             );
         }
-        SimulationClass::Gameplay => {
+        SimulationClass::Cpu => {
             if physics_backends.gameplay_available {
                 note(
                     ui,
@@ -447,11 +558,11 @@ fn draw_physics(
                 note(
                     ui,
                     EditorTheme::ERROR,
-                    "Gameplay physics backend is not connected yet.",
+                    "CPU physics backend is not connected yet.",
                 );
             }
         }
-        SimulationClass::GpuDynamic => {
+        SimulationClass::Gpu => {
             if !physics_backends.gpu_dynamic_available {
                 note(
                     ui,
@@ -466,9 +577,10 @@ fn draw_physics(
                 &mut physics.solver,
                 &PHYSICS_SOLVERS,
             );
+            draw_gpu_sync(ui, world, entity, custom_values, component_edits);
             if physics.solver == PhysicsSolver::Custom {
                 let path = physics.custom_shader.get_or_insert_with(|| {
-                    format!("{}/shaders/custom.comp", state.project_root)
+                    format!("{}/shaders/custom_solver.glsl", state.project_root)
                 });
                 widgets::text(ui, "Shader", path);
                 widgets::property_row(ui, "", |ui| {
@@ -500,6 +612,53 @@ fn draw_physics(
         widgets::vec3(ui, "Velocity", &mut body.linear_velocity, 0.1);
     }
     edit_collider(ui, edited_collider.get_or_insert_with(Collider::default));
+}
+
+/// Sync mode choice plus what it costs and how old the last readback is.
+fn draw_gpu_sync(
+    ui: &mut egui::Ui,
+    world: &World,
+    entity: Entity,
+    custom_values: &[(String, String)],
+    component_edits: &mut Vec<ComponentEdit>,
+) {
+    let mut sync = custom_values
+        .iter()
+        .find(|(name, _)| name == PHYSICS_SYNC_COMPONENT)
+        .and_then(|(_, value)| serde_json::from_str(value).ok())
+        .unwrap_or_default();
+    if widgets::choice(ui, "Sync", &mut sync, &SYNC_MODES) {
+        component_edits.push(ComponentEdit::Set {
+            entity,
+            name: PHYSICS_SYNC_COMPONENT.to_owned(),
+            value: serde_json::to_string(&sync).unwrap_or_default(),
+        });
+    }
+    let cost = match sync {
+        PhysicsSyncMode::None => "Nothing read back".to_owned(),
+        PhysicsSyncMode::Events => "Only emitted events".to_owned(),
+        _ => format!(
+            "{} B per tick, 1-3 frames late",
+            PhysicsSyncMode::STATE_READBACK_BYTES
+        ),
+    };
+    widgets::value(ui, "Sync Cost", &cost);
+    if sync.reads_back_state() {
+        let age = match world.get::<GpuStateMirror>(entity) {
+            Some(mirror) => {
+                let now = world
+                    .get_resource::<FrameTime>()
+                    .map_or(mirror.tick, |time| time.fixed_tick);
+                format!(
+                    "tick {} ({} ticks old)",
+                    mirror.tick,
+                    mirror.age_ticks(now)
+                )
+            }
+            None => "none yet (runs in Play)".to_owned(),
+        };
+        widgets::value(ui, "Last Readback", &age);
+    }
 }
 
 /// Draws shape, friction, bounce, and trigger settings for one collider.
@@ -541,6 +700,7 @@ fn bounds_for_kind(
 fn draw_material(
     ui: &mut egui::Ui,
     world: &World,
+    entity: Entity,
     material: &mut MaterialAsset,
     asset_request: &mut Option<AssetRequest>,
 ) {
@@ -626,7 +786,7 @@ fn draw_material(
             .iter()
             .find(|(handle, _)| handle == texture)
             .map_or("Unknown", |(_, name)| name.as_str());
-        widgets::property_row(ui, label, |ui| {
+        let row = widgets::property_row(ui, label, |ui| {
             let load = ui
                 .button("Load…")
                 .on_hover_text("Choose an image file for this slot");
@@ -641,7 +801,23 @@ fn draw_material(
                         ui.selectable_value(texture, *handle, name);
                     }
                 });
+            ui.min_rect()
         });
+        // Dropping an Assets image on the row loads it into this slot.
+        let drop = ui.interact(
+            row,
+            ui.id().with(("texture_drop", slot)),
+            egui::Sense::hover(),
+        );
+        if let Some(payload) =
+            drop.dnd_release_payload::<crate::editor::assets_panel::ImageDrag>()
+        {
+            *asset_request = Some(AssetRequest::SetMaterialTexture {
+                entity,
+                slot,
+                path: payload.0.clone(),
+            });
+        }
     }
 }
 
@@ -695,11 +871,15 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
         Box,
         Sphere,
         Capsule,
+        Convex,
+        Triangles,
     }
     let current = match collider.shape {
         ColliderShape::Box { .. } => Shape::Box,
         ColliderShape::Sphere { .. } => Shape::Sphere,
         ColliderShape::Capsule { .. } => Shape::Capsule,
+        ColliderShape::ConvexMesh => Shape::Convex,
+        ColliderShape::TriangleMesh => Shape::Triangles,
     };
     let mut shape = current;
     widgets::choice(
@@ -710,6 +890,8 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
             (Shape::Box, "Box"),
             (Shape::Sphere, "Sphere"),
             (Shape::Capsule, "Capsule"),
+            (Shape::Convex, "Convex Mesh"),
+            (Shape::Triangles, "Triangle Mesh"),
         ],
     );
     if shape != current {
@@ -722,6 +904,8 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
                 half_height: 0.5,
                 radius: 0.5,
             },
+            Shape::Convex => ColliderShape::ConvexMesh,
+            Shape::Triangles => ColliderShape::TriangleMesh,
         };
     }
     let size =
@@ -742,6 +926,12 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
         } => {
             widgets::drag(ui, "Half Height", size(half_height));
             widgets::drag(ui, "Radius", size(radius));
+        }
+        ColliderShape::ConvexMesh => {
+            widgets::value(ui, "Source", "This mesh (convex hull)");
+        }
+        ColliderShape::TriangleMesh => {
+            widgets::value(ui, "Source", "This mesh (static only)");
         }
     }
     let unit = |value| DragValue::new(value).range(0.0..=1.0).speed(0.01);

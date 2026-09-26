@@ -469,7 +469,7 @@ fn default_project_parent() -> PathBuf {
 }
 
 /// Per-user editor configuration folder.
-fn user_config_dir() -> PathBuf {
+pub(super) fn user_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(not(target_os = "windows"))]
@@ -494,17 +494,24 @@ fn recent_projects_path() -> PathBuf {
 pub struct EditorPreferences {
     /// Whole-interface zoom (egui zoom factor); 1.0 is 100%.
     pub ui_scale: f32,
+    /// Multiplier on egui's default text sizes; 1.0 is 100%.
+    pub font_scale: f32,
 }
 
 impl Default for EditorPreferences {
     fn default() -> Self {
-        Self { ui_scale: 1.0 }
+        Self {
+            ui_scale: 1.0,
+            font_scale: 1.0,
+        }
     }
 }
 
 impl EditorPreferences {
     /// UI scales offered in the View menu.
     pub const UI_SCALES: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
+    /// Text sizes offered in the View menu.
+    pub const FONT_SCALES: [f32; 4] = [0.9, 1.0, 1.15, 1.3];
 
     fn path() -> PathBuf {
         user_config_dir().join("editor_preferences.json")
@@ -522,6 +529,7 @@ impl EditorPreferences {
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
             .map(|mut preferences| {
                 preferences.ui_scale = preferences.ui_scale.clamp(0.5, 3.0);
+                preferences.font_scale = preferences.font_scale.clamp(0.5, 3.0);
                 preferences
             })
             .unwrap_or_default()
@@ -649,12 +657,17 @@ mod tests {
             EditorPreferences::default()
         );
 
-        let preferences = EditorPreferences { ui_scale: 1.25 };
+        let preferences = EditorPreferences {
+            ui_scale: 1.25,
+            font_scale: 1.15,
+        };
         preferences.save_to(&path).unwrap();
         assert_eq!(EditorPreferences::load_from(&path), preferences);
 
+        // Files saved before a field existed keep their other settings.
         std::fs::write(&path, "{\"ui_scale\": 40.0}").unwrap();
-        assert_eq!(EditorPreferences::load_from(&path).ui_scale, 3.0);
+        let old = EditorPreferences::load_from(&path);
+        assert_eq!((old.ui_scale, old.font_scale), (3.0, 1.0));
         std::fs::write(&path, "not json").unwrap();
         assert_eq!(
             EditorPreferences::load_from(&path),

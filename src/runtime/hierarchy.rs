@@ -6,7 +6,7 @@ pub use rusting_core::hierarchy::{propagate_transforms, HierarchyDiagnostics};
 
 use super::AppError;
 
-pub(super) fn set_parent(
+pub(crate) fn set_parent(
     world: &mut World,
     child: Entity,
     parent: Entity,

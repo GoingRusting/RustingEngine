@@ -31,7 +31,7 @@ pub fn main() {
                 .model(MaterialModel::Pbr)
                 .build(),
             &Physics::default()
-                .compute_shader(ComputeShaderType::Test)
+                .compute_shader(ComputeShaderType::GridCollision)
                 .mass(3.0)
                 .gravity_scale(1.0)
                 .collision_type(CollisionType::Box),
@@ -58,7 +58,7 @@ pub fn main() {
                 .model(MaterialModel::Pbr)
                 .build(),
             &Physics::default()
-                .compute_shader(ComputeShaderType::Test)
+                .compute_shader(ComputeShaderType::GridCollision)
                 .mass(3.0)
                 .gravity_scale(1.0)
                 .collision_type(CollisionType::Sphere),

@@ -23,9 +23,15 @@ pub(super) enum DialogPurpose {
     OpenScene,
     SaveSceneBeforeContinue,
     SaveSceneAs,
-    ExportGame,
+    /// `target` is a Cargo target triple, or `None` for this system.
+    ExportGame {
+        target: Option<&'static str>,
+    },
     ImportFiles,
-    MaterialTexture { entity: Entity, slot: usize },
+    MaterialTexture {
+        entity: Entity,
+        slot: usize,
+    },
 }
 
 struct PendingDialog {
@@ -180,7 +186,12 @@ mod tests {
         );
         assert!(!dialogs.is_open());
 
-        dialogs.open(DialogPurpose::ExportGame, async { Vec::new() });
-        assert_eq!(wait(&mut dialogs), (DialogPurpose::ExportGame, Vec::new()));
+        dialogs.open(DialogPurpose::ExportGame { target: None }, async {
+            Vec::new()
+        });
+        assert_eq!(
+            wait(&mut dialogs),
+            (DialogPurpose::ExportGame { target: None }, Vec::new())
+        );
     }
 }

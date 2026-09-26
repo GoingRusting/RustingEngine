@@ -4,13 +4,17 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 
 use crate::runtime::{
+    scene_document, GlobalTransform, Name, Parent, SceneId, SceneLoadMode,
+};
+use crate::runtime::{
     Camera, Collider, DirectionalLight, MeshRenderer, PhysicsBody, PointLight,
     RigidBody, SpotLight, Visibility,
 };
-use crate::runtime::{Name, Parent};
 use crate::Transform;
+use nalgebra::Matrix4;
+use std::collections::{HashMap, HashSet};
 
-use super::{gui_elements, EditorState, EntityRequest};
+use super::{gui_elements, AssetRequest, EditorState, EntityRequest};
 
 #[derive(Clone, Copy)]
 struct HierarchyDrag(Entity);
@@ -236,6 +240,7 @@ pub(super) fn draw_hierarchy_area(
     entities: &[HierarchyItem],
     state: &mut EditorState,
     entity_request: &mut Option<EntityRequest>,
+    asset_request: &mut Option<AssetRequest>,
     edited_transform: &mut Option<Transform>,
     edited_camera: &mut Option<Camera>,
     edited_physics: &mut Option<PhysicsBody>,
@@ -385,12 +390,34 @@ pub(super) fn draw_hierarchy_area(
                         egui::StrokeKind::Inside,
                     );
                 }
+                // An image dropped on a mesh object becomes its base color.
+                if let Some(payload) = response
+                    .dnd_release_payload::<super::assets_panel::ImageDrag>()
+                {
+                    *asset_request = Some(AssetRequest::SetMaterialTexture {
+                        entity: item.entity,
+                        slot: 0,
+                        path: payload.0.clone(),
+                    });
+                }
                 if let Some(payload) =
                     response.dnd_release_payload::<HierarchyDrag>()
                 {
-                    if can_reparent(world, payload.0, item.entity) {
+                    // Dragging a selected row moves the whole selection.
+                    let moved = if state.selection.contains(&payload.0) {
+                        state.selection.clone()
+                    } else {
+                        vec![payload.0]
+                    };
+                    let moved: Vec<Entity> = moved
+                        .into_iter()
+                        .filter(|entity| {
+                            can_reparent(world, *entity, item.entity)
+                        })
+                        .collect();
+                    if !moved.is_empty() {
                         *entity_request = Some(EntityRequest::Reparent(
-                            payload.0,
+                            moved,
                             Some(item.entity),
                         ));
                     }
@@ -467,8 +494,10 @@ pub(super) fn draw_hierarchy_area(
                         )
                         .clicked()
                     {
-                        *entity_request =
-                            Some(EntityRequest::Reparent(item.entity, None));
+                        *entity_request = Some(EntityRequest::Reparent(
+                            vec![item.entity],
+                            None,
+                        ));
                     }
                     EditorTheme::menu_section(ui, "DANGER");
                     let delete = if count > 1 {
@@ -484,30 +513,6 @@ pub(super) fn draw_hierarchy_area(
                 });
             }
         });
-
-    // Blender-style keys while the pointer is over the Hierarchy.
-    if ui.ui_contains_pointer()
-        && !ui.ctx().wants_keyboard_input()
-        && !state.selection.is_empty()
-    {
-        let (delete, rename) = ui.input(|input| {
-            (
-                input.key_pressed(egui::Key::Delete)
-                    || input.key_pressed(egui::Key::X),
-                input.key_pressed(egui::Key::F2),
-            )
-        });
-        if delete {
-            *entity_request =
-                Some(EntityRequest::Delete(state.selection.clone()));
-        } else if rename {
-            if let Some(item) = state.selected.and_then(|primary| {
-                entities.iter().find(|item| item.entity == primary)
-            }) {
-                start_rename(state, item);
-            }
-        }
-    }
 }
 
 fn start_rename(state: &mut EditorState, item: &HierarchyItem) {
@@ -532,6 +537,88 @@ fn can_reparent(world: &World, child: Entity, parent: Entity) -> bool {
         ancestor = world.get::<Parent>(entity).map(|parent| parent.0);
     }
     true
+}
+
+/// Moves `entities` under `parent` (or to the scene root) in one scene
+/// reload, keeping their world transforms. A moved entity whose ancestor is
+/// also moved keeps its place under that ancestor. Returns the first moved
+/// entity after the reload.
+pub(super) fn reparent_entities(
+    world: &mut World,
+    entities: &[Entity],
+    parent: Option<Entity>,
+) -> Result<Option<Entity>, String> {
+    let scene_id = |world: &World, entity: Entity| {
+        world
+            .get::<SceneId>(entity)
+            .map(|id| id.0)
+            .ok_or_else(|| "Object is not part of the saved scene".to_owned())
+    };
+    let parent_id = parent.map(|parent| scene_id(world, parent)).transpose()?;
+    let parent_inverse = parent
+        .and_then(|parent| world.get::<GlobalTransform>(parent))
+        .and_then(|parent| Matrix4::from(parent.matrix).try_inverse());
+    let is_moved_descendant = |entity: Entity| {
+        let mut ancestor = world.get::<Parent>(entity).map(|parent| parent.0);
+        while let Some(current) = ancestor {
+            if entities.contains(&current) {
+                return true;
+            }
+            ancestor = world.get::<Parent>(current).map(|parent| parent.0);
+        }
+        false
+    };
+    let mut moves = Vec::new();
+    for &entity in entities {
+        if is_moved_descendant(entity) {
+            continue;
+        }
+        let transform = world
+            .get::<GlobalTransform>(entity)
+            .map(|child| Matrix4::from(child.matrix))
+            .map(|child| {
+                parent_inverse.map_or(child, |inverse| inverse * child)
+            })
+            .map(Transform::from_matrix);
+        moves.push((scene_id(world, entity)?, transform));
+    }
+    let mut document = scene_document(world, "Main Scene")
+        .map_err(|error| error.to_string())?;
+    let parents: HashMap<_, _> = document
+        .entities
+        .iter()
+        .map(|item| (item.id, item.parent))
+        .collect();
+    for (child_id, transform) in &moves {
+        let mut ancestor = parent_id;
+        let mut visited = HashSet::new();
+        while let Some(id) = ancestor {
+            if id == *child_id || !visited.insert(id) {
+                return Err("That parent would create a hierarchy cycle".into());
+            }
+            ancestor = parents.get(&id).copied().flatten();
+        }
+        let child = document
+            .entities
+            .iter_mut()
+            .find(|item| item.id == *child_id)
+            .ok_or_else(|| "Object was not found in the scene".to_owned())?;
+        child.parent = parent_id;
+        if let Some(transform) = transform {
+            child.transform = Some((*transform).into());
+        }
+    }
+    crate::runtime::load_scene_document(
+        world,
+        &document,
+        SceneLoadMode::Replace,
+    )
+    .map_err(|error| error.to_string())?;
+    let first = moves.first().map(|(id, _)| *id);
+    let mut query = world.query::<(Entity, &SceneId)>();
+    Ok(query
+        .iter(world)
+        .find_map(|(entity, id)| (Some(id.0) == first).then_some(entity)))
 }
 
 /// Copies one clicked tree row into editor selection and Inspector drafts.

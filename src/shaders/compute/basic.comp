@@ -224,8 +224,19 @@ void main() {
             for (int dx = -1; dx <= 1; dx++) {
                 uint curr_h = hashCell(cell + ivec3(dx, dy, dz));
                 uint grid_c = min(grid_counts.data[curr_h], MAX_PER_CELL);
+                // Grid build fills cells in atomic (arbitrary) order, and each
+                // contact changes vel/pos for the next one. Visit the cell in
+                // ascending body index so the result is reproducible.
+                // ponytail: O(n^2) per cell; sort cells once after the grid
+                // build if crowded cells show up in profiles.
+                uint last = 0xFFFFFFFFu;
                 for (uint s = 0; s < grid_c; s++) {
-                    uint j = grid_objects.data[curr_h * MAX_PER_CELL + s];
+                    uint j = 0xFFFFFFFFu;
+                    for (uint t = 0; t < grid_c; t++) {
+                        uint candidate = grid_objects.data[curr_h * MAX_PER_CELL + t];
+                        if ((last == 0xFFFFFFFFu || candidate > last) && candidate < j) j = candidate;
+                    }
+                    last = j;
                     if (j == i || j >= pc.total_objects) continue;
                     SOLVE_COLLISION(j);
                 }
