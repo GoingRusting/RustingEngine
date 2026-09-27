@@ -558,10 +558,11 @@ struct PhysicsPushConstants {
     gravity_x: f32,
     gravity_y: f32,
     gravity_z: f32,
-    /// Commands to apply before integrating; nonzero only on the first step.
+    /// This step's commands: `command_count` entries from `command_first`.
     command_count: u32,
     collider_count: u32,
     grid_cell_size: f32,
+    command_first: u32,
 }
 
 /// A GPU body's own collider (binding 6), in [`crate::runtime::GpuCollider`]
@@ -605,6 +606,89 @@ impl From<&crate::runtime::GpuCollider> for GpuColliderUpload {
     }
 }
 
+/// Stackless bounding-volume tree over the collider upload order. `links.x`
+/// is the first node after this subtree; `links.y` is the collider index for
+/// a leaf, or `u32::MAX` for an internal node; `links.z` is the first collider
+/// index after the subtree.
+#[repr(C)]
+#[derive(BufferContents, Clone, Copy, Debug, Default, PartialEq)]
+struct GpuColliderNode {
+    lower: [f32; 4],
+    upper: [f32; 4],
+    links: [u32; 4],
+}
+
+fn collider_tree(colliders: &[GpuColliderUpload]) -> Vec<GpuColliderNode> {
+    fn build(
+        colliders: &[GpuColliderUpload],
+        nodes: &mut Vec<GpuColliderNode>,
+        start: usize,
+        end: usize,
+    ) -> usize {
+        let index = nodes.len();
+        nodes.push(GpuColliderNode::default());
+        let (lower, upper, collider) = if end - start == 1 {
+            let source = &colliders[start];
+            let radius = if source.shape[0] < 0.5 {
+                source.shape[1..4].iter().map(|v| v * v).sum::<f32>().sqrt()
+            } else if source.shape[0] < 1.5 {
+                source.shape[1]
+            } else {
+                source.shape[1] + source.shape[2]
+            };
+            let center = &source.model[3];
+            (
+                [
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[2] - radius,
+                    0.0,
+                ],
+                [
+                    center[0] + radius,
+                    center[1] + radius,
+                    center[2] + radius,
+                    0.0,
+                ],
+                start as u32,
+            )
+        } else {
+            let middle = start + (end - start) / 2;
+            let left = build(colliders, nodes, start, middle);
+            let right = build(colliders, nodes, middle, end);
+            let a = nodes[left];
+            let b = nodes[right];
+            (
+                [
+                    a.lower[0].min(b.lower[0]),
+                    a.lower[1].min(b.lower[1]),
+                    a.lower[2].min(b.lower[2]),
+                    0.0,
+                ],
+                [
+                    a.upper[0].max(b.upper[0]),
+                    a.upper[1].max(b.upper[1]),
+                    a.upper[2].max(b.upper[2]),
+                    0.0,
+                ],
+                u32::MAX,
+            )
+        };
+        nodes[index] = GpuColliderNode {
+            lower,
+            upper,
+            links: [nodes.len() as u32, collider, end as u32, 0],
+        };
+        index
+    }
+
+    let mut nodes = Vec::with_capacity(colliders.len().saturating_mul(2));
+    if !colliders.is_empty() {
+        build(colliders, &mut nodes, 0, colliders.len());
+    }
+    nodes
+}
+
 /// One [`GpuBodyCommand`] for the physics shader. `header` is the body's
 /// state index, the command kind, and the expected generation.
 ///
@@ -625,7 +709,9 @@ impl GpuCommandUpload {
         use crate::runtime::GpuBodyCommand;
         let vector = |value: [f32; 3]| [value[0], value[1], value[2], 0.0];
         let (kind, values) = match *command {
-            GpuBodyCommand::Teleport(transform) => (0, transform.to_matrix()),
+            GpuBodyCommand::Teleport(transform) => {
+                (0, crate::runtime::sim_math::transform_matrix(&transform))
+            }
             GpuBodyCommand::SetVelocity { linear, angular } => {
                 (1, [vector(linear), vector(angular), [0.0; 4], [0.0; 4]])
             }
@@ -920,7 +1006,8 @@ type FrameFence = Arc<FenceSignalFuture<Box<dyn GpuFuture>>>;
 /// Submitted frames allowed in flight before [`SceneRenderer::render`] waits.
 pub const FRAMES_IN_FLIGHT: usize = 2;
 
-/// Fixed physics ticks dispatched per rendered frame; older ticks are dropped.
+/// Fixed physics ticks dispatched per rendered frame; later ticks wait for
+/// the next frame.
 const MAX_PHYSICS_STEPS_PER_FRAME: u64 = 8;
 /// Largest event buffer per frame (48 bytes per event, 12 MiB in total).
 /// Below this, the buffer always fits every rule firing on every tick.
@@ -951,6 +1038,8 @@ struct PendingPhysicsReadback {
     header: Subbuffer<GpuEventHeader>,
     events: Subbuffer<[GpuEventUpload]>,
     states: Option<PendingStateReadback>,
+    /// `physics_hash.comp` output and the first and last tick it covers.
+    hashes: (Subbuffer<[[u32; 2]]>, u64, u64),
 }
 
 /// Pixel-space area of a render target occupied by the 3D scene.
@@ -1098,6 +1187,8 @@ pub struct SceneRenderer {
     /// each step.
     physics_grid_pipeline: Arc<ComputePipeline>,
     physics_contact_pipeline: Arc<ComputePipeline>,
+    /// Hashes GPU body state after each step (`physics_hash.comp`).
+    physics_hash_pipeline: Arc<ComputePipeline>,
     physics_contact_grid: Option<PhysicsContactGrid>,
     /// Bytes the contact grid's hash may take: an eighth of the per-frame
     /// upload budget, so a sixteenth of the largest device-local heap.
@@ -1148,6 +1239,7 @@ pub struct SceneRenderer {
     readback_counters: RenderCounters,
     completed_physics_events: Vec<RawGpuPhysicsEvent>,
     completed_physics_states: Vec<crate::runtime::GpuStateSample>,
+    completed_physics_hashes: Vec<(u64, u64)>,
     /// Events lost to a full event buffer and not yet reported to gameplay.
     physics_events_lost: u64,
     max_physics_events: usize,
@@ -1155,8 +1247,12 @@ pub struct SceneRenderer {
     /// runs a fixed step.
     // ponytail: unbounded while physics is disabled; cap it if games queue
     // commands for long pauses.
-    queued_physics_commands:
-        Vec<(crate::runtime::PhysicsId, crate::runtime::GpuBodyCommand)>,
+    /// Commands with the GPU tick each applies before.
+    queued_physics_commands: Vec<(
+        u64,
+        crate::runtime::PhysicsId,
+        crate::runtime::GpuBodyCommand,
+    )>,
     physics_commands_serial: u64,
     queued_read_all: bool,
     /// Custom condition shaders by resolved source. `Err` keeps the compiler
@@ -1231,6 +1327,10 @@ impl SceneRenderer {
         let physics_contact_pipeline = create_compute_pipeline(
             &queue,
             physics_contact_shader::load(queue.device().clone()),
+        )?;
+        let physics_hash_pipeline = create_compute_pipeline(
+            &queue,
+            physics_hash_shader::load(queue.device().clone()),
         )?;
         let cull_pipeline = create_compute_pipeline(
             &queue,
@@ -1360,6 +1460,7 @@ impl SceneRenderer {
         name_object(&*physics_pipeline, "GPU physics");
         name_object(&*physics_grid_pipeline, "GPU physics contact grid");
         name_object(&*physics_contact_pipeline, "GPU physics contacts");
+        name_object(&*physics_hash_pipeline, "GPU physics state hash");
         name_object(&*cull_pipeline, "Culling");
         name_object(&*depth_pyramid_copy_pipeline, "Depth pyramid copy");
         name_object(&*depth_pyramid_reduce_pipeline, "Depth pyramid reduce");
@@ -1402,6 +1503,7 @@ impl SceneRenderer {
             physics_pipeline,
             physics_grid_pipeline,
             physics_contact_pipeline,
+            physics_hash_pipeline,
             physics_contact_grid: None,
             cull_pipeline,
             depth_pyramid_copy_pipeline,
@@ -1429,6 +1531,7 @@ impl SceneRenderer {
             readback_counters: RenderCounters::default(),
             completed_physics_events: Vec::new(),
             completed_physics_states: Vec::new(),
+            completed_physics_hashes: Vec::new(),
             physics_events_lost: 0,
             max_physics_events: MAX_PHYSICS_EVENTS,
             queued_physics_commands: Vec::new(),
@@ -1649,8 +1752,14 @@ impl SceneRenderer {
                 self.prepared_physics = None;
                 self.queued_physics_commands.clear();
             }
-            self.queued_physics_commands
-                .extend_from_slice(&render_world.gpu_physics_commands);
+            let ticks = &render_world.gpu_physics_command_ticks;
+            self.queued_physics_commands.extend(
+                render_world.gpu_physics_commands.iter().enumerate().map(
+                    |(index, &(id, command))| {
+                        (ticks.get(index).copied().unwrap_or(0), id, command)
+                    },
+                ),
+            );
             self.queued_read_all |= render_world.gpu_physics_read_all;
         }
         self.prepare_gpu_physics(render_world)?;
@@ -1723,6 +1832,12 @@ impl SceneRenderer {
         let physics_ran = render_world.physics_enabled
             && new_ticks > 0
             && !physics.source.is_empty();
+        // One dispatch per fixed tick keeps the integration step at
+        // `fixed_delta`. Ticks past the cap wait for the next frame instead
+        // of being dropped, so the GPU simulates every tick the CPU counts.
+        let steps = new_ticks.min(MAX_PHYSICS_STEPS_PER_FRAME);
+        let first_tick = self.last_physics_tick + 1;
+        let last_tick = self.last_physics_tick + steps;
 
         let render_instances = self.prepared_instances.as_ref().unwrap();
         let frame_key = Arc::as_ptr(&target) as usize;
@@ -1919,6 +2034,8 @@ impl SceneRenderer {
         .map_err(|error| SceneRenderError(error.to_string()))?;
 
         let mut reads = Vec::new();
+        // First upload and count of each step's commands.
+        let mut command_ranges = vec![(0u32, 0u32); steps as usize];
         let command_uploads = if physics_ran
             && !self.queued_physics_commands.is_empty()
         {
@@ -1933,8 +2050,15 @@ impl SceneRenderer {
                     )
                 })
                 .collect();
+            let (due, later) =
+                std::mem::take(&mut self.queued_physics_commands)
+                    .into_iter()
+                    .partition::<Vec<_>, _>(|(tick, ..)| *tick <= last_tick);
+            self.queued_physics_commands = later;
             let mut uploads = Vec::new();
-            for (id, command) in self.queued_physics_commands.drain(..) {
+            for (tick, id, command) in due {
+                // Late commands apply before this frame's first step.
+                let step = tick.saturating_sub(first_tick) as usize;
                 match bodies.get(&id.slot) {
                     Some(&(index, generation))
                         if generation == id.generation =>
@@ -1943,18 +2067,29 @@ impl SceneRenderer {
                         {
                             reads.push(index);
                         } else {
-                            uploads.push(GpuCommandUpload::new(
-                                index, generation, &command,
+                            uploads.push((
+                                step,
+                                GpuCommandUpload::new(
+                                    index, generation, &command,
+                                ),
                             ));
                         }
                     }
                     _ => self.capacity.physics_commands_rejected += 1,
                 }
             }
-            // The shader finds a body's commands by binary search; the
-            // stable sort keeps each body's commands in submission order.
-            uploads.sort_by_key(|upload| upload.header[0]);
-            uploads
+            // Each step's commands are contiguous, and the shader finds a
+            // body's commands in them by binary search; the stable sort
+            // keeps each body's commands in submission order.
+            uploads.sort_by_key(|(step, upload)| (*step, upload.header[0]));
+            for (position, (step, _)) in uploads.iter().enumerate() {
+                let range = &mut command_ranges[*step];
+                if range.1 == 0 {
+                    range.0 = position as u32;
+                }
+                range.1 += 1;
+            }
+            uploads.into_iter().map(|(_, upload)| upload).collect()
         } else {
             Vec::new()
         };
@@ -2019,7 +2154,7 @@ impl SceneRenderer {
                 .iter()
                 .map(|body| body.rules.len())
                 .sum::<usize>();
-            let steps = new_ticks.min(MAX_PHYSICS_STEPS_PER_FRAME) as usize;
+            let steps = steps as usize;
             // Custom shaders get one event per body and tick each.
             let custom = condition_pipelines.len() * physics.source.len();
             ((rules + custom) * steps)
@@ -2037,6 +2172,7 @@ impl SceneRenderer {
         } else {
             Vec::new()
         };
+        let collider_nodes = collider_tree(&colliders);
         let physics_resources = if let Some(event_capacity) = event_capacity {
             let transient = &self.frame_contexts[self.frame_index].transient;
             let event_header = transient
@@ -2047,6 +2183,32 @@ impl SceneRenderer {
                 .write()
                 .map_err(|error| SceneRenderError(error.to_string()))? =
                 GpuEventHeader::default();
+            // Two hash lanes per tick slot; see `physics_hash.comp`.
+            let tick_hashes = transient
+                .allocate_slice::<[u32; 2]>(MAX_PHYSICS_STEPS_PER_FRAME)
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            tick_hashes
+                .write()
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .fill([0; 2]);
+            let hash_layout =
+                self.physics_hash_pipeline.layout().set_layouts()[0].clone();
+            let hash_writes = [
+                WriteDescriptorSet::buffer(0, physics.states.clone()),
+                WriteDescriptorSet::buffer(2, physics.rules.clone()),
+                WriteDescriptorSet::buffer(13, tick_hashes.clone()),
+            ]
+            .into_iter()
+            .filter(|write| {
+                hash_layout.bindings().contains_key(&write.binding())
+            });
+            let hash_set = DescriptorSet::new(
+                self.descriptor_allocator.clone(),
+                hash_layout.clone(),
+                hash_writes,
+                [],
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
             let event_buffer = transient
                 .allocate_slice::<GpuEventUpload>(event_capacity as u64)
                 .map_err(|error| SceneRenderError(error.to_string()))?;
@@ -2077,6 +2239,18 @@ impl SceneRenderer {
                     .copy_from_slice(&colliders);
                 self.counters.upload_bytes += colliders_buffer.size();
             }
+            let collider_tree_buffer = transient
+                .allocate_slice::<GpuColliderNode>(
+                    collider_nodes.len().max(1) as u64
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            if !collider_nodes.is_empty() {
+                collider_tree_buffer
+                    .write()
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .copy_from_slice(&collider_nodes);
+                self.counters.upload_bytes += collider_tree_buffer.size();
+            }
             let physics_set = DescriptorSet::new(
                 self.descriptor_allocator.clone(),
                 self.physics_pipeline.layout().set_layouts()[0].clone(),
@@ -2089,6 +2263,7 @@ impl SceneRenderer {
                     WriteDescriptorSet::buffer(5, command_buffer),
                     WriteDescriptorSet::buffer(6, physics.shapes.clone()),
                     WriteDescriptorSet::buffer(7, colliders_buffer),
+                    WriteDescriptorSet::buffer(12, collider_tree_buffer),
                 ],
                 [],
             )
@@ -2183,6 +2358,7 @@ impl SceneRenderer {
                 state_readback,
                 condition_sets,
                 contact_sets,
+                (hash_set, tick_hashes),
             ))
         } else {
             None
@@ -2258,17 +2434,18 @@ impl SceneRenderer {
         }
         if physics_ran {
             passes.begin(&mut commands, FramePass::Physics)?;
-            // One dispatch per fixed tick keeps the integration step at
-            // `fixed_delta`; a hitch beyond the cap is dropped rather than
-            // simulated as one large, tunnelling step.
-            let steps = new_ticks.min(MAX_PHYSICS_STEPS_PER_FRAME);
             let resources = physics_resources.as_ref().unwrap();
             let groups = physics.source.len().div_ceil(256) as u32;
             for step in 0..steps {
-                let tick = render_world.physics_tick - (steps - 1 - step);
+                let tick = first_tick + step;
                 let push = PhysicsPushConstants {
                     dt: render_world.fixed_delta_seconds,
-                    elapsed: render_world.elapsed_seconds,
+                    // Simulated time at the end of this tick, not the
+                    // frame clock, so rules and cooldowns do not depend on
+                    // frame timing.
+                    elapsed: (tick as f64
+                        * f64::from(render_world.fixed_delta_seconds))
+                        as f32,
                     body_count: physics.source.len() as u32,
                     event_capacity: event_capacity.unwrap() as u32,
                     tick_low: tick as u32,
@@ -2276,11 +2453,8 @@ impl SceneRenderer {
                     gravity_x: render_world.physics_gravity[0],
                     gravity_y: render_world.physics_gravity[1],
                     gravity_z: render_world.physics_gravity[2],
-                    command_count: if step == 0 {
-                        command_uploads.len() as u32
-                    } else {
-                        0
-                    },
+                    command_first: command_ranges[step as usize].0,
+                    command_count: command_ranges[step as usize].1,
                     collider_count: colliders.len() as u32,
                     grid_cell_size: physics.grid_cell_size,
                 };
@@ -2327,8 +2501,28 @@ impl SceneRenderer {
                         })?;
                     }
                 }
+                let hash = &self.physics_hash_pipeline;
+                commands
+                    .bind_pipeline_compute(hash.clone())
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Compute,
+                        hash.layout().clone(),
+                        0,
+                        resources.6 .0.clone(),
+                    )
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .push_constants(hash.layout().clone(), 0, push)
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                count_work(&recorded, 0, 1, 0);
+                self.counters.physics_dispatches += 1;
+                unsafe {
+                    commands
+                        .dispatch([groups, 1, 1])
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                }
             }
-            self.last_physics_tick = render_world.physics_tick;
+            self.last_physics_tick = last_tick;
             if let Some(target) = &resources.3 {
                 commands
                     .copy_buffer(CopyBufferInfo {
@@ -2921,16 +3115,16 @@ impl SceneRenderer {
         }
         self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT;
         if physics_ran {
-            let (_, event_header, event_buffer, state_readback, _, _) =
+            let (_, event_header, event_buffer, state_readback, _, _, hashes) =
                 physics_resources.unwrap();
             self.pending_physics.push(PendingPhysicsReadback {
                 fence: fence.clone(),
                 submitted_frame: self.frame_serial,
                 header: event_header,
                 events: event_buffer,
-                states: state_readback.map(|buffer| {
-                    (buffer, render_world.physics_tick, readback_full.clone())
-                }),
+                states: state_readback
+                    .map(|buffer| (buffer, last_tick, readback_full.clone())),
+                hashes: (hashes.1, first_tick, last_tick),
             });
         }
         Ok(fence.boxed())
@@ -3728,6 +3922,16 @@ impl SceneRenderer {
         std::mem::take(&mut self.completed_physics_states)
     }
 
+    /// `(tick, hash)` of GPU body state after each tick of completed
+    /// submissions, in tick order; see `StateHashes::gpu`. Like events,
+    /// these arrive one to three frames after their tick.
+    pub fn take_completed_physics_state_hashes(&mut self) -> Vec<(u64, u64)> {
+        self.collect_physics_readbacks();
+        let mut hashes = std::mem::take(&mut self.completed_physics_hashes);
+        hashes.sort_unstable_by_key(|(tick, _)| *tick);
+        hashes
+    }
+
     fn collect_physics_readbacks(&mut self) {
         let mut index = 0;
         while index < self.pending_physics.len() {
@@ -3757,6 +3961,16 @@ impl SceneRenderer {
                         }),
                     );
                 }
+            }
+            let (hashes, first, last) = &pending.hashes;
+            if let Ok(hashes) = hashes.read() {
+                self.completed_physics_hashes.extend((*first..=*last).map(
+                    |tick| {
+                        let [high, low] = hashes
+                            [(tick % MAX_PHYSICS_STEPS_PER_FRAME) as usize];
+                        (tick, u64::from(high) << 32 | u64::from(low))
+                    },
+                ));
             }
             let Ok(header) = pending.header.read() else {
                 continue;
@@ -3912,7 +4126,9 @@ impl SceneRenderer {
                 });
             }
             states.push(GpuBodyState {
-                model: body.transform.to_matrix(),
+                model: crate::runtime::sim_math::transform_matrix(
+                    &body.transform,
+                ),
                 velocity: [
                     body.rigid_body.linear_velocity[0],
                     body.rigid_body.linear_velocity[1],
@@ -4550,7 +4766,7 @@ fn state_sample(
             generation: state.metadata[1],
         },
         tick,
-        transform: crate::Transform::from_matrix(Matrix4::from(state.model)),
+        transform: crate::runtime::sim_math::transform_from_matrix(state.model),
         linear_velocity: xyz(state.velocity),
         angular_velocity: xyz(state.angular_velocity),
         custom_values: full.then_some(state.custom_values),
@@ -5834,7 +6050,7 @@ impl Capability {
 
 /// Optional GPU features above [`LOW_END_BASELINE`] that later passes can
 /// use, with the baseline path as their fallback.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(bevy_ecs::prelude::Resource, Clone, Debug, PartialEq, Eq)]
 pub struct RendererCapabilities {
     pub device_name: String,
     pub integrated_gpu: bool,
@@ -6718,6 +6934,14 @@ mod physics_contact_shader {
     }
 }
 
+mod physics_hash_shader {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        include: ["src/shaders"],
+        path: "src/shaders/compute/physics_hash.comp",
+    }
+}
+
 mod physics_shader {
     vulkano_shaders::shader! {
         ty: "compute",
@@ -6779,6 +7003,43 @@ mod tests {
             Matrix4::new_translation(&nalgebra::Vector3::new(2.0, 3.0, 4.0));
         let uploaded: [[f32; 4]; 4] = matrix.into();
         assert_eq!(matrix_from_array(uploaded), matrix);
+    }
+
+    #[test]
+    fn collider_tree_prunes_distant_groups_in_stable_order() {
+        let colliders = (0..128)
+            .map(|index| GpuColliderUpload {
+                model: crate::Transform::new([index as f32 * 10.0, 0.0, 0.0])
+                    .to_matrix(),
+                shape: [1.0, 0.5, 0.0, 0.0],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let nodes = collider_tree(&colliders);
+        assert_eq!(nodes.len(), colliders.len() * 2 - 1);
+        assert_eq!(nodes[0].links[0] as usize, nodes.len());
+
+        let mut node_index = 0;
+        let mut visited = 0;
+        let mut candidates = Vec::new();
+        let center = 420.0_f32;
+        let radius = 0.5_f32;
+        while node_index < nodes.len() {
+            visited += 1;
+            let node = nodes[node_index];
+            let distance =
+                (center - center.clamp(node.lower[0], node.upper[0])).abs();
+            if distance > radius {
+                node_index = node.links[0] as usize;
+            } else if node.links[1] == u32::MAX {
+                node_index += 1;
+            } else {
+                candidates.push(node.links[1]);
+                node_index = node.links[0] as usize;
+            }
+        }
+        assert_eq!(candidates, vec![42]);
+        assert!(visited < 20, "visited {visited} of {} nodes", nodes.len());
     }
 
     /// These compare our hand-written CPU upload structs against the
@@ -8586,6 +8847,61 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn gpu_timers_count_simulated_ticks_not_the_frame_clock() {
+        use crate::runtime::{
+            ExtractedGpuPhysicsBody, ExtractedGpuPhysicsRule, GpuCondition,
+            GpuEventId, GpuEventMode, GpuEventPayload,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        world.gpu_physics = vec![ExtractedGpuPhysicsBody {
+            entity: bevy_ecs::entity::Entity::from_raw_u32(3000).unwrap(),
+            physics_id: Default::default(),
+            transform: crate::Transform::new([0.0, 5.0, 0.0]),
+            rigid_body: Default::default(),
+            solver: Default::default(),
+            collider: None,
+            sync: Default::default(),
+            custom_shader: None,
+            rules: vec![ExtractedGpuPhysicsRule {
+                event_id: GpuEventId(7),
+                instructions: GpuCondition::timer_elapsed(0.04)
+                    .compile()
+                    .unwrap(),
+                mode: GpuEventMode::WhileTrue,
+                payload: GpuEventPayload::None,
+                cooldown_seconds: 0.0,
+            }],
+        }];
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.fixed_delta_seconds = 1.0 / 60.0;
+        // A frame clock far past the timer; only ticks 3 and 4 (0.05 s
+        // and later) are.
+        world.elapsed_seconds = 1000.0;
+        for tick in 1..=4 {
+            scene.render_world.physics_tick = tick;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let events = scene.renderer.take_completed_physics_events();
+            assert_eq!(events.len(), usize::from(tick >= 3), "tick {tick}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn event_buffer_fits_every_step_and_reports_losses_past_budget() {
         use crate::runtime::{
             ExtractedGpuPhysicsBody, ExtractedGpuPhysicsRule, GpuCondition,
@@ -8647,6 +8963,187 @@ mod tests {
         scene.renderer.max_physics_events = 60;
         assert_eq!(frame(&mut scene, 4), (60, u64::from(BODIES) - 60));
         assert_eq!(scene.renderer.take_physics_events_lost(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn ten_thousand_gpu_bodies_report_condition_events_without_state_readback()
+    {
+        use crate::runtime::{
+            ExtractedGpuPhysicsBody, ExtractedGpuPhysicsRule, GpuCondition,
+            GpuEventId, GpuEventMode, GpuEventPayload, PhysicsId,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        const BODIES: u32 = 10_000;
+        // Every body falls; the rule fires once when a body enters y < 0.
+        // Odd bodies start just above the line and cross it within the
+        // first ticks, even bodies start high and never do.
+        let rule = ExtractedGpuPhysicsRule {
+            event_id: GpuEventId(9),
+            instructions: GpuCondition::position_y()
+                .less_than(0.0)
+                .compile()
+                .unwrap(),
+            mode: GpuEventMode::OnEnter,
+            payload: GpuEventPayload::Position,
+            cooldown_seconds: 0.0,
+        };
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        world.gpu_physics = (0..BODIES)
+            .map(|slot| ExtractedGpuPhysicsBody {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(3000 + slot)
+                    .unwrap(),
+                physics_id: PhysicsId {
+                    slot,
+                    generation: 0,
+                },
+                transform: crate::Transform::new([
+                    (slot % 100) as f32 * 2.0,
+                    if slot % 2 == 1 { 0.05 } else { 100.0 },
+                    (slot / 100) as f32 * 2.0,
+                ]),
+                rigid_body: Default::default(),
+                solver: Default::default(),
+                collider: None,
+                custom_shader: None,
+                sync: Default::default(),
+                rules: vec![rule.clone()],
+            })
+            .collect();
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.physics_gravity = [0.0, -9.81, 0.0];
+        world.fixed_delta_seconds = 1.0 / 60.0;
+        let mut events = Vec::new();
+        for tick in 1..=30 {
+            scene.render_world.physics_tick = tick;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            events.extend(scene.renderer.take_completed_physics_events());
+        }
+
+        // Exactly one event per odd body, carrying its crossing position.
+        assert_eq!(events.len(), BODIES as usize / 2);
+        let mut slots = events
+            .iter()
+            .map(|event| event.body_slot)
+            .collect::<Vec<_>>();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots.len(), BODIES as usize / 2);
+        assert!(slots.iter().all(|slot| slot % 2 == 1));
+        assert!(events.iter().all(|event| {
+            event.event_id == 9
+                && event.payload[1] < 0.0
+                && event.payload[0] == (event.body_slot % 100) as f32 * 2.0
+        }));
+        assert_eq!(
+            scene.renderer.capacity_diagnostics().physics_events_dropped,
+            0
+        );
+        // Only event buffers came back: no body state was copied.
+        let counters = scene.renderer.render_counters();
+        assert_eq!(counters.physics_state_bytes, 0);
+        assert!(counters.physics_event_bytes > 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn commands_apply_on_their_tick_however_frames_batch_ticks() {
+        use crate::runtime::{
+            ExtractedGpuPhysicsBody, GpuBodyCommand, PhysicsId, PhysicsSyncMode,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let id = PhysicsId {
+            slot: 0,
+            generation: 1,
+        };
+        let velocity = |linear| GpuBodyCommand::SetVelocity {
+            linear,
+            angular: [0.0; 3],
+        };
+        // Renders one frame per listed physics tick and returns the last
+        // state read back and the GPU hash of every tick.
+        let run = |frames: &[u64], first_speed: f32| {
+            let mut scene = SlabScene::new(&[]);
+            let world = &mut scene.render_world;
+            world.gpu_physics = vec![ExtractedGpuPhysicsBody {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(3100).unwrap(),
+                physics_id: id,
+                transform: crate::Transform::default(),
+                rigid_body: Default::default(),
+                solver: Default::default(),
+                collider: None,
+                custom_shader: None,
+                rules: Vec::new(),
+                sync: PhysicsSyncMode::FullState,
+            }];
+            world.gpu_physics_revision = 1;
+            world.physics_enabled = true;
+            world.physics_gravity = [0.0; 3];
+            world.fixed_delta_seconds = 1.0 / 60.0;
+            world.gpu_physics_commands = vec![
+                (id, velocity([first_speed, 0.0, 0.0])),
+                (id, velocity([0.0, 2.0, 0.0])),
+            ];
+            world.gpu_physics_command_ticks = vec![3, 6];
+            let mut hashes = Vec::new();
+            world.gpu_physics_commands_serial = 1;
+            let mut last = None;
+            for &tick in frames {
+                scene.render_world.physics_tick = tick;
+                let before = scene.now();
+                scene
+                    .render(before)
+                    .then_signal_fence_and_flush()
+                    .unwrap()
+                    .wait(None)
+                    .unwrap();
+                scene.renderer.block_until_physics_readbacks_complete();
+                last = scene.renderer.take_completed_physics_states().pop();
+                hashes.extend(
+                    scene.renderer.take_completed_physics_state_hashes(),
+                );
+            }
+            let state = last.unwrap();
+            (state.tick, state.transform, state.linear_velocity, hashes)
+        };
+        let steady = run(&(1..=11).collect::<Vec<_>>(), 1.0);
+        // One tick moves 1/60 m at 1 m/s: ticks 3 to 5 in x, 6 to 11 in y.
+        assert_eq!(steady.0, 11);
+        assert!((steady.1.position[0] - 3.0 / 60.0).abs() < 1e-6);
+        assert!((steady.1.position[1] - 12.0 / 60.0).abs() < 1e-6);
+        // Ten ticks in one frame: eight run, the last two wait a frame.
+        assert_eq!(
+            steady.3.iter().map(|(tick, _)| *tick).collect::<Vec<_>>(),
+            (1..=11).collect::<Vec<_>>()
+        );
+        assert_eq!(run(&[1, 11, 11], 1.0), steady);
+        assert_eq!(run(&[1, 4, 7, 11], 1.0), steady);
+        // One ULP of the command applied before tick 3 changes the hash of
+        // tick 3 onward and nothing before it.
+        let nudged = run(&[1, 4, 7, 11], f32::from_bits(1.0f32.to_bits() + 1));
+        for ((tick, before), (_, after)) in steady.3.iter().zip(&nudged.3) {
+            assert_eq!(before == after, *tick < 3, "tick {tick}");
+        }
     }
 
     #[test]
@@ -8737,6 +9234,112 @@ mod tests {
         let states = frame(&mut scene, 2);
         assert_eq!(states[0].linear_velocity, [3.0, 0.0, 0.0]);
         assert_eq!(scene.renderer.render_counters().physics_commands, 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn commands_alter_only_selected_bodies_mid_simulation() {
+        use crate::runtime::{
+            ExtractedGpuPhysicsBody, GpuBodyCommand, PhysicsId, PhysicsSyncMode,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let id = |slot| PhysicsId {
+            slot,
+            generation: 0,
+        };
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        world.gpu_physics = (0..4)
+            .map(|slot| ExtractedGpuPhysicsBody {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(3000 + slot)
+                    .unwrap(),
+                physics_id: id(slot),
+                transform: crate::Transform::new([
+                    slot as f32 * 4.0,
+                    100.0,
+                    0.0,
+                ]),
+                rigid_body: Default::default(),
+                solver: Default::default(),
+                collider: None,
+                custom_shader: None,
+                rules: Vec::new(),
+                sync: PhysicsSyncMode::FullState,
+            })
+            .collect();
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.physics_gravity = [0.0, -9.81, 0.0];
+        world.fixed_delta_seconds = 1.0 / 60.0;
+
+        let frame = |scene: &mut SlabScene, tick| {
+            scene.render_world.physics_tick = tick;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.renderer.take_completed_physics_states()
+        };
+        let mut states = Vec::new();
+        for tick in 1..=10 {
+            states = frame(&mut scene, tick);
+        }
+        let falling = states[0].linear_velocity;
+        assert!(falling[1] < -1.0, "bodies fall before any command");
+        assert!(states.iter().all(|s| s.linear_velocity == falling));
+
+        // Mid-run commands for bodies 1 and 3 only.
+        let world = &mut scene.render_world;
+        world.gpu_physics_commands = vec![
+            (id(1), GpuBodyCommand::Impulse([5.0, 0.0, 0.0])),
+            (
+                id(3),
+                GpuBodyCommand::SetVelocity {
+                    linear: [0.0, 20.0, 0.0],
+                    angular: [0.0; 3],
+                },
+            ),
+        ];
+        world.gpu_physics_commands_serial = 1;
+        let before = states.clone();
+        let states = frame(&mut scene, 11);
+        assert_eq!(scene.renderer.render_counters().physics_commands, 2);
+        let gravity_step = -9.81 / 60.0;
+        for slot in [0, 2] {
+            let v = states[slot].linear_velocity;
+            assert_eq!(v[0], 0.0);
+            assert!((v[1] - (falling[1] + gravity_step)).abs() < 1e-4);
+            assert!(
+                states[slot].transform.position[1]
+                    < before[slot].transform.position[1]
+            );
+        }
+        assert!((states[1].linear_velocity[0] - 5.0).abs() < 1e-5);
+        assert!(
+            (states[1].linear_velocity[1] - (falling[1] + gravity_step)).abs()
+                < 1e-4
+        );
+        assert!(
+            (states[3].linear_velocity[1] - (20.0 + gravity_step)).abs() < 1e-4
+        );
+        assert!(
+            states[3].transform.position[1] > before[3].transform.position[1]
+        );
+
+        // The simulation keeps running from the altered state.
+        let states = frame(&mut scene, 12);
+        assert!(states[1].transform.position[0] > 4.0);
+        assert!(states[3].linear_velocity[1] > 19.0);
+        assert!(states[0].linear_velocity[1] < falling[1]);
     }
 
     #[test]
@@ -8949,8 +9552,25 @@ mod tests {
             ),
             body(2, 3.0, PhysicsSolver::Full, ghost_layers),
         ];
+        // Distant colliders precede the ground in upload order, so the
+        // indexed path must skip them and still find the final collider.
+        world.gpu_colliders = (0..32)
+            .map(|index| GpuCollider {
+                model: crate::Transform::new([
+                    100.0 + index as f32 * 10.0,
+                    -0.5,
+                    0.0,
+                ])
+                .to_matrix(),
+                shape: [0.0, 0.5, 0.5, 0.5],
+                velocity: [0.0; 3],
+                friction: 0.5,
+                restitution: 0.0,
+                layers: CollisionLayers::default(),
+            })
+            .collect();
         // Static ground on layer 1 only, top face at y = 0.
-        world.gpu_colliders = vec![GpuCollider {
+        world.gpu_colliders.push(GpuCollider {
             model: crate::Transform::new([0.0, -0.5, 0.0]).to_matrix(),
             shape: [0.0, 10.0, 0.5, 10.0],
             velocity: [0.0; 3],
@@ -8960,7 +9580,7 @@ mod tests {
                 memberships: 0b01,
                 filters: 0b01,
             },
-        }];
+        });
         world.gpu_physics_revision = 1;
         world.physics_enabled = true;
         world.physics_gravity = [0.0, -9.81, 0.0];
@@ -9103,9 +9723,10 @@ mod tests {
             )
         };
         let (states, diagnostics, counters) = run(DeviceSize::MAX);
-        // Grid pass, contact pass and the built-in step; frame 119's
-        // readback (an empty event header) landed in frame 120's counters.
-        assert_eq!(counters.physics_dispatches, 3);
+        // Grid pass, contact pass, the built-in step, and the state hash;
+        // frame 119's readback (an empty event header) landed in frame
+        // 120's counters.
+        assert_eq!(counters.physics_dispatches, 4);
         assert_eq!(counters.physics_event_bytes, 32);
         // The test blocks on each frame, so nothing waits a frame.
         assert_eq!(counters.physics_readback_latency_frames, 0);
@@ -9327,6 +9948,69 @@ mod tests {
         let x = states[0].transform.position[0];
         assert!((x - (wall_face + 0.5)).abs() < 0.1, "{:?}", states[0]);
         assert!((states[0].linear_velocity[0] - SPEED).abs() < 0.1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn gpu_collider_tree_rechecks_later_branches_after_a_push() {
+        use crate::runtime::{
+            Collider, ColliderShape, CollisionLayers, ExtractedGpuPhysicsBody,
+            GpuCollider, PhysicsId,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        world.gpu_physics = vec![ExtractedGpuPhysicsBody {
+            entity: bevy_ecs::entity::Entity::from_raw_u32(3000).unwrap(),
+            physics_id: PhysicsId::default(),
+            transform: crate::Transform::new([0.4, 0.0, 0.0]),
+            rigid_body: Default::default(),
+            solver: Default::default(),
+            collider: Some((
+                Collider {
+                    shape: ColliderShape::Sphere { radius: 0.5 },
+                    ..Collider::default()
+                },
+                CollisionLayers::default(),
+            )),
+            custom_shader: None,
+            rules: Vec::new(),
+            sync: Default::default(),
+        }];
+        world.gpu_colliders = [(0.0, [1.0, 0.6, 0.6]), (2.0, [0.5, 0.6, 0.6])]
+            .map(|(x, extents)| GpuCollider {
+                model: crate::Transform::new([x, 0.0, 0.0]).to_matrix(),
+                shape: [0.0, extents[0], extents[1], extents[2]],
+                velocity: [0.0; 3],
+                friction: 0.0,
+                restitution: 0.0,
+                layers: CollisionLayers::default(),
+            })
+            .to_vec();
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.physics_gravity = [0.0; 3];
+        world.fixed_delta_seconds = 1.0 / 60.0;
+        world.physics_tick = 1;
+        world.gpu_physics_read_all = true;
+        world.gpu_physics_commands_serial = 1;
+
+        let before = scene.now();
+        let _in_flight =
+            scene.render(before).then_signal_fence_and_flush().unwrap();
+        scene.renderer.block_until_physics_readbacks_complete();
+        let states = scene.renderer.take_completed_physics_states();
+        assert_eq!(states.len(), 1);
+        assert!(
+            (states[0].transform.position[0] - 1.0).abs() < 1e-4,
+            "{states:?}"
+        );
     }
 
     #[test]
@@ -10906,6 +11590,246 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn quality_profiles_compare_on_one_scene() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A floor under a red shadowed sun and 40 small green point lights,
+        // more than the Eco and Balanced light budgets.
+        let mut scene = SlabScene::with_extent(
+            &[(0.0, MaterialAsset::default())],
+            [32, 32],
+        );
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.directional_lights.push(
+            crate::runtime::ExtractedDirectionalLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2000).unwrap(),
+                transform: crate::runtime::GlobalTransform::default(),
+                light: crate::runtime::DirectionalLight {
+                    color: [1.0, 0.0, 0.0],
+                    illuminance: 20_000.0,
+                    shadows: true,
+                },
+            },
+        );
+        for index in 0..40u32 {
+            let (column, row) = ((index % 8) as f32, (index / 8) as f32);
+            scene.render_world.point_lights.push(
+                crate::runtime::ExtractedPointLight {
+                    entity: bevy_ecs::entity::Entity::from_raw_u32(
+                        2100 + index,
+                    )
+                    .unwrap(),
+                    transform: crate::runtime::GlobalTransform {
+                        matrix: Matrix4::new_translation(&Vector3::new(
+                            -0.875 + column * 0.25,
+                            -0.8 + row * 0.4,
+                            0.3,
+                        ))
+                        .into(),
+                    },
+                    light: crate::runtime::PointLight {
+                        color: [0.0, 1.0, 0.0],
+                        intensity: 200.0,
+                        range: 0.5,
+                    },
+                },
+            );
+        }
+        let msaa = scene.renderer.capabilities().msaa_samples;
+        let mut rows = Vec::new();
+        for (quality, lights, shadow_map, samples) in [
+            (QualityProfile::Eco, 16, 1024, 1),
+            (QualityProfile::Balanced, 32, 2048, msaa),
+            (QualityProfile::High, 41, 4096, msaa),
+        ] {
+            scene.render_world.quality = quality;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            let mean = |channel: usize| {
+                pixels.chunks(4).map(|p| f32::from(p[channel])).sum::<f32>()
+                    / (pixels.len() / 4) as f32
+            };
+            let (red, green) = (mean(2), mean(1));
+            let dropped = scene.renderer.capacity_diagnostics().dropped_lights;
+            // The sun counts toward the budget too.
+            assert_eq!(dropped, 41 - lights, "{quality:?}");
+            assert_eq!(
+                scene.renderer.shadow_framebuffer.extent(),
+                [shadow_map; 2]
+            );
+            assert_eq!(scene.renderer.scene_samples, samples);
+            eprintln!(
+                "{quality:?}: {lights} lights ({dropped} dropped), \
+                 {shadow_map}px shadow map, {samples}x MSAA, \
+                 mean red {red:.1}, mean green {green:.1}"
+            );
+            rows.push((red, green));
+        }
+        // The sun looks the same on every profile; each higher profile keeps
+        // more point lights, so more of the floor turns green.
+        assert!(rows.iter().all(|(red, _)| (red - rows[0].0).abs() < 2.0));
+        assert!(rows[0].0 > 50.0, "sunlit floor: {rows:?}");
+        assert!(rows[0].1 < rows[1].1 && rows[1].1 < rows[2].1, "{rows:?}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn vertical_slice_lighting_combines_shadow_point_sky_and_blend() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // One frame with every Milestone 7 lighting feature. Each light has
+        // its own channel: red directional sun, green point light, blue sky.
+        // A white half-transparent pane covers the top rows.
+        let pane = MaterialAsset {
+            model: MaterialModel::Unlit,
+            base_color: [1.0, 1.0, 1.0, 0.5],
+            alpha_mode: AlphaMode::Blend,
+            ..MaterialAsset::default()
+        };
+        let mut scene = SlabScene::with_extent(
+            &[
+                (0.0, MaterialAsset::default()),
+                (1.0, MaterialAsset::default()),
+                (1.5, pane),
+            ],
+            [32, 32],
+        );
+        let slab = |x: f32, y: f32, z: f32, width: f32, height: f32| {
+            crate::runtime::GlobalTransform {
+                matrix: (Matrix4::new_translation(&Vector3::new(x, y, z))
+                    * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                        width, height, 0.1,
+                    )))
+                .into(),
+            }
+        };
+        // The occluder sits outside the view; its shadow covers x > -0.5.
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.renderables[1].transform =
+            slab(6.5, 0.0, 1.0, 4.0, 4.0);
+        scene.render_world.renderables[2].transform =
+            slab(0.0, 0.75, 1.5, 4.0, 0.5);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.sky_light = Some(crate::runtime::SkyLight {
+            sky_color: [0.0, 0.0, 1.0],
+            ground_color: [0.0, 0.0, 1.0],
+            intensity: 0.05,
+        });
+        let direction = Vector3::new(-5.0, 0.0, -1.0).normalize();
+        scene.render_world.directional_lights.push(
+            crate::runtime::ExtractedDirectionalLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2000).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: nalgebra::Rotation3::rotation_between(
+                        &-Vector3::z(),
+                        &direction,
+                    )
+                    .unwrap()
+                    .to_homogeneous()
+                    .into(),
+                },
+                light: crate::runtime::DirectionalLight {
+                    color: [1.0, 0.0, 0.0],
+                    illuminance: 500_000.0,
+                    shadows: true,
+                },
+            },
+        );
+        scene.render_world.point_lights.push(
+            crate::runtime::ExtractedPointLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2001).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        0.5, -0.5, 1.0,
+                    ))
+                    .into(),
+                },
+                light: crate::runtime::PointLight {
+                    color: [0.0, 1.0, 0.0],
+                    intensity: 500.0,
+                    range: 1.5,
+                },
+            },
+        );
+        // Pixels as [r, g, b]: sunlit floor, shadowed floor near the point
+        // light, and sunlit floor behind the pane.
+        let frame = |scene: &mut SlabScene| {
+            scene.render_world.renderables_revision += 1;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            let at = |column: usize, row: usize| {
+                let index = (row * 32 + column) * 4;
+                [pixels[index + 2], pixels[index + 1], pixels[index]]
+            };
+            [at(4, 24), at(24, 24), at(4, 4)]
+        };
+
+        let [sunlit, shadowed, behind_pane] = frame(&mut scene);
+        assert!(sunlit[0] > 150 && sunlit[1] < 5, "sunlit {sunlit:?}");
+        assert!(shadowed[0] < 30, "shadowed {shadowed:?}");
+        assert!(shadowed[1] > 20, "point light {shadowed:?}");
+        assert!(shadowed[2] > 10 && sunlit[2] > 10, "sky {shadowed:?}");
+        // The pane adds white; the red floor still shows through it.
+        assert!(behind_pane[1] > 60, "pane {behind_pane:?}");
+        assert!(behind_pane[0] > behind_pane[1] + 20, "{behind_pane:?}");
+
+        // Turning each feature off removes only its own contribution.
+        scene.render_world.directional_lights[0].light.shadows = false;
+        let [_, unshadowed, _] = frame(&mut scene);
+        assert!(unshadowed[0] > 150, "without shadows {unshadowed:?}");
+        scene.render_world.directional_lights[0].light.shadows = true;
+
+        let point = scene.render_world.point_lights.pop().unwrap();
+        let [_, dark, _] = frame(&mut scene);
+        assert!(dark[1] < 5 && dark[2] > 10, "without point {dark:?}");
+        scene.render_world.point_lights.push(point);
+
+        scene.render_world.sky_light = None;
+        let [no_sky, no_sky_shadow, _] = frame(&mut scene);
+        assert!(
+            no_sky[2] < 5 && no_sky_shadow[2] < 5,
+            "without sky {no_sky:?}"
+        );
+
+        scene.render_world.renderables.pop();
+        let [_, _, bare] = frame(&mut scene);
+        assert!(bare[1] < 5, "without pane {bare:?}");
+    }
+
+    #[test]
     fn hybrid_physics_gpu_layouts_match_shader_structs() {
         use std::mem::{offset_of, size_of};
 
@@ -10919,6 +11843,14 @@ mod tests {
         assert_eq!(
             size_of::<GpuCommandUpload>(),
             size_of::<super::physics_shader::BodyCommand>()
+        );
+        assert_eq!(
+            size_of::<GpuColliderNode>(),
+            size_of::<super::physics_shader::ColliderNode>()
+        );
+        assert_eq!(
+            offset_of!(GpuColliderNode, links),
+            offset_of!(super::physics_shader::ColliderNode, links)
         );
         assert!(include_str!("../shaders/physics_abi.glsl").contains(
             &format!(

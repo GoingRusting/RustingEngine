@@ -1665,3 +1665,1144 @@ fn auto_simulation_picks_cpu_or_gpu_and_stays_overridable() {
         (SimulationClass::Gpu, AllocationReason::CpuOverBudget)
     );
 }
+
+#[test]
+fn player_controller_falls_walks_jumps_and_stops_at_walls() {
+    let mut app = App::new();
+    cpu_ground(app.world_mut());
+    let wall = cpu_body(
+        app.world_mut(),
+        [0.0, 1.0, -2.0],
+        ColliderShape::Box {
+            half_extents: [5.0, 1.0, 0.5],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let trigger = cpu_body(
+        app.world_mut(),
+        [0.0, 0.5, -1.0],
+        UNIT_BOX,
+        RigidBodyKind::Fixed,
+    );
+    app.world_mut().get_mut::<Collider>(trigger).unwrap().sensor = true;
+    // A kinematic capsule collider lets sensors see the player.
+    let player = cpu_body(
+        app.world_mut(),
+        [0.0, 3.0, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    app.world_mut()
+        .entity_mut(player)
+        .insert(PlayerController::default());
+    let body =
+        |app: &App| app.world().get::<Transform>(player).unwrap().position;
+    let state =
+        |app: &App| *app.world().get::<PlayerController>(player).unwrap();
+    // Runs fixed steps; true when the player touched the sensor.
+    let run = |app: &mut App, steps| {
+        let mut triggered = false;
+        for _ in 0..steps {
+            run_fixed_steps(app, 1);
+            triggered |= app
+                .world()
+                .resource::<EventQueue<CollisionEvent>>()
+                .iter()
+                .any(|event| {
+                    let pair = [event.a, event.b];
+                    event.sensor
+                        && pair.contains(&trigger)
+                        && pair.contains(&player)
+                });
+        }
+        triggered
+    };
+
+    // Gravity lands the capsule (0.9 m below its center) on the floor.
+    assert!(!run(&mut app, 90));
+    assert!(state(&app).grounded);
+    assert!((body(&app)[1] - 0.91).abs() < 0.02, "{:?}", body(&app));
+
+    // Forward walks toward -Z through the sensor until the wall stops it.
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::KeyW, true);
+    let triggered = run(&mut app, 60);
+    let stopped = body(&app);
+    assert!((stopped[2] + 1.19).abs() < 0.02, "{stopped:?}");
+    assert_eq!(stopped[0], 0.0);
+    assert!(triggered, "walking through the sensor reported nothing");
+    let ahead = app
+        .world()
+        .resource::<PhysicsWorld>()
+        .raycast(stopped, [0.0, 0.0, -1.0], 1.0, 0b1)
+        .unwrap();
+    assert_eq!(ahead.entity, wall);
+
+    // Jump leaves the floor, then gravity brings the player back.
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    input.record_key(KeyCode::KeyW, false);
+    input.record_key(KeyCode::Space, true);
+    run(&mut app, 10);
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .clear_frame_edges();
+    assert!(!state(&app).grounded);
+    assert!(body(&app)[1] > 1.3, "{:?}", body(&app));
+    run(&mut app, 90);
+    assert!(state(&app).grounded);
+    assert!((body(&app)[1] - 0.91).abs() < 0.02, "{:?}", body(&app));
+}
+
+#[test]
+fn player_look_needs_captured_cursor_and_clamps_pitch() {
+    let mut app = App::new();
+    let player = app.spawn((Transform::default(), PlayerController::default()));
+    let camera =
+        app.spawn((Transform::new([0.0, 0.7, 0.0]), Camera::default()));
+    app.set_parent(camera, player).unwrap();
+    let look = |app: &mut App, motion: [f32; 2]| {
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_mouse_motion(motion);
+        app.update(Duration::ZERO).unwrap();
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
+        let player = *app.world().get::<PlayerController>(player).unwrap();
+        (player.yaw, player.pitch)
+    };
+    assert_eq!(look(&mut app, [100.0, 0.0]), (0.0, 0.0));
+
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_mouse_button(MouseButton::Left, true);
+    let (yaw, pitch) = look(&mut app, [100.0, 0.0]);
+    assert!(app.world().resource::<RuntimeInput>().cursor_captured());
+    assert!((yaw + 0.2).abs() < 1e-6 && pitch == 0.0);
+    let (_, pitch) = look(&mut app, [0.0, -10_000.0]);
+    assert!((pitch - 89.0_f32.to_radians()).abs() < 1e-6);
+    // Yaw turns the body; pitch tilts only the camera child.
+    let world = app.world();
+    assert_eq!(
+        world.get::<Transform>(player).unwrap().rotation,
+        [0.0, yaw, 0.0]
+    );
+    assert_eq!(
+        world.get::<Transform>(camera).unwrap().rotation,
+        [pitch, 0.0, 0.0]
+    );
+
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::Escape, true);
+    look(&mut app, [0.0; 2]);
+    assert!(!app.world().resource::<RuntimeInput>().cursor_captured());
+}
+
+#[test]
+fn player_controller_settings_round_trip_through_scene_registry() {
+    let mut app = App::new();
+    let player = app.spawn((
+        Transform::default(),
+        PlayerController {
+            walk_speed: 7.0,
+            yaw: 1.0,
+            vertical_speed: -3.0,
+            ..PlayerController::default()
+        },
+    ));
+    let values = registered_component_values(app.world(), player).unwrap();
+    let (_, json) = values
+        .iter()
+        .find(|(name, _)| name == PLAYER_CONTROLLER_COMPONENT)
+        .unwrap();
+    let loaded: PlayerController = serde_json::from_str(json).unwrap();
+    assert_eq!(loaded.walk_speed, 7.0);
+    assert_eq!(loaded.yaw, 1.0);
+    // Live motion state is not saved.
+    assert_eq!(loaded.vertical_speed, 0.0);
+}
+
+#[cfg(feature = "ui")]
+#[test]
+fn runtime_ui_systems_draw_and_receive_clicks_each_update() {
+    #[derive(Resource, Default)]
+    struct Hud {
+        button: Option<egui::Rect>,
+        clicks: u32,
+    }
+    fn hud(ui: Res<RuntimeUi>, mut hud: ResMut<Hud>) {
+        egui::Area::new("hud".into()).show(ui.context(), |ui| {
+            ui.label("Score 3");
+            let response = ui.button("Restart");
+            hud.button = Some(response.rect);
+            hud.clicks += u32::from(response.clicked());
+        });
+    }
+    let mut app = App::new();
+    app.world_mut().init_resource::<Hud>();
+    app.add_system(ScheduleStage::Update, hud);
+    let frame = Duration::from_millis(16);
+
+    // egui lays new areas out invisibly on their first pass.
+    app.update(frame).unwrap();
+    app.update(frame).unwrap();
+    let output = app.world_mut().resource_mut::<RuntimeUi>().take_output();
+    let output = output.expect("every update finishes a UI pass");
+    assert!(!output.shapes.is_empty());
+    assert!(!output.textures_delta.set.is_empty(), "font atlas upload");
+    let context = app.world().resource::<RuntimeUi>().context().clone();
+    assert!(!context
+        .tessellate(output.shapes, output.pixels_per_point)
+        .is_empty());
+
+    // A press and release on the button reach the system as one click.
+    let center = app.world().resource::<Hud>().button.unwrap().center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: center,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.world_mut()
+        .resource_mut::<RuntimeUi>()
+        .set_input(egui::RawInput {
+            events: vec![egui::Event::PointerMoved(center), button(true)],
+            ..Default::default()
+        });
+    app.update(frame).unwrap();
+    app.world_mut()
+        .resource_mut::<RuntimeUi>()
+        .set_input(egui::RawInput {
+            events: vec![button(false)],
+            ..Default::default()
+        });
+    app.update(frame).unwrap();
+    assert_eq!(app.world().resource::<Hud>().clicks, 1);
+    // Input is used once; the next pass has none.
+    app.update(frame).unwrap();
+    assert_eq!(app.world().resource::<Hud>().clicks, 1);
+}
+
+#[test]
+fn easing_curves_start_at_zero_and_end_at_one() {
+    for easing in [
+        Easing::Linear,
+        Easing::QuadIn,
+        Easing::QuadOut,
+        Easing::QuadInOut,
+        Easing::CubicOut,
+        Easing::SineInOut,
+        Easing::BackOut,
+        Easing::BounceOut,
+    ] {
+        assert!(easing.apply(0.0).abs() < 1e-5, "{easing:?}");
+        assert!((easing.apply(1.0) - 1.0).abs() < 1e-5, "{easing:?}");
+    }
+    assert!(Easing::QuadIn.apply(0.5) < 0.5);
+    assert!(Easing::QuadOut.apply(0.5) > 0.5);
+    assert!(Easing::BackOut.apply(0.8) > 1.0);
+}
+
+#[test]
+fn tweens_play_once_loop_and_ping_pong_on_the_fixed_step() {
+    let mut app = App::new();
+    let tween = |repeat| Tween {
+        from: [0.0; 3],
+        to: [2.0, 0.0, 0.0],
+        duration: 1.0,
+        delay: 0.5,
+        easing: Easing::Linear,
+        repeat,
+        ..Tween::default()
+    };
+    let once = app.spawn((Transform::default(), tween(TweenRepeat::Once)));
+    let looped = app.spawn((Transform::default(), tween(TweenRepeat::Loop)));
+    let ping = app.spawn((Transform::default(), tween(TweenRepeat::PingPong)));
+    let scaled = app.spawn((
+        Transform::default(),
+        Tween {
+            property: TweenProperty::Scale,
+            from: [1.0; 3],
+            to: [3.0; 3],
+            repeat: TweenRepeat::Once,
+            ..tween(TweenRepeat::Once)
+        },
+    ));
+    let x = |app: &App, entity| {
+        app.world().get::<Transform>(entity).unwrap().position[0]
+    };
+    // Delay holds `from`.
+    run_fixed_steps(&mut app, 30);
+    assert!(x(&app, once).abs() < 1e-4);
+    // Halfway through the first play.
+    run_fixed_steps(&mut app, 30);
+    assert!((x(&app, once) - 1.0).abs() < 1e-3, "{}", x(&app, once));
+    // 1.25 s into playing: Once holds `to`, Loop restarted, PingPong returns.
+    run_fixed_steps(&mut app, 45);
+    assert!((x(&app, once) - 2.0).abs() < 1e-4);
+    assert!(app.world().get::<Tween>(once).unwrap().finished());
+    assert!((x(&app, looped) - 0.5).abs() < 1e-3, "{}", x(&app, looped));
+    assert!((x(&app, ping) - 1.5).abs() < 1e-3, "{}", x(&app, ping));
+    let scale = app.world().get::<Transform>(scaled).unwrap().scale;
+    assert!((scale[1] - 3.0).abs() < 1e-4, "{scale:?}");
+}
+
+#[test]
+fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
+    let run = || {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        let crate_body = cpu_body(
+            app.world_mut(),
+            [0.0, 1.0, 0.0],
+            UNIT_BOX,
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().entity_mut(crate_body).insert((
+            SceneId(uuid::Uuid::from_u128(7)),
+            SoundCue {
+                clip: "sounds/land.ogg".into(),
+                ..SoundCue::default()
+            },
+            BurstEmitter {
+                count: 5,
+                lifetime: 0.25,
+                ..BurstEmitter::default()
+            },
+        ));
+        let mut sounds = Vec::new();
+        let mut first_burst = None;
+        for _ in 0..90 {
+            run_fixed_steps(&mut app, 1);
+            sounds.extend(
+                app.world()
+                    .resource::<EventQueue<SoundEvent>>()
+                    .iter()
+                    .cloned(),
+            );
+            let world = app.world_mut();
+            let mut particles = world.query::<(&BurstParticle, &Transform)>();
+            if first_burst.is_none() && particles.iter(world).len() > 0 {
+                let mut positions: Vec<_> = particles
+                    .iter(world)
+                    .map(|(particle, _)| particle.velocity)
+                    .collect();
+                positions.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                first_burst = Some(positions);
+            }
+        }
+        let left = app
+            .world_mut()
+            .query::<&BurstParticle>()
+            .iter(app.world())
+            .count();
+        (app, crate_body, sounds, first_burst.unwrap(), left)
+    };
+    let (mut app, crate_body, sounds, burst, left) = run();
+    assert_eq!(sounds.len(), 1, "{sounds:?}");
+    assert_eq!(sounds[0].entity, crate_body);
+    assert_eq!(sounds[0].clip, "sounds/land.ogg");
+    assert_eq!(burst.len(), 5);
+    for velocity in &burst {
+        let speed = velocity.iter().map(|axis| axis * axis).sum::<f32>();
+        assert!(speed.sqrt() <= 3.0 + 1e-4, "{velocity:?}");
+    }
+    assert_eq!(left, 0, "particles outlive their lifetime");
+    // The same seed and tick give the same burst.
+    assert_eq!(run().3, burst);
+
+    // Game code can fire either one directly.
+    app.world_mut()
+        .get_mut::<SoundCue>(crate_body)
+        .unwrap()
+        .trigger();
+    app.world_mut()
+        .get_mut::<BurstEmitter>(crate_body)
+        .unwrap()
+        .trigger();
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(app.world().resource::<EventQueue<SoundEvent>>().len(), 1);
+    assert_eq!(
+        app.world_mut()
+            .query::<&BurstParticle>()
+            .iter(app.world())
+            .count(),
+        5
+    );
+}
+
+#[cfg(feature = "ui")]
+#[test]
+fn hud_draws_scene_text_and_reports_button_clicks() {
+    let mut app = App::new();
+    app.spawn(HudElement {
+        text: "Score: 3".into(),
+        ..HudElement::default()
+    });
+    let button = app.spawn(HudElement {
+        text: "Restart".into(),
+        anchor: HudAnchor::TopLeft,
+        offset: [100.0, 100.0],
+        button: true,
+        ..HudElement::default()
+    });
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    let frame = |app: &mut App, events: Vec<egui::Event>| {
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            });
+        app.update(Duration::from_millis(16)).unwrap();
+    };
+    // egui sizes new areas invisibly on their first frame.
+    frame(&mut app, Vec::new());
+    frame(&mut app, Vec::new());
+    let output = app
+        .world_mut()
+        .resource_mut::<RuntimeUi>()
+        .take_output()
+        .unwrap();
+    assert!(!output.shapes.is_empty());
+
+    let at = egui::pos2(110.0, 110.0);
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    frame(&mut app, vec![egui::Event::PointerMoved(at), press(true)]);
+    frame(&mut app, vec![press(false)]);
+    // Events sent during a frame are visible on the next one.
+    frame(&mut app, Vec::new());
+    let pressed: Vec<_> = app
+        .world()
+        .resource::<EventQueue<HudButtonPressed>>()
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(pressed, vec![HudButtonPressed { entity: button }]);
+}
+
+#[test]
+fn tile_maps_spawn_merged_colliders_and_rebuild_or_clean_up() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let map = app.spawn((
+        Transform::new([-2.0, 1.0, 0.0]),
+        TileMap {
+            tile_size: 0.5,
+            rows: vec!["#..#".into(), "##x#".into()],
+            tiles: std::collections::BTreeMap::from([
+                ("#".into(), TileKind::default()),
+                (
+                    "x".into(),
+                    TileKind {
+                        solid: false,
+                        ..TileKind::default()
+                    },
+                ),
+            ]),
+        },
+    ));
+    let parts = |app: &mut App| {
+        let world = app.world_mut();
+        let mut boxes: Vec<_> = world
+            .query::<(&TileOf, &Collider, &Transform)>()
+            .iter(world)
+            .map(|(_, collider, transform)| {
+                let ColliderShape::Box { half_extents } = collider.shape else {
+                    panic!("tile colliders are boxes");
+                };
+                (transform.position, half_extents)
+            })
+            .collect();
+        boxes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let drawn = world
+            .query::<(&TileOf, &MeshRenderer)>()
+            .iter(world)
+            .count();
+        (drawn, boxes)
+    };
+    app.update(Duration::ZERO).unwrap();
+    let (drawn, boxes) = parts(&mut app);
+    assert_eq!(drawn, 6);
+    // Row 0: two single tiles; row 1: "##" and "#", split by the non-solid x.
+    assert_eq!(
+        boxes,
+        vec![
+            ([-1.75, 0.75, 0.0], [0.25, 0.25, 0.25]),
+            ([-1.5, 0.25, 0.0], [0.5, 0.25, 0.25]),
+            ([-0.25, 0.25, 0.0], [0.25, 0.25, 0.25]),
+            ([-0.25, 0.75, 0.0], [0.25, 0.25, 0.25]),
+        ]
+    );
+
+    app.world_mut().get_mut::<TileMap>(map).unwrap().rows = vec!["#".into()];
+    app.update(Duration::ZERO).unwrap();
+    assert_eq!(parts(&mut app).0, 1);
+
+    app.despawn(map).unwrap();
+    app.update(Duration::ZERO).unwrap();
+    let world = app.world_mut();
+    assert_eq!(world.query::<&TileOf>().iter(world).count(), 0);
+}
+
+#[test]
+fn platformer_runs_jumps_and_lands_on_tiles() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.spawn((
+        Transform::new([-5.0, 0.0, 0.0]),
+        TileMap {
+            rows: vec!["##########".into()],
+            ..TileMap::default()
+        },
+    ));
+    let player = app.spawn((
+        Transform::new([-2.5, 1.0, 0.0]),
+        PlatformerController::default(),
+    ));
+    let state = |app: &App| {
+        (
+            *app.world().get::<PlatformerController>(player).unwrap(),
+            app.world().get::<Transform>(player).unwrap().position,
+        )
+    };
+    run_fixed_steps(&mut app, 60);
+    let (landed, start) = state(&app);
+    assert!(landed.grounded);
+    // Tile tops are at y = 0; the default capsule is 1 m tall.
+    assert!((start[1] - 0.5).abs() < 0.02, "{start:?}");
+
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    input.record_key(KeyCode::ArrowRight, true);
+    input.record_key(KeyCode::Space, true);
+    run_fixed_steps(&mut app, 1);
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .clear_frame_edges();
+    run_fixed_steps(&mut app, 10);
+    let (airborne, high) = state(&app);
+    assert!(!airborne.grounded);
+    assert!(high[1] > start[1] + 0.8, "{high:?}");
+    assert!(high[0] > start[0] + 0.5, "{high:?}");
+    assert_eq!(high[2], 0.0);
+    run_fixed_steps(&mut app, 60);
+    let (back, end) = state(&app);
+    assert!(back.grounded);
+    assert!((end[1] - 0.5).abs() < 0.02, "{end:?}");
+}
+
+#[test]
+fn pickups_count_hide_and_unlock_in_scene_id_order() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let player = cpu_body(world, [0.0; 3], UNIT_BOX, RigidBodyKind::Kinematic);
+    world.entity_mut(player).insert(PlatformerController {
+        gravity: 0.0,
+        ..PlatformerController::default()
+    });
+    let pickup = |world: &mut bevy_ecs::world::World, id, pickup| {
+        let entity =
+            cpu_body(world, [0.5, 0.0, 0.0], UNIT_BOX, RigidBodyKind::Fixed);
+        world.get_mut::<Collider>(entity).unwrap().sensor = true;
+        world
+            .entity_mut(entity)
+            .insert((SceneId(uuid::Uuid::from_u128(id)), pickup));
+        entity
+    };
+    // The goal sorts first, so on the first tick the coins are not yet
+    // complete and it waits one more tick.
+    let goal = pickup(
+        world,
+        1,
+        Pickup {
+            counter: "won".into(),
+            requires: Some("coins".into()),
+            ..Pickup::default()
+        },
+    );
+    let coin = pickup(
+        world,
+        2,
+        Pickup {
+            counter: "coins".into(),
+            ..Pickup::default()
+        },
+    );
+    world.entity_mut(coin).insert(BurstEmitter {
+        count: 3,
+        on_collision: false,
+        ..BurstEmitter::default()
+    });
+    pickup(
+        world,
+        3,
+        Pickup {
+            counter: "coins".into(),
+            value: 2,
+            ..Pickup::default()
+        },
+    );
+    let counter = |world: &mut bevy_ecs::world::World, name: &str, target| {
+        world
+            .spawn(Counter {
+                name: name.into(),
+                value: 0,
+                target: Some(target),
+            })
+            .id()
+    };
+    let coins = counter(world, "coins", 3);
+    let won = counter(world, "won", 1);
+
+    let mut ticks = 0;
+    while !app.world().get::<Pickup>(coin).unwrap().collected {
+        assert!(ticks < 10, "the coin was never collected");
+        run_fixed_steps(&mut app, 1);
+        ticks += 1;
+    }
+    let world = app.world();
+    assert_eq!(world.get::<Counter>(coins).unwrap().value, 3);
+    assert!(!world.get::<Pickup>(goal).unwrap().collected);
+    assert!(!world.get::<Visibility>(coin).unwrap().visible);
+    run_fixed_steps(&mut app, 2);
+    let world = app.world_mut();
+    assert!(world.get::<Pickup>(goal).unwrap().collected);
+    assert_eq!(world.get::<Counter>(won).unwrap().value, 1);
+    // Collected pickups stay collected while the player keeps touching.
+    assert_eq!(world.get::<Counter>(coins).unwrap().value, 3);
+    assert_eq!(world.query::<&BurstParticle>().iter(world).count(), 3);
+}
+
+#[test]
+fn hud_text_fills_counter_placeholders() {
+    let coins = Counter {
+        name: "coins".into(),
+        value: 4,
+        target: Some(5),
+    };
+    let counters = [(&coins, None)];
+    assert_eq!(
+        hud_text("Coins {coins}/5 {missing} {", counters.iter().copied()),
+        "Coins 4/5 {missing} {"
+    );
+}
+
+#[test]
+fn shader_pragmas_declare_determinism() {
+    let source =
+        "#version 450\n  // rusting: determinism = Local\nvoid main() {}";
+    assert_eq!(shader_determinism(source), Some(DeterminismMode::Local));
+    assert_eq!(
+        shader_determinism("// rusting: determinism = cross-platform"),
+        Some(DeterminismMode::CrossPlatform)
+    );
+    assert_eq!(shader_determinism("void main() {}"), None);
+    assert_eq!(shader_determinism("// rusting: determinism = fast"), None);
+}
+
+#[test]
+fn determinism_check_names_every_part_below_the_project_mode() {
+    use bevy_ecs::world::World;
+
+    let mut world = World::new();
+    world.spawn(PhysicsBody {
+        simulation: SimulationClass::Cpu,
+        ..PhysicsBody::default()
+    });
+    world.spawn(PhysicsBody {
+        simulation: SimulationClass::Gpu,
+        solver: PhysicsSolver::Custom,
+        custom_shader: Some("missing/shader.comp".into()),
+    });
+    let mut support = DeterminismSupport::default();
+    support.declare("game_ai", DeterminismMode::CrossPlatform);
+    support.declare("game_ai", DeterminismMode::Local);
+    world.insert_resource(support);
+
+    world.insert_resource(DeterminismMode::Off);
+    assert_eq!(check_determinism(&mut world), Ok(()));
+
+    world.insert_resource(DeterminismMode::Local);
+    let error = check_determinism(&mut world).unwrap_err();
+    assert_eq!(
+        error.offenders,
+        vec![DeterminismOffender {
+            part: "gpu_shader:missing/shader.comp".into(),
+            supports: DeterminismMode::Off,
+        }],
+        "a custom shader without a pragma supports only Off"
+    );
+
+    world.insert_resource(DeterminismMode::CrossPlatform);
+    let error = check_determinism(&mut world).unwrap_err();
+    let parts: Vec<_> = error
+        .offenders
+        .iter()
+        .map(|offender| offender.part.as_str())
+        .collect();
+    assert_eq!(
+        parts,
+        ["cpu_physics", "game_ai", "gpu_shader:missing/shader.comp"],
+        "offenders are sorted, and a second declaration keeps the weaker mode"
+    );
+    assert!(error.to_string().contains("cpu_physics (supports Local)"));
+}
+
+#[test]
+fn engine_fixed_update_systems_have_one_order() {
+    use bevy_ecs::schedule::{LogLevel, ScheduleBuildSettings};
+    let mut app = EngineBuilder::new().build().unwrap();
+    app.fixed_update.set_build_settings(ScheduleBuildSettings {
+        ambiguity_detection: LogLevel::Error,
+        ..Default::default()
+    });
+    let App {
+        world,
+        fixed_update,
+        ..
+    } = &mut app;
+    fixed_update.initialize(world).unwrap();
+}
+
+#[test]
+fn simulation_bits_depend_on_ticks_not_frame_pacing() {
+    let run = |frames: &[Duration]| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        for (index, height) in [1.0, 2.1, 3.2].into_iter().enumerate() {
+            let body = cpu_body(
+                app.world_mut(),
+                [0.1 * index as f32, height, 0.0],
+                UNIT_BOX,
+                RigidBodyKind::Dynamic,
+            );
+            let mut rigid = app.world_mut().get_mut::<RigidBody>(body).unwrap();
+            rigid.angular_velocity = [0.3, 0.0, 0.7];
+        }
+        let mut frame = 0;
+        while app.world().resource::<FrameTime>().fixed_tick < 120 {
+            app.update(frames[frame % frames.len()]).unwrap();
+            frame += 1;
+        }
+        assert_eq!(app.world().resource::<FrameTime>().fixed_tick, 120);
+        let world = app.world_mut();
+        let mut bodies = world
+            .query::<(bevy_ecs::entity::Entity, &Transform, &RigidBody)>()
+            .iter(world)
+            .map(|(entity, transform, rigid)| (entity, *transform, *rigid))
+            .collect::<Vec<_>>();
+        bodies.sort_by_key(|(entity, ..)| *entity);
+        // Debug prints the shortest string that round-trips, so equal
+        // strings mean equal bits.
+        format!("{bodies:?}")
+    };
+    let tick = Duration::from_secs_f64(1.0 / 60.0);
+    let half = tick / 2;
+    let steady = run(&[tick]);
+    let uneven = run(&[tick * 3, half, tick - half, Duration::ZERO, tick * 5]);
+    assert_eq!(steady, uneven);
+}
+
+#[test]
+fn fixed_steps_see_their_own_tick_and_stamp_gpu_commands_for_the_next() {
+    #[derive(Resource, Default)]
+    struct Seen(Vec<u64>);
+    let id = PhysicsId {
+        slot: 0,
+        generation: 0,
+    };
+    let mut app = App::new();
+    app.world_mut().init_resource::<Seen>();
+    app.world_mut().init_resource::<GpuPhysicsCommands>();
+    app.add_system(
+        ScheduleStage::FixedUpdate,
+        move |time: Res<FrameTime>,
+              mut seen: ResMut<Seen>,
+              mut commands: ResMut<GpuPhysicsCommands>| {
+            seen.0.push(time.fixed_tick);
+            commands.push(id, GpuBodyCommand::Impulse([1.0; 3]));
+        },
+    );
+    app.add_system(
+        ScheduleStage::Update,
+        move |mut commands: ResMut<GpuPhysicsCommands>| {
+            commands.push(id, GpuBodyCommand::ReadState);
+        },
+    );
+    let tick = Duration::from_secs_f64(1.0 / 60.0);
+    app.update(tick * 3).unwrap();
+    assert_eq!(app.world().resource::<Seen>().0, [0, 1, 2]);
+    assert_eq!(app.world().resource::<FrameTime>().fixed_tick, 3);
+    // The command pushed during tick n applies before GPU tick n; the one
+    // pushed in Update after tick 3 waits for tick 4.
+    super::hybrid_physics::stamp_gpu_commands(app.world_mut());
+    assert_eq!(
+        app.world().resource::<GpuPhysicsCommands>().apply_ticks,
+        [1, 2, 3, 4]
+    );
+}
+
+#[test]
+fn emitters_without_scene_ids_draw_their_own_bursts() {
+    let mut app = App::new();
+    for x in [0.0, 5.0] {
+        let mut emitter = BurstEmitter {
+            count: 3,
+            ..BurstEmitter::default()
+        };
+        emitter.trigger();
+        app.world_mut()
+            .spawn((Transform::new([x, 0.0, 0.0]), emitter));
+    }
+    run_fixed_steps(&mut app, 1);
+    let world = app.world_mut();
+    let mut velocities = world
+        .query::<&BurstParticle>()
+        .iter(world)
+        .map(|particle| format!("{:?}", particle.velocity))
+        .collect::<Vec<_>>();
+    assert_eq!(velocities.len(), 6);
+    velocities.sort();
+    velocities.dedup();
+    assert_eq!(velocities.len(), 6, "two emitters shared a stream");
+}
+
+#[test]
+fn state_hashes_cover_every_tick_and_only_simulation_state() {
+    #[derive(Resource)]
+    struct Nudge(Option<u64>);
+    let run = |frames: &[Duration], nudge: Option<u64>| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        for (index, height) in [1.0, 2.1, 3.2].into_iter().enumerate() {
+            cpu_body(
+                app.world_mut(),
+                [0.1 * index as f32, height, 0.0],
+                UNIT_BOX,
+                RigidBodyKind::Dynamic,
+            );
+        }
+        // A GPU body's CPU Transform is a late readback copy, so frame
+        // timing may change it without changing the hash.
+        app.world_mut().spawn((
+            Transform::default(),
+            PhysicsBody {
+                simulation: SimulationClass::Gpu,
+                ..PhysicsBody::default()
+            },
+        ));
+        app.world_mut().insert_resource(Nudge(nudge));
+        app.add_system(
+            ScheduleStage::FixedUpdate,
+            |time: Res<FrameTime>,
+             nudge: Res<Nudge>,
+             mut bodies: Query<&mut RigidBody>| {
+                if nudge.0 == Some(time.fixed_tick) {
+                    for mut rigid in &mut bodies {
+                        if rigid.kind == RigidBodyKind::Dynamic {
+                            let speed = rigid.linear_velocity[0];
+                            rigid.linear_velocity[0] =
+                                f32::from_bits(speed.to_bits() + 1);
+                            break;
+                        }
+                    }
+                }
+            },
+        );
+        app.add_system(
+            ScheduleStage::Update,
+            |time: Res<FrameTime>,
+             mut bodies: Query<(&mut Transform, &PhysicsBody)>| {
+                for (mut transform, body) in &mut bodies {
+                    if body.uses_gpu() {
+                        transform.position[0] = time.frame as f32;
+                    }
+                }
+            },
+        );
+        let mut frame = 0;
+        while app.world().resource::<FrameTime>().fixed_tick < 120 {
+            app.update(frames[frame % frames.len()]).unwrap();
+            frame += 1;
+        }
+        let hashes = &app.world().resource::<StateHashes>().recent;
+        hashes.iter().copied().take(120).collect::<Vec<_>>()
+    };
+    let tick = Duration::from_secs_f64(1.0 / 60.0);
+    let steady = run(&[tick], None);
+    assert_eq!(
+        steady.iter().map(|(tick, _)| *tick).collect::<Vec<_>>(),
+        (1..=120).collect::<Vec<_>>()
+    );
+    let uneven = run(&[tick * 3, tick / 2, tick / 2, Duration::ZERO], None);
+    assert_eq!(steady, uneven);
+    // One ULP of velocity during the step that ends at tick 41.
+    let nudged = run(&[tick], Some(40));
+    for ((tick, before), (_, after)) in steady.iter().zip(&nudged) {
+        assert_eq!(before == after, *tick <= 40, "tick {tick}");
+    }
+}
+
+#[test]
+fn compare_runs_reports_the_first_divergent_tick_and_body() {
+    #[derive(Resource)]
+    struct Nudge(u64);
+    let scene = |nudge: Option<u64>, seed: u64| {
+        let mut app = App::new();
+        app.world_mut().insert_resource(RandomSeed(seed));
+        cpu_ground(app.world_mut());
+        for (name, height) in [("Low", 1.0), ("Middle", 2.1), ("High", 3.2)] {
+            let body = cpu_body(
+                app.world_mut(),
+                [0.0, height, 0.0],
+                UNIT_BOX,
+                RigidBodyKind::Dynamic,
+            );
+            app.world_mut().entity_mut(body).insert(Name(name.into()));
+        }
+        if let Some(tick) = nudge {
+            app.world_mut().insert_resource(Nudge(tick));
+            app.add_system(
+                ScheduleStage::FixedUpdate,
+                |time: Res<FrameTime>,
+                 nudge: Res<Nudge>,
+                 mut bodies: Query<(&Name, &mut RigidBody)>| {
+                    for (name, mut rigid) in &mut bodies {
+                        if time.fixed_tick == nudge.0 && name.0 == "Middle" {
+                            rigid.linear_velocity[2] = 1e-6;
+                        }
+                    }
+                },
+            );
+        }
+        app
+    };
+    assert_eq!(compare_runs(|| scene(None, 7), 90).unwrap(), None);
+
+    let mut runs = 0;
+    let divergence = compare_runs(
+        || {
+            runs += 1;
+            // Tick 5, before the boxes touch. Once they are stacked the
+            // solver spreads the change to High within the same tick, and
+            // High comes first in entity order.
+            scene((runs == 2).then_some(5), 7)
+        },
+        90,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(divergence.tick, 6);
+    let entity = divergence.entity.unwrap();
+    assert_eq!(entity.name.as_deref(), Some("Middle"));
+
+    let mut runs = 0;
+    let divergence = compare_runs(
+        || {
+            runs += 1;
+            scene(None, runs)
+        },
+        90,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!((divergence.tick, divergence.entity), (1, None));
+
+    let ticks = [(1, 10), (2, 20), (3, 30)];
+    assert_eq!(first_divergent_tick(&ticks, &ticks), None);
+    assert_eq!(first_divergent_tick(&ticks, &[(1, 10), (2, 21)]), Some(2));
+    assert_eq!(first_divergent_tick(&ticks[..1], &ticks), Some(2));
+}
+
+#[test]
+fn replays_reproduce_recorded_hashes_and_find_changed_input() {
+    let scene = || {
+        let mut app = App::new();
+        app.add_plugin(crate::assets::AssetPlugin).unwrap();
+        app.world_mut().insert_resource(RandomSeed(11));
+        app.spawn((
+            Transform::new([-5.0, 0.0, 0.0]),
+            TileMap {
+                rows: vec!["##########".into()],
+                ..TileMap::default()
+            },
+        ));
+        app.spawn((
+            Transform::new([-2.5, 1.0, 0.0]),
+            PlatformerController::default(),
+        ));
+        app
+    };
+    // Uneven frames, some with no fixed step and some with several, and
+    // input edges cleared after each frame the way the window runner does.
+    let mut app = scene();
+    app.start_recording();
+    for frame in 0..90u64 {
+        let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+        match frame {
+            20 => input.record_key(KeyCode::ArrowRight, true),
+            30 | 55 => input.record_key(KeyCode::Space, true),
+            31 | 56 => input.record_key(KeyCode::Space, false),
+            70 => input.record_key(KeyCode::ArrowRight, false),
+            _ => {}
+        }
+        let millis = [16, 33, 5, 50][frame as usize % 4];
+        app.update(Duration::from_millis(millis)).unwrap();
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
+    }
+    let replay = app.finish_recording().unwrap();
+    assert_eq!(replay.format_version, REPLAY_FORMAT_VERSION);
+    assert_eq!((replay.seed, replay.start_tick), (11, 0));
+    assert_eq!(replay.frames.len(), 90);
+    let last_tick = app.world().resource::<FrameTime>().fixed_tick;
+    assert_eq!(replay.hashes.len() as u64, last_tick);
+    // Only frames whose input changed store it.
+    let stored = replay.frames.iter().filter(|f| f.input.is_some()).count();
+    assert!(stored < 20, "{stored}");
+
+    let text = serde_json::to_string(&replay).unwrap();
+    let replay: Replay = serde_json::from_str(&text).unwrap();
+    assert_eq!(play_replay(&mut scene(), &replay).unwrap(), None);
+
+    // Drop the second jump press. `platformer_jump` buffers presses in
+    // Update, after the frame's fixed steps, so the change shows on the
+    // first tick of the next frame. Replays cover Update-stage input too.
+    let mut edited = replay.clone();
+    let input = edited.frames[55].input.as_mut().unwrap();
+    input.record_key(KeyCode::Space, false);
+    input.clear_frame_edges();
+    let expected = edited.frames[56].tick + 1;
+    assert!(expected > edited.frames[55].tick + 1);
+    assert_eq!(play_replay(&mut scene(), &edited).unwrap(), Some(expected));
+
+    let mut old = replay;
+    old.format_version = 0;
+    assert!(matches!(
+        play_replay(&mut scene(), &old),
+        Err(ReplayError::UnsupportedVersion(0))
+    ));
+}
+
+/// A tile map, a platformer, and an emitter whose particles keep spawning
+/// and despawning, so entity indices are reused at rising generations.
+fn churning_scene() -> (App, Entity) {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.world_mut().insert_resource(RandomSeed(5));
+    app.spawn((
+        Transform::new([-5.0, 0.0, 0.0]),
+        TileMap {
+            rows: vec!["##########".into()],
+            ..TileMap::default()
+        },
+    ));
+    app.spawn((
+        Transform::new([-2.5, 1.0, 0.0]),
+        PlatformerController::default(),
+    ));
+    let emitter = app.spawn((
+        Transform::new([0.0, 3.0, 0.0]),
+        BurstEmitter {
+            count: 30,
+            lifetime: 0.1,
+            ..BurstEmitter::default()
+        },
+    ));
+    (app, emitter)
+}
+
+fn churn_frame(app: &mut App, emitter: Entity, frame: u64) {
+    if frame.is_multiple_of(5) {
+        app.world_mut()
+            .get_mut::<BurstEmitter>(emitter)
+            .unwrap()
+            .triggered = true;
+    }
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    match frame {
+        10 => input.record_key(KeyCode::ArrowRight, true),
+        25 | 70 => input.record_key(KeyCode::Space, true),
+        26 | 71 => input.record_key(KeyCode::Space, false),
+        _ => {}
+    }
+    let millis = [16, 33, 5, 50][frame as usize % 4];
+    app.update(Duration::from_millis(millis)).unwrap();
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .clear_frame_edges();
+}
+
+fn entity_ids(snapshot: &WorldSnapshot) -> Vec<Entity> {
+    snapshot.entities.iter().map(|saved| saved.entity).collect()
+}
+
+#[test]
+fn snapshots_restore_entity_ids_and_state_into_a_new_app() {
+    let (mut original, emitter) = churning_scene();
+    // Frame 37 is mid-burst: particles from frame 35 are alive.
+    for frame in 0..38 {
+        churn_frame(&mut original, emitter, frame);
+    }
+    let snapshot = original.snapshot().unwrap();
+    // Reused indices at raised generations, which the restore must match.
+    assert!(
+        entity_ids(&snapshot)
+            .iter()
+            .any(|entity| entity.generation().to_bits() > 0),
+        "{:?} {:?}",
+        entity_ids(&snapshot),
+        snapshot.allocator
+    );
+    // Freed but not yet reusable, which bevy hides.
+    assert!(
+        !snapshot.allocator.local.is_empty(),
+        "{:?}",
+        snapshot.allocator
+    );
+
+    let (mut restored, _) = churning_scene();
+    restored.restore(&snapshot).unwrap();
+    let again = restored.snapshot().unwrap();
+    assert_eq!(entity_ids(&again), entity_ids(&snapshot));
+    assert_eq!(again.allocator, snapshot.allocator);
+
+    for frame in 38..90 {
+        churn_frame(&mut original, emitter, frame);
+        churn_frame(&mut restored, emitter, frame);
+    }
+    let hashes =
+        |app: &App| app.world().resource::<StateHashes>().recent.clone();
+    assert!(hashes(&original).len() > 50);
+    assert_eq!(hashes(&restored), hashes(&original));
+    let (original, restored) =
+        (original.snapshot().unwrap(), restored.snapshot().unwrap());
+    assert_eq!(entity_ids(&restored), entity_ids(&original));
+    assert_eq!(restored.allocator, original.allocator);
+}
+
+#[test]
+fn snapshots_name_unregistered_types() {
+    #[derive(bevy_ecs::component::Component, Clone)]
+    struct Unlisted;
+
+    let (mut app, _) = churning_scene();
+    app.spawn(Unlisted);
+    let Err(SnapshotError::Unregistered(types)) = app.snapshot() else {
+        panic!("snapshot took an unregistered component");
+    };
+    assert_eq!(types.len(), 1);
+    assert!(types[0].ends_with("Unlisted"), "{types:?}");
+    app.register_snapshot_component::<Unlisted>();
+    assert!(app.snapshot().is_ok());
+}

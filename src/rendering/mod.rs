@@ -1,33 +1,34 @@
+pub mod benchmark;
 pub mod camera;
-pub mod compute_registry;
+pub mod capture;
+pub mod compute_profile;
+/// Compatibility path for physics profiles; the legacy pipeline registry is gone.
+pub mod compute_registry {
+    pub use super::compute_profile::{
+        physics_execution, ComputeShaderType, PhysicsExecution, ShaderBindings,
+    };
+}
 pub mod debug_overlay;
-#[cfg(feature = "editor")]
+#[cfg(feature = "ui")]
 pub mod egui_painter;
 pub mod frame_pacer;
 pub mod frame_passes;
-pub mod pipeline;
 pub mod readback;
-pub mod render;
 pub mod scene_renderer;
-pub mod shader_registry;
 pub mod swapchain;
 
 use std::sync::Arc;
 use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo,
-    QueueFlags,
+    Device, DeviceCreateInfo, Queue, QueueCreateInfo, QueueFlags,
 };
 use vulkano::instance::debug::ValidationFeatureEnable;
 use vulkano::instance::debug::{
-    DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
+    DebugUtilsMessageSeverity, DebugUtilsMessageType,
     DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo, InstanceExtensions};
-use vulkano::swapchain::Surface;
 use vulkano::VulkanLibrary;
-use winit::event_loop::EventLoop;
-use winit::window::Window;
 
 /// Error returned when `RUSTING_VULKAN_DEVICE` does not match any available
 /// physical device.
@@ -75,19 +76,18 @@ pub fn select_device_index(
 
 /// Picks one of `candidates` honoring `RUSTING_VULKAN_DEVICE` when set,
 /// otherwise preferring a discrete GPU over an integrated one over anything
-/// else. Panics with a [`DeviceSelectionError`] listing every candidate name
-/// when the selector matches nothing.
+/// else. Returns a [`DeviceSelectionError`] listing every candidate name
+/// when the selector matches nothing. `candidates` must not be empty.
 fn select_physical_device(
     candidates: Vec<(Arc<PhysicalDevice>, u32)>,
-) -> (Arc<PhysicalDevice>, u32) {
-    match std::env::var("RUSTING_VULKAN_DEVICE") {
+) -> Result<(Arc<PhysicalDevice>, u32), DeviceSelectionError> {
+    Ok(match std::env::var("RUSTING_VULKAN_DEVICE") {
         Ok(selector) => {
             let names: Vec<String> = candidates
                 .iter()
                 .map(|(p, _)| p.properties().device_name.clone())
                 .collect();
-            let index = select_device_index(&names, &selector)
-                .unwrap_or_else(|err| panic!("{err}"));
+            let index = select_device_index(&names, &selector)?;
             candidates.into_iter().nth(index).unwrap()
         }
         Err(_) => candidates
@@ -98,7 +98,7 @@ fn select_physical_device(
                 _ => 2,
             })
             .unwrap(),
-    }
+    })
 }
 
 /// A Vulkan instance, physical device, and logical device created without a
@@ -111,7 +111,24 @@ pub struct HeadlessVulkanBase {
 }
 
 pub fn init_vulkan_headless() -> HeadlessVulkanBase {
-    let library = VulkanLibrary::new().expect("No Vulkan driver found.");
+    let base =
+        try_init_vulkan_headless().unwrap_or_else(|error| panic!("{error}"));
+    let properties = base.device.physical_device().properties();
+    println!(
+        "Selected headless Vulkan device: {} (vendor 0x{:x}, driver {}, api {})",
+        properties.device_name,
+        properties.vendor_id,
+        properties.driver_version,
+        properties.api_version,
+    );
+    base
+}
+
+/// Like [`init_vulkan_headless`], but reports a missing driver or device as
+/// an error and prints nothing, for tools whose stdout is machine output.
+pub fn try_init_vulkan_headless() -> Result<HeadlessVulkanBase, String> {
+    let library = VulkanLibrary::new()
+        .map_err(|error| format!("no Vulkan driver found: {error}"))?;
     // Debug labels are recorded whenever the driver offers them, so headless
     // GPU tests also exercise the renderer's label scopes.
     let enabled_extensions = InstanceExtensions {
@@ -125,11 +142,11 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
             ..Default::default()
         },
     )
-    .expect("Failed to create headless Vulkan instance");
+    .map_err(|error| format!("failed to create a Vulkan instance: {error}"))?;
 
     let candidates: Vec<_> = instance
         .enumerate_physical_devices()
-        .unwrap()
+        .map_err(|error| format!("failed to list Vulkan devices: {error}"))?
         .filter_map(|p| {
             p.queue_family_properties()
                 .iter()
@@ -142,16 +159,12 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
         })
         .collect();
 
+    if candidates.is_empty() {
+        return Err("no Vulkan device supports graphics or compute".into());
+    }
     let (physical_device, queue_family_index) =
-        select_physical_device(candidates);
-
-    println!(
-        "Selected headless Vulkan device: {} (vendor 0x{:x}, driver {}, api {})",
-        physical_device.properties().device_name,
-        physical_device.properties().vendor_id,
-        physical_device.properties().driver_version,
-        physical_device.properties().api_version,
-    );
+        select_physical_device(candidates)
+            .map_err(|error| error.to_string())?;
 
     let enabled_features = optional_device_features(&physical_device);
     let create = || {
@@ -184,16 +197,17 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
             _ => break,
         }
     }
-    let (device, mut queues) =
-        result.expect("Failed to create headless Vulkan device");
+    let (device, mut queues) = result.map_err(|error| {
+        format!("failed to create a headless Vulkan device: {error}")
+    })?;
 
     let queue = queues.next().unwrap();
 
-    HeadlessVulkanBase {
+    Ok(HeadlessVulkanBase {
         instance,
         device,
         queue,
-    }
+    })
 }
 
 /// Optional features the renderer uses when the device has them. The
@@ -209,54 +223,67 @@ fn optional_device_features(
     }
 }
 
-/// `VulkanoConfig::default()` plus the optional features the renderer uses
-/// when the device `VulkanoContext` will pick has them. `VulkanoContext`
+/// `VulkanoConfig::default()` plus the validation layer (see
+/// [`validation_instance_info`]), the `RUSTING_VULKAN_DEVICE` device choice,
+/// and the optional features the renderer uses when the device
+/// `VulkanoContext` will pick has them. `VulkanoContext`
 /// panics on a requested feature the device lacks, so the pick is probed
 /// first with a short-lived instance.
 // ponytail: creates a second instance at startup (a few ms); drop the probe
 // if vulkano-util gains a per-device feature callback.
 #[cfg(feature = "window")]
 pub fn vulkano_config() -> vulkano_util::context::VulkanoConfig {
-    let mut config = vulkano_util::context::VulkanoConfig::default();
-    let picked = VulkanLibrary::new()
-        .ok()
-        .and_then(|library| {
-            Instance::new(library, InstanceCreateInfo::default()).ok()
-        })
-        .and_then(|instance| {
-            instance
-                .enumerate_physical_devices()
-                .ok()?
-                .filter(|p| (config.device_filter_fn)(p))
-                .min_by_key(|p| (config.device_priority_fn)(p))
-        });
+    let mut config = vulkano_util::context::VulkanoConfig {
+        print_device_name: true,
+        ..Default::default()
+    };
+    let Ok(library) = VulkanLibrary::new() else {
+        return config;
+    };
+    config.instance_create_info = InstanceCreateInfo {
+        flags: config.instance_create_info.flags,
+        ..validation_instance_info(&library)
+    };
+    let Ok(devices) = Instance::new(library, InstanceCreateInfo::default())
+        .and_then(|instance| Ok(instance.enumerate_physical_devices()?))
+    else {
+        return config;
+    };
+    let candidates: Vec<_> =
+        devices.filter(|p| (config.device_filter_fn)(p)).collect();
+    let picked = match std::env::var("RUSTING_VULKAN_DEVICE") {
+        Ok(selector) => {
+            let names: Vec<String> = candidates
+                .iter()
+                .map(|p| p.properties().device_name.clone())
+                .collect();
+            let index = select_device_index(&names, &selector)
+                .unwrap_or_else(|err| panic!("{err}"));
+            let name = names[index].clone();
+            config.device_filter_fn =
+                Arc::new(move |p| p.properties().device_name == name);
+            candidates.into_iter().nth(index)
+        }
+        Err(_) => candidates
+            .into_iter()
+            .min_by_key(|p| (config.device_priority_fn)(p)),
+    };
     if let Some(physical_device) = picked {
         config.device_features = optional_device_features(&physical_device);
     }
     config
 }
 
-#[derive(Clone)]
-pub struct VulkanBase {
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
-    pub surface: Arc<Surface>,
-    pub window: Arc<Window>,
-    pub instance: Arc<Instance>,
-    pub debug_messenger: Option<Arc<DebugUtilsMessenger>>,
-}
-
-pub fn init_vulkan(event_loop: &EventLoop<()>, title: &str) -> VulkanBase {
-    let library = VulkanLibrary::new().expect("No Vulkan driver found.");
-    let mut required_extensions = Surface::required_extensions(event_loop)
-        .expect("Failed to determine Vulkan surface extensions");
-
+/// Instance settings that turn on the Khronos validation layer in debug
+/// builds or with the `validation` feature, when the layer is installed.
+/// Set `RUSTING_GPU_VALIDATION=1` to add GPU-assisted validation.
+fn validation_instance_info(library: &VulkanLibrary) -> InstanceCreateInfo {
+    let mut required_extensions = InstanceExtensions::empty();
     let validation_enabled = (cfg!(debug_assertions)
         || cfg!(feature = "validation"))
-        && library
-            .layer_properties()
-            .expect("Failed to enumerate Vulkan layers")
-            .any(|layer| layer.name() == "VK_LAYER_KHRONOS_validation");
+        && library.layer_properties().is_ok_and(|mut layers| {
+            layers.any(|layer| layer.name() == "VK_LAYER_KHRONOS_validation")
+        });
     let validation_callback = unsafe {
         DebugUtilsMessengerCallback::new(|severity, message_type, data| {
             eprintln!(
@@ -268,8 +295,7 @@ pub fn init_vulkan(event_loop: &EventLoop<()>, title: &str) -> VulkanBase {
     };
     let debug_create_info = DebugUtilsMessengerCreateInfo {
         message_severity: DebugUtilsMessageSeverity::ERROR
-            | DebugUtilsMessageSeverity::WARNING
-            | DebugUtilsMessageSeverity::INFO,
+            | DebugUtilsMessageSeverity::WARNING,
         message_type: DebugUtilsMessageType::GENERAL
             | DebugUtilsMessageType::VALIDATION
             | DebugUtilsMessageType::PERFORMANCE,
@@ -298,103 +324,18 @@ pub fn init_vulkan(event_loop: &EventLoop<()>, title: &str) -> VulkanBase {
         required_extensions.ext_debug_utils = true;
     }
 
-    let instance = Instance::new(
-        library,
-        InstanceCreateInfo {
-            enabled_extensions: required_extensions,
-            enabled_layers: validation_enabled
-                .then(|| "VK_LAYER_KHRONOS_validation".to_owned())
-                .into_iter()
-                .collect(),
-            debug_utils_messengers: debug_utils_enabled
-                .then(|| debug_create_info.clone())
-                .into_iter()
-                .collect(),
-            enabled_validation_features,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    #[allow(deprecated)]
-    let window = Arc::new(
-        event_loop
-            .create_window(Window::default_attributes().with_title(title))
-            .expect("Failed to create window"),
-    );
-    let surface = Surface::from_window(instance.clone(), window.clone())
-        .expect("Failed to create Vulkan surface");
-    let debug_messenger = debug_utils_enabled
-        .then(|| {
-            DebugUtilsMessenger::new(instance.clone(), debug_create_info).ok()
-        })
-        .flatten()
-        .map(Arc::new);
-
-    let device_extensions = DeviceExtensions {
-        khr_swapchain: true,
-        ..DeviceExtensions::empty()
-    };
-
-    let candidates: Vec<_> = instance
-        .enumerate_physical_devices()
-        .unwrap()
-        .filter(|p| p.supported_extensions().contains(&device_extensions))
-        .filter_map(|p| {
-            p.queue_family_properties()
-                .iter()
-                .enumerate()
-                .position(|(i, q)| {
-                    q.queue_flags.intersects(QueueFlags::GRAPHICS)
-                        && p.surface_support(i as u32, &surface)
-                            .unwrap_or(false)
-                })
-                .map(|i| (p, i as u32))
-        })
-        .collect();
-
-    let (physical_device, queue_family_index) =
-        select_physical_device(candidates);
-
-    println!(
-        "Selected Vulkan device: {} (vendor 0x{:x}, driver {}, api {})",
-        physical_device.properties().device_name,
-        physical_device.properties().vendor_id,
-        physical_device.properties().driver_version,
-        physical_device.properties().api_version,
-    );
-
-    let enabled_features = optional_device_features(&physical_device);
-    let (device, mut queues) = Device::new(
-        physical_device,
-        DeviceCreateInfo {
-            enabled_extensions: device_extensions,
-            enabled_features,
-            queue_create_infos: vec![QueueCreateInfo {
-                queue_family_index,
-                ..Default::default()
-            }],
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    let queue = queues.next().unwrap();
-
-    if debug_utils_enabled {
-        let _ = device.set_debug_utils_object_name(
-            &queue,
-            Some("RustingEngine Main Queue"),
-        );
-    }
-
-    VulkanBase {
-        device,
-        queue,
-        surface,
-        window,
-        instance,
-        debug_messenger,
+    InstanceCreateInfo {
+        enabled_extensions: required_extensions,
+        enabled_layers: validation_enabled
+            .then(|| "VK_LAYER_KHRONOS_validation".to_owned())
+            .into_iter()
+            .collect(),
+        debug_utils_messengers: debug_utils_enabled
+            .then_some(debug_create_info)
+            .into_iter()
+            .collect(),
+        enabled_validation_features,
+        ..Default::default()
     }
 }
 
@@ -747,7 +688,8 @@ mod debug_utils_tests {
             })
             .collect();
         let (physical_device, queue_family_index) =
-            select_physical_device(candidates);
+            select_physical_device(candidates)
+                .unwrap_or_else(|error| panic!("{error}"));
 
         let (device, mut queues) = Device::new(
             physical_device,

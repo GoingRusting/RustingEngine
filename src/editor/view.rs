@@ -24,6 +24,7 @@ void solve(inout PhysicsState body) {
         * body.properties.y * pc.dt;
     body.model[3].xyz += body.velocity.xyz * pc.dt;
 }
+
 ";
 
 /// Draws the interactive editor into an already-open egui frame.
@@ -57,11 +58,20 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut pending_action = take_resource::<PendingDestructiveAction>(world);
     let mut editor_assets = take_resource::<EditorAssetState>(world);
     let mut dialogs = take_resource::<FileDialogs>(world);
-    let (build_running, build_finished, build_console_output) = {
+    super::reload_external_scene_change(world, &mut state, &mut history);
+    let (build_running, build_finished, build_console_output, restart_ready) = {
         let mut build = world.resource_mut::<EditorBuildState>();
         let finished = build.poll();
         let console_output = build.take_console_output();
-        (build.running, finished, console_output)
+        let restart_ready = build.take_restart_ready();
+        let notices = build.take_notices();
+        if let Some(mut console) = world.get_resource_mut::<EditorConsole>() {
+            for (level, source, text) in notices {
+                console.push_from(level, source, text);
+            }
+        }
+        let build = world.resource::<EditorBuildState>();
+        (build.running, finished, console_output, restart_ready)
     };
     let (reloaded, reload_failures) = world
         .get_resource_mut::<AssetServer>()
@@ -137,6 +147,16 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let render_counters = world
         .get_resource::<crate::rendering::scene_renderer::RenderCounters>()
         .copied();
+    let render_capacity = world
+        .get_resource::<crate::rendering::scene_renderer::RenderCapacityDiagnostics>()
+        .copied();
+    let renderer_capabilities = world
+        .get_resource::<crate::rendering::scene_renderer::RendererCapabilities>(
+        )
+        .cloned();
+    let physics_settings = world
+        .get_resource::<crate::runtime::PhysicsSettings>()
+        .cloned();
     let physics_label = render_counters.zip(
         world
             .get_resource::<crate::rendering::scene_renderer::RenderCapacityDiagnostics>()
@@ -239,8 +259,14 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut load_code = false;
     let mut save_code = false;
     let mut validate_code = false;
-    let mut run_project = false;
+    let mut run_project = restart_ready;
     let mut stop_build = false;
+    let mut restart_build = false;
+    let mut preview_start = false;
+    let mut preview_pause = false;
+    let mut preview_resume = false;
+    let mut preview_step = false;
+    let mut preview_stop = false;
     let mut add_area = false;
     let mut reset_layout = false;
     let mut save_layout = false;
@@ -326,6 +352,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 asset_request = Some(AssetRequest::ImportFiles(paths));
             }
             DialogPurpose::ImportFiles => {}
+            DialogPurpose::ReplaceAsset => match first {
+                Some(path) => {
+                    asset_request =
+                        Some(AssetRequest::PreviewReplacement(path));
+                }
+                None => editor_assets.replace_target = None,
+            },
             DialogPurpose::MaterialTexture { entity, slot } => {
                 asset_request = first.map(|path| {
                     AssetRequest::SetMaterialTexture { entity, slot, path }
@@ -584,6 +617,14 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     "Stop the running Cargo task or native game",
                                 )
                                 .clicked();
+                            restart_build =
+                                gui_elements::EditorTheme::toolbar_button(
+                                    ui, "Restart", false, true,
+                                )
+                                .on_hover_text(
+                                    "Stop the current process, then save, rebuild, and run again",
+                                )
+                                .clicked();
                         } else {
                             run_project =
                                 gui_elements::EditorTheme::toolbar_button(
@@ -596,6 +637,23 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     "Save and cook the scene, compile the Rust game, then run it",
                                 )
                                 .clicked();
+                        }
+                        ui.separator();
+                        match state.mode {
+                            EditorMode::Edit => {
+                                preview_start = gui_elements::EditorTheme::toolbar_button(
+                                    ui, "Preview", false, !build_running,
+                                ).on_hover_text("Run the scene inside the editor without compiling the project").clicked();
+                            }
+                            EditorMode::Play => {
+                                preview_pause = ui.button("Pause").clicked();
+                                preview_stop = ui.button("Stop Preview").clicked();
+                            }
+                            EditorMode::Paused => {
+                                preview_resume = ui.button("Resume").clicked();
+                                preview_step = ui.button("Step").clicked();
+                                preview_stop = ui.button("Stop Preview").clicked();
+                            }
                         }
                         gui_elements::EditorTheme::toolbar_combo_box_with_popup(
                             ui,
@@ -808,6 +866,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut dock_actions = Vec::new();
     let mut rendered_workspace = None;
     let mut active_area = state.active_area;
+    let mut focus_requested = false;
     // Every movable area lives inside this one transparent central panel.
     CentralPanel::default()
         .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
@@ -949,7 +1008,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     scene_drag_right_stopped = true;
                                 }
                                 scene_right_clicked = response.clicked_by(egui::PointerButton::Secondary);
-                                let transform_toolbar_hovered =
+                                let (transform_toolbar_hovered, focus_clicked) =
                                     draw_viewport_transform_toolbar(
                                         ui,
                                         rect,
@@ -958,6 +1017,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                         gizmo_drag.is_active(),
                                         state.selected.is_some(),
                                     );
+                                focus_requested |= focus_clicked;
                                 let settings_hovered =
                                     draw_viewport_render_settings(
                                         ui,
@@ -1043,6 +1103,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     "Build or native game is running...",
                                 );
                                 stop_build |= ui.button("Stop").clicked();
+                                restart_build |= ui.button("Restart").clicked();
                             });
                         }
                         // Build logs live in Console, so the source editor
@@ -1182,6 +1243,32 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 ));
                             }
                         }
+                    }
+                    EditorPanel::Profiler => {
+                        if let Some(mut profiler) =
+                            world.get_resource_mut::<profiler::EditorProfiler>()
+                        {
+                            profiler::draw_profiler_area(ui, &mut profiler);
+                        }
+                    }
+                    EditorPanel::RenderSettings => {
+                        diagnostics::draw_render_settings_area(
+                            ui,
+                            &mut render_settings,
+                            renderer_capabilities.as_ref(),
+                            culling_stats.as_ref(),
+                            render_capacity.as_ref(),
+                        );
+                    }
+                    EditorPanel::PhysicsDiagnostics => {
+                        diagnostics::draw_physics_diagnostics_area(
+                            ui,
+                            physics_backends,
+                            physics_settings.as_ref(),
+                            world.get_resource::<RenderWorld>(),
+                            render_counters.as_ref(),
+                            render_capacity.as_ref(),
+                        );
                     }
                     EditorPanel::Console => {
                         if let Some(mut console) =
@@ -1418,6 +1505,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             name: "New Scene".into(),
             entities: Vec::new(),
             render: Default::default(),
+            simulation: Default::default(),
         };
         match crate::runtime::load_scene_document(
             world,
@@ -1449,8 +1537,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         if let Some(previous) = history.undo.pop_back() {
             match scene_document(world, "Redo Snapshot") {
                 Ok(current) => {
-                    match reload_keeping_selection(world, &mut state, &previous)
-                    {
+                    match reload_keeping_selection(world, &mut state, |world| {
+                        crate::runtime::load_scene_document(
+                            world,
+                            &previous,
+                            SceneLoadMode::Replace,
+                        )
+                    }) {
                         Ok(()) => {
                             history.redo.push(current);
                             gizmo_drag = EditorGizmoDrag::default();
@@ -1476,7 +1569,13 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         if let Some(next) = history.redo.pop() {
             match scene_document(world, "Undo Snapshot") {
                 Ok(current) => {
-                    match reload_keeping_selection(world, &mut state, &next) {
+                    match reload_keeping_selection(world, &mut state, |world| {
+                        crate::runtime::load_scene_document(
+                            world,
+                            &next,
+                            SceneLoadMode::Replace,
+                        )
+                    }) {
                         Ok(()) => {
                             history.undo.push_back(current);
                             gizmo_drag = EditorGizmoDrag::default();
@@ -1697,7 +1796,24 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         }
     }
     if stop_build {
-        world.resource::<EditorBuildState>().request_stop();
+        world.resource_mut::<EditorBuildState>().request_stop();
+    } else if restart_build {
+        world.resource_mut::<EditorBuildState>().request_restart();
+    }
+    if preview_start {
+        start_embedded_preview(world, &mut state, &mut history);
+    }
+    if preview_pause {
+        set_embedded_preview_paused(world, &mut state, true);
+    }
+    if preview_resume {
+        set_embedded_preview_paused(world, &mut state, false);
+    }
+    if preview_step {
+        world.resource_mut::<crate::runtime::TimeControl>().step();
+    }
+    if preview_stop {
+        stop_embedded_preview(world, &mut state, &mut history);
     }
     if validate_code {
         let is_rust = std::path::Path::new(&state.code_path)
@@ -2202,6 +2318,48 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     ))
                 })()
             }
+            AssetRequest::PreviewReplacement(source) => {
+                match editor_assets.replace_target.take() {
+                    Some(target) => {
+                        let report = replace_asset(
+                            &state.project_root,
+                            &target,
+                            &source,
+                            true,
+                        );
+                        let message = report
+                            .as_ref()
+                            .map(|_| "Previewed asset replacement".to_owned())
+                            .map_err(Clone::clone);
+                        editor_assets.replace_preview = Some(ReplacePreview {
+                            target,
+                            source,
+                            report,
+                        });
+                        message
+                    }
+                    None => Err("No asset was chosen to replace".into()),
+                }
+            }
+            AssetRequest::ConfirmReplacement => {
+                match editor_assets.replace_preview.take() {
+                    Some(preview) => replace_asset(
+                        &state.project_root,
+                        &preview.target,
+                        &preview.source,
+                        false,
+                    )
+                    .map(|report| {
+                        // The asset server hot-reloads the file itself.
+                        editor_assets.thumbnails.remove(&preview.target);
+                        format!(
+                            "Replaced {} and kept ID {}",
+                            report.path, report.id
+                        )
+                    }),
+                    None => Err("No replacement to confirm".into()),
+                }
+            }
             AssetRequest::LoadTexture(path) => world
                 .resource_mut::<AssetServer>()
                 .load_texture(&path)
@@ -2259,6 +2417,40 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     state.scene_dirty = true;
                     Ok("Created a new material for the selected object".into())
                 }),
+            AssetRequest::AssignMesh { entity, handle } => {
+                (|| -> Result<String, String> {
+                    let assigned = assign_mesh_handle(
+                        world,
+                        &mut history,
+                        entity,
+                        handle,
+                    )?;
+                    state.scene_dirty |= assigned;
+                    Ok(if assigned {
+                        "Assigned mesh to selected object"
+                    } else {
+                        "Mesh is already assigned"
+                    }
+                    .into())
+                })()
+            }
+            AssetRequest::AssignMaterial { entity, handle } => {
+                (|| -> Result<String, String> {
+                    let assigned = assign_material_handle(
+                        world,
+                        &mut history,
+                        entity,
+                        handle,
+                    )?;
+                    state.scene_dirty |= assigned;
+                    Ok(if assigned {
+                        "Assigned material to selected object"
+                    } else {
+                        "Material is already assigned"
+                    }
+                    .into())
+                })()
+            }
             AssetRequest::LoadMaterialTexture(slot) => state
                 .selected
                 .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
@@ -2363,6 +2555,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     SceneLoadMode::Replace,
                 ) {
                     Ok(entity_count) => {
+                        super::SceneFileRevision::record(
+                            world,
+                            &project.scene_path,
+                        );
                         state.selected = None;
                         set_open_project_paths(&mut state, &project);
                         match std::fs::read_to_string(&project.code_path) {
@@ -2445,6 +2641,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             hovered_gizmo,
             &gizmo_drag,
             transform_mode.active_mode,
+            transform_mode.global_axes,
         )
     } else {
         RenderDebugOverlay::default()
@@ -2467,6 +2664,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         }
     }
     world.insert_resource(state);
+    if focus_requested {
+        shortcuts::camera_to_object(world);
+    }
     world.insert_resource(history);
     world.insert_resource(pending_action);
     world.insert_resource(editor_assets);
@@ -2618,7 +2818,8 @@ fn update_transform_gizmo(
         transform_mode.active_mode = TransformModes::Combo;
         return (None, false);
     };
-    let Some(geometry) = gizmo_geometry(world, entity) else {
+    let global_axes = transform_mode.global_axes;
+    let Some(geometry) = gizmo_geometry(world, entity, global_axes) else {
         if drag.is_active() {
             *edited_transform = drag.original_transform;
             *drag = EditorGizmoDrag::default();
@@ -2641,6 +2842,8 @@ fn update_transform_gizmo(
                 transform_mode.active_mode,
                 true,
                 transform_mode.axis_mask,
+                transform_mode.snap_enabled,
+                global_axes,
                 &geometry,
                 camera,
                 viewport,
@@ -2676,6 +2879,8 @@ fn update_transform_gizmo(
                     handle.mode,
                     false,
                     mask,
+                    transform_mode.snap_enabled,
+                    global_axes,
                     &geometry,
                     camera,
                     viewport,
@@ -2691,6 +2896,7 @@ fn update_transform_gizmo(
 
     if drag.is_active() {
         drag.axis_mask = transform_mode.axis_mask;
+        drag.snap_enabled = transform_mode.snap_enabled;
         drag.active_axis = single_enabled_axis(drag.axis_mask);
         let pointer = if drag.modal { hover } else { drag_position };
         if let Some(pointer) = pointer {
@@ -2758,10 +2964,121 @@ fn update_transform_gizmo(
 
 /// Replaces the scene with `document` and maps the selection back through
 /// `SceneId`, because the reload respawns every entity with a new `Entity`.
-fn reload_keeping_selection(
+pub(super) fn start_embedded_preview(
     world: &mut World,
     state: &mut EditorState,
-    document: &SceneDocument,
+    history: &mut EditorHistory,
+) {
+    match scene_document(world, "Preview Snapshot") {
+        Ok(snapshot) => {
+            state.preview_scene_dirty = Some(state.scene_dirty);
+            state.preview_entities =
+                Some(world.iter_entities().map(|entity| entity.id()).collect());
+            history.preview_before = Some(Box::new(EditorHistory {
+                undo: history.undo.clone(),
+                redo: history.redo.clone(),
+                pending_inspector: history.pending_inspector.clone(),
+                preview_before: None,
+            }));
+            state.play_snapshot = Some(snapshot);
+            state.mode = EditorMode::Play;
+            world.resource_mut::<crate::runtime::TimeControl>().resume();
+            if state.workspace == EditorWorkspace::Scene {
+                state
+                    .dock_layout
+                    .set_panel(state.active_area, EditorPanel::Game);
+            }
+            state.scene_message = Some("Embedded preview started".into());
+        }
+        Err(error) => {
+            state.scene_message =
+                Some(format!("Could not preview scene: {error}"));
+        }
+    }
+}
+
+/// Pauses or resumes fixed time while the embedded preview runs. Scene
+/// edits made while paused are kept when the preview resumes.
+pub(super) fn set_embedded_preview_paused(
+    world: &mut World,
+    state: &mut EditorState,
+    paused: bool,
+) {
+    let mut time = world.resource_mut::<crate::runtime::TimeControl>();
+    if paused {
+        state.mode = EditorMode::Paused;
+        time.pause();
+    } else {
+        state.mode = EditorMode::Play;
+        time.resume();
+    }
+}
+
+pub(super) fn stop_embedded_preview(
+    world: &mut World,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+) {
+    world.resource_mut::<crate::runtime::TimeControl>().pause();
+    let Some(snapshot) = state.play_snapshot.take() else {
+        state.mode = EditorMode::Edit;
+        return;
+    };
+    if let Some(before) = &state.preview_entities {
+        // Resources and observers are entities too; systems that first ran
+        // during the preview create them, and they must survive Stop.
+        let spawned = world
+            .iter_entities()
+            .filter(|entity| {
+                !entity.contains::<bevy_ecs::resource::IsResource>()
+                    && !entity.contains::<bevy_ecs::observer::Observer>()
+            })
+            .map(|entity| entity.id())
+            .filter(|entity| !before.contains(entity))
+            .collect::<Vec<_>>();
+        for entity in spawned {
+            world.despawn(entity);
+        }
+    }
+    match reload_keeping_selection(world, state, |world| {
+        crate::runtime::load_scene_document(
+            world,
+            &snapshot,
+            SceneLoadMode::Replace,
+        )
+    }) {
+        Ok(()) => {
+            state.scene_dirty = state
+                .preview_scene_dirty
+                .take()
+                .unwrap_or(state.scene_dirty);
+            state.preview_entities = None;
+            if let Some(before) = history.preview_before.take() {
+                *history = *before;
+            }
+            state.mode = EditorMode::Edit;
+            if state.workspace == EditorWorkspace::Game {
+                state
+                    .dock_layout
+                    .set_panel(state.active_area, EditorPanel::Scene);
+            }
+            state.scene_message = Some(
+                "Embedded preview stopped; authored scene restored".into(),
+            );
+        }
+        Err(error) => {
+            state.mode = EditorMode::Paused;
+            state.play_snapshot = Some(snapshot);
+            state.scene_message =
+                Some(format!("Could not restore scene: {error}"));
+        }
+    }
+}
+
+pub(super) fn reload_keeping_selection(
+    world: &mut World,
+    state: &mut EditorState,
+    load: impl FnOnce(&mut World) -> Result<usize, crate::runtime::SceneIoError>,
 ) -> Result<(), crate::runtime::SceneIoError> {
     let scene_id =
         |world: &World, entity| world.get::<SceneId>(entity).map(|id| id.0);
@@ -2771,11 +3088,7 @@ fn reload_keeping_selection(
         .iter()
         .filter_map(|&entity| scene_id(world, entity))
         .collect();
-    crate::runtime::load_scene_document(
-        world,
-        document,
-        SceneLoadMode::Replace,
-    )?;
+    load(world)?;
     let mut query = world.query::<(Entity, &SceneId)>();
     let entities: std::collections::HashMap<_, _> = query
         .iter(world)
@@ -2959,16 +3272,17 @@ fn draw_viewport_transform_toolbar(
     shortcuts: &EditorShortcuts,
     drag_active: bool,
     has_selection: bool,
-) -> bool {
+) -> (bool, bool) {
     let transform_active = drag_active || transform.start_requested;
     let toolbar_size =
-        egui::vec2(if transform_active { 218.0 } else { 110.0 }, 36.0);
+        egui::vec2(if transform_active { 410.0 } else { 301.0 }, 36.0);
     let toolbar_rect = egui::Rect::from_min_size(
         viewport.min + egui::vec2(8.0, 8.0),
         toolbar_size,
     )
     .intersect(viewport);
 
+    let mut focus_clicked = false;
     ui.scope_builder(
         egui::UiBuilder::new()
             .id_salt("viewport_transform_toolbar")
@@ -3009,6 +3323,36 @@ fn draw_viewport_transform_toolbar(
                             transform.axis_mask = [true; 3];
                             transform.start_requested = true;
                         }
+                    }
+
+                    ui.separator();
+                    if ui
+                        .selectable_label(transform.snap_enabled, "Snap")
+                        .on_hover_text("Snap move to 1 unit, rotation to 15°, and scale to 0.1 increments")
+                        .clicked()
+                    {
+                        transform.snap_enabled = !transform.snap_enabled;
+                    }
+                    if ui
+                        .add_enabled(
+                            !drag_active,
+                            egui::Button::new(if transform.global_axes {
+                                "Global"
+                            } else {
+                                "Local"
+                            }),
+                        )
+                        .on_hover_text("Use world axes for Move, Rotate, and Scale")
+                        .clicked()
+                    {
+                        transform.global_axes = !transform.global_axes;
+                    }
+                    if ui
+                        .add_enabled(has_selection && !drag_active, egui::Button::new("Frame"))
+                        .on_hover_text("Frame the selected object (F)")
+                        .clicked()
+                    {
+                        focus_clicked = true;
                     }
 
                     if transform_active {
@@ -3052,12 +3396,13 @@ fn draw_viewport_transform_toolbar(
         },
     );
 
-    ui.input(|input| {
+    let hovered = ui.input(|input| {
         input
             .pointer
             .latest_pos()
             .is_some_and(|position| toolbar_rect.contains(position))
-    })
+    });
+    (hovered, focus_clicked)
 }
 
 /// Writes the panel's render settings back. Quality and culling are scene
@@ -3069,6 +3414,60 @@ fn draw_viewport_transform_toolbar(
 /// stays on this object.
 // ponytail: the share check scans every renderer each edit frame; keep a
 // material use count if scenes grow large enough for this to show.
+pub(super) fn assign_mesh_handle(
+    world: &mut World,
+    history: &mut EditorHistory,
+    entity: Entity,
+    handle: crate::assets::Handle<crate::assets::MeshAsset>,
+) -> Result<bool, String> {
+    let assets = world.resource::<AssetServer>();
+    if !assets.meshes.contains(handle) {
+        return Err("The selected mesh is no longer loaded".into());
+    }
+    if assets.primitive_for_handle(handle).is_none()
+        && assets.meshes.path(handle).is_none()
+    {
+        return Err("The selected mesh cannot be saved in a scene".into());
+    }
+    let current = world
+        .get::<MeshRenderer>(entity)
+        .ok_or_else(|| "The object no longer has a Mesh Renderer".to_owned())?
+        .mesh;
+    if current == handle {
+        return Ok(false);
+    }
+    remember_scene_before_edit(world, history)?;
+    world
+        .get_mut::<MeshRenderer>(entity)
+        .expect("checked above")
+        .mesh = handle;
+    Ok(true)
+}
+
+pub(super) fn assign_material_handle(
+    world: &mut World,
+    history: &mut EditorHistory,
+    entity: Entity,
+    handle: crate::assets::Handle<MaterialAsset>,
+) -> Result<bool, String> {
+    if !world.resource::<AssetServer>().materials.contains(handle) {
+        return Err("The selected material is no longer loaded".into());
+    }
+    let current = world
+        .get::<MeshRenderer>(entity)
+        .ok_or_else(|| "The object no longer has a Mesh Renderer".to_owned())?
+        .material;
+    if current == handle {
+        return Ok(false);
+    }
+    remember_scene_before_edit(world, history)?;
+    world
+        .get_mut::<MeshRenderer>(entity)
+        .expect("checked above")
+        .material = handle;
+    Ok(true)
+}
+
 pub(super) fn set_material(
     world: &mut World,
     entity: Entity,
@@ -3117,7 +3516,7 @@ pub(super) fn apply_render_settings(
 
 /// Scene-saved renderer options. The exported game loads them with the
 /// scene.
-fn draw_scene_render_settings(
+pub(super) fn draw_scene_render_settings(
     ui: &mut egui::Ui,
     settings: &mut RenderSettings,
 ) {
@@ -3281,6 +3680,8 @@ fn begin_gizmo_drag(
     mode: TransformModes,
     modal: bool,
     axis_mask: [bool; 3],
+    snap_enabled: bool,
+    global_axes: bool,
     geometry: &GizmoGeometry,
     camera: Entity,
     viewport: egui::Rect,
@@ -3293,6 +3694,20 @@ fn begin_gizmo_drag(
         return;
     };
     let world_axes = geometry.axes.map(|(_, direction)| direction);
+    let global_scale_weights = world.get::<GlobalTransform>(entity).map_or(
+        [[0.0; 3]; 3],
+        |transform| {
+            let local_axes: [[f32; 3]; 3] = std::array::from_fn(|index| {
+                let column = transform.matrix[index];
+                normalized_axis([column[0], column[1], column[2]])
+            });
+            std::array::from_fn(|world_axis| {
+                std::array::from_fn(|local_axis| {
+                    local_axes[local_axis][world_axis].powi(2)
+                })
+            })
+        },
+    );
     let parent_inverse = world
         .get::<Parent>(entity)
         .and_then(|parent| world.get::<GlobalTransform>(parent.0))
@@ -3388,6 +3803,9 @@ fn begin_gizmo_drag(
         mode: Some(mode),
         modal,
         axis_mask,
+        snap_enabled,
+        global_axes,
+        global_scale_weights,
         active_axis,
         entity: Some(entity),
         start_pointer: Some(pointer),
@@ -3429,6 +3847,7 @@ fn transformed_from_pointer(
                 single_enabled_axis(drag.axis_mask),
             ) {
                 let distance = current_parameter - start_parameter;
+                let distance = snap_value(distance, 1.0, drag.snap_enabled);
                 let axis = gizmo_axis_index(axis);
                 for component in 0..3 {
                     transform.position[component] +=
@@ -3442,6 +3861,8 @@ fn transformed_from_pointer(
                 [delta.x, delta.y],
             );
             for (axis, coefficient) in coefficients.into_iter().enumerate() {
+                let coefficient =
+                    snap_value(coefficient, 1.0, drag.snap_enabled);
                 for component in 0..3 {
                     transform.position[component] +=
                         drag.local_delta_axes[axis][component] * coefficient;
@@ -3464,11 +3885,24 @@ fn transformed_from_pointer(
                     / length_squared)
                     .max(0.01)
             };
-            for axis in 0..3 {
-                if drag.axis_mask[axis] {
-                    transform.scale[axis] =
-                        (original.scale[axis] * factor).max(0.001);
-                }
+            let factor = 1.0 + snap_value(factor - 1.0, 0.1, drag.snap_enabled);
+            for local_axis in 0..3 {
+                let weight = if drag.global_axes {
+                    (0..3)
+                        .filter(|&world_axis| drag.axis_mask[world_axis])
+                        .map(|world_axis| {
+                            drag.global_scale_weights[world_axis][local_axis]
+                        })
+                        .sum::<f32>()
+                        .clamp(0.0, 1.0)
+                } else if drag.axis_mask[local_axis] {
+                    1.0
+                } else {
+                    0.0
+                };
+                transform.scale[local_axis] = (original.scale[local_axis]
+                    * (1.0 + (factor - 1.0) * weight))
+                    .max(0.001);
             }
         }
         TransformModes::Rotate => {
@@ -3476,13 +3910,19 @@ fn transformed_from_pointer(
                 return Some(rotate_transform_in_parent_space(
                     original,
                     drag.view_rotation_axis,
-                    raw_screen_rotation_angle(drag, pointer),
+                    snap_angle(
+                        raw_screen_rotation_angle(drag, pointer),
+                        drag.snap_enabled,
+                    ),
                 ));
             }
             let mut angles = [0.0; 3];
             if let Some(axis) = single_enabled_axis(drag.axis_mask) {
                 let index = gizmo_axis_index(axis);
-                angles[index] = screen_rotation_angle(drag, pointer, index);
+                angles[index] = snap_angle(
+                    screen_rotation_angle(drag, pointer, index),
+                    drag.snap_enabled,
+                );
             } else if drag.modal {
                 // Free rotation behaves like a small virtual trackball. Mouse
                 // vertical rotates around local X, horizontal around local Y,
@@ -3494,14 +3934,48 @@ fn transformed_from_pointer(
                 ];
             } else {
                 let index = gizmo_axis_index(drag.active_axis?);
-                angles[index] = screen_rotation_angle(drag, pointer, index);
+                angles[index] = snap_angle(
+                    screen_rotation_angle(drag, pointer, index),
+                    drag.snap_enabled,
+                );
             }
-            transform =
-                rotate_transform_locally(original, angles, drag.axis_mask);
+            for angle in &mut angles {
+                *angle = snap_angle(*angle, drag.snap_enabled);
+            }
+            transform = if drag.global_axes {
+                angles.into_iter().enumerate().fold(
+                    original,
+                    |current, (axis, angle)| {
+                        if drag.axis_mask[axis] && angle != 0.0 {
+                            rotate_transform_in_parent_space(
+                                current,
+                                drag.local_delta_axes[axis],
+                                angle,
+                            )
+                        } else {
+                            current
+                        }
+                    },
+                )
+            } else {
+                rotate_transform_locally(original, angles, drag.axis_mask)
+            };
         }
         TransformModes::Combo => return None,
     }
     Some(transform)
+}
+
+fn snap_value(value: f32, step: f32, enabled: bool) -> f32 {
+    if enabled {
+        (value / step).round() * step
+    } else {
+        value
+    }
+}
+
+fn snap_angle(angle: f32, enabled: bool) -> f32 {
+    snap_value(angle, 15.0_f32.to_radians(), enabled)
 }
 
 fn move_axis_parameter(
@@ -3672,10 +4146,14 @@ struct GizmoGeometry {
     axis_length: f32,
 }
 
-fn gizmo_geometry(world: &World, entity: Entity) -> Option<GizmoGeometry> {
+fn gizmo_geometry(
+    world: &World,
+    entity: Entity,
+    global_axes: bool,
+) -> Option<GizmoGeometry> {
     let matrix = world.get::<GlobalTransform>(entity)?.matrix;
     let origin = [matrix[3][0], matrix[3][1], matrix[3][2]];
-    let axes = [
+    let mut axes = [
         (
             GizmoAxis::X,
             normalized_axis([matrix[0][0], matrix[0][1], matrix[0][2]]),
@@ -3689,6 +4167,13 @@ fn gizmo_geometry(world: &World, entity: Entity) -> Option<GizmoGeometry> {
             normalized_axis([matrix[2][0], matrix[2][1], matrix[2][2]]),
         ),
     ];
+    if global_axes {
+        axes = [
+            (GizmoAxis::X, [1.0, 0.0, 0.0]),
+            (GizmoAxis::Y, [0.0, 1.0, 0.0]),
+            (GizmoAxis::Z, [0.0, 0.0, 1.0]),
+        ];
+    }
     let axis_length = world
         .get::<MeshRenderer>(entity)
         .and_then(|renderer| {
@@ -3849,6 +4334,7 @@ fn build_scene_debug_overlay(
     hovered: Option<GizmoHandle>,
     drag: &EditorGizmoDrag,
     selected_mode: TransformModes,
+    global_axes: bool,
 ) -> RenderDebugOverlay {
     let mut overlay = RenderDebugOverlay::default();
     if settings.show_grid {
@@ -3878,7 +4364,11 @@ fn build_scene_debug_overlay(
             [0.72, 0.74, 0.78, 1.0]
         };
         for [start, end] in lines {
-            overlay.line(start, end, color);
+            if Some(entity) == selected || selection.contains(&entity) {
+                overlay.line_on_top(start, end, color, 2.0);
+            } else {
+                overlay.line(start, end, color);
+            }
         }
     }
     if settings.show_selected_bounds {
@@ -3915,7 +4405,7 @@ fn build_scene_debug_overlay(
                         )
                     })
                     .map_or(1.0, |radius| (radius * 1.2).max(1.0));
-                let geometry = GizmoGeometry {
+                let mut geometry = GizmoGeometry {
                     origin,
                     axes: [
                         (
@@ -3946,6 +4436,13 @@ fn build_scene_debug_overlay(
                     axis_length,
                 };
                 let display_mode = drag.mode.unwrap_or(selected_mode);
+                if global_axes {
+                    geometry.axes = [
+                        (GizmoAxis::X, [1.0, 0.0, 0.0]),
+                        (GizmoAxis::Y, [0.0, 1.0, 0.0]),
+                        (GizmoAxis::Z, [0.0, 0.0, 1.0]),
+                    ];
+                }
                 if matches!(
                     display_mode,
                     TransformModes::Combo | TransformModes::Move
@@ -4183,9 +4680,13 @@ fn add_selected_bounds(
     let Some(renderer) = world.get::<MeshRenderer>(entity).copied() else {
         return;
     };
+    let first_line = overlay.lines.len();
     if let Some(&bounds) = world.get::<RenderBounds>(entity) {
         crate::editor::overlay::add_render_bounds(
             overlay, bounds, matrix, color,
+        );
+        crate::editor::overlay::make_selection_outline_visible(
+            overlay, first_line,
         );
         return;
     }
@@ -4195,6 +4696,7 @@ fn add_selected_bounds(
         return;
     };
     add_bound_box(overlay, matrix, minimum, maximum, color);
+    crate::editor::overlay::make_selection_outline_visible(overlay, first_line);
 }
 
 /// Removes object scale from a transform column so gizmos stay a useful size.
@@ -4495,6 +4997,120 @@ mod gizmo_tests {
 
         assert!((short.scale[0] - 2.0).abs() < 0.001);
         assert!((long.scale[0] - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn gizmo_snap_quantizes_move_scale_and_rotation() {
+        let move_drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Move),
+            snap_enabled: true,
+            axis_mask: [true, false, false],
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(Transform::default()),
+            screen_vectors: [[10.0, 0.0], [0.0, 10.0], [0.0; 2]],
+            local_delta_axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0; 3]],
+            ..EditorGizmoDrag::default()
+        };
+        let moved =
+            transformed_from_pointer(&move_drag, Pos2::new(14.0, 0.0), None)
+                .unwrap();
+        assert_eq!(moved.position, [1.0, 0.0, 0.0]);
+
+        let scale_drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Scale),
+            modal: true,
+            snap_enabled: true,
+            axis_mask: [true; 3],
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(Transform::default()),
+            ..EditorGizmoDrag::default()
+        };
+        let scaled =
+            transformed_from_pointer(&scale_drag, Pos2::new(14.0, 0.0), None)
+                .unwrap();
+        assert_eq!(scaled.scale, [1.2; 3]);
+        assert!((snap_angle(0.3, true) - 15.0_f32.to_radians()).abs() < 0.0001);
+        assert_eq!(snap_angle(0.3, false), 0.3);
+    }
+
+    #[test]
+    fn global_gizmo_axes_ignore_object_rotation() {
+        let mut world = World::new();
+        let rotated = Transform::default().with_rotation(
+            0.0,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+        );
+        let entity = world
+            .spawn(GlobalTransform {
+                matrix: rotated.to_matrix(),
+            })
+            .id();
+        let local = gizmo_geometry(&world, entity, false).unwrap();
+        let global = gizmo_geometry(&world, entity, true).unwrap();
+        assert!(local.axes[0].1[1] > 0.99);
+        assert_eq!(global.axes[0].1, [1.0, 0.0, 0.0]);
+        assert_eq!(global.axes[1].1, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn global_rotation_uses_parent_space_axis() {
+        let original = Transform::default().with_rotation(0.4, 0.7, -0.2);
+        let drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Rotate),
+            global_axes: true,
+            axis_mask: [true, false, false],
+            start_pointer: Some(Pos2::new(10.0, 0.0)),
+            origin_screen: Some(Pos2::ZERO),
+            original_transform: Some(original),
+            local_delta_axes: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            rotation_screen_signs: [1.0; 3],
+            ..EditorGizmoDrag::default()
+        };
+        let actual =
+            transformed_from_pointer(&drag, Pos2::new(0.0, 10.0), None)
+                .unwrap();
+        let expected = rotate_transform_in_parent_space(
+            original,
+            [1.0, 0.0, 0.0],
+            std::f32::consts::FRAC_PI_2,
+        );
+        let actual_matrix = Matrix4::from(actual.to_matrix());
+        let expected_matrix = Matrix4::from(expected.to_matrix());
+        assert!((actual_matrix - expected_matrix).norm() < 0.001);
+    }
+
+    #[test]
+    fn global_scale_on_rotated_object_uses_matching_local_axis() {
+        let drag = EditorGizmoDrag {
+            mode: Some(TransformModes::Scale),
+            modal: true,
+            global_axes: true,
+            axis_mask: [true, false, false],
+            start_pointer: Some(Pos2::ZERO),
+            original_transform: Some(
+                Transform::default().with_scale(2.0, 3.0, 4.0),
+            ),
+            global_scale_weights: [
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            ..EditorGizmoDrag::default()
+        };
+        let scaled = transformed_from_pointer(
+            &drag,
+            Pos2::new(std::f32::consts::LN_2 / 0.01, 0.0),
+            None,
+        )
+        .unwrap();
+        assert_eq!(scaled.scale[0], 2.0);
+        assert!((scaled.scale[1] - 6.0).abs() < 0.001);
+        assert_eq!(scaled.scale[2], 4.0);
     }
 
     #[test]

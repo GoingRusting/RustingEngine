@@ -7,40 +7,60 @@ mod actions;
 mod click;
 mod components;
 mod cpu_physics;
+mod determinism;
 mod events;
+mod game_feel;
 pub(crate) mod hierarchy;
 mod hybrid_physics;
 mod input;
 mod physics_benchmark;
 pub mod picking;
+mod player;
+mod render_benchmark;
 mod render_world;
+mod replay;
 mod scene_file;
+pub mod sim_math;
+mod snapshot;
+mod state_hash;
 #[cfg(test)]
 mod tests;
 mod time;
+mod two_d;
+#[cfg(feature = "ui")]
+mod ui;
 
 pub use actions::{ActionMap, InputBinding};
-pub use click::ClickEvent;
 pub use components::*;
 pub(crate) use cpu_physics::gpu_shape_words;
 pub use cpu_physics::{
     CharacterMove, CollisionEvent, Contact, GpuCollider, PhysicsWorld, RayHit,
     Sleeping, SLEEP_STEPS,
 };
+pub use determinism::*;
 pub use events::EventQueue;
+pub use game_feel::*;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
 pub use input::{KeyCode, MouseButton, RuntimeInput};
 pub use physics_benchmark::{
     BenchmarkBody, PhysicsBenchmark, BENCHMARK_TOWER_HEIGHT,
 };
+pub use player::*;
+pub use render_benchmark::*;
 pub use render_world::*;
-pub use rusting_core::schedule::{FrameReport, ScheduleStage};
+pub use replay::*;
+pub use rusting_core::app::AppError;
+pub use rusting_core::input::ClickEvent;
+pub use rusting_core::schedule::{CpuFrameTimings, FrameReport, ScheduleStage};
 pub use scene_file::*;
-pub use time::{FrameTime, TimeControl};
+pub use snapshot::{SnapshotError, WorldSnapshot};
+pub use state_hash::*;
+pub use time::{FrameTime, RandomSeed, TimeControl};
+pub use two_d::*;
+#[cfg(feature = "ui")]
+pub use ui::RuntimeUi;
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
 use std::hash::Hasher;
 use std::time::{Duration, Instant};
 
@@ -86,41 +106,6 @@ impl Hasher for FastHasher {
     }
 }
 
-/// Errors produced while constructing or controlling the runtime.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppError {
-    InvalidFixedDelta,
-    DuplicatePlugin(&'static str),
-    HierarchyCycle {
-        child: Entity,
-        parent: Entity,
-    },
-    MissingEntity(Entity),
-    PluginSetup {
-        plugin: &'static str,
-        message: String,
-    },
-}
-
-impl Display for AppError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidFixedDelta => formatter.write_str("fixed delta must be greater than zero"),
-            Self::DuplicatePlugin(name) => write!(formatter, "plugin `{name}` was already added"),
-            Self::HierarchyCycle { child, parent } => write!(
-                formatter,
-                "parenting {child:?} beneath {parent:?} would create a hierarchy cycle"
-            ),
-            Self::MissingEntity(entity) => write!(formatter, "entity {entity:?} does not exist"),
-            Self::PluginSetup { plugin, message } => {
-                write!(formatter, "plugin `{plugin}` setup failed: {message}")
-            }
-        }
-    }
-}
-
-impl Error for AppError {}
-
 /// A reusable unit of runtime configuration.
 pub trait Plugin: Send + Sync + 'static {
     fn build(&self, app: &mut App) -> Result<(), AppError>;
@@ -130,7 +115,7 @@ pub trait Plugin: Send + Sync + 'static {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Clone, Default)]
 struct ExitState {
     requested: bool,
 }
@@ -146,6 +131,8 @@ pub struct App {
     startup_complete: bool,
     event_maintenance: Vec<fn(&mut World)>,
     plugins: Vec<&'static str>,
+    replay_recorder: Option<ReplayRecorder>,
+    snapshot_types: snapshot::SnapshotTypes,
 }
 
 impl Default for App {
@@ -153,6 +140,7 @@ impl Default for App {
         let mut world = World::new();
         world.insert_resource(FrameTime::default());
         world.insert_resource(TimeControl::default());
+        world.insert_resource(RandomSeed::default());
         world.insert_resource(ExitState::default());
         world.insert_resource(HierarchyDiagnostics::default());
         world.insert_resource(RenderSettings::default());
@@ -164,30 +152,72 @@ impl Default for App {
         world.init_resource::<PhysicsWorld>();
         world.insert_resource(SceneComponentRegistry::default());
         world.init_resource::<CpuFrameTimings>();
+        // Bevy adds this on the first schedule run. Adding it here keeps its
+        // entity id the same before and after, which snapshots rely on.
+        world.init_resource::<bevy_ecs::schedule::Schedules>();
         input::install(&mut world);
         actions::install(&mut world);
+        player::bind_default_actions(&mut world.resource_mut::<ActionMap>());
+        #[cfg(feature = "ui")]
+        world.init_resource::<RuntimeUi>();
 
+        // Systems a game adds to FixedUpdate without an order still run in
+        // one order every tick: the single-threaded executor follows the
+        // build's topological sort instead of thread timing.
+        // ponytail: gives up parallel fixed-step systems; order them
+        // explicitly and switch back if a game needs the threads.
+        let mut fixed_update = Schedule::default();
+        fixed_update
+            .set_executor(bevy_ecs::schedule::SingleThreadedExecutor::new());
         let mut post_update = Schedule::default();
         post_update.add_systems(propagate_transforms);
 
         let mut app = Self {
             world,
             startup: Schedule::default(),
-            fixed_update: Schedule::default(),
+            fixed_update,
             update: Schedule::default(),
             post_update,
             render_extract: Schedule::default(),
             startup_complete: false,
             event_maintenance: Vec::new(),
             plugins: Vec::new(),
+            replay_recorder: None,
+            snapshot_types: snapshot::SnapshotTypes::default(),
         };
+        snapshot::register_engine_types(&mut app.snapshot_types);
         app.add_event::<ClickEvent>();
         app.add_system(ScheduleStage::Update, click::route_click_events);
         app.add_event::<CollisionEvent>();
-        app.add_system(
+        // One chain: these systems all write `Transform`, and unordered
+        // systems would run in whatever order threads finish.
+        app.add_systems(
             ScheduleStage::FixedUpdate,
-            cpu_physics::step_cpu_physics,
+            (
+                cpu_physics::step_cpu_physics,
+                player::player_move,
+                two_d::platformer_move,
+                game_feel::trigger_on_contact,
+                game_feel::collect_pickups,
+                game_feel::fire_sound_cues,
+                // Existing particles move before new ones spawn at rest.
+                game_feel::update_burst_particles,
+                game_feel::fire_bursts,
+                game_feel::advance_tweens,
+            )
+                .chain(),
         );
+        app.add_system(ScheduleStage::Update, player::player_look);
+        app.add_event::<SoundEvent>();
+        app.add_event::<HudButtonPressed>();
+        #[cfg(feature = "ui")]
+        app.add_system(ScheduleStage::Update, game_feel::draw_hud);
+        app.add_system(ScheduleStage::Update, two_d::build_tile_maps);
+        app.add_system(
+            ScheduleStage::Update,
+            game_feel::apply_scene_background,
+        );
+        app.add_system(ScheduleStage::Update, two_d::platformer_jump);
         app
     }
 }
@@ -221,8 +251,10 @@ impl App {
     }
 
     /// Allows a game plugin to persist one of its compiled Rust components in
-    /// scene files. Registration does not add scripting or dynamic dispatch to
-    /// normal ECS queries.
+    /// scene files. Describe the type with [`reflect!`](crate::reflect!)
+    /// first; the description drives saving, the Inspector, and field paths.
+    /// Registration does not add scripting or dynamic dispatch to normal ECS
+    /// queries.
     pub fn register_scene_component<T>(
         &mut self,
         name: impl Into<String>,
@@ -231,11 +263,26 @@ impl App {
         T: bevy_ecs::component::Component
             + serde::Serialize
             + serde::de::DeserializeOwned
-            + Default,
+            + Default
+            + crate::reflect::Reflect,
     {
         self.world
             .resource_mut::<SceneComponentRegistry>()
             .register::<T>(name)?;
+        Ok(self)
+    }
+
+    /// Records a renamed or removed field of a registered component, so
+    /// scenes saved before the change still load. See
+    /// [`SceneComponentRegistry::add_migration`].
+    pub fn migrate_scene_component(
+        &mut self,
+        name: &str,
+        migration: crate::reflect::FieldMigration,
+    ) -> Result<&mut Self, SceneIoError> {
+        self.world
+            .resource_mut::<SceneComponentRegistry>()
+            .add_migration(name, migration)?;
         Ok(self)
     }
 
@@ -319,6 +366,66 @@ impl App {
         hierarchy::clear_parent(&mut self.world, child)
     }
 
+    /// Records every following [`App::update`] into a [`Replay`]. The
+    /// recorder lives outside the `World`: in bevy 0.19 a resource is an
+    /// entity, and inserting one would shift the ids of later entities.
+    pub fn start_recording(&mut self) {
+        self.replay_recorder = Some(ReplayRecorder::new(&self.world));
+    }
+
+    /// Stops recording and returns the replay, or `None` when not recording.
+    pub fn finish_recording(&mut self) -> Option<Replay> {
+        self.replay_recorder.take().map(ReplayRecorder::finish)
+    }
+
+    /// Lets [`App::snapshot`] copy component or resource `T` (in bevy 0.19
+    /// a resource is a component on its own entity). Every type in the
+    /// world needs this or [`App::ignore_in_snapshots`].
+    pub fn register_snapshot_component<T>(&mut self) -> &mut Self
+    where
+        T: bevy_ecs::component::Component<
+                Mutability = bevy_ecs::component::Mutable,
+            > + Clone,
+    {
+        self.snapshot_types.register::<T>();
+        self
+    }
+
+    /// Leaves `T` out of snapshots: a restore keeps the value the app
+    /// already has. For caches, handles to external state, and values fixed
+    /// after setup.
+    pub fn ignore_in_snapshots<T: 'static>(&mut self) -> &mut Self {
+        self.snapshot_types.ignore::<T>();
+        self
+    }
+
+    /// Copies the whole world between frames; see [`WorldSnapshot`].
+    pub fn snapshot(&mut self) -> Result<WorldSnapshot, SnapshotError> {
+        let entities =
+            snapshot::capture_world(&mut self.world, &self.snapshot_types)?;
+        let allocator = snapshot::read_allocator(&mut self.world);
+        snapshot::write_allocator(&mut self.world, &allocator);
+        Ok(WorldSnapshot {
+            tick: self.world.resource::<FrameTime>().fixed_tick,
+            startup_complete: self.startup_complete,
+            entities,
+            allocator,
+        })
+    }
+
+    /// Puts the world back to `snapshot`. The app must be built the same
+    /// way as the one snapshotted (same plugins and scene) and not be past
+    /// the snapshot; a new app from the same setup always works. On error
+    /// the app is left half restored; build a new one.
+    pub fn restore(
+        &mut self,
+        snapshot: &WorldSnapshot,
+    ) -> Result<(), SnapshotError> {
+        snapshot::restore_world(&mut self.world, snapshot)?;
+        self.startup_complete = snapshot.startup_complete;
+        Ok(())
+    }
+
     /// Advances every schedule once using a caller-provided real-frame delta.
     pub fn update(
         &mut self,
@@ -333,14 +440,37 @@ impl App {
             maintain(&mut self.world);
         }
 
+        if let Some(recorder) = &mut self.replay_recorder {
+            recorder.frame_start(&self.world, real_delta);
+        }
         let fixed_steps = time::advance(&mut self.world, real_delta)?;
         let start = Instant::now();
-        for _ in 0..fixed_steps {
+        // `advance` counts the frame's steps at once; each step sees the
+        // ticks completed before it, so tick-indexed values differ per tick.
+        let end_tick = self.world.resource::<FrameTime>().fixed_tick;
+        let first_tick = end_tick.saturating_sub(u64::from(fixed_steps));
+        for step in 0..u64::from(fixed_steps) {
+            self.world.resource_mut::<FrameTime>().fixed_tick =
+                first_tick + step;
             self.fixed_update.run(&mut self.world);
+            hybrid_physics::stamp_gpu_commands(&mut self.world);
+            state_hash::record_state_hash(&mut self.world);
+        }
+        self.world.resource_mut::<FrameTime>().fixed_tick = end_tick;
+        if let Some(recorder) = &mut self.replay_recorder {
+            recorder.frame_hashes(&self.world, fixed_steps);
         }
         let physics = start.elapsed();
+        #[cfg(feature = "ui")]
+        if let Some(mut ui) = self.world.get_resource_mut::<RuntimeUi>() {
+            ui.begin_pass();
+        }
         self.update.run(&mut self.world);
         self.post_update.run(&mut self.world);
+        #[cfg(feature = "ui")]
+        if let Some(mut ui) = self.world.get_resource_mut::<RuntimeUi>() {
+            ui.end_pass();
+        }
         let start = Instant::now();
         self.render_extract.run(&mut self.world);
         let extraction = start.elapsed();
@@ -378,20 +508,6 @@ impl App {
             ScheduleStage::RenderExtract => &mut self.render_extract,
         }
     }
-}
-
-/// CPU time spent in each part of the last frame, for the profiler.
-///
-/// [`App::update`] fills `physics` (every `FixedUpdate` step, where physics
-/// runs) and `extraction` (the `RenderExtract` schedule). The renderer fills
-/// `preparation` and `recording`, and a host with a UI fills `editor`.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CpuFrameTimings {
-    pub physics: Duration,
-    pub extraction: Duration,
-    pub preparation: Duration,
-    pub recording: Duration,
-    pub editor: Duration,
 }
 
 /// Fallible builder for the ECS runtime.

@@ -935,4 +935,52 @@ mod tests {
         );
         assert_eq!(target.pixel([1, 4]), [0, 255, 0], "replaced image");
     }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn runtime_ui_drawn_by_an_ecs_system_paints_over_the_game_view() {
+        use crate::runtime::{RuntimeUi, ScheduleStage};
+        use bevy_ecs::prelude::Res;
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        fn hud(ui: Res<RuntimeUi>) {
+            // A red bar over the left half of the 8x8 view.
+            ui.context()
+                .layer_painter(egui::LayerId::background())
+                .rect_filled(points([0.0, 0.0], [4.0, 8.0]), 0.0, Color32::RED);
+        }
+        let mut app = crate::App::new();
+        app.add_system(ScheduleStage::Update, hud);
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(points([0.0, 0.0], [8.0, 8.0])),
+                ..Default::default()
+            });
+        app.update(std::time::Duration::from_millis(16)).unwrap();
+        let output = app
+            .world_mut()
+            .resource_mut::<RuntimeUi>()
+            .take_output()
+            .unwrap();
+        let primitives = app
+            .world()
+            .resource::<RuntimeUi>()
+            .context()
+            .tessellate(output.shapes, output.pixels_per_point);
+
+        let mut target = Target::new();
+        target.paint(
+            output.pixels_per_point,
+            &primitives,
+            &output.textures_delta,
+        );
+        assert_eq!(target.pixel([1, 4]), [255, 0, 0], "UI over the view");
+        assert_eq!(target.pixel([6, 4]), [0, 0, 255], "view outside the UI");
+    }
 }

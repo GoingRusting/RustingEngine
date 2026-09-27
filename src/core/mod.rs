@@ -7,7 +7,7 @@ pub use rusting_core::transform;
 pub mod material;
 pub mod physics;
 
-pub use crate::rendering::compute_registry::ComputeShaderType;
+pub use crate::rendering::compute_profile::ComputeShaderType;
 pub use material::{Material, MaterialBuilder};
 pub use physics::Physics;
 pub use transform::Transform;

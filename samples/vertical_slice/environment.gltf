@@ -1,0 +1,349 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "RustingEngine vertical slice fixture"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "PBR courtyard",
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Floor",
+      "mesh": 0,
+      "translation": [
+        0,
+        -0.3,
+        0
+      ],
+      "scale": [
+        12,
+        0.25,
+        12
+      ]
+    },
+    {
+      "name": "North wall",
+      "mesh": 0,
+      "translation": [
+        0,
+        2,
+        -12
+      ],
+      "scale": [
+        12,
+        2,
+        0.2
+      ]
+    },
+    {
+      "name": "West wall",
+      "mesh": 0,
+      "translation": [
+        -12,
+        2,
+        0
+      ],
+      "scale": [
+        0.2,
+        2,
+        12
+      ]
+    },
+    {
+      "name": "Walkway",
+      "mesh": 1,
+      "translation": [
+        0,
+        0.12,
+        0
+      ],
+      "scale": [
+        1.2,
+        0.12,
+        10
+      ]
+    },
+    {
+      "name": "Signal block",
+      "mesh": 2,
+      "translation": [
+        0,
+        1.3,
+        -7
+      ],
+      "scale": [
+        1.5,
+        1.5,
+        0.6
+      ]
+    },
+    {
+      "name": "Steel pillar -8 -8",
+      "mesh": 1,
+      "translation": [
+        -8,
+        2,
+        -8
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    },
+    {
+      "name": "Steel pillar -8 0",
+      "mesh": 1,
+      "translation": [
+        -8,
+        2,
+        0
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    },
+    {
+      "name": "Steel pillar -8 8",
+      "mesh": 1,
+      "translation": [
+        -8,
+        2,
+        8
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    },
+    {
+      "name": "Steel pillar 8 -8",
+      "mesh": 1,
+      "translation": [
+        8,
+        2,
+        -8
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    },
+    {
+      "name": "Steel pillar 8 0",
+      "mesh": 1,
+      "translation": [
+        8,
+        2,
+        0
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    },
+    {
+      "name": "Steel pillar 8 8",
+      "mesh": 1,
+      "translation": [
+        8,
+        2,
+        8
+      ],
+      "scale": [
+        0.35,
+        2,
+        0.35
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Textured concrete",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "Brushed steel",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "Signal orange",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TEXCOORD_0": 2
+          },
+          "indices": 3,
+          "material": 2
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Textured concrete",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "metallicRoughnessTexture": {
+          "index": 1
+        },
+        "metallicFactor": 0.1,
+        "roughnessFactor": 0.9
+      }
+    },
+    {
+      "name": "Brushed steel",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.37,
+          0.48,
+          0.55,
+          1
+        ],
+        "metallicFactor": 0.85,
+        "roughnessFactor": 0.28
+      }
+    },
+    {
+      "name": "Signal orange",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.95,
+          0.34,
+          0.08,
+          1
+        ],
+        "metallicFactor": 0.18,
+        "roughnessFactor": 0.42
+      }
+    }
+  ],
+  "images": [
+    {
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGPYsGPn//mr1/5nABEgDgBrjgwtSntsAwAAAABJRU5ErkJggg=="
+    },
+    {
+      "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP4f5j///+z/P8ZQASIAwBneAtV7pjeXgAAAABJRU5ErkJggg=="
+    }
+  ],
+  "textures": [
+    {
+      "source": 0
+    },
+    {
+      "source": 1
+    }
+  ],
+  "samplers": [
+    {}
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AACAPwAAgL8AAIC/AACAPwAAgL8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIC/AACAvwAAgL8AAIA/AACAvwAAgL8AAIC/AACAvwAAgD8AAIC/AACAvwAAgD8AAIA/AACAvwAAgD8AAIC/AACAPwAAgD8AAIC/AACAPwAAgD8AAIA/AACAvwAAgD8AAIA/AACAvwAAgL8AAIA/AACAPwAAgL8AAIA/AACAPwAAgL8AAIC/AACAvwAAgL8AAIC/AACAPwAAgL8AAIA/AACAvwAAgL8AAIA/AACAvwAAgD8AAIA/AACAPwAAgD8AAIA/AACAvwAAgL8AAIC/AACAPwAAgL8AAIC/AACAPwAAgD8AAIC/AACAvwAAgD8AAIC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA",
+      "byteLength": 840
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 192
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 768,
+      "byteLength": 72
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ]
+}

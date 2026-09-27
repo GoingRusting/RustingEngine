@@ -24,17 +24,19 @@ layout(set = 0, binding = 11) buffer Snapshot { PhysicsState data[]; } snapshot;
 // Full, Simplified and Space bodies with a solid shape touch each other;
 // NoCollision (2) and Custom (3) bodies do not.
 bool takes_part(PhysicsState body, BodyShape shape) {
-    float solver = body.custom_values.x;
-    return shape.shape.x < 2.5 && abs(solver - 2.0) > 0.5 && abs(solver - 3.0) > 0.5;
+    precise float from_no_collision = abs(body.custom_values.x - 2.0);
+    precise float from_custom = abs(body.custom_values.x - 3.0);
+    return shape.shape.x < 2.5 && from_no_collision > 0.5 && from_custom > 0.5;
 }
 
 float inverse_mass(PhysicsState body) {
     bool dynamic = body.properties.z > 0.5 && body.properties.z < 1.5 && body.properties.x > 0.0;
-    return dynamic ? 1.0 / body.properties.x : 0.0;
+    return dynamic ? sim_recip(body.properties.x) : 0.0;
 }
 
 ivec3 cell_of(vec3 position) {
-    return ivec3(floor(position / pc.grid_cell_size));
+    precise vec3 scaled = position * sim_recip(pc.grid_cell_size);
+    return sim_to_int(floor(scaled));
 }
 
 uint hash_cell(ivec3 cell) {
@@ -43,7 +45,8 @@ uint hash_cell(ivec3 cell) {
 }
 
 bool oversized(BodyShape shape) {
-    return bounding_radius(shape.shape) * 2.0 > pc.grid_cell_size;
+    precise float diameter = bounding_radius(shape.shape) * 2.0;
+    return diameter > pc.grid_cell_size;
 }
 
 #ifdef GRID_PASS
@@ -94,9 +97,12 @@ uint fallback_tests;
 // 1/65536 m (or m/s) steps; a contribution is clamped to 256 so 128 of
 // them cannot overflow.
 const float FIXED_SCALE = 65536.0;
+const float FIXED_STEP = 1.0 / FIXED_SCALE;
 
 ivec3 to_fixed(vec3 value) {
-    return ivec3(round(clamp(value, -256.0, 256.0) * FIXED_SCALE));
+    // roundEven: GLSL leaves the direction of round() at .5 to the device.
+    precise vec3 scaled = clamp(value, -256.0, 256.0) * FIXED_SCALE;
+    return sim_to_int(roundEven(scaled));
 }
 
 // Moves `own` out of `other_index` by its share of the overlap and removes
@@ -109,46 +115,50 @@ void touch(uint other_index) {
     PhysicsState other = snapshot.data[other_index];
     BodyShape other_shape = body_shapes.data[other_index];
     if ((own_shape.layers.x & other_shape.layers.y) == 0u || (other_shape.layers.x & own_shape.layers.y) == 0u) return;
-    vec3 offset = own.model[3].xyz - other.model[3].xyz;
-    float reach = bounding_radius(own_shape.shape) + bounding_radius(other_shape.shape);
-    if (dot(offset, offset) >= reach * reach) return;
+    precise vec3 offset = own.model[3].xyz - other.model[3].xyz;
+    precise float reach = bounding_radius(own_shape.shape) + bounding_radius(other_shape.shape);
+    precise float reach_squared = reach * reach;
+    if (sim_dot(offset, offset) >= reach_squared) return;
     vec3 normal;
     float distance;
     shape_distance(other_shape.shape, rotation_of(other.model), other.model[3].xyz, own.model[3].xyz, normal, distance);
-    float depth = support(own_shape.shape, own_rotation, normal) - distance;
+    precise float depth = support(own_shape.shape, own_rotation, normal) - distance;
     if (depth <= 0.0) return;
     touched = true;
-    float total = own_inverse_mass + inverse_mass(other);
+    precise float total = own_inverse_mass + inverse_mass(other);
     if (total <= 0.0) return;
-    float share = own_inverse_mass / total;
+    float share = sim_div(own_inverse_mass, total);
     // Shock propagation: a body below that was supported last step (touch
     // flag in velocity.w) counts as immovable, and it ignores the body
     // resting on it. One pass then holds a tall stack instead of splitting
     // each correction in half and letting the weight sink through.
     vec3 gravity = vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z);
-    if (dot(gravity, gravity) > 0.0) {
-        float up = dot(normal, -normalize(gravity));
+    if (sim_dot(gravity, gravity) > 0.0) {
+        float up = sim_dot(normal, -sim_normalize(gravity));
         if (up > 0.7 && other.velocity.w > 0.5 && own_inverse_mass > 0.0) share = 1.0;
         else if (up < -0.7 && own.velocity.w > 0.5) share = 0.0;
     }
-    push += to_fixed(normal * depth * share);
-    vec3 other_velocity = other.velocity.xyz;
+    precise vec3 correction = normal * depth * share;
+    push += to_fixed(correction);
+    precise vec3 other_velocity = other.velocity.xyz;
     // A supporting body sinks only because this pass lags a step; matching
     // that sink would add g * dt of fall per level of a stack.
-    if (share == 1.0) other_velocity -= normal * min(dot(other_velocity, normal), 0.0);
-    vec3 relative = own.velocity.xyz - other_velocity;
-    float closing = dot(relative, normal);
+    if (share == 1.0) other_velocity -= normal * min(sim_dot(other_velocity, normal), 0.0);
+    precise vec3 relative = own.velocity.xyz - other_velocity;
+    float closing = sim_dot(relative, normal);
     if (closing >= 0.0) return;
     // Bounce only above 1 m/s so resting contacts settle.
     float restitution = closing < -1.0 ? max(own_shape.material.y, other_shape.material.y) : 0.0;
-    vec3 change = -normal * closing * (1.0 + restitution);
-    vec3 tangent = relative - normal * closing;
-    float tangent_speed = length(tangent);
+    precise vec3 change = -normal * closing * (1.0 + restitution);
+    precise vec3 tangent = relative - normal * closing;
+    float tangent_speed = sim_length(tangent);
     if (tangent_speed > 0.000001) {
-        float friction = sqrt(own_shape.material.x * other_shape.material.x);
-        change -= tangent / tangent_speed * min(tangent_speed, -friction * closing);
+        precise float friction_squared = own_shape.material.x * other_shape.material.x;
+        float friction = sim_sqrt(friction_squared);
+        change -= sim_div(tangent, tangent_speed) * min(tangent_speed, -friction * closing);
     }
-    velocity_change += to_fixed(change * share);
+    precise vec3 shared_change = change * share;
+    velocity_change += to_fixed(shared_change);
 }
 
 void touch_in_cell(uint other_index, ivec3 cell) {
@@ -204,8 +214,10 @@ void main() {
     if (fallback_tests > 0u) atomicAdd(event_header.contacts.w, fallback_tests);
     // Every body is written so the contact flag starts each step fresh; the
     // main pass adds collider contacts to it.
-    bodies.data[own_index].model[3].xyz = own.model[3].xyz + vec3(push) / FIXED_SCALE;
-    bodies.data[own_index].velocity = vec4(own.velocity.xyz + vec3(velocity_change) / FIXED_SCALE, touched ? 1.0 : 0.0);
+    precise vec3 position = own.model[3].xyz + vec3(push) * FIXED_STEP;
+    precise vec3 velocity = own.velocity.xyz + vec3(velocity_change) * FIXED_STEP;
+    bodies.data[own_index].model[3].xyz = position;
+    bodies.data[own_index].velocity = vec4(velocity, touched ? 1.0 : 0.0);
 }
 
 #endif

@@ -184,13 +184,60 @@ pub fn advance(
     Ok(fixed_steps)
 }
 
+/// Seed for gameplay randomness. Draw values with [`RandomSeed::value`],
+/// indexed by the fixed tick and a stream from [`RandomSeed::stream`], so a
+/// run repeats exactly for the same seed. Scenario tests set the seed they
+/// record. Simulation code takes all its randomness from here, never from a
+/// global or thread-local generator.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RandomSeed(pub u64);
+
+impl RandomSeed {
+    /// Uniform 64-bit value for `stream` at fixed `tick`. The same seed,
+    /// tick and stream always give the same value.
+    #[must_use]
+    pub fn value(self, tick: u64, stream: u64) -> u64 {
+        splitmix64(self.0 ^ splitmix64(tick ^ splitmix64(stream)))
+    }
+
+    /// Stream `key` of the subsystem called `subsystem`, such as
+    /// `"bursts"`. The name is hashed in, so two subsystems that pick the
+    /// same keys still draw independent values.
+    #[must_use]
+    pub fn stream(subsystem: &str, key: u64) -> u64 {
+        // FNV-1a over the name.
+        let name =
+            subsystem
+                .bytes()
+                .fold(0xCBF2_9CE4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01B3)
+                });
+        splitmix64(name ^ splitmix64(key))
+    }
+
+    /// Uniform value in `[0, 1)` for `stream` at fixed `tick`.
+    #[must_use]
+    pub fn unit(self, tick: u64, stream: u64) -> f32 {
+        (self.value(tick, stream) >> 40) as f32 / (1_u64 << 24) as f32
+    }
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use bevy_ecs::prelude::Resource;
 
-    use super::{advance, FrameTime, TimeAdvanceError, TimeControl};
+    use super::{
+        advance, FrameTime, RandomSeed, TimeAdvanceError, TimeControl,
+    };
 
     #[test]
     fn default_starts_at_frame_zero_with_sixty_hz_fixed_delta() {
@@ -496,5 +543,28 @@ mod tests {
         assert_eq!(time.frame, u64::MAX);
         assert_eq!(time.elapsed, Duration::MAX);
         assert_eq!(time.fixed_tick, u64::MAX);
+    }
+
+    #[test]
+    fn random_seed_repeats_per_seed_tick_and_stream() {
+        let seed = RandomSeed(42);
+        assert_eq!(seed.value(3, 1), RandomSeed(42).value(3, 1));
+        assert_ne!(seed.value(3, 1), seed.value(4, 1));
+        assert_ne!(seed.value(3, 1), seed.value(3, 2));
+        assert_ne!(seed.value(3, 1), RandomSeed(43).value(3, 1));
+        let units: Vec<_> = (0..1000).map(|tick| seed.unit(tick, 0)).collect();
+        assert!(units.iter().all(|unit| (0.0..1.0).contains(unit)));
+        let mean = units.iter().sum::<f32>() / units.len() as f32;
+        assert!((0.45..0.55).contains(&mean), "{mean}");
+    }
+
+    #[test]
+    fn subsystem_streams_are_independent_and_fixed() {
+        let bursts = RandomSeed::stream("bursts", 7);
+        assert_eq!(bursts, RandomSeed::stream("bursts", 7));
+        assert_ne!(bursts, RandomSeed::stream("bursts", 8));
+        assert_ne!(bursts, RandomSeed::stream("spawner", 7));
+        // Pinned so a replay recorded today draws the same values later.
+        assert_eq!(RandomSeed(42).value(3, bursts), 5_142_468_438_960_481_807);
     }
 }

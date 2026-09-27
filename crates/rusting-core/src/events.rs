@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::Resource;
 
 /// A typed event channel whose visible events live for exactly one frame.
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct EventQueue<T: Send + Sync + 'static> {
     current: Vec<T>,
     pending: Vec<T>,

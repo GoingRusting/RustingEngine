@@ -1,7 +1,7 @@
 //! Inspector panel: the selected object's components drawn as Godot-style
 //! sections of property rows.
 
-mod json;
+mod reflected;
 pub mod widgets;
 
 use std::collections::BTreeMap;
@@ -18,11 +18,11 @@ use crate::assets::{
     AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel, TextureAsset,
 };
 use crate::runtime::{
-    AutoSimulation, Camera, Collider, ColliderShape, DirectionalLight,
-    FrameTime, GpuStateMirror, MeshRenderer, Name, ObjectClasses,
-    PhysicsBackendStatus, PhysicsBody, PhysicsSolver, PhysicsSyncMode,
-    PointLight, Projection, RenderBounds, RigidBody, RigidBodyKind,
-    SimulationClass, SpotLight, AUTO_SIMULATION_COMPONENT,
+    registered_component_info, AutoSimulation, Camera, Collider, ColliderShape,
+    DirectionalLight, FrameTime, GpuStateMirror, MeshRenderer, Name,
+    ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
+    PhysicsSyncMode, PointLight, Projection, RenderBounds, RigidBody,
+    RigidBodyKind, SimulationClass, SpotLight, AUTO_SIMULATION_COMPONENT,
     PHYSICS_SYNC_COMPONENT,
 };
 use crate::Transform;
@@ -32,7 +32,7 @@ type ComponentInspector =
 
 /// Typed Inspector sections for scene components. Only components in the
 /// [`crate::runtime::SceneComponentRegistry`] allowlist reach the Inspector;
-/// one without an entry here is edited as generic JSON fields.
+/// one without an entry here is drawn from its reflected type.
 #[derive(Resource, Default)]
 pub struct InspectorRegistry {
     inspectors: BTreeMap<String, ComponentInspector>,
@@ -176,6 +176,13 @@ pub(super) fn draw_inspector_area(
         );
         return;
     };
+    if state
+        .preview_entities
+        .as_ref()
+        .is_some_and(|before| !before.contains(&entity))
+    {
+        ui.colored_label(EditorTheme::WARNING, "Runtime entity — preview only");
+    }
     if state.selection.len() > 1 {
         ui.colored_label(
             EditorTheme::TEXT_MUTED,
@@ -210,11 +217,92 @@ pub(super) fn draw_inspector_area(
             }
             if let Some(renderer) = world.get::<MeshRenderer>(entity) {
                 widgets::section(ui, "Mesh Renderer", false, |ui| {
-                    widgets::value(
-                        ui,
-                        "Mesh",
-                        &format!("#{:016x}", renderer.mesh.key()),
-                    );
+                    if let Some(assets) = world.get_resource::<AssetServer>() {
+                        let mesh_label = |handle| {
+                            if handle == assets.fallback_mesh {
+                                "Cube (built-in)".to_owned()
+                            } else {
+                                assets.meshes.path(handle).map_or_else(
+                                    || format!("Mesh #{:016x}", handle.key()),
+                                    |path| {
+                                        path.file_name()
+                                            .unwrap_or(path.as_os_str())
+                                            .to_string_lossy()
+                                            .into_owned()
+                                    },
+                                )
+                            }
+                        };
+                        widgets::property_row(ui, "Mesh", |ui| {
+                            egui::ComboBox::from_id_salt(
+                                "renderer_mesh_handle",
+                            )
+                            .width(ui.available_width())
+                            .selected_text(mesh_label(renderer.mesh))
+                            .show_ui(ui, |ui| {
+                                for handle in scene_assignable_meshes(assets) {
+                                    if ui
+                                        .selectable_label(
+                                            handle == renderer.mesh,
+                                            mesh_label(handle),
+                                        )
+                                        .clicked()
+                                    {
+                                        *asset_request =
+                                            Some(AssetRequest::AssignMesh {
+                                                entity,
+                                                handle,
+                                            });
+                                    }
+                                }
+                            });
+                        });
+                        let material_label = |handle| {
+                            if handle == assets.fallback_material {
+                                "Default (built-in)".to_owned()
+                            } else {
+                                assets.materials.path(handle).map_or_else(
+                                    || {
+                                        format!(
+                                            "Material #{:016x}",
+                                            handle.key()
+                                        )
+                                    },
+                                    |path| {
+                                        path.file_name()
+                                            .unwrap_or(path.as_os_str())
+                                            .to_string_lossy()
+                                            .into_owned()
+                                    },
+                                )
+                            }
+                        };
+                        widgets::property_row(ui, "Material", |ui| {
+                            egui::ComboBox::from_id_salt(
+                                "renderer_material_handle",
+                            )
+                            .width(ui.available_width())
+                            .selected_text(material_label(renderer.material))
+                            .show_ui(ui, |ui| {
+                                for (handle, _) in assets.materials.iter() {
+                                    if ui
+                                        .selectable_label(
+                                            handle == renderer.material,
+                                            material_label(handle),
+                                        )
+                                        .clicked()
+                                    {
+                                        *asset_request = Some(
+                                            AssetRequest::AssignMaterial {
+                                                entity,
+                                                handle,
+                                            },
+                                        );
+                                    }
+                                }
+                            });
+                        });
+                    }
                     let mesh_box = world
                         .get_resource::<crate::assets::AssetServer>()
                         .and_then(|assets| assets.mesh_bounds(renderer.mesh));
@@ -314,10 +402,17 @@ pub(super) fn draw_inspector_area(
                         }
                         return;
                     }
+                    let info = registered_component_info(world, name);
                     match serde_json::from_str::<serde_json::Value>(serialized)
                     {
                         Ok(mut value) => {
-                            if json::edit_component(ui, &mut value) {
+                            let Some(info) = info else {
+                                widgets::value(ui, "Value", serialized);
+                                return;
+                            };
+                            if reflected::edit_component(
+                                ui, world, info, &mut value,
+                            ) {
                                 component_edits.push(ComponentEdit::Set {
                                     entity,
                                     name: name.clone(),
@@ -376,6 +471,22 @@ pub(super) fn draw_inspector_area(
                 }
             });
         });
+}
+
+/// Scene serialization can retain built-in primitives and path-backed meshes.
+/// Exclude transient mesh slots before the user can pick one.
+fn scene_assignable_meshes(
+    assets: &AssetServer,
+) -> Vec<Handle<crate::assets::MeshAsset>> {
+    assets
+        .meshes
+        .iter()
+        .filter_map(|(handle, _)| {
+            (assets.primitive_for_handle(handle).is_some()
+                || assets.meshes.path(handle).is_some())
+            .then_some(handle)
+        })
+        .collect()
 }
 
 fn draw_camera(ui: &mut egui::Ui, camera: &mut Camera) {
@@ -943,6 +1054,16 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_picker_excludes_transient_unsaved_handles() {
+        let mut assets = AssetServer::default();
+        let transient =
+            assets.meshes.insert(crate::assets::MeshAsset::default());
+        let choices = scene_assignable_meshes(&assets);
+        assert!(choices.contains(&assets.fallback_mesh));
+        assert!(!choices.contains(&transient));
+    }
 
     #[test]
     fn render_bounds_kinds_start_from_the_mesh_box() {

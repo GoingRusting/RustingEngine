@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "1.3.0"
+version = "1.4.0"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
@@ -27,6 +27,7 @@ resolver = "2"
 [[bin]]
 name = "user_main"
 path = "src/user_main.rs"
+required-features = ["window"]
 
 [[bin]]
 name = "editor"
@@ -42,17 +43,20 @@ required-features = ["window"]
 name = "cook_scene"
 path = "src/bin/cook_scene.rs"
 
+[[bin]]
+name = "rusting"
+path = "src/bin/rusting.rs"
+
 [lib]
 path = "src/lib.rs"
 
 [features]
 default = ["editor", "gltf"]
 window = ["dep:vulkano-util"]
+ui = ["window", "dep:egui", "dep:egui-winit"]
 editor = [
-    "window",
+    "ui",
     "gltf",
-    "dep:egui",
-    "dep:egui-winit",
     "dep:rfd",
     "dep:vulkano-util",
 ]
@@ -73,7 +77,7 @@ rayon = "1.10"
 gltf = { version = "1.4.1", optional = true, features = ["KHR_lights_punctual"] }
 smallvec = "1.15.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga"] }
-bevy_ecs = { version = "0.19.1", features = ["multi_threaded"] }
+bevy_ecs = { version = "0.19.1", features = ["multi_threaded", "debug", "serialize"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 bincode = "1.3.3"
@@ -97,13 +101,18 @@ required-features = ["gltf"]
 [[example]]
 name = "native_texture"
 path = "src/examples/native_texture.rs"
+required-features = ["window"]
 
 [[example]]
 name = "hybrid_10k"
 path = "src/examples/hybrid_10k.rs"
-required-features = ["window"]
+required-features = ["ui"]
 
 [[example]]
 name = "physics_bench"
 path = "src/examples/physics_bench.rs"
 required-features = ["window"]
+
+[[example]]
+name = "render_bench"
+path = "src/examples/render_bench.rs"

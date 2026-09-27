@@ -36,10 +36,10 @@ fn extension(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-/// Cooked caches the importers write next to their sources. They are not
-/// something to pick, so the browser hides them.
+/// Cooked caches and import sidecars the engine writes next to sources.
+/// They are not something to pick, so the browser hides them.
 fn is_engine_cache(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "rmesh" | "rtexture")
+    matches!(extension(path).as_str(), "rmesh" | "rtexture" | "rmeta")
 }
 
 /// Drag payload of a model row; the Scene View adds it on drop.
@@ -177,6 +177,7 @@ pub(super) fn draw_assets_area(
 
     let root = PathBuf::from(project_root).join("assets");
     let rows = asset_rows(&root, files, &assets.filter, &assets.collapsed);
+    let mut replace = None;
     let footer = EditorTheme::ROW_HEIGHT;
     egui::ScrollArea::vertical()
         .id_salt("assets_panel_scroll")
@@ -192,9 +193,23 @@ pub(super) fn draw_assets_area(
                     has_selection,
                     request,
                     &mut decode_budget,
+                    &mut replace,
                 );
             }
         });
+    if let Some(target) = replace {
+        if !dialogs.is_open() {
+            let extensions = [extension(&target)];
+            assets.replace_target = Some(target);
+            dialogs.pick_file(
+                DialogPurpose::ReplaceAsset,
+                rfd::AsyncFileDialog::new()
+                    .set_title("Replace Asset")
+                    .add_filter("Same file type", &extensions),
+            );
+        }
+    }
+    draw_replace_preview(ui.ctx(), assets, request);
     if rows.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(12.0);
@@ -237,6 +252,7 @@ fn draw_row(
     has_selection: bool,
     request: &mut Option<AssetRequest>,
     decode_budget: &mut usize,
+    replace: &mut Option<PathBuf>,
 ) {
     let kind = asset_kind(&row.path);
     let icon = match (row.folder, kind) {
@@ -386,6 +402,16 @@ fn draw_row(
     }
     response.context_menu(|ui| {
         assets.selected = Some(row.path.clone());
+        let imported = crate::asset_import::meta_path(&row.path).is_file();
+        if EditorTheme::menu_action(ui, "Replace…", imported)
+            .on_disabled_hover_text(
+                "Only files imported with an .rmeta sidecar can be replaced",
+            )
+            .clicked()
+        {
+            *replace = Some(row.path.clone());
+            ui.close_menu();
+        }
         match kind {
             AssetKind::Model => {
                 EditorTheme::menu_section(ui, "MODEL");
@@ -422,6 +448,95 @@ fn draw_row(
             }
         }
     });
+}
+
+/// The confirmation window for a previewed replacement: what the new file
+/// is, which scenes use the asset, and any problem that blocks it.
+fn draw_replace_preview(
+    context: &egui::Context,
+    assets: &mut EditorAssetState,
+    request: &mut Option<AssetRequest>,
+) {
+    let Some(preview) = &assets.replace_preview else {
+        return;
+    };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("asset_replace_preview")).show(
+        context,
+        |ui| {
+            ui.set_width(360.0);
+            ui.heading("Replace Asset");
+            let name = |path: &Path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            };
+            egui::Grid::new("asset_replace_grid").num_columns(2).show(
+                ui,
+                |ui| {
+                    ui.label("Asset");
+                    ui.label(name(&preview.target));
+                    ui.end_row();
+                    ui.label("New file");
+                    ui.label(name(&preview.source))
+                        .on_hover_text(preview.source.display().to_string());
+                    ui.end_row();
+                    if let Ok(report) = &preview.report {
+                        ui.label("Size");
+                        ui.label(format!("{:?}", report.size));
+                        ui.end_row();
+                        ui.label("Used by");
+                        ui.label(if report.referenced_by.is_empty() {
+                            "no scene".to_owned()
+                        } else {
+                            report.referenced_by.join(", ")
+                        });
+                        ui.end_row();
+                        ui.label("License");
+                        ui.label(
+                            report.source.license.as_deref().unwrap_or("none"),
+                        );
+                        ui.end_row();
+                    }
+                },
+            );
+            let (message, color) = match &preview.report {
+                Ok(report) if report.dependencies.is_empty() => (
+                    "Checks passed. The asset keeps its ID.".to_owned(),
+                    EditorTheme::TEXT_MUTED,
+                ),
+                Ok(report) => (
+                    format!(
+                        "Checks passed. Also copies: {}",
+                        report
+                            .dependencies
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    EditorTheme::TEXT_MUTED,
+                ),
+                Err(error) => (error.clone(), EditorTheme::ERROR),
+            };
+            ui.label(egui::RichText::new(message).color(color));
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        preview.report.is_ok(),
+                        egui::Button::new("Replace"),
+                    )
+                    .clicked()
+                {
+                    *request = Some(AssetRequest::ConfirmReplacement);
+                }
+                close = ui.button("Cancel").clicked();
+            });
+        },
+    );
+    if close {
+        assets.replace_preview = None;
+    }
 }
 
 #[cfg(test)]

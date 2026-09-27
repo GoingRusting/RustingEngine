@@ -268,6 +268,19 @@ pub fn add_bound_box(
     }
 }
 
+/// Keeps the selected object's wire outline visible through foreground
+/// geometry. Only lines added since `first_line` are affected, so grid and
+/// unselected helpers still respect scene depth.
+pub fn make_selection_outline_visible(
+    overlay: &mut RenderDebugOverlay,
+    first_line: usize,
+) {
+    for line in &mut overlay.lines[first_line..] {
+        line.on_top = true;
+        line.thickness = 2.0;
+    }
+}
+
 /// Adds the world-space volume that frustum culling tests for a
 /// `RenderBounds` override, so the outline matches what the renderer uses:
 /// a box becomes the world axis-aligned box around its transformed corners,
@@ -413,5 +426,26 @@ mod tests {
             let distance = ((x - 10.0).powi(2) + y * y + z * z).sqrt();
             assert!((distance - 2.0).abs() < 1e-4, "{distance}");
         }
+    }
+
+    #[test]
+    fn selection_outline_ignores_depth_without_changing_other_helpers() {
+        let mut overlay = RenderDebugOverlay::default();
+        overlay.line([0.0; 3], [1.0; 3], [0.5; 4]);
+        let first_line = overlay.lines.len();
+        add_bound_box(
+            &mut overlay,
+            nalgebra::Matrix4::<f32>::identity().into(),
+            [-1.0; 3],
+            [1.0; 3],
+            [1.0; 4],
+        );
+        make_selection_outline_visible(&mut overlay, first_line);
+        assert!(!overlay.lines[0].on_top);
+        assert_eq!(overlay.lines[0].thickness, 1.0);
+        assert_eq!(overlay.lines.len(), 13);
+        assert!(overlay.lines[1..]
+            .iter()
+            .all(|line| line.on_top && line.thickness == 2.0));
     }
 }

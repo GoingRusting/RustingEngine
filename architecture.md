@@ -43,6 +43,13 @@ Each layer may depend only on layers below it. Crates sharing a layer are siblin
 10  game projects     vertical slice, demo projects, Sundering
 ```
 
+This is the target layout. Today only `rusting-core` (layer 1) is a separate
+crate; everything else still lives in the `rusting_engine` crate under
+`src/`, including reflection (`src/reflect`), which depends on the asset
+server and can move to `rusting-core` only together with the asset types.
+New code should still respect the layer order, so each module can move
+into its crate without rewrites.
+
 `rusting-math` sits below everything because both the CPU solver and the generated shader math must use one implementation. Splitting it later means rewriting every solver.
 
 Physics is the engine's flagship subsystem and sits low in the stack on purpose: animation, navigation, rendering, audio, UI, and networking all consume physics state and events, and none of them may own a parallel simulation. Runtime UI and particles reach the screen through render extraction, never by calling `rusting-render` directly.

@@ -4,17 +4,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Resource, World};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::assets::{
     AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel,
     PrimitiveShape, TextureAsset,
+};
+use crate::reflect::{
+    self, FieldMigration, Reflect, ReflectError, ReflectProblem, TypeInfo,
 };
 use crate::Transform;
 
@@ -24,9 +29,10 @@ use super::{
     PointLight, Projection, RenderBounds, RenderSettings, RigidBody, SceneId,
     SkyLight, SpotLight, ToneMapping, Visibility,
 };
+use crate::runtime::DeterminismMode;
 use crate::runtime::{CullingMode, QualityProfile};
 
-pub const SCENE_FORMAT_VERSION: u32 = 6;
+pub const SCENE_FORMAT_VERSION: u32 = 7;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -37,17 +43,27 @@ pub enum SceneIoError {
     UnsupportedVersion(u32),
     DuplicateComponent(String),
     UnknownComponent(String),
-    Component { name: String, message: String },
+    Component {
+        name: String,
+        message: String,
+    },
     MissingAssetServer,
     MissingAssetPath(PathBuf),
-    AssetLoad { path: PathBuf, message: String },
+    AssetLoad {
+        path: PathBuf,
+        message: String,
+    },
     UnsavedMesh(u64),
     UnsavedTexture(u64),
     DuplicateEntity(Uuid),
     DuplicateName(String),
     MissingParent(Uuid),
     HierarchyCycle(Uuid),
+    /// The file changed on disk after the editor loaded or saved it.
+    Conflict(PathBuf),
     Runtime(super::AppError),
+    /// A component value that does not fit its reflected type.
+    Reflection(Box<ReflectError>),
 }
 
 impl Display for SceneIoError {
@@ -117,7 +133,14 @@ impl Display for SceneIoError {
             Self::HierarchyCycle(id) => {
                 write!(formatter, "scene object {id} has a parent cycle")
             }
+            Self::Conflict(path) => write!(
+                formatter,
+                "{} changed on disk since it was loaded; Load takes that \
+                 change, Save again overwrites it",
+                path.display()
+            ),
             Self::Runtime(error) => Display::fmt(error, formatter),
+            Self::Reflection(error) => Display::fmt(error, formatter),
         }
     }
 }
@@ -154,9 +177,43 @@ pub struct SceneDocument {
     pub format_version: u32,
     pub name: String,
     pub entities: Vec<SceneEntity>,
-    /// Stays the last field: cooked version 5 scenes end before it.
+    /// Cooked version 5 scenes end before it.
     #[serde(default)]
     pub render: SceneRenderSettings,
+    /// Stays the last field: cooked version 6 scenes end before it.
+    #[serde(default)]
+    pub simulation: SceneSimulationSettings,
+}
+
+/// Simulation settings that ship with the game. `cook_scene` copies them
+/// from the project's `project.json`; a replacing load inserts them as
+/// resources.
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+pub struct SceneSimulationSettings {
+    pub determinism: DeterminismMode,
+}
+
+/// Cooked shape of version 6, before simulation settings.
+#[derive(Serialize, Deserialize)]
+struct LegacySceneDocumentV6 {
+    format_version: u32,
+    name: String,
+    entities: Vec<SceneEntity>,
+    render: SceneRenderSettings,
+}
+
+impl From<LegacySceneDocumentV6> for SceneDocument {
+    fn from(document: LegacySceneDocumentV6) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document.entities,
+            render: document.render,
+            simulation: SceneSimulationSettings::default(),
+        }
+    }
 }
 
 /// The scene's [`RenderSettings`] that ship with the game. A replacing load
@@ -184,6 +241,7 @@ impl From<LegacySceneDocumentV5> for SceneDocument {
             name: document.name,
             entities: document.entities,
             render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
         }
     }
 }
@@ -277,6 +335,7 @@ impl From<LegacySceneDocumentV4> for SceneDocument {
                 })
                 .collect(),
             render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
         }
     }
 }
@@ -396,6 +455,7 @@ impl From<LegacySceneDocumentV3> for SceneDocument {
                 })
                 .collect(),
             render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
         }
     }
 }
@@ -453,6 +513,7 @@ impl From<LegacySceneDocumentV1> for SceneDocument {
                 })
                 .collect(),
             render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
         }
     }
 }
@@ -511,6 +572,7 @@ impl From<LegacySceneDocumentV2> for SceneDocument {
                 })
                 .collect(),
             render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
         }
     }
 }
@@ -619,19 +681,44 @@ pub enum SceneProjection {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ComponentRegistration {
-    capture: fn(&World, Entity) -> Result<Option<String>, SceneIoError>,
-    restore: fn(&mut World, Entity, &str) -> Result<(), SceneIoError>,
+    ty: Arc<ComponentType>,
+    to_text: fn(&World, Entity) -> Option<serde_json::Result<String>>,
+    to_value: fn(&World, Entity) -> Option<serde_json::Result<Value>>,
+    from_value: fn(&mut World, Entity, Value) -> serde_json::Result<()>,
     insert_default: fn(&mut World, Entity),
     remove: fn(&mut World, Entity),
+}
+
+/// What the registry knows about a component's type besides its Rust code.
+#[derive(Clone)]
+struct ComponentType {
+    info: TypeInfo,
+    migrations: Vec<FieldMigration>,
+    /// Holds entities or handles, which save in a different form.
+    references: bool,
+}
+
+impl ComponentType {
+    fn version(&self) -> u32 {
+        self.migrations.len() as u32
+    }
 }
 
 /// Allowlist for game-defined, compiled Rust components stored in scenes.
 #[derive(Resource)]
 pub struct SceneComponentRegistry {
     registrations: BTreeMap<String, ComponentRegistration>,
+    /// See [`SceneComponentRegistry::keep_unregistered`].
+    keep_unregistered: bool,
 }
+
+/// Saved JSON of the components a tool had no registration for, kept so a
+/// save writes them back unchanged. See
+/// [`SceneComponentRegistry::keep_unregistered`].
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnregisteredComponents(pub BTreeMap<String, String>);
 
 /// Registry name of the built-in ambient light, stored like a game
 /// component so adding it did not change the scene binary layout.
@@ -646,11 +733,33 @@ pub const RENDER_BOUNDS_COMPONENT: &str = "rusting.render_bounds";
 pub const PHYSICS_SYNC_COMPONENT: &str = "rusting.physics_sync";
 /// Registry name of the built-in automatic CPU/GPU allocation marker.
 pub const AUTO_SIMULATION_COMPONENT: &str = "rusting.auto_simulation";
+/// Registry name of the built-in first-person player controller.
+pub const PLAYER_CONTROLLER_COMPONENT: &str = "rusting.player_controller";
+/// Registry name of the built-in transform tween.
+pub const TWEEN_COMPONENT: &str = "rusting.tween";
+/// Registry name of the built-in event-triggered sound cue.
+pub const SOUND_CUE_COMPONENT: &str = "rusting.sound_cue";
+/// Registry name of the built-in particle burst emitter.
+pub const BURST_EMITTER_COMPONENT: &str = "rusting.burst_emitter";
+/// Registry name of the built-in HUD text or button.
+pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
+/// Registry name of the built-in scene clear color.
+pub const BACKGROUND_COMPONENT: &str = "rusting.background";
+/// Registry name of the built-in named counter.
+pub const COUNTER_COMPONENT: &str = "rusting.counter";
+/// Registry name of the built-in collectable.
+pub const PICKUP_COMPONENT: &str = "rusting.pickup";
+/// Registry name of the built-in text tile map.
+pub const TILE_MAP_COMPONENT: &str = "rusting.tile_map";
+/// Registry name of the built-in side-view platformer controller.
+pub const PLATFORMER_CONTROLLER_COMPONENT: &str =
+    "rusting.platformer_controller";
 
 impl Default for SceneComponentRegistry {
     fn default() -> Self {
         let mut registry = Self {
             registrations: BTreeMap::new(),
+            keep_unregistered: false,
         };
         registry
             .register::<AmbientLight>(AMBIENT_LIGHT_COMPONENT)
@@ -671,31 +780,113 @@ impl Default for SceneComponentRegistry {
             .register::<super::AutoSimulation>(AUTO_SIMULATION_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
+            .register::<super::PlayerController>(PLAYER_CONTROLLER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Tween>(TWEEN_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::SoundCue>(SOUND_CUE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::BurstEmitter>(BURST_EMITTER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::HudElement>(HUD_ELEMENT_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::SceneBackground>(BACKGROUND_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Counter>(COUNTER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Pickup>(PICKUP_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::TileMap>(TILE_MAP_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::PlatformerController>(
+                PLATFORMER_CONTROLLER_COMPONENT,
+            )
+            .expect("empty registry has no duplicates");
+        registry
     }
 }
 
 impl SceneComponentRegistry {
+    /// For tools that load scenes without the game's plugins, such as the
+    /// editor and `rusting capture`: a component with no registration is
+    /// kept as saved JSON in [`UnregisteredComponents`] instead of failing
+    /// the load. Games leave this off, so a misspelled or unregistered
+    /// component still stops them.
+    pub fn keep_unregistered(&mut self) {
+        self.keep_unregistered = true;
+    }
+
     pub fn register<T>(
         &mut self,
         name: impl Into<String>,
     ) -> Result<(), SceneIoError>
     where
-        T: Component + Serialize + DeserializeOwned + Default,
+        T: Component + Serialize + DeserializeOwned + Default + Reflect,
     {
         let name = name.into();
         if self.registrations.contains_key(&name) {
             return Err(SceneIoError::DuplicateComponent(name));
         }
+        let info = T::type_info();
         self.registrations.insert(
             name,
             ComponentRegistration {
-                capture: capture_component::<T>,
-                restore: restore_component::<T>,
+                ty: Arc::new(ComponentType {
+                    references: info.has_references(),
+                    info,
+                    migrations: Vec::new(),
+                }),
+                to_text: component_text::<T>,
+                to_value: component_value::<T>,
+                from_value: insert_component_value::<T>,
                 insert_default: insert_default_component::<T>,
                 remove: remove_component::<T>,
             },
         );
         Ok(())
+    }
+
+    /// Records the next step in a component's history and raises its
+    /// version by one. Values saved from then on carry `"$version"`, and
+    /// older values run the steps they missed when they load. Register
+    /// steps oldest first, and never remove one: saved versions count them.
+    pub fn add_migration(
+        &mut self,
+        name: &str,
+        migration: FieldMigration,
+    ) -> Result<(), SceneIoError> {
+        let registration = self
+            .registrations
+            .get_mut(name)
+            .ok_or_else(|| SceneIoError::UnknownComponent(name.into()))?;
+        let ty = Arc::make_mut(&mut registration.ty);
+        if !matches!(ty.info, TypeInfo::Struct(_)) {
+            return Err(reflect_error(
+                name,
+                ty,
+                ty.version(),
+                (String::new(), ReflectProblem::NotAStruct),
+            ));
+        }
+        ty.migrations.push(migration);
+        Ok(())
+    }
+
+    /// The reflected type of a registered component.
+    #[must_use]
+    pub fn info(&self, name: &str) -> Option<&TypeInfo> {
+        self.registrations
+            .get(name)
+            .map(|registration| &registration.ty.info)
     }
 
     #[must_use]
@@ -704,23 +895,20 @@ impl SceneComponentRegistry {
     }
 }
 
-/// Returns serialized values for all registered components present on an
-/// entity. The editor uses these strings as an initial generic inspector until
-/// typed widgets are registered for a component.
+/// Returns the scene form of every registered component on an entity, as
+/// JSON text keyed by registry name.
 pub fn registered_component_values(
     world: &World,
     entity: Entity,
 ) -> Result<Vec<(String, String)>, SceneIoError> {
-    let registrations = world
-        .resource::<SceneComponentRegistry>()
+    let registry = world.resource::<SceneComponentRegistry>();
+    registry
         .registrations
-        .clone();
-    registrations
-        .into_iter()
+        .iter()
         .filter_map(|(name, registration)| {
-            (registration.capture)(world, entity)
+            capture_component(world, entity, name, registration)
                 .transpose()
-                .map(|result| result.map(|value| (name, value)))
+                .map(|result| result.map(|value| (name.clone(), value)))
         })
         .collect()
 }
@@ -735,19 +923,36 @@ pub fn registered_component_names(world: &World) -> Vec<String> {
         .collect()
 }
 
+/// The reflected type of a registered component.
+#[must_use]
+pub fn registered_component_info<'a>(
+    world: &'a World,
+    name: &str,
+) -> Option<&'a TypeInfo> {
+    world.resource::<SceneComponentRegistry>().info(name)
+}
+
+fn registration(
+    world: &World,
+    name: &str,
+) -> Result<ComponentRegistration, SceneIoError> {
+    world
+        .resource::<SceneComponentRegistry>()
+        .registrations
+        .get(name)
+        .cloned()
+        .ok_or_else(|| SceneIoError::UnknownComponent(name.into()))
+}
+
+/// Replaces a component with the value in `serialized`, in scene form.
 pub fn set_registered_component(
     world: &mut World,
     entity: Entity,
     name: &str,
     serialized: &str,
 ) -> Result<(), SceneIoError> {
-    let registration = world
-        .resource::<SceneComponentRegistry>()
-        .registrations
-        .get(name)
-        .copied()
-        .ok_or_else(|| SceneIoError::UnknownComponent(name.into()))?;
-    (registration.restore)(world, entity, serialized)
+    let registration = registration(world, name)?;
+    restore_component(world, entity, name, &registration, serialized, None)
 }
 
 pub fn add_registered_component(
@@ -755,13 +960,7 @@ pub fn add_registered_component(
     entity: Entity,
     name: &str,
 ) -> Result<(), SceneIoError> {
-    let registration = world
-        .resource::<SceneComponentRegistry>()
-        .registrations
-        .get(name)
-        .copied()
-        .ok_or_else(|| SceneIoError::UnknownComponent(name.into()))?;
-    (registration.insert_default)(world, entity);
+    (registration(world, name)?.insert_default)(world, entity);
     Ok(())
 }
 
@@ -770,47 +969,202 @@ pub fn remove_registered_component(
     entity: Entity,
     name: &str,
 ) -> Result<(), SceneIoError> {
-    let registration = world
-        .resource::<SceneComponentRegistry>()
-        .registrations
-        .get(name)
-        .copied()
-        .ok_or_else(|| SceneIoError::UnknownComponent(name.into()))?;
-    (registration.remove)(world, entity);
+    (registration(world, name)?.remove)(world, entity);
     Ok(())
 }
 
-fn capture_component<T>(
+/// Reads one field of a registered component by JSON pointer into its
+/// scene form, as animation tracks and tools address properties. `None`
+/// when the entity lacks the component or an optional value on the way
+/// is `null`.
+pub fn registered_component_field(
     world: &World,
     entity: Entity,
-) -> Result<Option<String>, SceneIoError>
+    name: &str,
+    pointer: &str,
+) -> Result<Option<Value>, SceneIoError> {
+    let registration = registration(world, name)?;
+    let ty = &registration.ty;
+    if ty.info.at(pointer).is_none() {
+        return Err(reflect_error(
+            name,
+            ty,
+            ty.version(),
+            (pointer.into(), ReflectProblem::NoSuchPath),
+        ));
+    }
+    let Some(value) = capture_value(world, entity, name, &registration)? else {
+        return Ok(None);
+    };
+    Ok(value.pointer(pointer).cloned())
+}
+
+/// Writes one field of a registered component by JSON pointer into its
+/// scene form. The value is checked against the field's type, then the
+/// whole component goes through the same path as a scene load.
+pub fn set_registered_component_field(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    pointer: &str,
+    value: Value,
+) -> Result<(), SceneIoError> {
+    let registration = registration(world, name)?;
+    let ty = &registration.ty;
+    let located = |problem| {
+        reflect_error(name, ty, ty.version(), (pointer.to_owned(), problem))
+    };
+    let field = ty
+        .info
+        .at(pointer)
+        .ok_or_else(|| located(ReflectProblem::NoSuchPath))?;
+    if !field.accepts(&value) {
+        return Err(located(ReflectProblem::WrongKind(field.kind_name())));
+    }
+    let mut component = capture_value(world, entity, name, &registration)?
+        .ok_or_else(|| SceneIoError::Component {
+            name: name.into(),
+            message: "the entity does not have this component".into(),
+        })?;
+    // A pointer into a variant the value does not hold, or through a null
+    // option, has nothing to write to.
+    let slot = component
+        .pointer_mut(pointer)
+        .ok_or_else(|| located(ReflectProblem::NoSuchPath))?;
+    *slot = value;
+    restore_value(world, entity, name, &registration, component, None)
+}
+
+fn reflect_error(
+    name: &str,
+    ty: &ComponentType,
+    saved_version: u32,
+    (path, problem): reflect::Located,
+) -> SceneIoError {
+    SceneIoError::Reflection(Box::new(ReflectError {
+        component: name.into(),
+        saved_version,
+        current_version: ty.version(),
+        path,
+        problem,
+    }))
+}
+
+fn serde_error(name: &str, error: &serde_json::Error) -> SceneIoError {
+    SceneIoError::Component {
+        name: name.into(),
+        message: error.to_string(),
+    }
+}
+
+/// The component's scene form, with `"$version"` when it has migrations.
+fn capture_value(
+    world: &World,
+    entity: Entity,
+    name: &str,
+    registration: &ComponentRegistration,
+) -> Result<Option<Value>, SceneIoError> {
+    let Some(value) = (registration.to_value)(world, entity) else {
+        return Ok(None);
+    };
+    let mut value = value.map_err(|error| serde_error(name, &error))?;
+    let ty = &registration.ty;
+    if ty.references {
+        reflect::to_scene_form(&ty.info, &mut value, world).map_err(
+            |located| reflect_error(name, ty, ty.version(), located),
+        )?;
+    }
+    if let (Value::Object(map), version @ 1..) = (&mut value, ty.version()) {
+        map.insert(reflect::VERSION_KEY.into(), version.into());
+    }
+    Ok(Some(value))
+}
+
+fn capture_component(
+    world: &World,
+    entity: Entity,
+    name: &str,
+    registration: &ComponentRegistration,
+) -> Result<Option<String>, SceneIoError> {
+    let ty = &registration.ty;
+    if !ty.references && ty.migrations.is_empty() {
+        // Serde's output is already the scene form.
+        return (registration.to_text)(world, entity)
+            .transpose()
+            .map_err(|error| serde_error(name, &error));
+    }
+    Ok(capture_value(world, entity, name, registration)?
+        .map(|value| value.to_string()))
+}
+
+/// Parses, migrates, and checks a saved component, then inserts it.
+/// `ids` maps scene IDs to entities during a load.
+fn restore_component(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    registration: &ComponentRegistration,
+    serialized: &str,
+    ids: Option<&HashMap<Uuid, Entity>>,
+) -> Result<(), SceneIoError> {
+    let value = serde_json::from_str(serialized)
+        .map_err(|error| serde_error(name, &error))?;
+    restore_value(world, entity, name, registration, value, ids)
+}
+
+fn restore_value(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    registration: &ComponentRegistration,
+    mut value: Value,
+    ids: Option<&HashMap<Uuid, Entity>>,
+) -> Result<(), SceneIoError> {
+    let ty = &registration.ty;
+    let saved = reflect::take_version(&mut value)
+        .map_err(|located| reflect_error(name, ty, 0, located))?;
+    let error = |located| reflect_error(name, ty, saved, located);
+    reflect::migrate(&mut value, saved, &ty.migrations).map_err(error)?;
+    if ty.references {
+        reflect::from_scene_form(&ty.info, &mut value, world, ids)
+            .map_err(error)?;
+    } else {
+        reflect::walk(&ty.info, &mut value, &mut |_, _| Ok(()))
+            .map_err(error)?;
+    }
+    (registration.from_value)(world, entity, value)
+        .map_err(|error| serde_error(name, &error))
+}
+
+fn component_text<T>(
+    world: &World,
+    entity: Entity,
+) -> Option<serde_json::Result<String>>
 where
     T: Component + Serialize,
 {
-    world
-        .get::<T>(entity)
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|error| SceneIoError::Component {
-            name: std::any::type_name::<T>().into(),
-            message: error.to_string(),
-        })
+    world.get::<T>(entity).map(serde_json::to_string)
 }
 
-fn restore_component<T>(
+fn component_value<T>(
+    world: &World,
+    entity: Entity,
+) -> Option<serde_json::Result<Value>>
+where
+    T: Component + Serialize,
+{
+    world.get::<T>(entity).map(serde_json::to_value)
+}
+
+fn insert_component_value<T>(
     world: &mut World,
     entity: Entity,
-    serialized: &str,
-) -> Result<(), SceneIoError>
+    value: Value,
+) -> serde_json::Result<()>
 where
     T: Component + DeserializeOwned,
 {
-    let component = serde_json::from_str::<T>(serialized).map_err(|error| {
-        SceneIoError::Component {
-            name: std::any::type_name::<T>().into(),
-            message: error.to_string(),
-        }
-    })?;
+    let component = serde_json::from_value::<T>(value)?;
     world.entity_mut(entity).insert(component);
     Ok(())
 }
@@ -954,9 +1308,14 @@ pub fn scene_document(
         let mesh_renderer = renderer
             .map(|renderer| scene_renderer(renderer, assets))
             .transpose()?;
-        let mut components = BTreeMap::new();
+        let mut components = world
+            .get::<UnregisteredComponents>(entity)
+            .map(|kept| kept.0.clone())
+            .unwrap_or_default();
         for (component_name, registration) in &registrations {
-            if let Some(value) = (registration.capture)(world, entity)? {
+            if let Some(value) =
+                capture_component(world, entity, component_name, registration)?
+            {
                 components.insert(component_name.clone(), value);
             }
         }
@@ -993,6 +1352,12 @@ pub fn scene_document(
         name: name.into(),
         entities,
         render,
+        simulation: SceneSimulationSettings {
+            determinism: world
+                .get_resource::<DeterminismMode>()
+                .copied()
+                .unwrap_or_default(),
+        },
     };
     validate_scene_structure(&document)?;
     Ok(document)
@@ -1060,6 +1425,19 @@ pub fn unload_scene(world: &mut World) -> usize {
     count
 }
 
+/// The `determinism` of the nearest `project.json` above `scene`, which
+/// overrides the value in the text scene.
+fn project_determinism(scene: &Path) -> Option<DeterminismMode> {
+    let manifest = scene
+        .ancestors()
+        .skip(1)
+        .map(|folder| folder.join("project.json"))
+        .find(|path| path.is_file())?;
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    serde_json::from_value(value.get("determinism")?.clone()).ok()
+}
+
 pub fn cook_scene(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
@@ -1074,6 +1452,9 @@ pub fn cook_scene(
     if let Some(parent) = source.parent() {
         absolutize_scene_assets(&mut document, parent)?;
     }
+    if let Some(determinism) = project_determinism(source) {
+        document.simulation.determinism = determinism;
+    }
     if let Some(parent) = destination.parent() {
         relativize_scene_assets(&mut document, parent)?;
     }
@@ -1086,12 +1467,25 @@ pub fn cook_scene(
     Ok(())
 }
 
-/// Applies one path conversion to every mesh and texture in a scene.
+/// Applies one path conversion to every mesh and texture in a scene,
+/// including reflected handles in components.
 fn map_scene_asset_paths(
     document: &mut SceneDocument,
     mut convert: impl FnMut(&Path) -> Result<PathBuf, SceneIoError>,
 ) -> Result<(), SceneIoError> {
     for entity in &mut document.entities {
+        for serialized in entity.components.values_mut() {
+            // Only reflected handles write this key; skip parsing the rest.
+            if !serialized.contains(reflect::ASSET_KEY) {
+                continue;
+            }
+            let Ok(mut value) = serde_json::from_str::<Value>(serialized)
+            else {
+                continue;
+            };
+            reflect::map_asset_paths(&mut value, &mut convert)?;
+            *serialized = value.to_string();
+        }
         let Some(renderer) = &mut entity.mesh_renderer else {
             continue;
         };
@@ -1205,13 +1599,12 @@ pub fn load_scene_document(
         return Err(SceneIoError::UnsupportedVersion(document.format_version));
     }
     validate_scene_structure(document)?;
-    let registrations = world
-        .resource::<SceneComponentRegistry>()
-        .registrations
-        .clone();
+    let registry = world.resource::<SceneComponentRegistry>();
+    let registrations = registry.registrations.clone();
+    let keep_unregistered = registry.keep_unregistered;
     for entity in &document.entities {
         for name in entity.components.keys() {
-            if !registrations.contains_key(name) {
+            if !keep_unregistered && !registrations.contains_key(name) {
                 return Err(SceneIoError::UnknownComponent(name.clone()));
             }
         }
@@ -1220,6 +1613,7 @@ pub fn load_scene_document(
     // Resolve every referenced asset before replacing the current world. A
     // missing asset must not erase the scene that is already open.
     let prepared = prepare_assets(world, document)?;
+    preload_component_assets(world, document, &registrations)?;
 
     // The old scene stays until the new one is complete, so a failing parent
     // link or custom component leaves the open scene untouched.
@@ -1289,12 +1683,26 @@ pub fn load_scene_document(
                     .ok_or(SceneIoError::MissingParent(parent))?;
                 super::hierarchy::set_parent(world, entity, parent)?;
             }
+            let mut unregistered = BTreeMap::new();
             for (name, serialized) in &scene_entity.components {
-                let registration =
-                    registrations.get(name).ok_or_else(|| {
-                        SceneIoError::UnknownComponent(name.clone())
-                    })?;
-                (registration.restore)(world, entity, serialized)?;
+                match registrations.get(name) {
+                    Some(registration) => restore_component(
+                        world,
+                        entity,
+                        name,
+                        registration,
+                        serialized,
+                        Some(&spawned),
+                    )?,
+                    None => {
+                        unregistered.insert(name.clone(), serialized.clone());
+                    }
+                }
+            }
+            if !unregistered.is_empty() {
+                world
+                    .entity_mut(entity)
+                    .insert(UnregisteredComponents(unregistered));
             }
         }
         Ok(())
@@ -1307,6 +1715,7 @@ pub fn load_scene_document(
                 settings.quality = document.render.quality;
                 settings.culling = document.render.culling;
             }
+            world.insert_resource(document.simulation.determinism);
         }
         replaced
     } else {
@@ -1319,7 +1728,7 @@ pub fn load_scene_document(
 }
 
 /// Checks every stable ID and parent chain before replacing the open scene.
-fn validate_scene_structure(
+pub fn validate_scene_structure(
     document: &SceneDocument,
 ) -> Result<(), SceneIoError> {
     let mut parents = HashMap::new();
@@ -1356,8 +1765,15 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
     {
         // `format_version` is the first field of every cooked shape. Version 4
         // is dispatched on it because a v4 material can also parse as v5.
-        if crate::assets::deserialize_bounded::<u32>(compiled)? == 4 {
+        let version = crate::assets::deserialize_bounded::<u32>(compiled)?;
+        if version == 4 {
             crate::assets::deserialize_bounded::<LegacySceneDocumentV4>(
+                compiled,
+            )?
+            .into()
+        } else if version == 6 {
+            // A v6 scene would also parse as v5 and drop its render settings.
+            crate::assets::deserialize_bounded::<LegacySceneDocumentV6>(
                 compiled,
             )?
             .into()
@@ -1400,13 +1816,42 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
     Ok(document)
 }
 
+/// Reads a text or cooked scene with the runtime's migrations and structural checks.
+/// Asset paths remain as authored so callers can report useful source locations.
+pub fn read_scene_document(
+    path: impl AsRef<Path>,
+) -> Result<SceneDocument, SceneIoError> {
+    parse_scene_document(&std::fs::read(path)?)
+}
+
+/// [`read_scene_document`] for bytes already in memory.
+pub fn parse_scene_document(
+    bytes: &[u8],
+) -> Result<SceneDocument, SceneIoError> {
+    let document = decode_scene(bytes)?;
+    validate_scene_structure(&document)?;
+    Ok(document)
+}
+
+/// Content hash of a scene file's bytes. Scene patches and the editor
+/// compare it to detect edits made by someone else since they last read it.
+#[must_use]
+pub fn scene_revision(bytes: &[u8]) -> String {
+    // FNV-1a 64: stable across platforms and releases, unlike `DefaultHasher`.
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
 /// Upgrades old text-scene shapes before normal validation and loading.
 fn migrate_scene_document(
     document: &mut SceneDocument,
 ) -> Result<(), SceneIoError> {
     match document.format_version {
-        0..=5 => {
-            // Versions before programmable GPU watches and render settings
+        0..=6 => {
+            // Versions before programmable GPU watches, render settings, and
+            // simulation settings
             // use safe defaults for the fields that were added later.
             document.format_version = SCENE_FORMAT_VERSION;
             Ok(())
@@ -1496,6 +1941,51 @@ fn scene_material(
         occlusion_texture: texture_path(material.occlusion_texture)?,
         emissive_texture: texture_path(material.emissive_texture)?,
     })
+}
+
+/// Loads every asset that registered components reference by handle, so a
+/// missing one fails before the open scene is replaced. Restoring the
+/// components later finds them already loaded.
+fn preload_component_assets(
+    world: &mut World,
+    document: &SceneDocument,
+    registrations: &BTreeMap<String, ComponentRegistration>,
+) -> Result<(), SceneIoError> {
+    for entity in &document.entities {
+        for (name, serialized) in &entity.components {
+            let Some(registration) = registrations.get(name) else {
+                continue;
+            };
+            let ty = &registration.ty;
+            if !ty.references {
+                continue;
+            }
+            let mut value: Value = serde_json::from_str(serialized)
+                .map_err(|error| serde_error(name, &error))?;
+            let saved = reflect::take_version(&mut value)
+                .map_err(|located| reflect_error(name, ty, 0, located))?;
+            let error = |located| reflect_error(name, ty, saved, located);
+            reflect::migrate(&mut value, saved, &ty.migrations)
+                .map_err(error)?;
+            let mut assets = world
+                .get_resource_mut::<AssetServer>()
+                .ok_or(SceneIoError::MissingAssetServer)?;
+            reflect::walk(&ty.info, &mut value, &mut |info, value| {
+                let TypeInfo::Handle(kind) = info else {
+                    return Ok(());
+                };
+                let path = value
+                    .get(reflect::ASSET_KEY)
+                    .and_then(Value::as_str)
+                    .ok_or(ReflectProblem::WrongKind("{\"$asset\": path}"))?;
+                kind.load(&mut assets, Path::new(path))
+                    .map(drop)
+                    .map_err(|error| ReflectProblem::Asset(error.to_string()))
+            })
+            .map_err(error)?;
+        }
+    }
+    Ok(())
 }
 
 fn prepare_assets(
@@ -1681,6 +2171,12 @@ mod tests {
         speed: f32,
     }
 
+    crate::reflect! {
+        struct GameplayTag {
+            speed: f32,
+        }
+    }
+
     fn scene_app() -> App {
         let mut app = App::new();
         app.add_plugin(crate::AssetPlugin).unwrap();
@@ -1722,6 +2218,36 @@ mod tests {
             panic!("expected an inline material");
         };
         assert_eq!(material.base_color_texture, None);
+    }
+
+    #[test]
+    fn tools_keep_unregistered_components_through_a_round_trip() {
+        let mut app = scene_app();
+        app.spawn((Name("Flag".into()), Transform::default()));
+        let mut document = scene_document(app.world_mut(), "Main").unwrap();
+        document.entities[0]
+            .components
+            .insert("game.spin".into(), r#"{"speed":2.0}"#.into());
+
+        assert!(matches!(
+            load_scene_document(
+                app.world_mut(),
+                &document,
+                SceneLoadMode::Replace
+            ),
+            Err(SceneIoError::UnknownComponent(name)) if name == "game.spin"
+        ));
+
+        app.world_mut()
+            .resource_mut::<SceneComponentRegistry>()
+            .keep_unregistered();
+        load_scene_document(app.world_mut(), &document, SceneLoadMode::Replace)
+            .unwrap();
+        let saved = scene_document(app.world_mut(), "Main").unwrap();
+        assert_eq!(
+            saved.entities[0].components,
+            document.entities[0].components
+        );
     }
 
     #[test]
@@ -2134,6 +2660,49 @@ mod tests {
             assert_eq!(migrated.name, "Scene Before Render Settings");
             assert_eq!(migrated.render, SceneRenderSettings::default());
         }
+    }
+
+    #[test]
+    fn version_six_cooked_scenes_keep_render_settings() {
+        let render = SceneRenderSettings {
+            quality: QualityProfile::High,
+            culling: CullingMode::FrustumAndOcclusion,
+        };
+        let legacy = LegacySceneDocumentV6 {
+            format_version: 6,
+            name: "Scene Before Simulation Settings".into(),
+            entities: Vec::new(),
+            render,
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+        let migrated = decode_scene(&bytes).unwrap();
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        assert_eq!(migrated.render, render);
+        assert_eq!(migrated.simulation, SceneSimulationSettings::default());
+    }
+
+    #[test]
+    fn cook_copies_project_determinism_and_replacing_loads_insert_it() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-determinism-{}", Uuid::new_v4()));
+        let source = root.join("scenes/main.rscene");
+        let cooked = root.join("build/main.rscene.bin");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(root.join("project.json"), r#"{"determinism":"Local"}"#)
+            .unwrap();
+        let mut editor_app = scene_app();
+        save_scene(editor_app.world_mut(), &source, "Main").unwrap();
+        cook_scene(&source, &cooked).unwrap();
+
+        let mut game_app = scene_app();
+        load_scene(game_app.world_mut(), &cooked, SceneLoadMode::Replace)
+            .unwrap();
+        assert_eq!(
+            game_app.world().get_resource::<DeterminismMode>(),
+            Some(&DeterminismMode::Local)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

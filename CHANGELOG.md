@@ -1,5 +1,69 @@
 # Changelog
 
+## [1.4.0] - 2026-09-27
+
+### Added
+
+- Added the `rusting` command-line tool. It works without a window: `doctor` checks the setup, `new` creates a project, and `check`, `run`, `test` and `export` build, run, test and export a game.
+- `rusting` can inspect projects and scenes, find objects by ID, name, class or component, and validate and cook scenes.
+- Added `rusting scene patch` for atomic scene edits with dry-run diffs and revision checks. When the scene is open in the editor, the patch goes through undo and conflicts are reported instead of overwriting work.
+- Added `rusting capture`, which renders a chosen camera at a chosen tick to PNG and tells which scene object is under each picked pixel.
+- Added `rusting schema`, a generated catalog of every component, resource, asset type and command, with defaults, units, valid ranges and examples.
+- Added input-driven test scenarios: named actions at fixed ticks, checks on game state and events, optional captures, fixed seeds, and a short trace from the first failing tick.
+- Added reflection. Components, resources and assets describe their fields with the `reflect!` macro, with units, ranges, colors and docs as hints. Scene saving, the Inspector, the schema and field paths all use these descriptions.
+- Reflection supports enums, nested structs, lists, optional values, string-keyed maps, entity references and typed asset handles.
+- Entity references in components now save as object IDs and are reconnected on load. A reference to a deleted object loads as empty instead of failing. Asset handles save as asset paths.
+- Renamed or removed component fields can be migrated with `migrate_scene_component`. Scenes with unknown fields, unknown enum variants or a newer version now fail with an error that names the component, the field and both versions.
+- Added `DeterminismMode` (Off, Local and CrossPlatform) per project, with a startup check that every solver and custom shader supports the chosen mode.
+- Added a shared simulation math module used by both CPU physics and GPU physics shaders, with defined float-to-integer conversion and no fast-math.
+- Added a seeded random number generator with separate streams for each engine system.
+- Added a world-state hash for every tick, including GPU physics bodies.
+- Added headless simulation without a window or renderer, and a determinism runner that compares two runs and reports the first different tick and body.
+- Added replays: recorded inputs with a seed and format version, replay verification against the recorded hashes, and fast seeking from saved snapshots.
+- Added a determinism CI workflow that runs on changes to physics, math and shader code.
+- Added a render benchmark with a fixed scene and camera path. It records frame times, GPU passes, draw calls, memory, uploads, physics and readback, and fails when a stored baseline gets worse.
+- Added benchmark baselines for the RTX 3060 and llvmpipe, and documented the tested drivers and settings.
+- Added a Profiler panel with CPU and GPU history graphs, CPU spans, GPU pass timings, counters and memory use.
+- Added Render Settings and Physics Diagnostics panels.
+- Added orbit, pan, dolly and Frame Selection (F) controls to the Scene View.
+- Gizmos now have local and global modes and snapping for move, rotate and scale.
+- Mesh Renderer can now pick meshes and materials from the loaded assets.
+- Added a Restart button for the running game.
+- Added an embedded preview that plays the scene inside the editor without a build, with Pause, Resume and Step. Objects created during preview are marked `[Runtime]`.
+- Added image and glTF import with stable IDs, import settings, dependency reports, reimport, and source and license records.
+- Added art-direction presets for lighting, camera, text and color.
+- Added a first-person player controller with a camera.
+- Added a game-feel kit: tweens with easing, sounds and particle bursts triggered by events, counters, pickups and a runtime HUD with text and buttons.
+- Added in-game UI for games, separate from the editor UI.
+- Added a quick 2D path: sprites, tile maps, an orthographic camera and a 2D starter scene.
+- Added a starter game template with a scripted acceptance test.
+- Added the vertical slice sample: an imported courtyard with PBR materials, a player, physics, lights, shadows, transparency and live asset reload.
+- Added `RUSTING_VULKAN_DEVICE` to choose a GPU by index or name. A wrong choice now fails and lists every available device.
+- Added feature flags for the editor, validation layers, experimental GPU physics and optional importers.
+- Added a getting-started guide, a concepts guide, a determinism guide and four tutorials.
+
+### Changed
+
+- The Inspector now draws typed widgets for every registered component from its reflected description, including drop-downs for object and asset references. The raw JSON editor was removed.
+- Scene component fields in `rusting schema` now come from the reflected types, so the schema cannot drift from the code. The schema catalog version is now 2.
+- Registering a scene component now needs a `reflect!` description.
+- More engine types moved into the `rusting-core` crate, which has no Vulkan dependency.
+- The window is now created when the app resumes, which removes the last deprecated winit call.
+- GPU physics buffers now grow with the body count and report overflow instead of dropping bodies.
+- Selected objects now stay outlined when they are behind other geometry.
+- Removed the old legacy renderer, pipeline and scene modules.
+- Rewrote the editor guide. It now covers Scene View navigation, the transform gizmo, the Inspector, asset actions, Preview, the Profiler and diagnostics panels, and keyboard shortcuts. The README lists the current features and project layout.
+
+### Fixed
+
+- Fixed fixed-update steps in one frame all seeing the same tick number.
+- Fixed CPU-to-GPU commands being applied at the wrong step when a frame ran several physics ticks.
+- Fixed physics ticks being dropped when a frame needed more steps than the limit. They now run in the next frame.
+- Fixed burst emitters without a scene ID all producing the same burst.
+- Scenes with misspelled or removed component fields no longer drop that data silently.
+
+---
+
 ## [1.3.0] - 2026-09-26
 
 ### Added

@@ -23,10 +23,16 @@ pub enum EditorPanel {
     Assets,
     /// Rebinds editor keyboard shortcuts.
     Shortcuts,
+    /// CPU and GPU frame timings, work counters, and memory history.
+    Profiler,
+    /// Scene render controls, device capabilities, and asset fallbacks.
+    RenderSettings,
+    /// Physics backend, workload, readback, and capacity diagnostics.
+    PhysicsDiagnostics,
 }
 
 impl EditorPanel {
-    pub(super) const ALL: [Self; 9] = [
+    pub(super) const ALL: [Self; 12] = [
         Self::Scene,
         Self::Game,
         Self::Code,
@@ -36,6 +42,9 @@ impl EditorPanel {
         Self::Console,
         Self::Assets,
         Self::Shortcuts,
+        Self::Profiler,
+        Self::RenderSettings,
+        Self::PhysicsDiagnostics,
     ];
 
     pub(super) fn icon(self) -> super::EditorIcon {
@@ -50,6 +59,9 @@ impl EditorPanel {
             Self::Console => EditorIcon::Console,
             Self::Assets => EditorIcon::Folder,
             Self::Shortcuts => EditorIcon::Gear,
+            Self::Profiler => EditorIcon::ViewOptions,
+            Self::RenderSettings => EditorIcon::Gear,
+            Self::PhysicsDiagnostics => EditorIcon::ViewOptions,
         }
     }
 
@@ -64,6 +76,9 @@ impl EditorPanel {
             Self::Console => "Console",
             Self::Assets => "Assets",
             Self::Shortcuts => "Keyboard Shortcuts",
+            Self::Profiler => "Profiler",
+            Self::RenderSettings => "Render Settings",
+            Self::PhysicsDiagnostics => "Physics Diagnostics",
         }
     }
 }

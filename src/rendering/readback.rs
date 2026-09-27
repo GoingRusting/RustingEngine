@@ -203,4 +203,111 @@ mod tests {
         let expected: Vec<u32> = input.iter().map(|v| v * 2).collect();
         assert_eq!(result, expected);
     }
+
+    mod sim_math_shader {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            include: ["src/shaders"],
+            path: "src/shaders/compute/sim_math_test.comp",
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn shader_sim_math_matches_the_rust_reference_bit_for_bit() {
+        use crate::rendering::test_support::dispatch_and_read_back;
+        use crate::runtime::sim_math;
+
+        if VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let base = headless_device();
+        // p * p + c is 0 with separate rounding and 2^-24 when fused, so
+        // the first case fails on a driver that contracts `sim_dot`.
+        let p = 1.0 + 2f32.powi(-12);
+        let mut cases =
+            vec![([p, 1.0, 0.0], [p, -(1.0 + 2f32.powi(-11)), 0.0], 3.0)];
+        let mut seed = 0x2545_f491_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            // Positive and negative values spread over 2^-20 .. 2^20.
+            let magnitude = 2f32.powf((seed % 4000) as f32 / 100.0 - 20.0);
+            if seed & 1 == 0 {
+                magnitude
+            } else {
+                -magnitude
+            }
+        };
+        while cases.len() < 64 {
+            let v = [next(), next(), next()];
+            let u = [next(), next(), next()];
+            cases.push((v, u, next().abs()));
+        }
+        // Inputs for sim_to_int: GLSL int() is undefined for the specials.
+        let specials = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            2f32.powi(31),
+            -(2f32.powi(31)),
+            3e9,
+            -3e9,
+            -0.5,
+            1.5,
+            -2.5,
+        ];
+        let ints: Vec<f32> = (0..cases.len())
+            .map(|index| {
+                specials
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| next() * 4096.0)
+            })
+            .collect();
+        let input: Vec<u32> = cases
+            .iter()
+            .zip(&ints)
+            .flat_map(|((v, u, s), t)| {
+                v.iter()
+                    .chain(u)
+                    .chain([s, t, &0.0])
+                    .map(|value| value.to_bits())
+            })
+            .collect();
+        let shader = sim_math_shader::load(base.device.clone()).unwrap();
+        let result = dispatch_and_read_back(
+            base,
+            shader.entry_point("main").unwrap(),
+            input,
+            [1, 1, 1],
+        );
+        let expected: Vec<u32> = cases
+            .iter()
+            .zip(&ints)
+            .flat_map(|(&(v, u, s), &t)| {
+                let row = [v[0], u[0], s];
+                [
+                    sim_math::recip(s),
+                    sim_math::rsqrt(s),
+                    sim_math::sqrt(s),
+                    sim_math::div(v[0], s),
+                    sim_math::dot(v, u),
+                    sim_math::length(v),
+                    sim_math::normalize(v)[1],
+                    sim_math::dot(row, u),
+                ]
+                .map(f32::to_bits)
+                .into_iter()
+                .chain([sim_math::to_int(t).cast_unsigned()])
+            })
+            .collect();
+        assert_eq!(f32::from_bits(expected[4]), 0.0, "reference must not fuse");
+        assert_eq!(result, expected);
+    }
 }

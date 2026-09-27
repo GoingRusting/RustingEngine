@@ -28,6 +28,8 @@ pub(super) enum DialogPurpose {
         target: Option<&'static str>,
     },
     ImportFiles,
+    /// A new file for `EditorAssetState::replace_target`.
+    ReplaceAsset,
     MaterialTexture {
         entity: Entity,
         slot: usize,

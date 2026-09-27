@@ -39,8 +39,10 @@ pub struct HierarchyDiagnostics {
 
 /// What the last full propagation saw. A run with no changed `Transform` or
 /// `Parent` and the same component counts has nothing to update.
-#[derive(Resource)]
-struct PropagationFingerprint {
+/// Public only so replay snapshots can copy it.
+#[doc(hidden)]
+#[derive(Resource, Clone)]
+pub struct PropagationFingerprint {
     last_run: Tick,
     counts: [usize; 3],
 }

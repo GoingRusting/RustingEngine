@@ -99,6 +99,9 @@ pub struct RenderWorld {
     /// Commands taken from [`super::GpuPhysicsCommands`] by the last
     /// extraction that found any.
     pub gpu_physics_commands: Vec<(super::PhysicsId, super::GpuBodyCommand)>,
+    /// GPU tick each command applies before, parallel to
+    /// `gpu_physics_commands`; a missing entry means the next GPU tick.
+    pub gpu_physics_command_ticks: Vec<u64>,
     /// Whether the batch asks for every body's state; see
     /// [`super::GpuPhysicsCommands::read_all_states`].
     pub gpu_physics_read_all: bool,
@@ -168,6 +171,7 @@ pub fn extract_render_world(world: &mut World) {
         .contains_resource::<super::PhysicsIdRegistry>()
         && world.contains_resource::<super::GpuEventRegistry>()
         && world.contains_resource::<super::GpuPhysicsClassWatches>();
+    super::hybrid_physics::stamp_gpu_commands(world);
     let commands = world
         .get_resource_mut::<super::GpuPhysicsCommands>()
         .map(|mut commands| std::mem::take(&mut *commands))
@@ -304,6 +308,7 @@ pub fn extract_render_world(world: &mut World) {
         || commands.reset_to_authored
     {
         render_world.gpu_physics_commands = commands.commands;
+        render_world.gpu_physics_command_ticks = commands.apply_ticks;
         render_world.gpu_physics_read_all = commands.read_all_states;
         render_world.gpu_physics_reset = commands.reset_to_authored;
         render_world.gpu_physics_commands_serial += 1;

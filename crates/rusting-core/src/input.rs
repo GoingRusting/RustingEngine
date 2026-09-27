@@ -4,11 +4,21 @@
 //! Window integrations record raw events into it and clear edge state once per
 //! rendered frame after gameplay systems have had a chance to read it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
+use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::Resource;
+use serde::{Deserialize, Serialize};
 pub use winit::event::MouseButton;
 pub use winit::keyboard::KeyCode;
+
+/// Fired the frame a mouse button is pressed over a renderable entity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClickEvent {
+    pub entity: Entity,
+    pub button: MouseButton,
+    pub world_position: [f32; 3],
+}
 
 /// Held keys, mouse buttons, and cursor position for the current frame.
 ///
@@ -17,16 +27,22 @@ pub use winit::keyboard::KeyCode;
 /// [`RuntimeInput::clear_frame_edges`]. Runtime integrations call that method
 /// once per rendered frame after gameplay systems have had a chance to read
 /// them.
-#[derive(Resource, Default)]
+///
+/// It serializes whole, so replays can record what each frame's systems saw.
+#[derive(
+    Resource, Clone, Debug, Default, PartialEq, Serialize, Deserialize,
+)]
 pub struct RuntimeInput {
-    keys_held: HashSet<KeyCode>,
-    keys_just_pressed: HashSet<KeyCode>,
-    keys_just_released: HashSet<KeyCode>,
-    mouse_held: HashSet<MouseButton>,
-    mouse_just_pressed: HashSet<MouseButton>,
-    mouse_just_released: HashSet<MouseButton>,
+    keys_held: BTreeSet<KeyCode>,
+    keys_just_pressed: BTreeSet<KeyCode>,
+    keys_just_released: BTreeSet<KeyCode>,
+    mouse_held: BTreeSet<MouseButton>,
+    mouse_just_pressed: BTreeSet<MouseButton>,
+    mouse_just_released: BTreeSet<MouseButton>,
     cursor_position: Option<[f32; 2]>,
     viewport_size: [f32; 2],
+    mouse_motion: [f32; 2],
+    cursor_captured: bool,
 }
 
 impl RuntimeInput {
@@ -57,6 +73,25 @@ impl RuntimeInput {
     #[must_use]
     pub fn cursor_position(&self) -> Option<[f32; 2]> {
         self.cursor_position
+    }
+
+    /// Raw mouse movement since the last [`Self::clear_frame_edges`]. It keeps
+    /// counting while the cursor is captured and cannot move.
+    #[must_use]
+    pub fn mouse_motion(&self) -> [f32; 2] {
+        self.mouse_motion
+    }
+
+    /// True when gameplay asked the window to hide and lock the cursor.
+    #[must_use]
+    pub fn cursor_captured(&self) -> bool {
+        self.cursor_captured
+    }
+
+    /// Asks the window to hide and lock the cursor, for mouse look. The
+    /// window runner applies the request after the frame's systems ran.
+    pub fn set_cursor_captured(&mut self, captured: bool) {
+        self.cursor_captured = captured;
     }
 
     /// Current window/render-viewport size in pixels, used to convert cursor
@@ -93,13 +128,18 @@ impl RuntimeInput {
     /// Call it when the window loses focus, because the matching release
     /// events then go to another window.
     pub fn release_all(&mut self) {
-        self.keys_just_released.extend(self.keys_held.drain());
-        self.mouse_just_released.extend(self.mouse_held.drain());
+        self.keys_just_released.append(&mut self.keys_held);
+        self.mouse_just_released.append(&mut self.mouse_held);
     }
 
     /// Records the latest cursor position from a `CursorMoved` event.
     pub fn record_cursor_position(&mut self, position: [f32; 2]) {
         self.cursor_position = Some(position);
+    }
+    /// Adds one raw `DeviceEvent::MouseMotion` delta.
+    pub fn record_mouse_motion(&mut self, delta: [f32; 2]) {
+        self.mouse_motion[0] += delta[0];
+        self.mouse_motion[1] += delta[1];
     }
     /// Records the current window/render-viewport size in pixels.
     pub fn record_viewport_size(&mut self, size: [f32; 2]) {
@@ -114,6 +154,7 @@ impl RuntimeInput {
         self.keys_just_released.clear();
         self.mouse_just_pressed.clear();
         self.mouse_just_released.clear();
+        self.mouse_motion = [0.0; 2];
     }
 }
 
@@ -129,7 +170,7 @@ pub enum InputBinding {
 
 /// Maps action names to one or more raw input bindings (any bound input
 /// satisfies the action).
-#[derive(Resource, Default)]
+#[derive(Resource, Clone, Default)]
 pub struct ActionMap {
     bindings: HashMap<String, Vec<InputBinding>>,
 }
@@ -167,6 +208,11 @@ impl ActionMap {
             InputBinding::Mouse(button) => input.mouse_just_released(*button),
         })
     }
+    /// Inputs bound to `action`, in binding order; empty when unbound.
+    #[must_use]
+    pub fn bindings(&self, action: &str) -> &[InputBinding] {
+        self.bindings.get(action).map_or(&[], Vec::as_slice)
+    }
     fn bindings_for(
         &self,
         action: &str,
@@ -179,6 +225,16 @@ impl ActionMap {
 mod tests {
     use super::*;
     use bevy_ecs::prelude::Resource;
+
+    #[test]
+    fn mouse_motion_adds_up_until_the_frame_ends() {
+        let mut input = RuntimeInput::default();
+        input.record_mouse_motion([1.0, -2.0]);
+        input.record_mouse_motion([0.5, 1.0]);
+        assert_eq!(input.mouse_motion(), [1.5, -1.0]);
+        input.clear_frame_edges();
+        assert_eq!(input.mouse_motion(), [0.0, 0.0]);
+    }
 
     #[test]
     fn release_all_clears_held_input_as_releases() {

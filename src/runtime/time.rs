@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bevy_ecs::prelude::{Mut, World};
 use rusting_core::time::{self as core_time, TimeAdvanceError};
-pub use rusting_core::time::{FrameTime, TimeControl};
+pub use rusting_core::time::{FrameTime, RandomSeed, TimeControl};
 
 use super::AppError;
 

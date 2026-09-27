@@ -26,38 +26,81 @@ struct Collider {
 };
 layout(set = 0, binding = 7) readonly buffer Colliders { Collider data[]; } colliders;
 
+struct ColliderNode {
+    vec4 lower;
+    vec4 upper;
+    // x = first node after this subtree; y = collider index for a leaf,
+    // or UINT_MAX for an internal node; z = first collider index after it.
+    uvec4 links;
+};
+layout(set = 0, binding = 12) readonly buffer ColliderTree { ColliderNode data[]; } collider_tree;
+
 void collider_distance(Collider collider, vec3 point, out vec3 normal, out float distance) {
     shape_distance(collider.shape, mat3(collider.model), collider.model[3].xyz, point, normal, distance);
 }
 
-// Pushes a dynamic body out of every solid CPU or static collider, in list
-// order, and removes its velocity into them. The body's rotation only shapes
-// its reach along each normal; contacts apply no torque.
+// Visits nearby CPU/static colliders in their stable upload order. A node's
+// sphere test is conservative for every shape it contains. The body's
+// rotation only shapes its reach along each contact normal; contacts apply
+// no torque.
 void collide_with_colliders(inout PhysicsState body, BodyShape own) {
+    if (pc.collider_count == 0u) return;
     mat3 rotation = rotation_of(body.model);
-    for (uint index = 0u; index < pc.collider_count; index++) {
+    float radius = bounding_radius(own.shape);
+    uint node_index = 0u;
+    uint next_collider = 0u;
+    uint node_count = pc.collider_count * 2u - 1u;
+    while (node_index < node_count) {
+        ColliderNode node = collider_tree.data[node_index];
+        if (node.links.z <= next_collider) {
+            node_index = node.links.x;
+            continue;
+        }
+        vec3 center = body.model[3].xyz;
+        vec3 nearest = clamp(center, node.lower.xyz, node.upper.xyz);
+        precise vec3 delta = center - nearest;
+        precise float radius_squared = radius * radius;
+        if (sim_dot(delta, delta) > radius_squared) {
+            next_collider = node.links.z;
+            node_index = node.links.x;
+            continue;
+        }
+        if (node.links.y == 0xffffffffu) {
+            node_index++;
+            continue;
+        }
+        uint index = node.links.y;
+        next_collider = index + 1u;
+        node_index = node.links.x;
         Collider collider = colliders.data[index];
         if ((own.layers.x & collider.layers.y) == 0u || (collider.layers.x & own.layers.y) == 0u) continue;
         vec3 normal;
         float distance;
         collider_distance(collider, body.model[3].xyz, normal, distance);
-        float depth = support(own.shape, rotation, normal) - distance;
+        precise float depth = support(own.shape, rotation, normal) - distance;
         if (depth <= 0.0) continue;
-        body.model[3].xyz += normal * depth;
+        precise vec3 position = body.model[3].xyz + normal * depth;
+        body.model[3].xyz = position;
+        // The correction can move the body into a later collider whose tree
+        // branch was skipped. Re-query from the root, but do not revisit any
+        // collider the original list-order loop already passed.
+        node_index = 0u;
         body.velocity.w = 1.0;
-        vec3 relative = body.velocity.xyz - collider.velocity.xyz;
-        float closing = dot(relative, normal);
+        precise vec3 relative = body.velocity.xyz - collider.velocity.xyz;
+        float closing = sim_dot(relative, normal);
         if (closing >= 0.0) continue;
         // Bounce only above 1 m/s so resting contacts settle.
         float restitution = closing < -1.0 ? max(own.material.y, collider.material.y) : 0.0;
-        vec3 tangent = relative - normal * closing;
-        float tangent_speed = length(tangent);
+        precise vec3 tangent = relative - normal * closing;
+        float tangent_speed = sim_length(tangent);
         if (tangent_speed > 0.000001) {
-            float friction = sqrt(own.material.x * collider.material.x);
-            relative -= tangent / tangent_speed * min(tangent_speed, -friction * closing);
+            precise float friction_squared = own.material.x * collider.material.x;
+            float friction = sim_sqrt(friction_squared);
+            relative -= sim_div(tangent, tangent_speed) * min(tangent_speed, -friction * closing);
         }
         relative -= normal * closing * (1.0 + restitution);
-        body.velocity.xyz = relative + collider.velocity.xyz;
+        precise vec3 velocity = relative + collider.velocity.xyz;
+        body.velocity.xyz = velocity;
     }
 }
 
@@ -76,31 +119,34 @@ void apply_command(inout PhysicsState body, BodyCommand command) {
         body.velocity.xyz = command.values[0].xyz;
         body.angular_velocity.xyz = command.values[1].xyz;
     } else if (kind == COMMAND_IMPULSE && is_dynamic(body)) {
-        body.velocity.xyz += command.values[0].xyz / body.properties.x;
+        precise vec3 velocity = body.velocity.xyz + sim_div(command.values[0].xyz, body.properties.x);
+        body.velocity.xyz = velocity;
     } else if (kind == COMMAND_FORCE && is_dynamic(body)) {
-        body.velocity.xyz += command.values[0].xyz / body.properties.x * pc.dt;
+        precise vec3 velocity = body.velocity.xyz + sim_div(command.values[0].xyz, body.properties.x) * pc.dt;
+        body.velocity.xyz = velocity;
     } else if (kind == COMMAND_SET_CUSTOM_VALUES) {
         body.custom_values = command.values[0];
     }
 }
 
 void apply_commands(inout PhysicsState body, uint body_index) {
-    // Commands are sorted by body index: find this body's first one.
-    uint low = 0u;
-    uint high = pc.command_count;
+    // This step's commands are sorted by body index: find this body's first.
+    uint end = pc.command_first + pc.command_count;
+    uint low = pc.command_first;
+    uint high = end;
     while (low < high) {
         uint middle = (low + high) / 2u;
         if (commands.data[middle].header.x < body_index) low = middle + 1u;
         else high = middle;
     }
-    for (uint index = low; index < pc.command_count && commands.data[index].header.x == body_index; index++) {
+    for (uint index = low; index < end && commands.data[index].header.x == body_index; index++) {
         apply_command(body, commands.data[index]);
     }
 }
 
 float read_field(PhysicsState body, uint field) {
     vec3 position = body.model[3].xyz;
-    vec3 scale = vec3(length(body.model[0].xyz), length(body.model[1].xyz), length(body.model[2].xyz));
+    vec3 scale = vec3(sim_length(body.model[0].xyz), sim_length(body.model[1].xyz), sim_length(body.model[2].xyz));
     if (field == 0u) return position.x;
     if (field == 1u) return position.y;
     if (field == 2u) return position.z;
@@ -115,7 +161,7 @@ float read_field(PhysicsState body, uint field) {
     if (field == 11u) return scale.z;
     if (field == 12u) return body.properties.x;
     if (field == 13u) return body.properties.y;
-    if (field == 14u) return length(body.velocity.xyz);
+    if (field == 14u) return sim_length(body.velocity.xyz);
     if (field >= 0x100u && field < 0x104u) return body.custom_values[field - 0x100u];
     return 0.0;
 }
@@ -125,8 +171,9 @@ bool compare_value(float left, float right, uint comparison) {
     if (comparison == 1u) return left <= right;
     if (comparison == 2u) return left > right;
     if (comparison == 3u) return left >= right;
-    if (comparison == 4u) return abs(left - right) <= 0.00001;
-    return abs(left - right) > 0.00001;
+    precise float difference = abs(left - right);
+    if (comparison == 4u) return difference <= 0.00001;
+    return difference > 0.00001;
 }
 
 bool evaluate_condition(PhysicsState body, uint offset, uint count) {
@@ -147,7 +194,7 @@ bool evaluate_condition(PhysicsState body, uint offset, uint count) {
         } else if (operation == 3u) {
             stack[stack_size++] = body.velocity.w > 0.5;
         } else if (operation == 4u) {
-            stack[stack_size++] = length(body.velocity.xyz) < 0.02 && length(body.angular_velocity.xyz) < 0.02;
+            stack[stack_size++] = sim_length(body.velocity.xyz) < 0.02 && sim_length(body.angular_velocity.xyz) < 0.02;
         } else if (operation == 5u) {
             stack[stack_size++] = pc.elapsed >= instruction.values.x;
         } else if (operation == 16u && stack_size >= 2u) {
@@ -180,27 +227,31 @@ void main() {
     // The contact pass before this one already reset velocity.w.
     // properties.z: 0 = fixed, 1 = dynamic, 2 = kinematic.
     // Solver 3 is Custom: its own shader moves the body after this step.
-    if (is_dynamic(body) && abs(body.custom_values.x - 3.0) > 0.5) {
-        if (abs(body.custom_values.x - 4.0) < 0.5) {
+    precise vec3 from_solver = abs(body.custom_values.xxx - vec3(2.0, 3.0, 4.0));
+    if (is_dynamic(body) && from_solver.y > 0.5) {
+        precise vec3 velocity = body.velocity.xyz;
+        if (from_solver.z < 0.5) {
             // Space mode attracts bodies toward the origin. The force is
             // softened near the target so bodies do not explode numerically.
             vec3 to_target = -body.model[3].xyz;
-            float distance_squared = dot(to_target, to_target);
+            float distance_squared = sim_dot(to_target, to_target);
             if (distance_squared > 0.000001) {
-                vec3 direction = normalize(to_target);
+                vec3 direction = sim_normalize(to_target);
                 float safe_distance_squared = max(distance_squared, 4.0);
-                body.velocity.xyz += direction
-                    * (500.0 / safe_distance_squared)
+                velocity += direction
+                    * sim_div(500.0, safe_distance_squared)
                     * body.properties.y * pc.dt;
             }
         } else {
-            body.velocity.xyz += vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z)
+            velocity += vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z)
                 * body.properties.y * pc.dt;
         }
-        body.model[3].xyz += body.velocity.xyz * pc.dt;
+        precise vec3 position = body.model[3].xyz + velocity * pc.dt;
+        body.velocity.xyz = velocity;
+        body.model[3].xyz = position;
         BodyShape own = body_shapes.data[body_index];
         // Solver 2 is NoCollision.
-        if (own.shape.x < 2.5 && abs(body.custom_values.x - 2.0) > 0.5) {
+        if (own.shape.x < 2.5 && from_solver.x > 0.5) {
             collide_with_colliders(body, own);
         }
     }
@@ -220,7 +271,8 @@ void main() {
         else if (rule.config.w == 2u) should_emit = current;
         else if (rule.config.w == 3u) should_emit = current && !already_emitted;
 
-        bool cooldown_ready = pc.elapsed - rule.timing.y >= rule.timing.x;
+        precise float since_emitted = pc.elapsed - rule.timing.y;
+        bool cooldown_ready = since_emitted >= rule.timing.x;
         if (should_emit && cooldown_ready) {
             emit_event(body, rule.config.z, rule.state.x, event_payload(body, rule.state.x));
             rule.timing.y = pc.elapsed;

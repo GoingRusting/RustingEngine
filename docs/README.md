@@ -1,0 +1,44 @@
+# RustingEngine documentation
+
+Start with **Getting started**, then work through the tutorials in order.
+Each tutorial builds a small, working game. The commands and code in them
+were run against this version of the engine.
+
+## Start here
+
+- [Getting started](getting-started.md): install the tools, open the editor,
+  create a project, and press Play.
+- [Core concepts](concepts.md): projects, scenes, cooking, frames and fixed
+  ticks, CPU and GPU physics, and where game code runs.
+
+## Tutorials
+
+1. [Hello cube](tutorials/01-hello-cube.md): move and spin a scene object
+   from Rust with the short `rusting_game!` API. (Editor or CLI, 10 minutes.)
+2. [Coin Run from the command line](tutorials/02-coin-run-cli.md): create a
+   complete 2D game from the starter template, change it with scene
+   patches, test it with a scenario, capture a screenshot, and export it.
+3. [Gameplay plugins](tutorials/03-gameplay-plugin.md): write ECS systems,
+   read input through named actions, and save your own components in
+   scenes.
+4. [GPU cube rain](tutorials/04-gpu-cube-rain.md): simulate thousands of
+   bodies on the GPU and get only the events you ask for back in Rust.
+
+## Guides and reference
+
+- [Editor guide](../editor_gui.md): areas, Scene View navigation and the
+  transform gizmo, Hierarchy, Inspector, assets, Preview and Play, export,
+  the Profiler, and keyboard shortcuts.
+- [README: headless CLI](../README.md#headless-project-cli): every `rusting`
+  command, scene patches, and the scenario format.
+- `rusting schema`: the full catalog of commands and scene components, with
+  each field's default, unit, and valid range. It is generated from the
+  engine itself, so it is always current.
+- [Determinism](determinism.md): what makes a simulation reproducible, state
+  hashes, `rusting determinism`, and replays.
+- [Architecture](../architecture.md): how the runtime, renderer, and editor
+  fit together.
+- [Development environment](dev-environment.md): running GPU tests without a
+  GPU (lavapipe).
+- [Changelog](../CHANGELOG.md): what changed in each release.
+- [Roadmap](../roadmap.md): what is done and what comes next.

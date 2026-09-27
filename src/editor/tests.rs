@@ -1,8 +1,139 @@
 //! Tests for the editor state, dock layout, project tools, and GUI elements.
 
+use std::path::Path;
 use std::time::Duration;
 
 use super::*;
+
+#[test]
+fn restart_waits_for_worker_exit_and_stop_cancels_pending_restart() {
+    let mut build = EditorBuildState {
+        running: true,
+        ..EditorBuildState::default()
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    *build.receiver.get_mut().unwrap() = Some(receiver);
+    build.request_restart();
+    assert!(!build.take_restart_ready());
+    assert!(build.stop.load(std::sync::atomic::Ordering::Relaxed));
+
+    sender
+        .send(BuildWorkerMessage::Finished(BuildFinished {
+            success: false,
+            output: "stopped".into(),
+        }))
+        .unwrap();
+    assert_eq!(build.poll(), Some(false));
+    assert!(build.take_restart_ready());
+    assert!(!build.take_restart_ready());
+
+    build.running = true;
+    build.request_restart();
+    build.request_stop();
+    assert!(!build.restart_requested);
+}
+
+#[test]
+fn embedded_preview_restores_authored_scene_after_simulation() {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let world = app.world_mut();
+    let entity = world
+        .spawn((
+            SceneId::default(),
+            Name("Preview Object".into()),
+            Transform::default(),
+        ))
+        .id();
+    let mut state = EditorState {
+        selected: Some(entity),
+        selection: vec![entity],
+        workspace: EditorWorkspace::Scene,
+        active_area: 2,
+        ..EditorState::default()
+    };
+    let mut history = EditorHistory::default();
+    view::start_embedded_preview(world, &mut state, &mut history);
+    assert_eq!(state.mode, EditorMode::Play);
+    assert!(state.play_snapshot.is_some());
+    assert!(!world.resource::<crate::runtime::TimeControl>().paused);
+    world.get_mut::<Transform>(entity).unwrap().position[0] = 10.0;
+    let spawned = world
+        .spawn((Name("Runtime".into()), Transform::default()))
+        .id();
+    history.push_undo(scene_document(world, "Preview Edit").unwrap());
+
+    state.workspace = EditorWorkspace::Game;
+    view::stop_embedded_preview(world, &mut state, &mut history);
+    assert_eq!(state.mode, EditorMode::Edit);
+    assert!(state.play_snapshot.is_none());
+    assert!(world.resource::<crate::runtime::TimeControl>().paused);
+    assert!(world.get_entity(spawned).is_err());
+    assert!(history.undo.is_empty());
+    let restored = state.selected.unwrap();
+    assert_eq!(world.get::<Transform>(restored).unwrap().position[0], 0.0);
+}
+
+#[test]
+fn typed_asset_assignment_snapshots_once_and_rejects_unsaved_meshes() {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+    let (cube, sphere, fallback_material, material, transient) = {
+        let mut assets = world.resource_mut::<AssetServer>();
+        let cube = assets.fallback_mesh;
+        let sphere = assets.builtin_sphere;
+        let fallback_material = assets.fallback_material;
+        let material = assets.materials.insert(MaterialAsset::default());
+        let transient =
+            assets.meshes.insert(crate::assets::MeshAsset::default());
+        (cube, sphere, fallback_material, material, transient)
+    };
+    let entity = world
+        .spawn((
+            SceneId::default(),
+            Name("Object".into()),
+            Transform::default(),
+            MeshRenderer {
+                mesh: cube,
+                material: fallback_material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ))
+        .id();
+    let mut history = EditorHistory::default();
+
+    assert!(
+        view::assign_mesh_handle(world, &mut history, entity, transient)
+            .is_err()
+    );
+    assert!(history.undo.is_empty());
+    assert!(
+        view::assign_mesh_handle(world, &mut history, entity, sphere).unwrap()
+    );
+    assert_eq!(world.get::<MeshRenderer>(entity).unwrap().mesh, sphere);
+    assert_eq!(history.undo.len(), 1);
+    assert!(
+        !view::assign_mesh_handle(world, &mut history, entity, sphere).unwrap()
+    );
+    assert_eq!(history.undo.len(), 1);
+
+    assert!(view::assign_material_handle(
+        world,
+        &mut history,
+        entity,
+        material
+    )
+    .unwrap());
+    assert_eq!(
+        world.get::<MeshRenderer>(entity).unwrap().material,
+        material
+    );
+    assert_eq!(history.undo.len(), 2);
+}
 
 #[test]
 fn editor_play_uses_debug_builds_by_default() {
@@ -1086,6 +1217,11 @@ fn registered_inspectors_draw_and_edit_their_component() {
     struct Health {
         points: u32,
     }
+    crate::reflect! {
+        struct Health {
+            points: u32,
+        }
+    }
     fn draw_health(ui: &mut egui::Ui, health: &mut Health) -> bool {
         ui.label(format!("Typed health {}", health.points));
         health.points += 1;
@@ -1292,4 +1428,322 @@ fn console_groups_repeats_filters_and_records_status_lines() {
     let hidden = texts(&mut app);
     assert!(!hidden.contains("Build finished"), "{hidden}");
     assert!(hidden.contains("Texture missing"), "{hidden}");
+}
+
+#[test]
+fn preview_edits_while_paused_drive_the_simulation_until_stop() {
+    use crate::runtime::{
+        Collider, PhysicsBody, RigidBody, RigidBodyKind, TimeControl,
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let ball = app.world_mut().spawn((
+        SceneId::default(),
+        Name("Ball".into()),
+        Transform::new([0.0, 10.0, 0.0]),
+        PhysicsBody::default(),
+        RigidBody {
+            kind: RigidBodyKind::Dynamic,
+            ..RigidBody::default()
+        },
+        Collider::default(),
+    ));
+    let ball = ball.id();
+    let mut state = EditorState::default();
+    let mut history = EditorHistory::default();
+    let frames = |app: &mut App, count| {
+        for _ in 0..count {
+            app.update(Duration::from_secs_f64(1.0 / 60.0)).unwrap();
+        }
+    };
+    let position =
+        |app: &App| app.world().get::<Transform>(ball).unwrap().position;
+
+    view::start_embedded_preview(app.world_mut(), &mut state, &mut history);
+    frames(&mut app, 30);
+    let fallen = position(&app);
+    assert!(fallen[1] < 9.0, "the ball falls while playing: {fallen:?}");
+
+    view::set_embedded_preview_paused(app.world_mut(), &mut state, true);
+    assert_eq!(state.mode, EditorMode::Paused);
+    frames(&mut app, 10);
+    assert_eq!(position(&app), fallen, "paused time does not move it");
+
+    // Edit through the undo path while paused, then single-step.
+    remember_scene_before_edit(app.world_mut(), &mut history).unwrap();
+    app.world_mut().get_mut::<Transform>(ball).unwrap().position =
+        [3.0, 20.0, 0.0];
+    assert_eq!(history.undo.len(), 1);
+    app.world_mut().resource_mut::<TimeControl>().step();
+    frames(&mut app, 1);
+    let stepped = position(&app);
+    assert_eq!(stepped[0], 3.0);
+    assert!(stepped[1] < 20.0 && stepped[1] > 19.0, "{stepped:?}");
+    frames(&mut app, 5);
+    assert_eq!(position(&app), stepped, "one step, then paused again");
+
+    view::set_embedded_preview_paused(app.world_mut(), &mut state, false);
+    frames(&mut app, 10);
+    assert!(position(&app)[1] < stepped[1], "resumes from the edit");
+
+    view::stop_embedded_preview(app.world_mut(), &mut state, &mut history);
+    assert_eq!(state.mode, EditorMode::Edit);
+    assert!(history.undo.is_empty(), "preview edits leave no history");
+    let world = app.world_mut();
+    let mut query = world.query::<(&Name, &Transform)>();
+    let (_, authored) = query
+        .iter(world)
+        .find(|(name, _)| name.0 == "Ball")
+        .unwrap();
+    assert_eq!(authored.position, [0.0, 10.0, 0.0]);
+}
+
+#[test]
+fn outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-patch-{}", uuid::Uuid::new_v4()));
+    let path = folder.join("main.rscene");
+    let mut app = App::new();
+    app.insert_resource(AssetServer::default());
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let id = uuid::Uuid::new_v4();
+    let cube =
+        app.spawn((SceneId(id), Name("Cube".into()), Transform::default()));
+    let world = app.world_mut();
+    let mut state = EditorState {
+        selected: Some(cube),
+        selection: vec![cube],
+        ..Default::default()
+    };
+    let mut history = EditorHistory::default();
+    save_editor_scene(world, &state, &path).unwrap();
+    let rename = |world: &mut World, name: &str| {
+        let patch = serde_json::from_value(serde_json::json!({"operations": [
+            {"op": "set", "id": id, "path": "/name", "value": name}]}))
+        .unwrap();
+        crate::scene_patch::patch_scene_file(&path, &patch, false).unwrap();
+        // Coarse file clocks can give two writes one timestamp.
+        world.resource_mut::<SceneFileRevision>().modified = None;
+    };
+    let name = |world: &mut World| {
+        let mut query = world.query::<(&SceneId, &Name)>();
+        query
+            .iter(world)
+            .find(|(scene, _)| scene.0 == id)
+            .unwrap()
+            .1
+             .0
+            .clone()
+    };
+
+    // Clean scene: the outside change loads behind one Undo snapshot.
+    rename(world, "Agent");
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Agent");
+    assert_eq!(history.undo.len(), 1);
+    assert!(!state.scene_dirty);
+    assert_eq!(
+        state
+            .selected
+            .and_then(|e| world.get::<SceneId>(e))
+            .unwrap()
+            .0,
+        id
+    );
+    let before = history.undo.back().unwrap().clone();
+    crate::runtime::load_scene_document(world, &before, SceneLoadMode::Replace)
+        .unwrap();
+    assert_eq!(
+        name(world),
+        "Cube",
+        "the snapshot holds the scene before the patch"
+    );
+
+    // Unsaved edits: nothing reloads, and Save refuses once.
+    save_editor_scene(world, &state, &path).unwrap();
+    state.scene_dirty = true;
+    rename(world, "Agent Again");
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Cube");
+    assert!(state
+        .scene_message
+        .as_deref()
+        .unwrap()
+        .contains("unsaved edits"));
+    assert!(matches!(
+        save_editor_scene(world, &state, &path),
+        Err(crate::runtime::SceneIoError::Conflict(_))
+    ));
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("Agent Again"));
+    save_editor_scene(world, &state, &path).unwrap();
+    assert!(!std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("Agent Again"));
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn play_reports_first_frame_time_and_per_file_reload_errors() {
+    let mut build = EditorBuildState {
+        running: true,
+        play_started: Some(std::time::Instant::now()),
+        ..EditorBuildState::default()
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    *build.receiver.get_mut().unwrap() = Some(receiver);
+    for text in [
+        format!("\n{BUILD_PASSED} Starting native game...\n"),
+        "hot reload failed: failed to load `assets/crate.rtexture`: bad\n"
+            .into(),
+        format!("{} 250 ms\n", crate::project::FIRST_FRAME_MARKER),
+    ] {
+        sender.send(BuildWorkerMessage::Output(text)).unwrap();
+    }
+    assert_eq!(build.poll(), None);
+    let notices = build.take_notices();
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert_eq!(notices[0].1, "Assets");
+    assert!(notices[0].2.contains("assets/crate.rtexture"));
+    assert_eq!(notices[1].1, "Play");
+    assert!(notices[1].2.contains("game startup 250 ms"));
+
+    // A failed build reports each error with its file; a failed game after
+    // a good build does not repeat the build output as errors.
+    build.built_after = None;
+    sender
+        .send(BuildWorkerMessage::Output(
+            "src/main.rs:9:5: error[E0425]: cannot find value `x`\n".into(),
+        ))
+        .unwrap();
+    sender
+        .send(BuildWorkerMessage::Finished(BuildFinished {
+            success: false,
+            output: "\nCargo task failed.\n".into(),
+        }))
+        .unwrap();
+    assert_eq!(build.poll(), Some(false));
+    let notices = build.take_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].1, "Rust");
+    assert!(notices[0].2.starts_with("src/main.rs:9: error[E0425]"));
+}
+
+#[test]
+fn replacing_an_imported_asset_previews_then_writes_on_confirm() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-replace-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(folder.join("assets")).unwrap();
+    let png = |name: &str, value: u8| {
+        let path = folder.join(name);
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([value, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    };
+    let imported = crate::asset_import::import_asset(
+        &folder,
+        &png("old.png", 10),
+        Path::new(""),
+        &crate::asset_import::AssetProvenance::default(),
+        &crate::asset_import::ImportSettings::default(),
+        false,
+    )
+    .unwrap();
+    let target = folder.join(&imported.path);
+    let replacement = png("new.png", 250);
+    let red = |path: &Path| image::open(path).unwrap().to_rgba8()[(0, 0)][0];
+
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    {
+        let world = app.world_mut();
+        let mut state = world.resource_mut::<EditorState>();
+        state.project_root = folder.display().to_string();
+        state.dock_layout = EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Assets,
+        };
+        world.resource_mut::<EditorAssetState>().replace_target =
+            Some(target.clone());
+        let chosen = replacement.clone();
+        world
+            .resource_mut::<FileDialogs>()
+            .open(DialogPurpose::ReplaceAsset, async move { vec![chosen] });
+    }
+    let context = Context::default();
+    let frame = |app: &mut App, input: egui::RawInput| {
+        context.run(input, |context| draw_editor_view(app.world_mut(), context))
+    };
+    frame(&mut app, egui::RawInput::default());
+    for _ in 0..200 {
+        if app
+            .world()
+            .resource::<EditorAssetState>()
+            .replace_preview
+            .is_some()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        frame(&mut app, egui::RawInput::default());
+    }
+    let preview = app
+        .world()
+        .resource::<EditorAssetState>()
+        .replace_preview
+        .clone()
+        .expect("the chosen file is previewed");
+    assert_eq!(preview.report.as_ref().unwrap().id, imported.id);
+    assert_eq!(red(&target), 10, "a preview writes nothing");
+
+    // egui lays a new modal out invisibly on its first frame.
+    frame(&mut app, egui::RawInput::default());
+    let output = frame(&mut app, egui::RawInput::default());
+    let button = output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Replace" => {
+                Some(text.pos + text.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .expect("Replace button");
+    for pressed in [true, false] {
+        frame(
+            &mut app,
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton {
+                        pos: button,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(red(&target), 250);
+    let assets = app.world().resource::<EditorAssetState>();
+    assert!(assets.replace_preview.is_none());
+    assert!(
+        assets
+            .message
+            .as_deref()
+            .unwrap()
+            .contains(&imported.id.to_string()),
+        "{:?}",
+        assets.message
+    );
+    std::fs::remove_dir_all(folder).unwrap();
 }

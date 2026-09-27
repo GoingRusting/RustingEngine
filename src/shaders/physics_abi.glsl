@@ -48,7 +48,7 @@ layout(set = 0, binding = 4) buffer Events { PhysicsEvent data[]; } events;
 
 layout(push_constant) uniform PhysicsPush {
     float dt;
-    float elapsed;
+    float elapsed; // Seconds simulated by the end of this tick: tick * dt.
     uint body_count;
     uint event_capacity;
     uint tick_low;
@@ -61,6 +61,8 @@ layout(push_constant) uniform PhysicsPush {
     uint collider_count;
     // Edge of one cell in the built-in body-contact grid, in meters.
     float grid_cell_size;
+    // Index of this step's first command; see `command_count`.
+    uint command_first;
 } pc;
 
 // Appends one event for `body`. `event_id` is a `GpuEventId` registered on

@@ -7,17 +7,9 @@ use nalgebra::Vector3;
 use crate::assets::AssetServer;
 use crate::runtime::picking::{ray_mesh_bounds, scene_ray, Ray};
 use crate::runtime::{
-    Camera, EventQueue, GlobalTransform, MeshRenderer, MouseButton,
+    Camera, ClickEvent, EventQueue, GlobalTransform, MeshRenderer, MouseButton,
     RenderWorld, RuntimeInput,
 };
-
-/// Fired the frame a mouse button is pressed over a renderable object.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ClickEvent {
-    pub entity: Entity,
-    pub button: MouseButton,
-    pub world_position: [f32; 3],
-}
 
 /// Buttons checked for click events. `MouseButton::Other` codes are ignored;
 /// most games only care about these three.

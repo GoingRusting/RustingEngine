@@ -1,0 +1,65 @@
+{
+  "device": "NVIDIA GeForce RTX 3060",
+  "driver": "615.71.09",
+  "extent": [
+    1920,
+    1080
+  ],
+  "quality": "Eco",
+  "frames": 600,
+  "frame_time": {
+    "mean_ms": 2.5907152399999993,
+    "p95_ms": 3.0350569999999997,
+    "max_ms": 40.482766000000005
+  },
+  "cpu_time": {
+    "mean_ms": 0.25106126499999987,
+    "p95_ms": 0.23264400000000002,
+    "max_ms": 36.744844
+  },
+  "gpu_time": {
+    "mean_ms": 1.8432598933333337,
+    "p95_ms": 2.202432,
+    "max_ms": 2.279616
+  },
+  "gpu_passes_ms": [
+    [
+      "Uploads",
+      0.0022400000000000002
+    ],
+    [
+      "Physics",
+      0.7567422933333333
+    ],
+    [
+      "Culling",
+      0.006623573333333333
+    ],
+    [
+      "Shadow",
+      0.026647893333333332
+    ],
+    [
+      "Scene",
+      1.0219707733333332
+    ],
+    [
+      "ToneMap",
+      0.03127162666666667
+    ]
+  ],
+  "draws": 21,
+  "dispatches": 4,
+  "triangles": 104856,
+  "visible_instances": 1079,
+  "gpu_memory_bytes": 1073741824,
+  "upload_bytes": 737808,
+  "physics_bodies": 1001,
+  "physics_command_bytes": 0,
+  "physics_event_bytes": 41728,
+  "physics_state_bytes": 0,
+  "readback_latency_frames": 0,
+  "dropped_lights": 9,
+  "physics_events_dropped": 0,
+  "physics_commands_rejected": 0
+}

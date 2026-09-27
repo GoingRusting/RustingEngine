@@ -131,6 +131,15 @@ item are named in parentheses.
   per-type icons. Hidden objects still draw their shape.
 - Gizmo polish: local/global modes, snapping, visual restyle (M6).
 - Multiple viewports and orthographic views (M20).
+- Game components the editor has no registration for (for example a
+  game's `coin_run.spin`) load as `UnregisteredComponents` and save back
+  unchanged, but the Inspector does not show them. Show them as read-only
+  JSON first, then editable JSON validated on the next game load.
+- Reflected Inspector gaps: string-keyed maps (such as `TileMap.tiles`)
+  edit existing entries but cannot add or rename keys; field `doc` hints
+  are not shown as tooltips; the asset drop-down for handle fields lists
+  only assets that are already loaded, with no file browser or drag from
+  the Assets panel.
 
 ### Asset workflow
 
@@ -140,8 +149,24 @@ item are named in parentheses.
 - glTF import: vertex colors (`COLOR_0`), `KHR_texture_transform`, and
   import options (scale, up axis, "apply transforms") are not read.
   Re-adding a file imports its meshes again instead of sharing them.
-- Assign meshes, materials, textures, and physics shapes by typed handle (M6).
-- Per-asset import settings and re-import (M20).
+- Typed asset assignment follow-up: standalone reusable collider shape
+  assets do not exist yet. Mesh colliders use the renderer's typed mesh
+  handle, while primitive collider shapes are typed enum variants.
+- Per-asset import settings and re-import (M20). The library and CLI side
+  exists (`crate::asset_import`, `rusting asset import|reimport|list`,
+  `<file>.rmeta` sidecars with ID, settings, dependencies and provenance).
+  The asset browser has a Replace… action with a dry-run preview and hides
+  `.rmeta` sidecars. It still needs an import dialog with provenance fields
+  (its Import button copies files without a sidecar), license/changed/
+  not-imported badges, and a Generate dialog that runs a `project.json`
+  generator hook with a prompt (`rusting asset generate` covers it today).
+- New Project dialog: add a template picker (3d, 2d, starter). The CLI's
+  `rusting new --template` already takes all three.
+- Art-direction presets: `rusting preset apply` has no editor picker yet.
+  Presets should skip ACES tone mapping and keep HUD size hierarchy on 2D
+  unlit scenes; the starter exercise corrects both by patch today.
+  Edit mode does not run App schedules, so `rusting.background` only shows
+  in Play; the viewport should read it directly.
 - Image textures always load as sRGB, both from the Inspector and from
   scene files. Normal, metal/rough, and occlusion maps need a linear load
   path, and the scene file needs to store the color space per slot.
@@ -156,34 +181,49 @@ item are named in parentheses.
 - Console: engine code (renderer, physics, runtime) has no log sink, so
   only editor messages reach it. Status lines get their level from
   keywords; give `scene_message` a level instead.
-- Profiler with CPU spans, GPU pass timings, counters, and memory (M6, M20).
-- Render settings panel (quality profile, capabilities) and physics
-  diagnostics panel (M6). It should show `RenderCapacityDiagnostics`,
-  including the missing mesh, material, and texture counts.
+- Profiler follow-up: add per-system CPU spans, capture/export, and dedicated
+  GPU allocation accounting to the M6 dockable history panel (M20).
+- Render settings and physics diagnostics follow-up: expose more optional
+  device capabilities and explain capacity warnings inline. The M6 panels
+  already show `RenderCapacityDiagnostics`, including missing asset counts.
 - Environment panel for the scene-wide `AmbientLight`, `SkyLight`, and
   `ToneMapping` components, like Godot's `WorldEnvironment` (M6).
 - Shortcut follow-ups: show each binding next to its Edit menu entry, allow
   more than one key per action (Blender deletes with both X and Delete), and
   make modal keys (Escape cancels a gizmo drag) rebindable.
+- Global scaling at arbitrary object angles is axis weighted because scene
+  transforms store rotation and scale without shear; support exact global
+  scaling if the scene transform format gains a shear component.
 - Project settings and input map editors (M20).
 - Project-wide search (M20).
+- 2D path: Edit mode does not run App schedules, so a `rusting.tile_map`
+  shows no tiles until Play. Run `build_tile_maps` in Edit mode (or draw a
+  preview), add a tile painter, and offer the 3D/2D template choice in the
+  New Project dialog (the CLI has `new --template 2d`).
 
 ### Play workflow
 
-- Stop and restart for the native game process (M6).
-- Embedded preview without compiled Rust systems (M6).
+- Native Stop/Restart and embedded Preview with Pause/Step are implemented
+  in M6. Preview runs the editor's ECS systems and restores the authored
+  scene, undo history, and transient entities on Stop.
 - Remote scene tree and inspector for a running game (M20).
+- Show `RuntimeUi` in the embedded Preview. Update systems already draw
+  into the App's `RuntimeUi` pass while Preview runs, but the Game area does
+  not paint that output or forward pointer and key input to it. Native Play
+  shows it because the game window runner paints it.
 
 ### Rendering integration
 
+- Smoke-test editor window resize and close-button shutdown by hand after
+  the `EditorWindowRunner::draw` split; an 8-second launch passed (M1).
 - Engine-owned egui painter is done (`rendering::egui_painter`). Texture
   uploads wait on their own submission; replace with a staging ring if the
   stall shows up in profiles.
 - Golden-image test for editor compositing (M6 exit gate).
 - Show the resolved quality profile when Quality is Auto, and the LOD
   groups loaded next to meshes, in the stats area.
-- Profiler panel: today `CullingStats` is one line in the stats area.
-  Add a panel with per-pass GPU timestamps and a history graph.
+- Profiler area with per-pass GPU timestamps and CPU/GPU history is done.
+  Add per-pass history selection and frame capture/export (M20).
 - Render Bounds are edited as numbers in the Inspector only. Add viewport
   handles to drag box faces and the sphere radius, plus a "Fit to Mesh"
   action. Multi-selection edits only the active object.
@@ -216,3 +256,11 @@ Items the audit found but left open, with the reason for each.
   but picking, focus, the gizmo, and Save still read the authored
   `Transform`. Picking and focus should prefer the mirror when present; a
   "Keep simulated pose" action should copy it into `Transform` through undo.
+
+### Outside scene edits
+
+- The editor reloads a clean scene when `rusting scene patch` or another
+  tool changes its file, and refuses one Save when it has unsaved edits.
+  Add a conflict dialog that shows the patch diff and offers keep mine,
+  take theirs, or a per-field merge. The watch compares the file time
+  first; switch to a file watcher if coarse clocks miss changes.

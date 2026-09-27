@@ -125,7 +125,7 @@ fn square_side(cells: usize) -> usize {
 }
 
 /// Position of cell `index` in a `side` × `side` grid centred on the origin.
-fn grid(index: usize, side: usize, spacing: f32) -> [f32; 2] {
+pub(super) fn grid(index: usize, side: usize, spacing: f32) -> [f32; 2] {
     let centre = (side - 1) as f32 / 2.0;
     [
         ((index % side) as f32 - centre) * spacing,

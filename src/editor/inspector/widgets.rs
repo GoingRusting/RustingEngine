@@ -103,6 +103,14 @@ pub fn color(ui: &mut Ui, label: &str, rgb: &mut [f32; 3]) -> bool {
     })
 }
 
+/// Color with alpha, unmultiplied.
+pub fn color4(ui: &mut Ui, label: &str, rgba: &mut [f32; 4]) -> bool {
+    property_row(ui, label, |ui| {
+        ui.spacing_mut().interact_size.x = ui.available_width();
+        ui.color_edit_button_rgba_unmultiplied(rgba).changed()
+    })
+}
+
 pub fn checkbox(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
     property_row(ui, label, |ui| ui.checkbox(value, "").changed())
 }

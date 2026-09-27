@@ -1,0 +1,60 @@
+#version 450
+// Hash of every GPU body's state after one fixed tick; see "World-state
+// hash" in docs/determinism.md. Each body hashes its own state and rules;
+// the tick's hash is the integer sum over bodies, which is the same in any
+// order, so the atomics here never change the result.
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+#include <physics_abi.glsl>
+
+struct RuleState {
+    uvec4 config;
+    vec4 timing;
+    uvec4 state;
+};
+layout(set = 0, binding = 2) readonly buffer Rules { RuleState data[]; } rules;
+// Two 32-bit lanes per tick, at slot tick % 8; a frame runs at most eight
+// ticks, so its slots never collide.
+layout(set = 0, binding = 13) buffer TickHashes { uvec2 data[]; } tick_hashes;
+
+uint fnv(uint hash, uvec4 words) {
+    hash = (hash ^ words.x) * 16777619u;
+    hash = (hash ^ words.y) * 16777619u;
+    hash = (hash ^ words.z) * 16777619u;
+    return (hash ^ words.w) * 16777619u;
+}
+
+uint fnv(uint hash, vec4 values) {
+    return fnv(hash, floatBitsToUint(values));
+}
+
+// MurmurHash3 finalizer, so the second lane is not a multiple of the first.
+uint finish(uint hash) {
+    hash ^= hash >> 16;
+    hash *= 0x85EBCA6Bu;
+    hash ^= hash >> 13;
+    hash *= 0xC2B2AE35u;
+    return hash ^ (hash >> 16);
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= pc.body_count) return;
+    PhysicsState body = bodies.data[index];
+    uint hash = (2166136261u ^ index) * 16777619u;
+    for (int column = 0; column < 4; column++) hash = fnv(hash, body.model[column]);
+    hash = fnv(hash, body.velocity);
+    hash = fnv(hash, body.angular_velocity);
+    hash = fnv(hash, body.properties);
+    hash = fnv(hash, body.custom_values);
+    hash = fnv(hash, body.metadata);
+    for (uint rule = 0u; rule < body.metadata.w; rule++) {
+        RuleState state = rules.data[body.metadata.z + rule];
+        hash = fnv(hash, state.config);
+        hash = fnv(hash, state.timing);
+        hash = fnv(hash, state.state);
+    }
+    uint slot = pc.tick_low % 8u;
+    atomicAdd(tick_hashes.data[slot].x, hash);
+    atomicAdd(tick_hashes.data[slot].y, finish(hash));
+}

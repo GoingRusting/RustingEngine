@@ -4,6 +4,7 @@
 //! composites the resulting shapes over the Vulkan scene.
 
 mod assets_panel;
+mod diagnostics;
 mod dock;
 mod file_dialogs;
 pub mod gui_elements;
@@ -12,6 +13,7 @@ mod icons;
 mod inspector;
 mod overlay;
 mod picking;
+pub mod profiler;
 mod project;
 mod shortcuts;
 pub mod view;
@@ -25,6 +27,9 @@ pub use inspector::InspectorRegistry;
 use inspector::{draw_inspector_area, ComponentEdit};
 pub use view::draw_editor_view;
 
+use crate::project::export_built_game;
+#[cfg(test)]
+use crate::project::package_game_files;
 pub use project::{
     create_project, open_project, EditorPreferences, OpenProject, ProjectError,
     ProjectManagerState, ProjectManifest, RecentProject,
@@ -57,7 +62,7 @@ use crate::runtime::{
     SceneDocument, SceneId, SceneLoadMode, SpotLight, Visibility,
 };
 use crate::Transform;
-use crate::{AssetServer, MaterialAsset, PrimitiveShape};
+use crate::{AssetServer, Handle, MaterialAsset, PrimitiveShape};
 
 /// True when the editor must redraw every frame: the game is playing or the
 /// fly camera moves without window events. Otherwise it redraws only on input,
@@ -90,14 +95,119 @@ fn editor_metadata_path(scene: &std::path::Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Scene file revision the editor last loaded or saved. An agent's
+/// `rusting scene patch` changes the file under the open editor; comparing
+/// revisions turns that into a reload or a conflict instead of lost work.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct SceneFileRevision {
+    path: Option<PathBuf>,
+    revision: String,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl SceneFileRevision {
+    fn read(path: &std::path::Path) -> Option<Self> {
+        let bytes = std::fs::read(path).ok()?;
+        Some(Self {
+            // Canonical, so project and Save paths to one file compare equal.
+            path: path.canonicalize().ok(),
+            revision: crate::runtime::scene_revision(&bytes),
+            modified: std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        })
+    }
+
+    fn record(world: &mut World, path: &std::path::Path) {
+        world.insert_resource(Self::read(path).unwrap_or_default());
+    }
+}
+
+/// Reloads the open scene when another tool changed its file. A clean scene
+/// reloads behind an Undo snapshot, so Undo reverts the outside change. A
+/// scene with unsaved edits keeps them and reports the conflict; the next
+/// Save then refuses once before it overwrites.
+fn reload_external_scene_change(
+    world: &mut World,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+) {
+    let Some(known) = world.get_resource::<SceneFileRevision>() else {
+        return;
+    };
+    let Some(path) = known.path.clone() else {
+        return;
+    };
+    let modified = std::fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    if modified == known.modified || state.mode != EditorMode::Edit {
+        return;
+    }
+    let known = known.revision.clone();
+    let Some(disk) = SceneFileRevision::read(&path) else {
+        return;
+    };
+    if disk.revision == known {
+        world.resource_mut::<SceneFileRevision>().modified = disk.modified;
+        return;
+    }
+    if state.scene_dirty {
+        world.resource_mut::<SceneFileRevision>().modified = disk.modified;
+        state.scene_message = Some(format!(
+            "{} changed on disk while this scene has unsaved edits; Load \
+             takes the outside change, Save overwrites it",
+            path.display()
+        ));
+        return;
+    }
+    if let Err(error) = remember_scene_before_edit(world, history) {
+        state.scene_message = Some(error);
+        return;
+    }
+    let result = view::reload_keeping_selection(world, state, |world| {
+        load_scene(world, &path, SceneLoadMode::Replace)
+    });
+    state.scene_message = Some(match result {
+        Ok(()) => {
+            history.redo.clear();
+            world.insert_resource(disk);
+            format!(
+                "Reloaded outside change to {}; Undo reverts it",
+                path.display()
+            )
+        }
+        Err(error) => {
+            history.undo.pop_back();
+            world.resource_mut::<SceneFileRevision>().modified = disk.modified;
+            format!("Could not reload outside change: {error}")
+        }
+    });
+}
+
 /// Saves the scene, then the editor camera pose and selection beside it.
-/// A failed metadata write does not fail the save.
+/// A failed metadata write does not fail the save. Refuses once with
+/// [`crate::runtime::SceneIoError::Conflict`] when the file changed since the
+/// editor loaded or saved it; saving again overwrites.
 pub fn save_editor_scene(
     world: &mut World,
     state: &EditorState,
     path: &std::path::Path,
 ) -> Result<(), crate::runtime::SceneIoError> {
+    if let Some(mut known) = world.get_resource_mut::<SceneFileRevision>() {
+        if known.path.is_some() && known.path == path.canonicalize().ok() {
+            if let Some(disk) = SceneFileRevision::read(path) {
+                if disk.revision != known.revision {
+                    *known = disk;
+                    return Err(crate::runtime::SceneIoError::Conflict(
+                        path.to_owned(),
+                    ));
+                }
+            }
+        }
+    }
     save_scene(world, path, "Main Scene")?;
+    SceneFileRevision::record(world, path);
     let camera = state
         .editor_camera
         .and_then(|camera| world.get::<Transform>(camera));
@@ -135,6 +245,7 @@ pub fn load_editor_scene(
     path: &std::path::Path,
 ) -> Result<usize, crate::runtime::SceneIoError> {
     let count = load_scene(world, path, SceneLoadMode::Replace)?;
+    SceneFileRevision::record(world, path);
     state.selected = None;
     state.selection.clear();
     let Some(metadata) = std::fs::read(editor_metadata_path(path))
@@ -287,6 +398,10 @@ pub struct EditorState {
     pub editor_camera: Option<Entity>,
     /// Copy of the scene restored when Stop is pressed.
     pub play_snapshot: Option<SceneDocument>,
+    /// All entities that existed before embedded preview started.
+    pub preview_entities: Option<std::collections::HashSet<Entity>>,
+    /// Dirty flag to restore after transient preview edits are discarded.
+    pub preview_scene_dirty: Option<bool>,
     /// Source path relative to the selected project folder.
     pub code_path: String,
     /// Editable text loaded from `code_path`.
@@ -359,6 +474,10 @@ pub enum GizmoAxis {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct EditorGizmoDrag {
     pub mode: Option<TransformModes>,
+    pub snap_enabled: bool,
+    pub global_axes: bool,
+    /// Squared projection of each world scale axis onto local scale axes.
+    pub global_scale_weights: [[f32; 3]; 3],
     pub modal: bool,
     pub axis_mask: [bool; 3],
     pub active_axis: Option<GizmoAxis>,
@@ -424,6 +543,7 @@ struct EditorHistory {
     redo: Vec<SceneDocument>,
     /// Scene state from before the current continuous Inspector edit.
     pending_inspector: Option<SceneDocument>,
+    preview_before: Option<Box<EditorHistory>>,
 }
 
 impl EditorHistory {
@@ -461,6 +581,8 @@ impl Default for EditorState {
             workspace: EditorWorkspace::Scene,
             editor_camera: None,
             play_snapshot: None,
+            preview_entities: None,
+            preview_scene_dirty: None,
             code_path: "src/main.rs".into(),
             code_source: String::new(),
             code_message: None,
@@ -600,12 +722,18 @@ impl Plugin for EditorPlugin {
             .insert_resource(EditorTransformMode::default())
             .insert_resource(EditorFlyCamera::default())
             .insert_resource(EditorConsole::default())
+            .insert_resource(profiler::EditorProfiler::default())
             .insert_resource(EditorHistory::default())
             .insert_resource(PendingDestructiveAction::default())
             .insert_resource(EditorAssetState::default())
             .insert_resource(EditorBuildState::default())
             .insert_resource(ProjectManagerState::default())
             .insert_resource(FileDialogs::default());
+        // The editor does not link the game's plugins; keep their
+        // components as saved JSON so opening and saving a scene keeps them.
+        app.world_mut()
+            .resource_mut::<crate::runtime::SceneComponentRegistry>()
+            .keep_unregistered();
         Ok(())
     }
 }
@@ -652,6 +780,18 @@ struct EditorAssetState {
     files_scanned: Option<(String, std::time::Instant)>,
     /// Image previews by path; `None` marks a file that failed to decode.
     thumbnails: std::collections::HashMap<PathBuf, Option<egui::TextureHandle>>,
+    /// Imported asset a Replace dialog is choosing a new file for.
+    replace_target: Option<PathBuf>,
+    /// Dry-run result shown for confirmation before a replacement.
+    replace_preview: Option<ReplacePreview>,
+}
+
+/// A checked but unwritten asset replacement.
+#[derive(Clone)]
+struct ReplacePreview {
+    target: PathBuf,
+    source: PathBuf,
+    report: Result<crate::asset_import::ImportReport, String>,
 }
 
 impl EditorAssetState {
@@ -693,18 +833,6 @@ enum BuildRequest {
 /// only needs `rustup target add` and mingw-w64, not the MSVC tools.
 pub(super) const WINDOWS_TARGET: &str = "x86_64-pc-windows-gnu";
 
-/// File name of the game executable built for `target`.
-fn executable_name(binary_name: &str, target: Option<&str>) -> String {
-    let windows = target.map_or(cfg!(target_os = "windows"), |target| {
-        target.contains("windows")
-    });
-    if windows {
-        format!("{binary_name}.exe")
-    } else {
-        binary_name.to_owned()
-    }
-}
-
 /// Result sent from the Cargo worker back to the main editor thread.
 struct BuildFinished {
     success: bool,
@@ -733,6 +861,15 @@ struct EditorBuildState {
         std::sync::Mutex<Option<std::sync::mpsc::Receiver<BuildWorkerMessage>>>,
     /// Set by Stop; the worker kills its current process when it sees it.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Restart only after the worker confirms its process has exited.
+    restart_requested: bool,
+    restart_ready: bool,
+    /// When Play or Restart started a build; the scene was saved just before.
+    play_started: Option<std::time::Instant>,
+    /// Build time of the current Play, once Cargo finished.
+    built_after: Option<std::time::Duration>,
+    /// Timing and per-file error messages for the Console.
+    notices: Vec<(ConsoleLevel, &'static str, String)>,
 }
 
 impl EditorBuildState {
@@ -771,6 +908,9 @@ impl EditorBuildState {
             ),
         };
         self.console_cursor = 0;
+        self.play_started = matches!(request, BuildRequest::BuildAndRun { .. })
+            .then(std::time::Instant::now);
+        self.built_after = None;
         self.stop = std::sync::Arc::default();
         let stop = std::sync::Arc::clone(&self.stop);
         std::thread::spawn(move || {
@@ -884,8 +1024,20 @@ impl EditorBuildState {
     }
 
     /// Asks the worker to kill the running Cargo task or native game.
-    fn request_stop(&self) {
+    fn request_stop(&mut self) {
+        self.restart_requested = false;
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn request_restart(&mut self) {
+        if self.running {
+            self.restart_requested = true;
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn take_restart_ready(&mut self) -> bool {
+        std::mem::take(&mut self.restart_ready)
     }
 
     /// Receives new compiler and game output without blocking the editor.
@@ -910,21 +1062,29 @@ impl EditorBuildState {
         for message in messages {
             match message {
                 BuildWorkerMessage::Output(text) => {
+                    self.note_output(&text);
                     self.append_output(&text);
                 }
                 BuildWorkerMessage::Finished(finished) => {
                     self.append_output(&finished.output);
                     self.running = false;
+                    if !finished.success && self.built_after.is_none() {
+                        self.note_build_errors();
+                    }
+                    self.play_started = None;
                     finished_status = Some(finished.success);
                 }
             }
         }
         if finished_status.is_some() {
+            self.restart_ready = std::mem::take(&mut self.restart_requested);
             *self.receiver.get_mut().ok()? = None;
             finished_status
         } else if disconnected {
             if self.running {
                 self.running = false;
+                self.restart_ready =
+                    std::mem::take(&mut self.restart_requested);
                 self.append_output("\nCargo worker stopped unexpectedly.\n");
                 *self.receiver.get_mut().ok()? = None;
                 Some(false)
@@ -934,6 +1094,65 @@ impl EditorBuildState {
         } else {
             None
         }
+    }
+
+    /// Records build time, the game's first playable frame, and asset
+    /// reload failures from one piece of worker output.
+    fn note_output(&mut self, text: &str) {
+        let Some(started) = self.play_started else {
+            return;
+        };
+        if text.contains(BUILD_PASSED) {
+            self.built_after = Some(started.elapsed());
+        }
+        if let Some(game_ms) = crate::project::first_frame_ms(text) {
+            self.notices.push((
+                ConsoleLevel::Info,
+                "Play",
+                format!(
+                    "First playable frame {:.2} s after save (build {:.2} s, \
+                     game startup {game_ms} ms)",
+                    started.elapsed().as_secs_f64(),
+                    self.built_after.unwrap_or_default().as_secs_f64(),
+                ),
+            ));
+        }
+        for failure in crate::project::reload_diagnostics(text) {
+            if failure.kind == "asset" {
+                self.notices.push((
+                    ConsoleLevel::Error,
+                    "Assets",
+                    failure.message,
+                ));
+            }
+        }
+    }
+
+    /// Adds one Console error per Rust or shader error in the build output.
+    fn note_build_errors(&mut self) {
+        for error in crate::project::reload_diagnostics(&self.output) {
+            let (source, location) = match error.kind {
+                "shader" => ("Shader", error.file),
+                "rust" => ("Rust", error.file),
+                _ => continue,
+            };
+            let location = match (location, error.line) {
+                (Some(file), Some(line)) => {
+                    format!("{}:{line}: ", file.display())
+                }
+                (Some(file), None) => format!("{}: ", file.display()),
+                _ => String::new(),
+            };
+            self.notices.push((
+                ConsoleLevel::Error,
+                source,
+                format!("{location}{}", error.message),
+            ));
+        }
+    }
+
+    fn take_notices(&mut self) -> Vec<(ConsoleLevel, &'static str, String)> {
+        std::mem::take(&mut self.notices)
     }
 
     /// Keeps recent output while preventing an unlimited memory allocation.
@@ -966,6 +1185,9 @@ impl EditorBuildState {
     }
 }
 
+/// Output line the worker sends when the game build succeeded.
+const BUILD_PASSED: &str = "Build passed.";
+
 /// Starts the native game and forwards both output streams to the editor.
 fn run_native_game(
     project_root: &std::path::Path,
@@ -974,9 +1196,9 @@ fn run_native_game(
     sender: std::sync::mpsc::Sender<BuildWorkerMessage>,
     stop: &std::sync::atomic::AtomicBool,
 ) {
-    let _ = sender.send(BuildWorkerMessage::Output(
-        "\nBuild passed. Starting native game...\n".into(),
-    ));
+    let _ = sender.send(BuildWorkerMessage::Output(format!(
+        "\n{BUILD_PASSED} Starting native game...\n"
+    )));
     // On Unix `cargo run` replaces itself with the game, so Stop kills the
     // game; on Windows Cargo's job object takes the game down with it.
     let mut cargo = std::process::Command::new("cargo");
@@ -1065,158 +1287,13 @@ fn run_streamed(
     Ok(status)
 }
 
-/// Creates a portable folder after Cargo has produced the release binary.
-fn export_built_game(
-    project_root: &std::path::Path,
-    manifest: &std::path::Path,
-    parent: &std::path::Path,
-    project_name: &str,
-    binary_name: &str,
-    cooked_scene: &std::path::Path,
-    target: Option<&str>,
-) -> Result<PathBuf, String> {
-    if !parent.is_dir() {
-        return Err(format!("{} is not a folder", parent.display()));
-    }
-    let metadata = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .args(["--manifest-path"])
-        .arg(manifest)
-        .current_dir(project_root)
-        .output()
-        .map_err(|error| format!("Could not read Cargo metadata: {error}"))?;
-    if !metadata.status.success() {
-        return Err(String::from_utf8_lossy(&metadata.stderr).into_owned());
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout)
-        .map_err(|error| format!("Invalid Cargo metadata: {error}"))?;
-    let target_directory = metadata
-        .get("target_directory")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "Cargo metadata has no target directory".to_owned())?;
-    let executable = PathBuf::from(target_directory)
-        .join(target.unwrap_or_default())
-        .join("release")
-        .join(executable_name(binary_name, target));
-    if !executable.is_file() {
-        return Err(format!(
-            "Release executable {} was not produced",
-            executable.display()
-        ));
-    }
-    package_game_files(
-        project_root,
-        &executable,
-        parent,
-        project_name,
-        binary_name,
-        cooked_scene,
-        target,
-    )
-}
-
-/// Copies a verified executable and runtime data into one new export folder.
-fn package_game_files(
-    project_root: &std::path::Path,
-    executable: &std::path::Path,
-    parent: &std::path::Path,
-    project_name: &str,
-    binary_name: &str,
-    cooked_scene: &std::path::Path,
-    target: Option<&str>,
-) -> Result<PathBuf, String> {
-    let executable_name = executable_name(binary_name, target);
-    let cooked_source = project_root.join(cooked_scene);
-    if !cooked_source.is_file() {
-        return Err(format!(
-            "Cooked scene {} is missing",
-            cooked_source.display()
-        ));
-    }
-
-    // A unique final name avoids replacing an older playable export.
-    // Cross exports name their system, e.g. `game_windows_export`.
-    let safe_name = match target.and_then(|target| target.split('-').nth(2)) {
-        Some(system) => format!("{}_{system}", binary_name.replace('-', "_")),
-        None => binary_name.replace('-', "_"),
-    };
-    let mut destination = parent.join(format!("{safe_name}_export"));
-    for number in 2.. {
-        if !destination.exists() {
-            break;
-        }
-        destination = parent.join(format!("{safe_name}_export_{number}"));
-    }
-    let temporary =
-        parent.join(format!(".rusting-export-{}", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<(), String> {
-        std::fs::create_dir_all(&temporary)
-            .map_err(|error| error.to_string())?;
-        std::fs::copy(executable, temporary.join(&executable_name))
-            .map_err(|error| error.to_string())?;
-        let cooked_destination = temporary.join(cooked_scene);
-        if let Some(folder) = cooked_destination.parent() {
-            std::fs::create_dir_all(folder)
-                .map_err(|error| error.to_string())?;
-        }
-        std::fs::copy(&cooked_source, cooked_destination)
-            .map_err(|error| error.to_string())?;
-        let assets = project_root.join("assets");
-        if assets.is_dir() {
-            copy_directory(&assets, &temporary.join("assets"))?;
-        }
-        let engine_license =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("LICENSE.md");
-        if engine_license.is_file() {
-            std::fs::copy(
-                engine_license,
-                temporary.join("RUSTING_ENGINE_LICENSE.md"),
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        std::fs::write(
-            temporary.join("README.txt"),
-            format!(
-                "{project_name}\n\nRun {executable_name} to start the game.\nThe system needs a Vulkan-capable graphics driver.\n"
-            ),
-        )
-        .map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, &destination)
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })();
-    if result.is_err() && temporary.exists() {
-        let _ = std::fs::remove_dir_all(&temporary);
-    }
-    result.map(|()| destination)
-}
-
-/// Recursively copies normal files and folders while ignoring symbolic links.
-fn copy_directory(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-) -> Result<(), String> {
-    std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
-    for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let file_type = entry.file_type().map_err(|error| error.to_string())?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        let target = destination.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_directory(&entry.path(), &target)?;
-        } else if file_type.is_file() {
-            std::fs::copy(entry.path(), target)
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 /// Work selected inside the Assets area and applied after drawing.
 enum AssetRequest {
     ImportFiles(Vec<PathBuf>),
+    /// Dry-runs replacing `EditorAssetState::replace_target` with a file.
+    PreviewReplacement(PathBuf),
+    /// Writes the replacement in `EditorAssetState::replace_preview`.
+    ConfirmReplacement,
     LoadTexture(PathBuf),
     /// Adds a project glTF file to the scene as one object tree.
     AddModel(PathBuf),
@@ -1224,6 +1301,16 @@ enum AssetRequest {
     AssignTexture(PathBuf),
     /// Gives the selected renderer a fresh default material.
     NewMaterial,
+    /// Assign an already-loaded typed mesh to one scene renderer.
+    AssignMesh {
+        entity: Entity,
+        handle: Handle<crate::assets::MeshAsset>,
+    },
+    /// Assign an already-loaded typed material to one scene renderer.
+    AssignMaterial {
+        entity: Entity,
+        handle: Handle<MaterialAsset>,
+    },
     /// Picks an image file for one `inspector::TEXTURE_SLOTS` slot.
     LoadMaterialTexture(usize),
     /// Puts the image a `LoadMaterialTexture` dialog chose into the slot.
@@ -1397,6 +1484,25 @@ fn project_asset_files(project_root: &str) -> Vec<PathBuf> {
 
 /// Copies an external file into the project without replacing an existing
 /// asset. Name collisions receive `_2`, `_3`, and so on.
+/// Replaces an imported asset from `source` through the project importer,
+/// keeping its ID; `dry_run` only checks.
+fn replace_asset(
+    project_root: &str,
+    target: &std::path::Path,
+    source: &std::path::Path,
+    dry_run: bool,
+) -> Result<crate::asset_import::ImportReport, String> {
+    crate::asset_import::reimport_asset(
+        std::path::Path::new(project_root),
+        &target.to_string_lossy(),
+        Some(source),
+        &crate::asset_import::AssetProvenance::default(),
+        None,
+        dry_run,
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn copy_into_project_assets(
     project_root: &str,
     source: &std::path::Path,

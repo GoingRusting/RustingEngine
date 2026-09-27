@@ -1,18 +1,24 @@
+pub mod art_direction;
+pub mod asset_import;
 pub mod assets;
 pub mod core;
 pub mod demo;
 // pub mod effects;
+pub mod cli;
 #[cfg(feature = "editor")]
 pub mod editor;
 pub mod engine;
 pub mod geometry;
 pub mod input;
+pub mod project;
 #[cfg(feature = "window")]
 pub mod project_runner;
+pub mod reflect;
 pub mod rendering;
 pub mod runtime;
-pub mod scene;
-pub mod shaders;
+pub mod scenario;
+pub mod scene_patch;
+pub mod schema;
 #[cfg(test)]
 pub mod tests;
 
@@ -27,9 +33,12 @@ pub use core::collisions::CollisionType;
 pub use core::{Material, MaterialBuilder, Physics, Transform};
 #[cfg(feature = "editor")]
 pub use editor::EditorPlugin;
+/// The egui version [`runtime::RuntimeUi`] draws with.
+#[cfg(feature = "ui")]
+pub use egui;
 pub use engine::{Engine, PerspectiveCamera};
 pub use geometry::Mesh;
-pub use rendering::compute_registry::ComputeShaderType;
+pub use rendering::compute_profile::ComputeShaderType;
 pub use runtime::{
     App, EngineBuilder, GpuCondition, GpuEventMode, GpuEventPayload,
     GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch,

@@ -1,0 +1,77 @@
+{
+  "command_to_first_frame_ms": 4859,
+  "corrective_edits": 2,
+  "failed_edits": 0,
+  "game_first_frame_ms": 20,
+  "manual_interventions": 0,
+  "mechanics_visible": true,
+  "presentation_visible": {
+    "capture_device": "NVIDIA GeForce RTX 3060",
+    "first_coin_on_screen": true,
+    "win_frame_captured": true
+  },
+  "request": "samples/starter_game/request.md",
+  "steps": [
+    {
+      "ms": 3,
+      "ok": true,
+      "step": "create"
+    },
+    {
+      "ms": 11,
+      "ok": true,
+      "step": "preset"
+    },
+    {
+      "ms": 2,
+      "ok": true,
+      "step": "find coins"
+    },
+    {
+      "ms": 2,
+      "ok": true,
+      "step": "find win"
+    },
+    {
+      "ms": 2,
+      "ok": true,
+      "step": "find tone mapping"
+    },
+    {
+      "ms": 11,
+      "ok": true,
+      "step": "patch preview"
+    },
+    {
+      "ms": 11,
+      "ok": true,
+      "step": "patch"
+    },
+    {
+      "ms": 2,
+      "ok": true,
+      "step": "validate"
+    },
+    {
+      "ms": 5241,
+      "ok": true,
+      "step": "run"
+    },
+    {
+      "ms": 585,
+      "ok": true,
+      "step": "capture"
+    },
+    {
+      "ms": 1773,
+      "ok": true,
+      "step": "test"
+    },
+    {
+      "ms": 685,
+      "ok": true,
+      "step": "export"
+    }
+  ],
+  "total_ms": 8335
+}

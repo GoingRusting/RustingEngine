@@ -1,0 +1,24 @@
+{
+  "name": "coin run: collect every coin, then win",
+  "seed": 1,
+  "ticks": 240,
+  "capture_size": [960, 540],
+  "steps": [
+    {"tick": 1, "press": "player.right"},
+    {"tick": 0, "until": 200, "expect": {"entity": "Win", "path": "/components/rusting.counter/value", "equals": 0}},
+    {"tick": 25, "expect": {"entity": "Coin 1", "path": "/components/rusting.pickup/collected", "equals": true}},
+    {"tick": 25, "expect": {"entity": "Coin 1", "path": "/visible", "equals": false}},
+    {"tick": 30, "press": "player.jump"},
+    {"tick": 31, "release": "player.jump"},
+    {"tick": 86, "press": "player.jump"},
+    {"tick": 87, "release": "player.jump"},
+    {"tick": 134, "press": "player.jump"},
+    {"tick": 135, "release": "player.jump"},
+    {"tick": 190, "expect": {"entity": "Score", "path": "/components/rusting.counter/value", "equals": 5}},
+    {"tick": 196, "press": "player.jump"},
+    {"tick": 197, "release": "player.jump"},
+    {"tick": 235, "expect": {"entity": "Win", "path": "/components/rusting.counter/value", "equals": 1}},
+    {"tick": 235, "expect": {"entity": "Flag", "path": "/components/rusting.pickup/collected", "equals": true}},
+    {"tick": 240, "capture": "shots/win.png"}
+  ]
+}

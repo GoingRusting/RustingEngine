@@ -40,6 +40,35 @@ impl<T> Handle<T> {
     pub const fn key(self) -> u64 {
         ((self.generation as u64) << 32) | self.index as u64
     }
+
+    /// The handle whose [`key`](Self::key) is `key`.
+    #[must_use]
+    pub const fn from_key(key: u64) -> Self {
+        Self {
+            index: key as u32,
+            generation: (key >> 32) as u32,
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Serializes as the [`key`](Handle::key), which is only valid in the same
+/// `AssetServer`. Scenes save reflected handles as asset paths instead.
+impl<T> Serialize for Handle<T> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.key())
+    }
+}
+
+impl<'de, T> Deserialize<'de> for Handle<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        u64::deserialize(deserializer).map(Self::from_key)
+    }
 }
 
 impl<T> Clone for Handle<T> {
@@ -966,10 +995,13 @@ pub enum PrimitiveShape {
     Cylinder,
     Cone,
     Torus,
+    /// Upright 1×1 square in the XY plane facing +Z, with the whole texture
+    /// mapped upright: the sprite shape for 2D scenes.
+    Quad,
 }
 
 impl PrimitiveShape {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Cube,
         Self::Sphere,
         Self::Triangle,
@@ -982,6 +1014,7 @@ impl PrimitiveShape {
         Self::Cylinder,
         Self::Cone,
         Self::Torus,
+        Self::Quad,
     ];
 
     #[must_use]
@@ -999,6 +1032,7 @@ impl PrimitiveShape {
             Self::Cylinder => "Cylinder",
             Self::Cone => "Cone",
             Self::Torus => "Torus",
+            Self::Quad => "Quad",
         }
     }
 }
@@ -1935,6 +1969,7 @@ pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
         PrimitiveShape::Cylinder => cylinder_mesh(32),
         PrimitiveShape::Cone => cone_mesh(32),
         PrimitiveShape::Torus => torus_mesh(32, 12),
+        PrimitiveShape::Quad => quad_mesh(),
     };
     // The builders write placeholder tangents; normal maps need real ones.
     generate_tangents(&mut mesh.vertices, &mesh.indices);
@@ -2242,6 +2277,28 @@ fn normalize3(value: [f32; 3]) -> [f32; 3] {
         [value[0] / length, value[1] / length, value[2] / length]
     } else {
         [0.0, 1.0, 0.0]
+    }
+}
+
+/// UV (0, 0) is the image's top-left pixel, as in glTF.
+fn quad_mesh() -> MeshAsset {
+    let corners = [
+        ([-0.5, -0.5, 0.0], [0.0, 1.0]),
+        ([0.5, -0.5, 0.0], [1.0, 1.0]),
+        ([0.5, 0.5, 0.0], [1.0, 0.0]),
+        ([-0.5, 0.5, 0.0], [0.0, 0.0]),
+    ];
+    MeshAsset {
+        vertices: corners
+            .into_iter()
+            .map(|(position, uv)| MeshVertex {
+                position,
+                normal: [0.0, 0.0, 1.0],
+                uv,
+                tangent: [1.0, 0.0, 0.0, 1.0],
+            })
+            .collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
     }
 }
 

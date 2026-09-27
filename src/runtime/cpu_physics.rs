@@ -28,6 +28,7 @@ use bevy_ecs::prelude::{Component, Resource, World};
 use nalgebra::{Matrix3, Matrix4, Rotation3, Vector3};
 
 use crate::assets::{AssetServer, MeshAsset};
+use crate::runtime::sim_math;
 use crate::runtime::{
     Collider, ColliderShape, CollisionLayers, EventQueue, FrameTime,
     GlobalTransform, GpuProxyOf, MeshRenderer, Parent, PhysicsBody,
@@ -431,7 +432,7 @@ impl Body {
 pub struct Sleeping;
 
 /// CPU physics state after the last fixed step, with immediate queries.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct PhysicsWorld {
     bodies: Vec<Body>,
     contacts: Vec<Contact>,
@@ -464,6 +465,28 @@ const POSITION_CORRECTION: f32 = 0.8;
 const RESTITUTION_THRESHOLD: f32 = 1.0;
 
 impl PhysicsWorld {
+    /// Feeds the state carried into the next step (sleep counters and
+    /// warm-start impulses) in entity order.
+    pub(crate) fn hash_state(&self, hasher: &mut super::StateHasher) {
+        let mut rest: Vec<_> = self.rest.iter().collect();
+        rest.sort_unstable_by_key(|(entity, _)| **entity);
+        for (entity, (steps, position)) in rest {
+            hasher.word(entity.to_bits());
+            hasher.word(u64::from(*steps));
+            hasher.floats(position);
+        }
+        let mut warm: Vec<_> = self.warm.iter().collect();
+        warm.sort_unstable_by_key(|(pair, _)| **pair);
+        for ((first, second), points) in warm {
+            hasher.word(first.to_bits());
+            hasher.word(second.to_bits());
+            for (point, impulses) in points {
+                hasher.floats(point.as_slice());
+                hasher.floats(impulses);
+            }
+        }
+    }
+
     /// Touching pairs found by the last step, sensors included.
     #[must_use]
     pub fn contacts(&self) -> &[Contact] {
@@ -748,7 +771,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             let spin = body.angular_velocity * dt;
             if spin != Vector3::zeros() {
                 body.rotation =
-                    Rotation3::from_scaled_axis(spin) * body.rotation;
+                    sim_math::rotation_from_scaled_axis(spin) * body.rotation;
             }
         }
         correct_positions(&mut bodies, &contacts, dt);
@@ -902,7 +925,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                     kind,
                     movable,
                     position: pose.position.into(),
-                    rotation: Rotation3::from_euler_angles(
+                    rotation: sim_math::rotation_from_euler(
                         pose.rotation[0],
                         pose.rotation[1],
                         pose.rotation[2],
@@ -940,33 +963,64 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
     bodies
 }
 
-/// Broad phase: sort-and-sweep of bounding spheres along X, then the exact
-/// pair test. Contacts come out in (a, b) index order, the same order the
-/// solver has always seen, so results do not depend on the sweep.
-// ponytail: one axis only; bodies stacked in a tall column all overlap in X
-// and fall back to O(n^2). Sweep the axis of largest spread, or add a grid,
-// if that shows up.
-fn find_contacts(bodies: &[Body]) -> Vec<(usize, usize, Contact)> {
-    let span = |body: &Body| {
-        let radius = body.bounding_radius();
-        (body.position.x - radius, body.position.x + radius)
-    };
+/// Candidates from a three-dimensional bounding-sphere broad phase. Sweep
+/// the axis with the greatest center spread, then reject pairs separated on
+/// either remaining axis before running the shape-specific collision test.
+/// Sort pairs back into body order so the solver sees a stable constraint
+/// order regardless of the selected axis.
+fn broad_phase_candidates(bodies: &[Body]) -> Vec<(usize, usize)> {
+    if bodies.len() < 2 {
+        return Vec::new();
+    }
+    let radii = bodies.iter().map(Body::bounding_radius).collect::<Vec<_>>();
+    let mut low = bodies[0].position;
+    let mut high = low;
+    for body in &bodies[1..] {
+        low = low.inf(&body.position);
+        high = high.sup(&body.position);
+    }
+    let spread = high - low;
+    let axis = (0..3)
+        .max_by(|&a, &b| {
+            spread[a].total_cmp(&spread[b]).then_with(|| b.cmp(&a))
+        })
+        .unwrap();
     let mut order = (0..bodies.len()).collect::<Vec<_>>();
-    order.sort_by(|&a, &b| span(&bodies[a]).0.total_cmp(&span(&bodies[b]).0));
-    let mut contacts = Vec::new();
+    order.sort_by(|&a, &b| {
+        (bodies[a].position[axis] - radii[a])
+            .total_cmp(&(bodies[b].position[axis] - radii[b]))
+            .then_with(|| a.cmp(&b))
+    });
+    let mut candidates = Vec::new();
     for (rank, &a) in order.iter().enumerate() {
-        let end = span(&bodies[a]).1;
+        let end = bodies[a].position[axis] + radii[a];
         for &b in &order[rank + 1..] {
-            if span(&bodies[b]).0 > end {
+            if bodies[b].position[axis] - radii[b] > end {
                 break;
             }
-            let (a, b) = (a.min(b), a.max(b));
-            if let Some(contact) = narrow_phase(&bodies[a], &bodies[b]) {
-                contacts.push((a, b, contact));
+            let reach = radii[a] + radii[b];
+            if (0..3).any(|other| {
+                other != axis
+                    && (bodies[a].position[other] - bodies[b].position[other])
+                        .abs()
+                        > reach
+            }) {
+                continue;
             }
+            candidates.push((a.min(b), a.max(b)));
         }
     }
-    contacts.sort_by_key(|&(a, b, _)| (a, b));
+    candidates.sort_unstable();
+    candidates
+}
+
+fn find_contacts(bodies: &[Body]) -> Vec<(usize, usize, Contact)> {
+    let mut contacts = Vec::new();
+    for (a, b) in broad_phase_candidates(bodies) {
+        if let Some(contact) = narrow_phase(&bodies[a], &bodies[b]) {
+            contacts.push((a, b, contact));
+        }
+    }
     contacts
 }
 
@@ -1356,7 +1410,7 @@ fn write_back(world: &mut World, bodies: &[Body]) {
         .filter(|body| body.movable && body.kind != RigidBodyKind::Fixed)
     {
         let position: [f32; 3] = body.position.into();
-        let (x, y, z) = body.rotation.euler_angles();
+        let (x, y, z) = sim_math::euler_from_rotation(&body.rotation);
         let mut entity = world.entity_mut(body.entity);
         if let Some(mut transform) = entity.get_mut::<Transform>() {
             // Only touch changed fields so resting bodies do not trigger
@@ -2223,6 +2277,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(brute.len() > 10, "scatter too sparse: {}", brute.len());
         assert_eq!(swept, brute);
+    }
+
+    #[test]
+    fn broad_phase_prunes_a_tall_column_without_changing_pair_order() {
+        let mut bodies = (0..200)
+            .map(|index| {
+                body(Shape::Sphere(0.6), [0.0, index as f32 * 4.0, 0.0])
+            })
+            .collect::<Vec<_>>();
+        bodies[80].position.y = bodies[79].position.y + 0.8;
+
+        assert_eq!(broad_phase_candidates(&bodies), vec![(79, 80)]);
+        let contacts = find_contacts(&bodies);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!((contacts[0].0, contacts[0].1), (79, 80));
     }
 
     #[test]

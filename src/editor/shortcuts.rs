@@ -465,6 +465,10 @@ pub struct EditorTransformMode {
     pub active_mode: TransformModes,
     pub axis_mask: [bool; 3],
     pub start_requested: bool,
+    /// Quantize move, rotation, and scale previews while dragging.
+    pub snap_enabled: bool,
+    /// Use world axes for movement, rotation, and scale handles.
+    pub global_axes: bool,
 }
 
 impl Default for EditorTransformMode {
@@ -473,6 +477,8 @@ impl Default for EditorTransformMode {
             active_mode: TransformModes::Combo,
             axis_mask: [true; 3],
             start_requested: false,
+            snap_enabled: false,
+            global_axes: false,
         }
     }
 }

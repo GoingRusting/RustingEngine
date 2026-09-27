@@ -1,10 +1,22 @@
-# Editor GUI
+# Editor guide
 
-The editor uses an area tree similar to Blender. An area is either a leaf that
-shows one editor type, or a split containing two more areas. This keeps layout
-state independent from the ECS world and Vulkan renderer.
+The editor window is split into areas, as in Blender. Each area shows one
+editor type, such as Scene View, Hierarchy, or Inspector, and you can split,
+resize, and change areas freely. Every change to the scene can be undone.
 
-## Quick start
+- [Projects](#projects)
+- [Areas and layout](#areas-and-layout)
+- [Scene View](#scene-view)
+- [Hierarchy](#hierarchy)
+- [Inspector](#inspector)
+- [Assets](#assets)
+- [Preview and Play](#preview-and-play)
+- [Code Editor](#code-editor)
+- [Exporting a game](#exporting-a-game)
+- [Profiler and diagnostics](#profiler-and-diagnostics)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+
+## Projects
 
 Start the editor from the engine folder:
 
@@ -12,114 +24,220 @@ Start the editor from the engine folder:
 ./scripts/run_editor.sh
 ```
 
-The Project Manager appears when the editor starts:
+The Project Manager appears first.
 
-1. To create a game, press `New Project...`, choose the parent folder, type the
-   project name, and press `Create Project`. The editor never silently uses its
-   own working directory.
+1. To create a game, press `New Project...`, choose the parent folder, type
+   the project name, and press `Create Project`. The editor makes a new
+   folder and refuses to overwrite an existing one.
 2. To open a game, select a recent project or press
    `Browse for existing project...` and choose its folder.
-3. Press `Projects` in the top toolbar whenever you want to change projects.
+3. Press `Projects` in the top bar to change projects later.
 
-A created project includes its Cargo file, `project.json`, Rust entry point,
-main scene, assets folder, shader folder, and build folder. The editor refuses
-to overwrite an existing project folder. `Save Project` writes the open source
-file and scene. `Save Scene` and `Save Scene As...` intentionally affect only
-the scene and are named explicitly to avoid mixing the two operations.
+A new project contains its `Cargo.toml`, `project.json`, Rust entry point,
+main scene, `assets` folder, `shaders` folder, and `build` folder. See
+[Getting started](docs/getting-started.md#what-is-in-a-project) for what
+each one holds.
 
-## Editing a scene
+The top bar groups commands into menus:
 
-- The compact top bar groups project and scene actions under `File`, Undo/Redo
-  under `Edit`, and area/layout actions under `View`. `Play` and its build
-  profile stay directly visible because they are used frequently.
-- Use `New Scene`, `Open Scene...`, `Save Scene`, and `Save Scene As...` in the
-  `File` menu for scene files. The editor asks before an unsaved scene is
-  replaced.
-- Open `Add Object` at the top of Hierarchy and choose Empty Object, Cube, or
-  Camera. Related creation actions share one wide styled popup.
-- Hierarchy is a parent-first tree: every child appears immediately below its
-  parent, moves right by one indent level, and keeps visible branch lines.
-- Right-click an object row to Rename, Duplicate, or Delete it. Rename opens an
-  inline field on that row; Enter or Apply confirms it, while Escape or Cancel
+- `File` holds project and scene files. `Save Project` writes the open Rust
+  source and the scene. `Save Scene` and `Save Scene As...` write only the
+  scene. The editor asks before it replaces a scene with unsaved changes.
+- `Edit` holds Undo and Redo.
+- `View` holds area and layout commands, UI scale, and text size.
+
+`Unsaved scene` appears beside the engine name while changes still need to
+be written.
+
+## Areas and layout
+
+Each area has a header with an editor-type drop-down.
+
+- Click a header to select its area. A blue border marks the selected area.
+- Choose the editor type from the header drop-down: Scene View, Game View,
+  Code Editor, Hierarchy, Inspector, Project Settings, Console, Assets,
+  Keyboard Shortcuts, Profiler, Render Settings, or Physics Diagnostics.
+- Press `↔` to split an area left and right, or `↕` to split it top and
+  bottom. `Add Area` in the `View` menu splits the selected area left and
+  right.
+- Drag the divider between two areas to resize them.
+- Press `×` to close an area. The area beside it takes the space.
+
+For example, to put Code Editor beside Scene View, select the Scene View
+area, press `↔`, and choose `Code Editor` in the new area's drop-down.
+
+`View` > `Save Layout` writes the layout to `editor_layout.json` in the open
+project, and `Load Layout` restores it. `Reset Layout` returns to the
+default layout.
+
+Only one Scene View or Game View renders at a time. If the layout has
+several, the first one in the layout draws and the others show a notice.
+Other editor types can appear any number of times.
+
+## Scene View
+
+Scene View shows the scene through the editor camera. Game View shows it
+through the scene's active camera.
+
+### Moving the camera
+
+| Action | Input |
+| --- | --- |
+| Fly | Hold the right mouse button, then `W` `A` `S` `D`, `Space` up, `Ctrl` down, `Shift` faster |
+| Fly without holding a button | `Numpad 0` turns fly mode on and off |
+| Orbit around the view center | Hold the middle mouse button |
+| Pan | Hold `Shift` and the middle mouse button |
+| Zoom toward the view center | Mouse wheel |
+| Frame the selection | `F`, or `Frame` in the toolbar |
+
+While the camera is flying or orbiting, the rest of the editor ignores the
+mouse and keyboard.
+
+### Selecting and transforming
+
+Click an object to select it. `Shift`-click adds objects to the selection
+or removes them from it.
+
+The transform gizmo works like Blender's:
+
+1. Press `G` to move, `R` to rotate, or `S` to scale the selection. You can
+   also use the toolbar buttons, or drag a gizmo handle.
+2. Press `X`, `Y`, or `Z` to lock the change to one axis.
+3. Click to confirm. Right-click or `Escape` cancels and restores the old
+   transform.
+
+The toolbar has two toggles:
+
+- `Snap` rounds moves to 1 unit, rotations to 15°, and scales to steps of
+  0.1.
+- `Global` and `Local` choose whether the gizmo follows world axes or the
+  object's own axes.
+
+A whole gizmo drag is one undo step.
+
+## Hierarchy
+
+Hierarchy lists the scene as a tree. Each child appears under its parent,
+indented one level, with branch lines.
+
+- Press `+` at the top of Hierarchy to add an Empty Object, a Perspective
+  Camera, or a light.
+- Click to select. `Ctrl`-click adds or removes one object. `Shift`-click
+  selects a range.
+- Drag a row onto another row to make it a child. A red outline means the
+  move is not allowed, for example onto the object's own child. Dragging a
+  selected row moves the whole selection.
+- Press the eye icon to hide or show an object.
+- Right-click a row to add a child object, rename, duplicate, delete, or
+  move the object to the scene root. Deleting a parent also deletes its
+  children.
+- Rename opens a text field on the row. `Enter` confirms it and `Escape`
   restores the old name.
-- Select an object to inspect it or change its parent. Use its right-click menu
-  to rename, duplicate, or delete it. Deleting a parent also deletes children.
-- Use `Undo` and `Redo` in the top toolbar. A continuous Inspector drag is
-  stored as one undo step instead of one step for every rendered frame.
-- `Unsaved scene` appears beside the engine name while changes still need to
-  be written.
+- Type in the filter field to find objects by name.
 
-## Importing assets
+## Inspector
 
-Change an area to `Assets`, then press `Import Files...`. Selected files are
-copied into the current project's `assets` folder without overwriting files
-that already exist. Images are loaded as typed textures. GLB/glTF triangle
-primitives are imported as meshes and materials, with reloadable `.rmesh`
-files generated beside the source model.
+Inspector shows the selected object's components, each in its own section.
 
-Select a scene object and press `Use on Selected` beside a loaded texture or
-glTF primitive. Texture assignment creates a material for that object; glTF
-assignment adds or replaces its Mesh Renderer. Use the Filter field to find a
-project file quickly.
+- Transform, Mesh Renderer, Material, Camera, lights, and Physics have their
+  own editors.
+- Every other component, including your own game components, gets typed
+  fields generated from its `reflect!` description: numbers with their unit
+  and valid range, colors, check boxes, drop-downs for enums, and lists
+  with `+` and `-` buttons. See
+  [Tutorial 3](docs/tutorials/03-gameplay-plugin.md#2-write-the-plugin)
+  for how to describe a component.
+- A field that refers to another scene object is a drop-down of the
+  scene's objects. A field that refers to a texture or mesh is a drop-down
+  of assets that are already loaded.
+- `Add Component` at the bottom adds Physics or any registered game
+  component. The `×` button in a section header removes that component.
+- `Classes` holds the object's class names, which scene patches and
+  scenarios use to find groups of objects.
 
-## Checking Rust code
+A continuous drag in the Inspector is one undo step, not one step per
+frame.
 
-In Code Editor, `Check` saves Rust source and runs a real `cargo check` in the
-background. Compiler errors and warnings appear in `Cargo Output`, while the
-editor and 3D view stay responsive.
+## Assets
 
-`Play` in the top toolbar and `Build & Run` in Code Editor use the same native
-game workflow: they save code and scene changes, cook runtime data, compile the
-project, and start it in a separate window. Select `Debug` beside Play for fast
-iteration, or `Release` for slower compilation with full optimizations. Output
-and Rust panics from the running game are shown in `Cargo Output`.
+Assets lists the files in the project's `assets` folder. Press `Import` to
+copy models and images into it. Import never overwrites a file that is
+already there. Images load as textures. Each triangle primitive in a GLB or
+glTF file becomes a mesh and a material, with a reloadable `.rmesh` file
+written beside the model.
+
+- Double-click a model, or drag it into Scene View, to add it to the scene.
+- Double-click an image to use it as the base color of the selected
+  object. You can also drag it onto a Hierarchy row or an Inspector texture
+  slot.
+- Right-click a file for more actions. `Replace…` swaps an imported file
+  for a new one of the same type, and shows its size and which objects use
+  it before you confirm.
+- Type in the filter field to find a file.
+
+## Preview and Play
+
+The editor runs a scene in two ways:
+
+- **Preview** runs the scene inside the editor without compiling the
+  project. Use `Pause`, `Resume`, and `Step` to go one fixed tick at a time.
+  `Stop Preview` returns the scene to exactly how it was before Preview.
+- **Play** saves and cooks the scene, compiles the project's Rust code, and
+  starts the game in its own window. `Stop` ends the game or the build, and
+  `Restart` rebuilds and runs again.
+
+Choose `Debug` beside Play for fast compiles while you work, and `Release`
+for full optimization. Build output and panics from the game appear in
+`Cargo Output` in Code Editor.
+
+## Code Editor
+
+Code Editor edits the project's Rust source. `Check` saves the source and
+runs `cargo check` in the background. Errors and warnings appear in
+`Cargo Output`, and the editor stays responsive while Cargo runs.
+`Build & Run` does the same as Play.
 
 ## Exporting a game
 
-Open `Project Settings` and press `Export Game...`, then choose a parent
-folder. The editor saves and cooks the scene, builds the game with Cargo's
-release profile, and creates a new `<game>_export` folder. Existing exports are
-not overwritten; later exports receive `_2`, `_3`, and so on.
+Open Project Settings and press `Export Game...`, then choose a parent
+folder. The editor saves and cooks the scene, builds the game in release
+mode, and creates a new `<game>_export` folder. It never overwrites an
+export: later exports are named `_2`, `_3`, and so on.
 
-The export contains the native executable, `build/main.rscene.bin`, the
-project's `assets` folder, RustingEngine's license, and a short README. Runtime
-scene and asset paths are relative to this folder, so the exported game does
-not depend on the original Cargo project or editor installation. Build and
-export results appear in Code Editor's Cargo Output.
+The export holds the executable, `build/main.rscene.bin`, the project's
+`assets` folder, the RustingEngine license, and a short README. All paths
+are relative to the export folder, so it runs without the project or the
+editor. Results appear in `Cargo Output`.
 
-To change one area:
+## Profiler and diagnostics
 
-1. Click its top bar. A blue border shows that it is selected.
-2. Open the dropdown in that bar.
-3. Choose `Scene View`, `Code Editor`, `Console`, or another editor type.
+- **Profiler** graphs the last 180 frames. It splits CPU time into physics,
+  extraction, preparation, recording, and editor work, and shows GPU pass
+  times, draw counts, and culling results. GPU times can lag the CPU sample
+  by a frame or more.
+- **Render Settings** holds the scene's render settings, VSync, the FPS
+  limit, the GPU in use, and rendering diagnostics.
+- **Physics Diagnostics** shows which physics backends are available, how
+  many bodies run on the GPU and the CPU, the GPU work and readback each
+  frame costs, and what falls back when a capacity limit is reached.
 
-To place Code Editor beside Scene View:
+## Keyboard shortcuts
 
-1. Select the Scene View area.
-2. Press `↔` to split it left/right.
-3. In the new area's dropdown, choose `Code Editor`.
-4. Drag the divider to give more space to the view you are using.
+These are the default keys. Open a Keyboard Shortcuts area to change them:
+click a shortcut, then press the new key. `Escape` cancels. The keys are
+saved to `editor_shortcuts.json` in your user config folder and apply to
+every project.
 
-Open `View` and press `Save Layout` when the arrangement is useful. The editor saves it as
-`editor_layout.json` inside the current game project. Press `Load Layout` after
-restarting the editor. `Reset Layout` returns to the original arrangement.
+| Action | Default key |
+| --- | --- |
+| Undo, redo | `Ctrl+Z`, `Ctrl+Shift+Z` |
+| Save scene | `Ctrl+S` |
+| Rename selection | `F2` |
+| Delete selection | `Delete` |
+| Move, rotate, scale | `G`, `R`, `S` |
+| Lock to one axis | `X`, `Y`, `Z` |
+| Frame selection | `F` |
+| Fly mode on and off | `Numpad 0` |
+| Fly | `W` `A` `S` `D`, `Space` up, `Ctrl` down, `Shift` faster |
 
-## Using areas
-
-- Click an area's header to select it. The blue border marks the selected area.
-- Use the dropdown in the header to choose Scene View, Game View, Code Editor,
-  Hierarchy, Inspector, Project Settings, Console, or Assets.
-- Press `↔` to split an area left/right or `↕` to split it top/bottom.
-- Drag the divider between two areas to resize them.
-- Press `×` to close an area. Its sibling expands into the released space.
-- `+ Area` in the main toolbar splits the selected area left/right.
-- `Reset Layout` restores the default hierarchy/scene/inspector/project layout.
-- `Save Layout` writes `editor_layout.json` into the selected game project.
-  `Load Layout` restores it.
-
-`Add Area` in the `View` menu splits the selected area without using its small
-header button.
-
-Only one live Scene View or Game View is rendered for now. If several viewport
-areas exist, the first one in the layout tree is active and the others display
-a notice. Other editor types can be duplicated freely.
+No shortcut fires while a text field has focus.

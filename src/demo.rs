@@ -13,6 +13,12 @@ pub struct Spin {
     pub speed: [f32; 2],
 }
 
+crate::reflect! {
+    struct Spin {
+        speed: [f32; 2] { unit: "rad/s", doc: "around X, then Y" },
+    }
+}
+
 impl Default for Spin {
     fn default() -> Self {
         Self { speed: [0.35, 0.7] }

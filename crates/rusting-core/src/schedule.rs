@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use bevy_ecs::prelude::Resource;
+
 /// The ordered stages executed by an application's `update` method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScheduleStage {
@@ -15,12 +19,28 @@ pub struct FrameReport {
     pub exit_requested: bool,
 }
 
+/// CPU time spent in each part of the last frame, for the profiler.
+///
+/// The application fills `physics` and `extraction`; the renderer fills
+/// `preparation` and `recording`, and a host with a UI fills `editor`.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpuFrameTimings {
+    pub physics: Duration,
+    pub extraction: Duration,
+    pub preparation: Duration,
+    pub recording: Duration,
+    pub editor: Duration,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
     use std::hash::Hash;
+    use std::time::Duration;
 
-    use super::{FrameReport, ScheduleStage};
+    use bevy_ecs::prelude::World;
+
+    use super::{CpuFrameTimings, FrameReport, ScheduleStage};
 
     #[test]
     fn frame_report_default_has_no_work_or_exit_request() {
@@ -70,5 +90,19 @@ mod tests {
 
         assert_eq!(report.fixed_steps, 3);
         assert!(report.exit_requested);
+    }
+
+    #[test]
+    fn cpu_frame_timings_can_be_used_as_a_world_resource() {
+        let mut world = World::new();
+        world.init_resource::<CpuFrameTimings>();
+
+        assert_eq!(world.resource::<CpuFrameTimings>().physics, Duration::ZERO);
+        world.resource_mut::<CpuFrameTimings>().physics =
+            Duration::from_millis(2);
+        assert_eq!(
+            world.resource::<CpuFrameTimings>().physics,
+            Duration::from_millis(2)
+        );
     }
 }

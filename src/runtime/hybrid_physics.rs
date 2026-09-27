@@ -55,7 +55,7 @@ struct PhysicsSlot {
 }
 
 /// Owns the stable mapping between ECS entities and GPU physics IDs.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct PhysicsIdRegistry {
     slots: Vec<PhysicsSlot>,
     free_slots: Vec<u32>,
@@ -63,6 +63,18 @@ pub struct PhysicsIdRegistry {
 }
 
 impl PhysicsIdRegistry {
+    /// Feeds slot generations, owners, and the free list, which decide the
+    /// ids later bodies get.
+    pub(crate) fn hash_state(&self, hasher: &mut super::StateHasher) {
+        for slot in &self.slots {
+            hasher.word(u64::from(slot.generation));
+            hasher.word(slot.entity.map_or(u64::MAX, Entity::to_bits));
+        }
+        for slot in &self.free_slots {
+            hasher.word(u64::from(*slot));
+        }
+    }
+
     /// Returns the existing ID or creates a new stable ID for an entity.
     pub fn assign(&mut self, entity: Entity) -> PhysicsId {
         if let Some(id) = self.entity_ids.get(&entity) {
@@ -143,7 +155,7 @@ fn next_generation(generation: u32) -> u32 {
 pub struct GpuEventId(pub u32);
 
 /// Assigns compact IDs to event names used by Rust and custom shaders.
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Clone, Debug, Default)]
 pub struct GpuEventRegistry {
     names: Vec<String>,
     ids: HashMap<String, GpuEventId>,
@@ -704,11 +716,19 @@ pub enum GpuBodyCommand {
 
 /// Commands waiting for the next render extraction, in submission order.
 ///
-/// The renderer applies them before the next fixed GPU step, in order per
-/// body, and rejects commands whose body generation is stale.
+/// A command applies before the GPU simulates the tick after the one that
+/// was completed when it was pushed: one pushed during fixed tick `n` (when
+/// `FrameTime::fixed_tick` reads `n - 1`), or in `Update` right after tick
+/// `n - 1`, applies before GPU tick `n`. That holds however many ticks a
+/// frame batches. Commands apply in order per body; the renderer rejects
+/// commands whose body generation is stale.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct GpuPhysicsCommands {
     pub commands: Vec<(PhysicsId, GpuBodyCommand)>,
+    /// GPU tick each command applies before, parallel to `commands`. The
+    /// engine fills it after every fixed tick and at extraction; a command
+    /// without an entry applies before the next GPU tick.
+    pub apply_ticks: Vec<u64>,
     /// Reads every GPU body's full state back once after the next step.
     /// Meant for debugging, save states, and tests: it copies the whole
     /// simulation, so keep it off the per-frame gameplay path.
@@ -739,6 +759,18 @@ impl GpuPhysicsCommands {
         );
         if let Some(values) = state.custom_values {
             self.push(body, GpuBodyCommand::SetCustomValues(values));
+        }
+    }
+}
+
+/// Gives every command pushed since the last call the tick after the
+/// current `FrameTime::fixed_tick`; see [`GpuPhysicsCommands`].
+pub(super) fn stamp_gpu_commands(world: &mut World) {
+    let tick = world.resource::<super::FrameTime>().fixed_tick + 1;
+    if let Some(mut commands) = world.get_resource_mut::<GpuPhysicsCommands>() {
+        let length = commands.commands.len();
+        if commands.apply_ticks.len() != length {
+            commands.apply_ticks.resize(length, tick);
         }
     }
 }

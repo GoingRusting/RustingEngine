@@ -1,8 +1,13 @@
 //! Native-runtime example with 10,000 visible GPU-owned cubes.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use rusting_engine::prelude::*;
 
-fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
+/// Cubes that crossed Y=-100 so far, shown in the HUD.
+static FALLEN: AtomicUsize = AtomicUsize::new(0);
+
+fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
     scene.once("create_10k_cubes", |scene| {
         let cube = CubeSpawn::new().class("gravity").class("falling_cubes");
 
@@ -41,6 +46,12 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
     // Printing all 10,000 events separately would make terminal I/O the
     // benchmark bottleneck, so report one summary for this frame instead.
     let events = scene.gpu_events("body_fell");
+    let fallen =
+        FALLEN.fetch_add(events.len(), Ordering::Relaxed) + events.len();
+    rusting_engine::egui::Window::new("Hybrid 10k").show(&scene.ui(), |ui| {
+        ui.label(format!("{:.0} FPS", 1.0 / time.delta_seconds().max(1e-6)));
+        ui.label(format!("{fallen} cubes crossed Y=-100"));
+    });
     if let Some(first) = events.first() {
         println!(
             "{} cubes crossed Y=-100; first ID {:?}, position {:?}",

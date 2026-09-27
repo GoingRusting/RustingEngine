@@ -1,3 +1,4 @@
+pub mod app;
 pub mod collisions;
 pub mod components;
 pub mod events;

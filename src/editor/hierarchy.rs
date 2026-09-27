@@ -34,6 +34,13 @@ struct RawHierarchyItem {
     transform: Option<Transform>,
 }
 
+fn is_preview_spawned(state: &EditorState, entity: Entity) -> bool {
+    state
+        .preview_entities
+        .as_ref()
+        .is_some_and(|before| !before.contains(&entity))
+}
+
 /// Builds a parent-first tree where every child directly follows its parent.
 pub(super) fn collect_entities(world: &mut World) -> Vec<HierarchyItem> {
     let mut query = world.query::<(
@@ -323,9 +330,14 @@ pub(super) fn draw_hierarchy_area(
                         ) {
                             ui.multiply_opacity(0.45);
                         }
+                        let label = if is_preview_spawned(state, item.entity) {
+                            format!("{}  [Runtime]", item.name)
+                        } else {
+                            item.name.clone()
+                        };
                         EditorTheme::tree_row(
                             ui,
-                            &item.name,
+                            &label,
                             item.depth,
                             state.selection.contains(&item.entity),
                             state.selected == Some(item.entity),
@@ -691,6 +703,21 @@ fn draw_inline_rename(
 mod tests {
     use super::*;
     use crate::editor::gui_elements::EditorTheme;
+
+    #[test]
+    fn only_entities_created_during_preview_get_runtime_badges() {
+        let mut world = World::new();
+        let authored = world.spawn(Name("Authored".into())).id();
+        let mut state = EditorState {
+            preview_entities: Some([authored].into_iter().collect()),
+            ..EditorState::default()
+        };
+        let spawned = world.spawn(Name("Spawned".into())).id();
+        assert!(!is_preview_spawned(&state, authored));
+        assert!(is_preview_spawned(&state, spawned));
+        state.preview_entities = None;
+        assert!(!is_preview_spawned(&state, spawned));
+    }
 
     #[test]
     fn children_are_drawn_immediately_after_their_parent() {
