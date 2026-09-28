@@ -34,6 +34,26 @@ pub const REPLAY_OUT_ENV: &str = "RUSTING_REPLAY_OUT";
 /// headless instead of opening a window, failing if any tick's hash differs.
 pub const REPLAY_PLAY_ENV: &str = "RUSTING_REPLAY_PLAY";
 
+/// Environment variable the editor sets on Play: a file that carries the
+/// game's state across a code reload. The game writes its scene there and
+/// exits when it reads [`CODE_RELOAD_SAVE_COMMAND`] on standard input, and
+/// starts from that file, then deletes it, when the file exists.
+pub const CODE_RELOAD_STATE_ENV: &str = "RUSTING_CODE_RELOAD_STATE";
+
+/// Standard input line that asks a game started with
+/// [`CODE_RELOAD_STATE_ENV`] to save its state and exit.
+pub const CODE_RELOAD_SAVE_COMMAND: &str = "save-state";
+
+/// Line prefix a game prints to standard error when a code reload kept the
+/// scene.
+pub const CODE_RELOAD_KEPT_MARKER: &str =
+    "[rusting] code reload kept the scene";
+
+/// Line prefix a game prints to standard error when a code reload could not
+/// keep the scene, followed by the reason.
+pub const CODE_RELOAD_CLEAN_MARKER: &str =
+    "[rusting] code reload restarted clean:";
+
 /// Line prefix a game prints to standard error once its first playable frame
 /// is done, followed by the milliseconds since the game started.
 pub const FIRST_FRAME_MARKER: &str = "[rusting] first playable frame after";
@@ -181,6 +201,8 @@ pub struct ProjectManagerState {
     pub project_name: String,
     /// Parent folder selected for the new project.
     pub parent_directory: PathBuf,
+    /// Starting content of the new project.
+    pub template: ProjectTemplate,
     /// Projects loaded from the editor settings file.
     pub recent_projects: Vec<RecentProject>,
     /// Last create, open, or validation message.
@@ -194,6 +216,7 @@ impl Default for ProjectManagerState {
             project_name: "MyGame".into(),
             // An empty path forces the user to choose where the project lives.
             parent_directory: PathBuf::new(),
+            template: ProjectTemplate::default(),
             recent_projects: load_recent_projects().unwrap_or_default(),
             message: None,
         }
@@ -291,18 +314,58 @@ pub enum ProjectTemplate {
     /// Coin Run, a complete small game on the 2D template: collect every
     /// coin, then touch the flag to win.
     Starter,
+    /// A walkable 3D room with crates and a first-person player.
+    FirstPerson3d,
+    /// The first-person room with a visible player body and an orbiting
+    /// camera behind it.
+    ThirdPerson3d,
+    /// A pile of dynamic boxes and balls that fall onto a floor and settle.
+    PhysicsSandbox,
 }
 
 impl ProjectTemplate {
-    /// `3d`, `2d`, or `starter`, as `rusting new --template` takes it.
+    /// Every template, in the order pickers list them.
+    pub const ALL: [Self; 6] = [
+        Self::Basic3d,
+        Self::FirstPerson3d,
+        Self::ThirdPerson3d,
+        Self::PhysicsSandbox,
+        Self::Platformer2d,
+        Self::Starter,
+    ];
+
+    /// The name `rusting new --template` takes.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Basic3d => "3d",
+            Self::Platformer2d => "2d",
+            Self::Starter => "starter",
+            Self::FirstPerson3d => "first-person",
+            Self::ThirdPerson3d => "third-person",
+            Self::PhysicsSandbox => "sandbox",
+        }
+    }
+
+    /// A short label for pickers.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Basic3d => "Empty 3D",
+            Self::Platformer2d => "2D platformer",
+            Self::Starter => "Coin Run (2D game)",
+            Self::FirstPerson3d => "3D first person",
+            Self::ThirdPerson3d => "3D third person",
+            Self::PhysicsSandbox => "Physics sandbox",
+        }
+    }
+
+    /// Inverse of [`Self::name`].
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "3d" => Some(Self::Basic3d),
-            "2d" => Some(Self::Platformer2d),
-            "starter" => Some(Self::Starter),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find(|template| template.name() == name)
     }
 }
 
@@ -517,6 +580,9 @@ fn write_project_template(
             ProjectTemplate::Basic3d => default_scene(name),
             ProjectTemplate::Platformer2d => platformer_scene(name),
             ProjectTemplate::Starter => starter_scene(name),
+            ProjectTemplate::FirstPerson3d
+            | ProjectTemplate::ThirdPerson3d
+            | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
         })?,
     )?;
     Ok(())
@@ -744,6 +810,188 @@ fn platformer_scene(name: &str) -> SceneDocument {
         name: format!("{name} Main Scene"),
         entities: serde_json::from_value(entities)
             .expect("the 2D template is a valid scene"),
+        render: Default::default(),
+        simulation: Default::default(),
+    }
+}
+
+/// The first-person, third-person, and physics sandbox templates. They
+/// share a lit floor; the player templates add crates and a
+/// `PlayerController`, the sandbox a pile of dynamic bodies and a fixed
+/// camera.
+fn scene_3d(name: &str, template: ProjectTemplate) -> SceneDocument {
+    use serde_json::{json, Value};
+
+    use crate::runtime::{HudElement, PlayerController};
+
+    fn component(value: &impl Serialize) -> String {
+        serde_json::to_string(value).expect("components serialize")
+    }
+    let mesh = |shape: &str, color: [f32; 3]| {
+        json!({
+            "mesh": {"BuiltinPrimitive": shape},
+            "material": {"Inline": {
+                "model": "Pbr", "alpha_mode": "Opaque",
+                "base_color": [color[0], color[1], color[2], 1.0],
+                "emissive": [0.0, 0.0, 0.0], "metallic": 0.0, "roughness": 0.7,
+                "base_color_texture": null, "normal_texture": null,
+                "metallic_roughness_texture": null,
+                "occlusion_texture": null, "emissive_texture": null
+            }},
+            "cast_shadows": true, "receive_shadows": true
+        })
+    };
+    let transform = |position: [f32; 3], scale: [f32; 3]| json!({"position": position, "rotation": [0.0, 0.0, 0.0], "scale": scale});
+    let physics = json!({"simulation": "Cpu", "solver": "Simplified", "custom_shader": null});
+    let body = |kind: &str| json!({"kind": kind, "mass": 1.0, "linear_velocity": [0.0, 0.0, 0.0], "angular_velocity": [0.0, 0.0, 0.0], "gravity_scale": 1.0});
+    let collider = |shape: Value| json!({"shape": shape, "friction": 0.5, "restitution": 0.0, "sensor": false});
+    // A box of `size` whose mesh matches its collider.
+    let block = |name: &str,
+                 kind: &str,
+                 position: [f32; 3],
+                 size: [f32; 3],
+                 color| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "transform": transform(position, size),
+            "mesh_renderer": mesh("Cube", color), "visible": true,
+            "physics_body": physics, "rigid_body": body(kind),
+            "collider": collider(json!({"Box": {"half_extents": [0.5, 0.5, 0.5]}}))
+        })
+    };
+
+    let mut entities = vec![
+        // Top face at y = 0.
+        block(
+            "Floor",
+            "Fixed",
+            [0.0, -0.5, 0.0],
+            [30.0, 1.0, 30.0],
+            [0.35, 0.37, 0.4],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+    ];
+    let help = if template == ProjectTemplate::PhysicsSandbox {
+        for (index, x) in [-1.1_f32, 0.0, 1.1].into_iter().enumerate() {
+            for level in 0..3 {
+                entities.push(block(
+                    &format!("Box {}", level * 3 + index + 1),
+                    "Dynamic",
+                    [x, 0.5 + 1.05 * level as f32, 0.0],
+                    [1.0; 3],
+                    [0.9, 0.55 - 0.15 * level as f32, 0.2],
+                ));
+            }
+        }
+        // Low walls keep rolling balls on the floor.
+        for (index, (position, size)) in [
+            ([0.0, 0.5, -15.0], [30.0, 1.0, 0.5]),
+            ([0.0, 0.5, 15.0], [30.0, 1.0, 0.5]),
+            ([-15.0, 0.5, 0.0], [0.5, 1.0, 30.0]),
+            ([15.0, 0.5, 0.0], [0.5, 1.0, 30.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            entities.push(block(
+                &format!("Wall {}", index + 1),
+                "Fixed",
+                position,
+                size,
+                [0.3, 0.32, 0.35],
+            ));
+        }
+        for (index, x) in [-0.6_f32, 0.6].into_iter().enumerate() {
+            entities.push(json!({
+                "id": Uuid::new_v4(), "parent": null,
+                "name": format!("Ball {}", index + 1),
+                "transform": transform([x, 6.0 + 2.0 * index as f32, 0.2], [1.0; 3]),
+                "mesh_renderer": mesh("Sphere", [0.2, 0.6, 0.95]), "visible": true,
+                "physics_body": physics, "rigid_body": body("Dynamic"),
+                "collider": collider(json!({"Sphere": {"radius": 0.5}}))
+            }));
+        }
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 4.0, 10.0], "rotation": [-0.3, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }));
+        "Boxes and balls fall and settle. Press Play again to restart."
+    } else {
+        for (index, (position, size)) in [
+            ([-3.0, 0.5, -3.0], [1.0, 1.0, 1.0]),
+            ([-1.5, 0.25, -4.0], [1.0, 0.5, 1.0]),
+            ([3.0, 0.75, -2.0], [2.0, 1.5, 2.0]),
+            ([0.0, 1.5, -12.0], [12.0, 3.0, 1.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            entities.push(block(
+                &format!("Crate {}", index + 1),
+                "Fixed",
+                position,
+                size,
+                [0.6, 0.45, 0.3],
+            ));
+        }
+        let third_person = template == ProjectTemplate::ThirdPerson3d;
+        let player = Uuid::new_v4();
+        let controller = if third_person {
+            // Start looking a little down, over the body's shoulder.
+            PlayerController {
+                camera_distance: 4.0,
+                pitch: -0.3,
+                ..PlayerController::default()
+            }
+        } else {
+            PlayerController::default()
+        };
+        entities.push(json!({
+            "id": player, "parent": null, "name": "Player",
+            "transform": transform([0.0, 1.0, 4.0], [1.0; 3]),
+            "physics_body": physics, "rigid_body": body("Kinematic"),
+            "collider": collider(json!({"Capsule": {"half_height": 0.6, "radius": 0.3}})),
+            "components": {"rusting.player_controller": component(&controller)}
+        }));
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": player, "name": "Game Camera",
+            "transform": transform([0.0, 0.7, 0.0], [1.0; 3]),
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.05, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }));
+        if third_person {
+            entities.push(json!({
+                "id": Uuid::new_v4(), "parent": player, "name": "Body",
+                "transform": transform([0.0; 3], [0.6, 1.8, 0.6]),
+                "mesh_renderer": mesh("Cylinder", [0.95, 0.45, 0.15]),
+                "visible": true
+            }));
+        }
+        "Click to look around, Esc frees the mouse. WASD moves, Shift runs, Space jumps."
+    };
+    let help = HudElement {
+        text: help.into(),
+        ..HudElement::default()
+    };
+    entities.push(json!({
+        "id": Uuid::new_v4(), "parent": null, "name": "Help",
+        "components": {"rusting.hud": component(&help)}
+    }));
+    SceneDocument {
+        format_version: SCENE_FORMAT_VERSION,
+        name: format!("{name} Main Scene"),
+        entities: serde_json::from_value(Value::Array(entities))
+            .expect("the 3D templates are valid scenes"),
         render: Default::default(),
         simulation: Default::default(),
     }
@@ -1325,7 +1573,7 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                     .clear_frame_edges();
             }
         };
-        let player = |app: &mut App| {
+        let player = |app: &mut crate::runtime::App| {
             let world = app.world_mut();
             let mut query =
                 world.query::<(&PlatformerController, &crate::Transform)>();
@@ -1359,6 +1607,147 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
         let (_, moved) = player(&mut app);
         assert!(moved[0] > start[0] + 3.0, "{moved:?} after {frames}");
 
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    /// Creates `template` in a temporary folder and loads its main scene.
+    /// Returns the app, a ticker at 60 Hz, and the folder to remove.
+    fn load_template(
+        template: ProjectTemplate,
+    ) -> (
+        crate::runtime::App,
+        impl Fn(&mut crate::runtime::App, u32),
+        PathBuf,
+    ) {
+        use std::time::Duration;
+
+        use crate::assets::AssetPlugin;
+        use crate::runtime::{load_scene, App, RuntimeInput, SceneLoadMode};
+
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-project-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Template", template).unwrap();
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        load_scene(
+            app.world_mut(),
+            project.root.join("scenes/main.rscene"),
+            SceneLoadMode::Replace,
+        )
+        .unwrap();
+        let tick = |app: &mut App, ticks| {
+            for _ in 0..ticks {
+                app.update(Duration::from_secs_f64(1.0 / 60.0)).unwrap();
+                app.world_mut()
+                    .resource_mut::<RuntimeInput>()
+                    .clear_frame_edges();
+            }
+        };
+        (app, tick, parent)
+    }
+
+    #[test]
+    fn template_names_round_trip() {
+        for template in ProjectTemplate::ALL {
+            assert_eq!(ProjectTemplate::parse(template.name()), Some(template));
+        }
+    }
+
+    #[test]
+    fn the_player_templates_stand_walk_and_frame_the_camera() {
+        use crate::runtime::{Camera, KeyCode, PlayerController, RuntimeInput};
+
+        for template in [
+            ProjectTemplate::FirstPerson3d,
+            ProjectTemplate::ThirdPerson3d,
+        ] {
+            let (mut app, tick, parent) = load_template(template);
+            let player = |app: &mut crate::runtime::App| {
+                let world = app.world_mut();
+                let mut query =
+                    world.query::<(&PlayerController, &crate::Transform)>();
+                let (controller, transform) = query.single(world).unwrap();
+                (*controller, transform.position)
+            };
+            tick(&mut app, 60);
+            let (controller, start) = player(&mut app);
+            assert!(controller.grounded, "{template:?} {start:?}");
+            // The capsule is 1.8 m tall and the floor's top is y = 0.
+            assert!((start[1] - 0.9).abs() < 0.05, "{template:?} {start:?}");
+
+            app.world_mut()
+                .resource_mut::<RuntimeInput>()
+                .record_key(KeyCode::KeyW, true);
+            tick(&mut app, 30);
+            let (_, moved) = player(&mut app);
+            assert!(moved[2] < start[2] - 1.0, "{template:?} {moved:?}");
+
+            let world = app.world_mut();
+            let camera = world
+                .query_filtered::<&crate::Transform, bevy_ecs::query::With<Camera>>()
+                .single(world)
+                .unwrap()
+                .position;
+            if template == ProjectTemplate::ThirdPerson3d {
+                assert!(camera[2] > 3.0 && camera[1] > 0.5, "{camera:?}");
+            } else {
+                assert_eq!(camera, [0.0, 0.7, 0.0]);
+            }
+            std::fs::remove_dir_all(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_sandbox_template_settles_its_pile_on_the_floor() {
+        use crate::runtime::{Name, RigidBody, RigidBodyKind};
+
+        let (mut app, tick, parent) =
+            load_template(ProjectTemplate::PhysicsSandbox);
+        let dynamic = |app: &mut crate::runtime::App| {
+            let world = app.world_mut();
+            let mut bodies: Vec<_> = world
+                .query::<(&Name, &RigidBody, &crate::Transform)>()
+                .iter(world)
+                .filter(|(_, body, _)| body.kind == RigidBodyKind::Dynamic)
+                .map(|(name, _, transform)| {
+                    (name.0.clone(), transform.position)
+                })
+                .collect();
+            bodies.sort_by(|a, b| a.0.cmp(&b.0));
+            bodies
+        };
+        let start = dynamic(&mut app);
+        assert_eq!(start.len(), 11);
+        // Long enough for a rolling ball to reach a wall.
+        tick(&mut app, 1200);
+        let settled = dynamic(&mut app);
+        tick(&mut app, 30);
+        for ((name, before), (_, after)) in
+            settled.iter().zip(dynamic(&mut app))
+        {
+            // Every body rests on the floor or the pile, not in it, and
+            // inside the walls.
+            assert!(before[1] > 0.45, "{name} sank: {before:?}");
+            assert!(
+                after[0].abs() < 15.0 && after[2].abs() < 15.0,
+                "{name} left the floor: {after:?}"
+            );
+            if name.starts_with("Ball") {
+                // Balls roll on with no rolling resistance.
+                continue;
+            }
+            let moved = (0..3)
+                .map(|axis| (after[axis] - before[axis]).abs())
+                .fold(0.0, f32::max);
+            assert!(moved < 0.02, "{name} still moves: {before:?} {after:?}");
+        }
+        let fell = start
+            .iter()
+            .zip(&settled)
+            .any(|(a, b)| b.1[1] < a.1[1] - 1.0);
+        assert!(fell, "the balls dropped onto the pile");
         std::fs::remove_dir_all(parent).unwrap();
     }
 

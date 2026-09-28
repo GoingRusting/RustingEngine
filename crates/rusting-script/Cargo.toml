@@ -1,0 +1,18 @@
+[package]
+name = "rusting-script"
+version = "0.1.0"
+authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
+edition = "2021"
+description = "Optional sandboxed WebAssembly scripting host for RustingEngine games"
+license-file = "../../LICENSE.md"
+repository = "https://github.com/GoingRusting/RustingEngine"
+homepage = "https://github.com/GoingRusting/RustingEngine"
+keywords = ["wasm", "scripting", "game-engine", "gamedev"]
+categories = ["game-engines"]
+
+[dependencies]
+rusting_engine = { version = "1.4.0", path = "../..", default-features = false }
+bevy_ecs = "0.19.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+wasmi = { version = "2.0.0", features = ["deterministic"] }

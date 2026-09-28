@@ -19,6 +19,10 @@
 //! it or sets its velocity, or gameplay removes the marker. Two sleeping
 //! bodies (or a sleeping and a fixed one) are not tested against each
 //! other, so resting sleepers send no `CollisionEvent`.
+//!
+//! A [`Joint`] ties a body to another body or to the world; see `joints.rs`.
+//! Joint rows are solved with the contacts, and a moving or motor-driven
+//! body wakes the other side of its joints.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,6 +39,16 @@ use crate::runtime::{
     PhysicsSettings, RigidBody, RigidBodyKind, SimulationClass,
 };
 use crate::Transform;
+
+#[path = "articulation.rs"]
+mod articulation;
+#[path = "joints.rs"]
+mod joints;
+pub use articulation::Articulation;
+pub use joints::{
+    AxisMotion, Joint, JointAxis, JointBroken, JointKind, JointMotor,
+    JointSpring,
+};
 
 /// Fired once per touching pair of CPU colliders in each `FixedUpdate` step.
 /// `sensor` is true when either collider is a sensor.
@@ -185,6 +199,8 @@ struct Body {
     /// for bodies the solver does not move.
     inverse_inertia: Vector3<f32>,
     asleep: bool,
+    /// Moved by its articulation, never by the rigid-body integrator.
+    articulated: bool,
     velocity: Vector3<f32>,
     angular_velocity: Vector3<f32>,
 }
@@ -315,6 +331,7 @@ impl Body {
             inverse_mass: 0.0,
             inverse_inertia: Vector3::zeros(),
             asleep: false,
+            articulated: false,
             velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
         }
@@ -441,12 +458,16 @@ pub struct PhysicsWorld {
     rest: HashMap<Entity, (u32, [f32; 3])>,
     /// Last step's impulses per contact pair, to warm-start the solver.
     warm: WarmStart,
+    /// Last step's impulse of each joint row, by row key.
+    joint_warm: JointWarm,
     meshes: MeshCache,
 }
 
 /// Contact points of each pair in the first body's local frame, with the
 /// normal and two tangent impulses they ended the step with.
 type WarmStart = HashMap<(Entity, Entity), Vec<(Vector3<f32>, [f32; 3])>>;
+/// Impulse of each joint's rows at the end of the step, by row key.
+type JointWarm = HashMap<Entity, Vec<(u8, f32)>>;
 /// Local distance within which a new manifold point inherits an old impulse.
 const WARM_MATCH: f32 = 0.05;
 
@@ -457,10 +478,17 @@ const SLEEP_LINEAR: f32 = 0.05;
 const SLEEP_ANGULAR: f32 = 0.05;
 
 const SOLVER_ITERATIONS: usize = 8;
+/// Joint passes per solver iteration. A long lever on a light body couples
+/// a joint's rows tightly, and one pass leaves its anchor drifting.
+// ponytail: extra passes, not a block solve of the anchor rows; switch to
+// a 3x3 anchor block if joint-heavy scenes make this cost show.
+const JOINT_PASSES: usize = 4;
 /// Overlap left alone so resting contacts do not jitter.
 const PENETRATION_SLOP: f32 = 0.005;
 /// Share of the remaining overlap removed each step.
 const POSITION_CORRECTION: f32 = 0.8;
+/// Share of an articulation's contact overlap removed per step by velocity.
+const CONTACT_BIAS: f32 = 0.2;
 /// Closing speed below which contacts do not bounce, in m/s.
 const RESTITUTION_THRESHOLD: f32 = 1.0;
 
@@ -483,6 +511,15 @@ impl PhysicsWorld {
             for (point, impulses) in points {
                 hasher.floats(point.as_slice());
                 hasher.floats(impulses);
+            }
+        }
+        let mut joints: Vec<_> = self.joint_warm.iter().collect();
+        joints.sort_unstable_by_key(|(entity, _)| **entity);
+        for (entity, rows) in joints {
+            hasher.word(entity.to_bits());
+            for (key, impulse) in rows {
+                hasher.word(u64::from(*key));
+                hasher.floats(&[*impulse]);
             }
         }
     }
@@ -719,7 +756,16 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             body.asleep = false;
         }
     }
-    let contacts = find_contacts(&bodies);
+    let links = joints::gather_joints(world, &bodies);
+    let (mut articulations, taken) =
+        articulation::build(world, &mut bodies, &links);
+    let mut contacts = find_contacts(&bodies);
+    contacts.retain(|(a, b, _)| !joints::excluded(&links, *a, *b));
+    let links: Vec<_> = links
+        .into_iter()
+        .zip(taken)
+        .filter_map(|(link, taken)| (!taken).then_some(link))
+        .collect();
     // ponytail: one pass, so a push wakes only direct neighbours this step
     // and a chain wakes over the next steps; add islands if that shows.
     for (a, b, contact) in &contacts {
@@ -738,6 +784,25 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             bodies[*a].asleep = false;
         }
     }
+    // A moving or motor-driven side wakes the other side of its joint.
+    for link in &links {
+        let Some(a) = link.a else {
+            bodies[link.b].asleep &= !joints::has_motor(&link.joint);
+            continue;
+        };
+        let moving = |body: &Body| {
+            !body.asleep
+                && body.kind != RigidBodyKind::Fixed
+                && body.velocity.norm() > SLEEP_LINEAR
+        };
+        let wake = joints::has_motor(&link.joint)
+            || moving(&bodies[a])
+            || moving(&bodies[link.b]);
+        if wake {
+            bodies[a].asleep = false;
+            bodies[link.b].asleep = false;
+        }
+    }
     for body in &mut bodies {
         if body.asleep {
             body.inverse_mass = 0.0;
@@ -751,7 +816,10 @@ pub(super) fn step_cpu_physics(world: &mut World) {
     }
     let gravity = Vector3::from(settings.gravity);
     if settings.enabled {
-        for body in bodies.iter_mut().filter(|body| body.inverse_mass > 0.0) {
+        for body in bodies
+            .iter_mut()
+            .filter(|body| body.inverse_mass > 0.0 && !body.articulated)
+        {
             let scale = world
                 .get::<RigidBody>(body.entity)
                 .map_or(1.0, |rigid| rigid.gravity_scale);
@@ -761,11 +829,38 @@ pub(super) fn step_cpu_physics(world: &mut World) {
     if settings.enabled {
         let mut physics = world.resource_mut::<PhysicsWorld>();
         let mut warm = std::mem::take(&mut physics.warm);
-        solve_velocities(&mut bodies, &contacts, &mut warm);
-        world.resource_mut::<PhysicsWorld>().warm = warm;
+        let mut joint_warm = std::mem::take(&mut physics.joint_warm);
+        articulations.free_motion(&mut bodies, gravity, dt);
+        let broken = solve_velocities(
+            &mut bodies,
+            &mut articulations,
+            &contacts,
+            &mut warm,
+            &links,
+            &mut joint_warm,
+            dt,
+        );
+        let mut physics = world.resource_mut::<PhysicsWorld>();
+        physics.warm = warm;
+        physics.joint_warm = joint_warm;
+        for (link, force, torque) in broken {
+            let link = &links[link];
+            world.entity_mut(link.entity).remove::<Joint>();
+            world
+                .resource_mut::<EventQueue<JointBroken>>()
+                .send(JointBroken {
+                    joint: link.entity,
+                    target: link.joint.target,
+                    force,
+                    torque,
+                });
+        }
         sweep_fast_bodies(&mut bodies, dt);
         for body in bodies.iter_mut().filter(|body| {
-            body.movable && body.kind != RigidBodyKind::Fixed && !body.asleep
+            body.movable
+                && body.kind != RigidBodyKind::Fixed
+                && !body.asleep
+                && !body.articulated
         }) {
             body.position += body.velocity * dt;
             let spin = body.angular_velocity * dt;
@@ -774,6 +869,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
                     sim_math::rotation_from_scaled_axis(spin) * body.rotation;
             }
         }
+        articulations.integrate(&mut bodies, dt);
         correct_positions(&mut bodies, &contacts, dt);
         write_back(world, &bodies);
         fall_asleep(world, &bodies, &mut rest);
@@ -803,6 +899,7 @@ fn fall_asleep(
 ) {
     for body in bodies.iter().filter(|body| {
         !body.asleep
+            && !body.articulated
             && body.inverse_mass > 0.0
             && body.kind == RigidBodyKind::Dynamic
     }) {
@@ -943,6 +1040,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                     },
                     shape,
                     asleep: sleeping.is_some() && inverse_mass > 0.0,
+                    articulated: false,
                     velocity: if moving {
                         rigid.linear_velocity.into()
                     } else {
@@ -1055,16 +1153,35 @@ struct SolverPoint {
 }
 
 /// Sequential impulses over every manifold point, with angular response and
-/// accumulated friction clamped by each point's normal impulse.
+/// accumulated friction clamped by each point's normal impulse. Joint rows
+/// are solved before the contacts in each iteration. Returns the joints
+/// that broke, from [`joints::broken`].
 fn solve_velocities(
     bodies: &mut [Body],
+    articulations: &mut articulation::Articulations,
     contacts: &[(usize, usize, Contact)],
     warm: &mut WarmStart,
-) {
+    links: &[joints::JointLink],
+    joint_warm: &mut JointWarm,
+    dt: f32,
+) -> Vec<(usize, f32, f32)> {
     let inertia = bodies
         .iter()
         .map(Body::world_inverse_inertia)
         .collect::<Vec<_>>();
+    let mut rows =
+        joints::joint_rows(bodies, &inertia, articulations, links, dt);
+    for (link, rows) in &mut rows {
+        if let Some(old) = joint_warm.get(&links[*link].entity) {
+            for row in rows {
+                if let Some((_, impulse)) =
+                    old.iter().find(|(key, _)| *key == row.key)
+                {
+                    row.impulse = *impulse;
+                }
+            }
+        }
+    }
     let point_velocity = |bodies: &[Body], a: usize, b: usize, ra, rb| {
         let (first, second) = (&bodies[a], &bodies[b]);
         second.velocity + second.angular_velocity.cross(&rb)
@@ -1086,12 +1203,21 @@ fn solve_velocities(
         let tangents = [tangent, normal.cross(&tangent)];
         for point in manifold(first, second, contact) {
             let (ra, rb) = (point - first.position, point - second.position);
+            let articulated = first.articulated || second.articulated;
             let mass = |direction: &Vector3<f32>| {
                 let (ca, cb) = (ra.cross(direction), rb.cross(direction));
-                let k = first.inverse_mass
-                    + second.inverse_mass
-                    + ca.dot(&(inertia[a] * ca))
-                    + cb.dot(&(inertia[b] * cb));
+                let k = if articulated {
+                    articulations.inverse_mass(
+                        bodies,
+                        &inertia,
+                        &[(a, -ca, -direction), (b, cb, *direction)],
+                    )
+                } else {
+                    first.inverse_mass
+                        + second.inverse_mass
+                        + ca.dot(&(inertia[a] * ca))
+                        + cb.dot(&(inertia[b] * cb))
+                };
                 if k > 0.0 {
                     1.0 / k
                 } else {
@@ -1101,6 +1227,13 @@ fn solve_velocities(
             // Bounce targets use the closing speed before any impulse.
             let closing = point_velocity(bodies, a, b, ra, rb).dot(&normal);
             let restitution = first.restitution.max(second.restitution);
+            // correct_positions leaves articulations alone, so their
+            // contacts push out of overlap through the velocity target.
+            let push_out = if articulated {
+                CONTACT_BIAS / dt * (contact.depth - PENETRATION_SLOP).max(0.0)
+            } else {
+                0.0
+            };
             points.push(SolverPoint {
                 a,
                 b,
@@ -1113,7 +1246,8 @@ fn solve_velocities(
                     -restitution * closing
                 } else {
                     0.0
-                },
+                }
+                .max(push_out),
                 friction: (first.friction * second.friction).sqrt(),
                 impulses: warm
                     .get(&(first.entity, second.entity))
@@ -1126,21 +1260,41 @@ fn solve_velocities(
             });
         }
     }
-    let apply = |bodies: &mut [Body], point: &SolverPoint, impulse| {
+    let apply = |bodies: &mut [Body],
+                 articulations: &mut articulation::Articulations,
+                 point: &SolverPoint,
+                 impulse: Vector3<f32>| {
         let (a, b) = (point.a, point.b);
+        if bodies[a].articulated || bodies[b].articulated {
+            let length = impulse.norm();
+            if length > 0.0 {
+                let direction = impulse / length;
+                let sides = [
+                    (a, -point.ra.cross(&direction), -direction),
+                    (b, point.rb.cross(&direction), direction),
+                ];
+                articulations.apply(bodies, &inertia, &sides, length);
+            }
+            return;
+        }
         bodies[a].velocity -= impulse * bodies[a].inverse_mass;
         bodies[a].angular_velocity -= inertia[a] * point.ra.cross(&impulse);
         bodies[b].velocity += impulse * bodies[b].inverse_mass;
         bodies[b].angular_velocity += inertia[b] * point.rb.cross(&impulse);
     };
+    joints::warm_start(bodies, &inertia, articulations, &rows);
     for point in &points {
         let [normal, first, second] = point.impulses;
         let impulse = point.normal * normal
             + point.tangents[0] * first
             + point.tangents[1] * second;
-        apply(bodies, point, impulse);
+        apply(bodies, articulations, point, impulse);
     }
     for _ in 0..SOLVER_ITERATIONS {
+        for _ in 0..JOINT_PASSES {
+            joints::solve(bodies, &inertia, articulations, &mut rows);
+            articulations.solve_rows(bodies);
+        }
         for point in &mut points {
             let velocity =
                 point_velocity(bodies, point.a, point.b, point.ra, point.rb);
@@ -1149,7 +1303,7 @@ fn solve_velocities(
             let total = (point.impulses[0] + change).max(0.0);
             let applied = total - point.impulses[0];
             point.impulses[0] = total;
-            apply(bodies, point, point.normal * applied);
+            apply(bodies, articulations, point, point.normal * applied);
 
             // Coulomb friction on each tangent, limited by the normal impulse.
             let limit = point.friction * point.impulses[0];
@@ -1163,7 +1317,7 @@ fn solve_velocities(
                     (point.impulses[axis + 1] + change).clamp(-limit, limit);
                 let applied = total - point.impulses[axis + 1];
                 point.impulses[axis + 1] = total;
-                apply(bodies, point, tangent * applied);
+                apply(bodies, articulations, point, tangent * applied);
             }
         }
     }
@@ -1174,6 +1328,15 @@ fn solve_velocities(
             .or_default()
             .push((first.rotation.inverse() * point.ra, point.impulses));
     }
+    let broken = joints::broken(links, &rows, dt);
+    joint_warm.clear();
+    for (link, rows) in rows {
+        joint_warm.insert(
+            links[link].entity,
+            rows.iter().map(|row| (row.key, row.impulse)).collect(),
+        );
+    }
+    broken
 }
 
 /// Contact points of a pair in world space. Two boxes touching face to face
@@ -1352,7 +1515,11 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
         let body = &bodies[index];
         let travel = body.velocity.norm() * dt;
         let reach = body.inner_radius();
-        if body.inverse_mass == 0.0 || body.sensor || travel <= reach {
+        if body.inverse_mass == 0.0
+            || body.articulated
+            || body.sensor
+            || travel <= reach
+        {
             continue;
         }
         let direction = body.velocity / body.velocity.norm();
@@ -1387,7 +1554,15 @@ fn correct_positions(
     dt: f32,
 ) {
     for (a, b, contact) in contacts {
-        let (ima, imb) = (bodies[*a].inverse_mass, bodies[*b].inverse_mass);
+        // Articulations resolve their overlap through the contact bias.
+        let movable = |body: &Body| {
+            if body.articulated {
+                0.0
+            } else {
+                body.inverse_mass
+            }
+        };
+        let (ima, imb) = (movable(&bodies[*a]), movable(&bodies[*b]));
         if contact.sensor || ima + imb == 0.0 {
             continue;
         }
@@ -2164,6 +2339,7 @@ mod tests {
             inverse_mass: 1.0,
             inverse_inertia: Vector3::repeat(1.0),
             asleep: false,
+            articulated: false,
             velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
         }
@@ -2326,6 +2502,7 @@ mod tests {
             contacts: Vec::new(),
             rest: HashMap::new(),
             warm: HashMap::new(),
+            joint_warm: HashMap::new(),
             meshes: HashMap::new(),
         };
         let hit = world

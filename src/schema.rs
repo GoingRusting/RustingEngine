@@ -54,8 +54,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "new",
-        usage: "new <parent-directory> <project-name> [--template 3d|2d|starter] [--json]",
-        summary: "Create a project from a template: 3d is the editor's lit cube, 2d a playable side-view level, starter the complete Coin Run game (collect five coins, then touch the flag). The parent must exist and the project folder must not.",
+        usage: "new <parent-directory> <project-name> [--template 3d|first-person|third-person|sandbox|2d|starter] [--json]",
+        summary: "Create a project from a template: 3d is the editor's lit cube; first-person and third-person a walkable room with a player controller; sandbox a pile of dynamic bodies that fall and settle; 2d a playable side-view level; starter the complete Coin Run game (collect five coins, then touch the flag). The parent must exist and the project folder must not.",
         gpu: NO_GPU,
         defaults: &[("--template", "3d")],
         example: "new . my_game --json",
@@ -488,9 +488,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First-person walking body. Reads the player.* actions; parent a camera to it at eye height.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body.",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6}),
     },
     ComponentSection {
         key: "rusting.tween",
@@ -539,6 +539,30 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Side-view run and jump in the XY plane. Reads player.left, player.right and player.jump; parent an orthographic camera to follow.",
         gpu: NO_GPU,
         example: || json!({"run_speed": 6.0, "jump_speed": 9.0, "gravity": 25.0, "collision_mask": 1}),
+    },
+    ComponentSection {
+        key: "rusting.scene_instance",
+        summary: "Places another scene under this entity when the scene loads, as a prefab. The placed entities get stable IDs; the text scene stores only the link and each changed field (rusting.instance_overrides), and cooking includes them, so a game ships without the source scene. Nested instances work; a scene that contains itself fails to load.",
+        gpu: NO_GPU,
+        example: || json!({"source": "prefabs/coin.rscene"}),
+    },
+    ComponentSection {
+        key: "rusting.connections",
+        summary: "Signal connections of the object that emits them: each runs a Rust handler the game registered with App::add_signal_handler, with target as the receiver, when this object sends the handler's event or gains or loses its component. A game fails to load a scene that names an unregistered handler or a missing object.",
+        gpu: NO_GPU,
+        example: || json!({"list": [{"handler": "add_score", "target": "8d1f6f0e-3c43-4b0a-9a57-2f64a1b0c7d2"}]}),
+    },
+    ComponentSection {
+        key: "rusting.joint",
+        summary: "Joins this CPU body to target's (null: the world) at anchor and target_anchor. kind is Fixed, Hinge, Slider, BallSocket, ConeTwist, Distance, Spring, or Generic (per-axis Locked, Free, or Limited, each with an optional spring and motor). The frame's X axis is the hinge, slider, and twist axis. A break_force or break_torque above 0 removes the joint and sends JointBroken when a step's load passes it.",
+        gpu: NO_GPU,
+        example: || json!({"target": null, "kind": {"Hinge": {"limit": [-1.0, 1.0], "spring": {"target": 0.0, "stiffness": 20.0, "damping": 2.0}, "motor": {"speed": 2.0, "max_force": 50.0}}}, "anchor": [0.0, 1.0, 0.0], "frame": [0.0, 0.0, 1.5], "target_anchor": [0.0, 3.0, 0.0], "target_frame": [0.0, 0.0, 1.5], "collide_connected": false, "break_force": 500.0, "break_torque": 0.0}),
+    },
+    ComponentSection {
+        key: "rusting.articulation",
+        summary: "Makes this body the root of a reduced-coordinate joint tree. Fixed, Hinge, Slider, and BallSocket joints hanging from it, directly or through other links, are solved in joint space: they never drift apart and hinge and slider limits hold exactly. A dynamic root floats; a fixed or kinematic root is the base. Reduced joints do not break.",
+        gpu: NO_GPU,
+        example: || json!({}),
     },
 ];
 
@@ -800,7 +824,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         load_scene_document, set_registered_component, SceneDocument,
-        SceneLoadMode,
+        SceneLoadMode, CONNECTIONS_COMPONENT, SCENE_INSTANCE_COMPONENT,
     };
 
     /// JSON pointers of every leaf. Arrays are leaves.
@@ -858,7 +882,18 @@ mod tests {
                 "{key}{path} is saved but not documented"
             );
         }
-        for pattern in documented.iter().filter(|path| !path.is_empty()) {
+        // Fields of an enum variant the example does not use have no
+        // saved parent, so only fields under a saved parent must be saved.
+        let parent_saved = |pattern: &String| {
+            pattern.rsplit_once('/').is_none_or(|(parent, _)| {
+                parent.is_empty()
+                    || saved.iter().any(|path| matches(parent, path, true))
+            })
+        };
+        for pattern in documented
+            .iter()
+            .filter(|path| !path.is_empty() && parent_saved(path))
+        {
             assert!(
                 saved.iter().any(|path| matches(pattern, path, true)),
                 "{key}{pattern} is documented but not saved"
@@ -920,8 +955,14 @@ mod tests {
             .iter()
             .map(|section| (section.key.to_owned(), (section.example)()))
             .collect();
+        // The instance example names a file that does not exist here, and
+        // the connections example a handler and an object.
         let components: Map<String, Value> = COMPONENT_SECTIONS
             .iter()
+            .filter(|section| {
+                ![SCENE_INSTANCE_COMPONENT, CONNECTIONS_COMPONENT]
+                    .contains(&section.key)
+            })
             .map(|section| {
                 let text = (section.example)().to_string();
                 (section.key.to_owned(), Value::String(text))

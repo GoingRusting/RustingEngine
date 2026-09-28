@@ -38,7 +38,9 @@ were run against this version of the engine.
   hashes, `rusting determinism`, and replays.
 - [Architecture](../architecture.md): how the runtime, renderer, and editor
   fit together.
-- [Development environment](dev-environment.md): running GPU tests without a
+- [WebAssembly scripts](scripting.md): the optional sandboxed scripting
+  host for modding and designer logic, its host functions, and its limits.
+- [Development environment](dev-environment.md): iteration speed targets, running GPU tests without a
   GPU (lavapipe).
 - [Changelog](../CHANGELOG.md): what changed in each release.
 - [Roadmap](../roadmap.md): what is done and what comes next.

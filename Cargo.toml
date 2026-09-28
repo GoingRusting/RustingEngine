@@ -1,6 +1,6 @@
 [package]
 name = "rusting_engine"
-version = "1.4.0"
+version = "1.4.5"
 authors = ["Vasyl Trefilov <drenfor228@gmail.com>"]
 edition = "2021"
 description = "Vulkan 3D game engine with GPU-accelerated physics for massive physics-heavy scenes"
@@ -20,7 +20,7 @@ homepage = "https://github.com/GoingRusting/RustingEngine"
 documentation = "https://docs.rs/rusting_engine"
 
 [workspace]
-members = ["testGame", "crates/rusting-core"]
+members = ["testGame", "crates/rusting-core", "crates/rusting-script"]
 default-members = ["."]
 resolver = "2"
 

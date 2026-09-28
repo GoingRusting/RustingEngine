@@ -35,8 +35,8 @@ you can still create, build, test, and export projects headless.
 The Project Manager opens first.
 
 1. Press `New Project...`.
-2. Choose a parent folder, type a name such as `Hello Cube`, and press
-   `Create Project`. The editor makes a new folder and never overwrites an
+2. Choose a parent folder, type a name such as `Hello Cube`, keep the
+   `Empty 3D` template, and press `Create Project`. The editor makes a new folder and never overwrites an
    existing one.
 3. The new project opens with a blue cube and a camera.
 

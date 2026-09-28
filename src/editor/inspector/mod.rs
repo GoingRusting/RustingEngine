@@ -1,6 +1,8 @@
 //! Inspector panel: the selected object's components drawn as Godot-style
 //! sections of property rows.
 
+pub(super) mod data_asset;
+pub(super) mod placement;
 mod reflected;
 pub mod widgets;
 
@@ -391,7 +393,8 @@ pub(super) fn draw_inspector_area(
                 let inspector = world
                     .get_resource::<InspectorRegistry>()
                     .and_then(|registry| registry.inspectors.get(name));
-                let removed = widgets::section(ui, name, true, |ui| {
+                let label = placement::component_label(name);
+                let removed = widgets::section(ui, &label, true, |ui| {
                     if let Some(inspector) = inspector {
                         if let Some(value) = inspector(ui, serialized) {
                             component_edits.push(ComponentEdit::Set {
@@ -437,15 +440,30 @@ pub(super) fn draw_inspector_area(
             }
 
             ui.add_space(6.0);
-            let addable = registered_names
+            let present = custom_values
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>();
+            let mut addable = registered_names
                 .iter()
                 .filter(|name| {
                     !has_dedicated_editor(name)
-                        && !custom_values
-                            .iter()
-                            .any(|(present, _)| present == *name)
+                        && !present.contains(&name.as_str())
+                })
+                .filter_map(|name| {
+                    match placement::placement(world, entity, name, &present) {
+                        placement::Placement::Hidden => None,
+                        placement::Placement::Allowed => Some((name, None)),
+                        placement::Placement::Blocked(reason) => {
+                            Some((name, Some(reason)))
+                        }
+                    }
+                })
+                .map(|(name, blocked)| {
+                    (placement::component_label(name), name, blocked)
                 })
                 .collect::<Vec<_>>();
+            addable.sort_by(|a, b| a.0.cmp(&b.0));
             ui.menu_button("Add Component", |ui| {
                 ui.set_min_width(200.0);
                 if edited_physics.is_none()
@@ -460,8 +478,12 @@ pub(super) fn draw_inspector_area(
                 if !addable.is_empty() {
                     EditorTheme::menu_section(ui, "GAME COMPONENTS");
                 }
-                for name in addable {
-                    if EditorTheme::menu_action(ui, name, true).clicked() {
+                for (label, name, blocked) in addable {
+                    let response =
+                        EditorTheme::menu_action(ui, &label, blocked.is_none());
+                    if let Some(reason) = blocked {
+                        response.on_disabled_hover_text(reason);
+                    } else if response.on_hover_text(name.as_str()).clicked() {
                         component_edits.push(ComponentEdit::Add {
                             entity,
                             name: name.clone(),

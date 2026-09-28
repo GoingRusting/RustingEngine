@@ -3,13 +3,14 @@
 use egui::Ui;
 
 use super::gui_elements::EditorTheme;
-use super::inspector::widgets::{checkbox, drag, section, value};
+use super::inspector::widgets::{checkbox, choice, drag, section, value};
 use crate::rendering::scene_renderer::{
     resolve_quality, CullingStats, RenderCapacityDiagnostics, RenderCounters,
     RendererCapabilities,
 };
 use crate::runtime::{
-    PhysicsBackendStatus, PhysicsSettings, RenderSettings, RenderWorld,
+    Antialiasing, PhysicsBackendStatus, PhysicsSettings, RenderSettings,
+    RenderWorld, ShadowQuality,
 };
 
 pub(super) fn draw_render_settings_area(
@@ -35,6 +36,45 @@ pub(super) fn draw_render_settings_area(
                     );
                 });
             });
+            // Session options like VSync: the scene file does not keep them.
+            section(ui, "Quality", false, |ui| {
+                choice(
+                    ui,
+                    "Anti-aliasing",
+                    &mut settings.antialiasing,
+                    &[
+                        (Antialiasing::Auto, "Auto (by quality)"),
+                        (Antialiasing::Off, "Off"),
+                        (Antialiasing::Msaa2, "MSAA 2x"),
+                        (Antialiasing::Msaa4, "MSAA 4x"),
+                    ],
+                );
+                choice(
+                    ui,
+                    "Shadows",
+                    &mut settings.shadows,
+                    &[
+                        (ShadowQuality::Auto, "Auto (by quality)"),
+                        (ShadowQuality::Low, "Low (1024)"),
+                        (ShadowQuality::Medium, "Medium (2048)"),
+                        (ShadowQuality::High, "High (4096)"),
+                    ],
+                );
+                if let Some(caps) = capabilities {
+                    value(
+                        ui,
+                        "MSAA in use",
+                        &format!(
+                            "{}x",
+                            crate::rendering::scene_renderer::scene_sample_count(
+                                settings.antialiasing,
+                                resolve_quality(settings.quality, caps),
+                                caps,
+                            )
+                        ),
+                    );
+                }
+            });
             section(ui, "Device", false, |ui| {
                 if let Some(caps) = capabilities {
                     value(ui, "GPU", &caps.device_name);
@@ -46,7 +86,11 @@ pub(super) fn draw_render_settings_area(
                             resolve_quality(settings.quality, caps)
                         ),
                     );
-                    value(ui, "MSAA samples", &caps.msaa_samples.to_string());
+                    value(
+                        ui,
+                        "Max MSAA",
+                        &format!("{}x", caps.msaa_samples),
+                    );
                     value(
                         ui,
                         "GPU timestamps",

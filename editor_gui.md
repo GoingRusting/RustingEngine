@@ -27,8 +27,10 @@ Start the editor from the engine folder:
 The Project Manager appears first.
 
 1. To create a game, press `New Project...`, choose the parent folder, type
-   the project name, and press `Create Project`. The editor makes a new
-   folder and refuses to overwrite an existing one.
+   the project name, pick a `Template`, and press `Create Project`. The
+   templates are Empty 3D (a lit cube), 3D first person, 3D third person,
+   Physics sandbox, 2D platformer, and Coin Run (a complete 2D game). The
+   editor makes a new folder and refuses to overwrite an existing one.
 2. To open a game, select a recent project or press
    `Browse for existing project...` and choose its folder.
 3. Press `Projects` in the top bar to change projects later.
@@ -131,6 +133,12 @@ indented one level, with branch lines.
 - Right-click a row to add a child object, rename, duplicate, delete, or
   move the object to the scene root. Deleting a parent also deletes its
   children.
+- For an instanced scene, the right-click menu also has an INSTANCE section:
+  `Revert Object` (one placed object) and `Revert Instance` drop your
+  changes, `Apply to Source` writes them into the source `.rscene` file, and
+  `Unpack Completely` turns the instance into ordinary objects. Undo
+  restores the open scene, but not a source file written by `Apply to
+  Source`.
 - Rename opens a text field on the row. `Enter` confirms it and `Escape`
   restores the old name.
 - Type in the filter field to find objects by name.
@@ -151,12 +159,33 @@ Inspector shows the selected object's components, each in its own section.
   scene's objects. A field that refers to a texture or mesh is a drop-down
   of assets that are already loaded.
 - `Add Component` at the bottom adds Physics or any registered game
-  component. The `×` button in a section header removes that component.
+  component. Components are listed by their short name ("Sky Light", not
+  `rusting.sky_light`); hover one to see its full ID. The `×` button in a
+  section header removes that component.
+- Environment settings (Sky Light, Ambient Light, Tone Mapping, Background
+  Color), HUD elements and tile maps make an object into something of its
+  own, so Add Component does not offer them on meshes, cameras or lights,
+  or on an object that is already another of these kinds. Create them from
+  Add Object instead: **Environment and UI** has World Environment and HUD
+  Element. A scene has one sky; a second one is greyed out with the name of
+  the object that holds the first.
 - `Classes` holds the object's class names, which scene patches and
   scenarios use to find groups of objects.
 
 A continuous drag in the Inspector is one undo step, not one step per
 frame.
+
+A data asset (`.rdata`) picked in Assets replaces the object in the
+Inspector until you press `×` or select another object. Its fields use the
+same editors as components. Each change is written to the file when the
+mouse button is released, and every object that uses the file sees it.
+These edits change files, not the scene, so Undo does not revert them.
+
+A data asset field's drop-down lists the loaded files and `Unique (saved
+with this object)`. Unique copies the current file's values into the
+object, and the fields appear under the drop-down. Edits to a unique value
+change only this object, are saved with the scene, and undo like any
+other component edit. Pick a file again to go back to shared values.
 
 ## Assets
 
@@ -167,6 +196,11 @@ glTF file becomes a mesh and a material, with a reloadable `.rmesh` file
 written beside the model.
 
 - Double-click a model, or drag it into Scene View, to add it to the scene.
+- Double-click a scene (`.rscene`), or right-click it and choose
+  `Instance in Scene`, to place it in the open scene as a prefab. It
+  appears as one object whose children come from that file; see
+  [Scenes](docs/concepts.md#scenes). `New Variant` in the same menu
+  creates `<name>_variant.rscene`, a scene that inherits this one.
 - Double-click an image to use it as the base color of the selected
   object. You can also drag it onto a Hierarchy row or an Inspector texture
   slot.
@@ -174,6 +208,10 @@ written beside the model.
   for a new one of the same type, and shows its size and which objects use
   it before you confirm.
 - Type in the filter field to find a file.
+- `New` lists the data asset types the game registers. It writes a file
+  with the type's default values, named after the type, into the selected
+  folder, and opens it in the Inspector. Click a `.rdata` file to edit it;
+  see [Data assets](docs/concepts.md#data-assets).
 
 ## Preview and Play
 
@@ -185,6 +223,26 @@ The editor runs a scene in two ways:
 - **Play** saves and cooks the scene, compiles the project's Rust code, and
   starts the game in its own window. `Stop` ends the game or the build, and
   `Restart` rebuilds and runs again.
+
+### Reload Code
+
+Change your Rust code while the game runs, then press `Reload Code`. The
+game saves its objects and exits. The editor rebuilds the code and starts
+the game again from where it was, so a changed system runs on the same
+scene. Only the code changes.
+
+- Every object keeps its transform, physics, and each component registered
+  with `register_scene_component`. Resources, and components that are not
+  registered, start fresh.
+- Startup systems and `once` blocks that already ran do not run again.
+- When a saved component no longer fits its changed Rust type, for example
+  after a field changed type, the game starts clean. The Console gives the
+  reason.
+- When the new code does not build, the game stays stopped and the Console
+  shows the errors. Fix them and press `Play` to continue from the saved
+  objects.
+- The Console reports each reload, and how long the game took to show its
+  first frame again.
 
 Choose `Debug` beside Play for fast compiles while you work, and `Release`
 for full optimization. Build output and panics from the game appear in
@@ -216,7 +274,12 @@ editor. Results appear in `Cargo Output`.
   times, draw counts, and culling results. GPU times can lag the CPU sample
   by a frame or more.
 - **Render Settings** holds the scene's render settings, VSync, the FPS
-  limit, the GPU in use, and rendering diagnostics.
+  limit, the GPU in use, and rendering diagnostics. Its Quality section
+  sets anti-aliasing (Auto, Off, MSAA 2x or MSAA 4x) and the shadow map
+  size (Auto, Low, Medium or High); Auto follows the quality profile. Like
+  VSync, these two are not saved with the scene. MSAA 2x falls back to off
+  on a GPU without it, and "MSAA in use" shows the count the renderer
+  picked.
 - **Physics Diagnostics** shows which physics backends are available, how
   many bodies run on the GPU and the CPU, the GPU work and readback each
   frame costs, and what falls back when a capacity limit is reached.

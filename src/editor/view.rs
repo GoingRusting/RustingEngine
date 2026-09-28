@@ -262,6 +262,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut run_project = restart_ready;
     let mut stop_build = false;
     let mut restart_build = false;
+    let mut reload_code = false;
     let mut preview_start = false;
     let mut preview_pause = false;
     let mut preview_resume = false;
@@ -282,6 +283,18 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut entity_request = None;
     let mut asset_request = None;
     let mut build_request = None;
+    let data_types: Vec<&'static str> = world
+        .get_resource::<crate::assets::DataAssetTypes>()
+        .map(|types| types.iter().map(|registered| registered.name).collect())
+        .unwrap_or_default();
+    // Picking another object takes the Inspector back from a data asset.
+    if editor_assets
+        .inspected
+        .as_ref()
+        .is_some_and(|inspection| inspection.selection != state.selected)
+    {
+        editor_assets.inspected = None;
+    }
     let mut export_destination = None;
     // Keyboard shortcuts queued by the window-event handler run like the
     // matching menu entries.
@@ -336,6 +349,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                     dialog_project_request = Some(ProjectRequest::Create {
                         parent: path,
                         name: project_manager.project_name.clone(),
+                        template: project_manager.template,
                     });
                 }
             }
@@ -625,6 +639,14 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     "Stop the current process, then save, rebuild, and run again",
                                 )
                                 .clicked();
+                            reload_code =
+                                gui_elements::EditorTheme::toolbar_button(
+                                    ui, "Reload Code", false, true,
+                                )
+                                .on_hover_text(
+                                    "Keep the running game's objects, rebuild the Rust code, and continue with them",
+                                )
+                                .clicked();
                         } else {
                             run_project =
                                 gui_elements::EditorTheme::toolbar_button(
@@ -894,6 +916,26 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             &mut edited_collider,
                         );
                     }
+                    EditorPanel::Inspector
+                        if editor_assets.inspected.is_some() =>
+                    {
+                        let inspection = editor_assets
+                            .inspected
+                            .as_mut()
+                            .expect("checked by the match guard");
+                        match super::inspector::data_asset::draw_data_asset(
+                            ui, world, inspection,
+                        ) {
+                            super::inspector::data_asset::DataAssetAction::None => {}
+                            super::inspector::data_asset::DataAssetAction::Save => {
+                                asset_request =
+                                    Some(AssetRequest::SaveDataAsset);
+                            }
+                            super::inspector::data_asset::DataAssetAction::Close => {
+                                editor_assets.inspected = None;
+                            }
+                        }
+                    }
                     EditorPanel::Inspector => draw_inspector_area(
                         ui,
                         world,
@@ -1104,6 +1146,8 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                 );
                                 stop_build |= ui.button("Stop").clicked();
                                 restart_build |= ui.button("Restart").clicked();
+                                reload_code |=
+                                    ui.button("Reload Code").clicked();
                             });
                         }
                         // Build logs live in Console, so the source editor
@@ -1288,7 +1332,8 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             &mut editor_assets,
                             &state.project_root,
                             &asset_files,
-                            state.selected.is_some(),
+                            state.selected,
+                            &data_types,
                             &mut dialogs,
                             &mut asset_request,
                         );
@@ -1799,6 +1844,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
         world.resource_mut::<EditorBuildState>().request_stop();
     } else if restart_build {
         world.resource_mut::<EditorBuildState>().request_restart();
+    } else if reload_code {
+        world
+            .resource_mut::<EditorBuildState>()
+            .request_code_reload();
     }
     if preview_start {
         start_embedded_preview(world, &mut state, &mut history);
@@ -2067,6 +2116,30 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         }
                         Ok(Some(entity))
                     }
+                    EntityRequest::CreateWith {
+                        name,
+                        components,
+                        parent,
+                    } => {
+                        let name = unique_object_name(world, name);
+                        let entity = world
+                            .spawn((
+                                SceneId::new(),
+                                Name(name),
+                                Transform::default(),
+                            ))
+                            .id();
+                        if let Some(parent) = parent {
+                            world.entity_mut(entity).insert(Parent(parent));
+                        }
+                        for component in components {
+                            crate::runtime::add_registered_component(
+                                world, entity, component,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        }
+                        Ok(Some(entity))
+                    }
                     EntityRequest::CreateCamera(parent) => {
                         let name = unique_object_name(world, "Camera");
                         let entity = world
@@ -2145,6 +2218,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             })?;
                         entity.insert(Name(name));
                         Ok(Some(entity.id()))
+                    }
+                    EntityRequest::Instance(entity, edit) => {
+                        edit_scene_instance(world, entity, edit)
                     }
                     EntityRequest::Reparent(entities, parent) => {
                         super::hierarchy::reparent_entities(
@@ -2375,6 +2451,58 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 select_added_model(&mut state, world, root);
                 Ok(format!("Added {} to the scene", path.display()))
             })(),
+            AssetRequest::InstanceScene(path) => {
+                (|| -> Result<String, String> {
+                    let open_scene = project_content_path(
+                        &state.project_root,
+                        &state.scene_path,
+                    )
+                    .ok();
+                    remember_scene_before_edit(world, &mut history)?;
+                    let root = instance_scene_in_scene(
+                        world,
+                        &path,
+                        open_scene.as_deref(),
+                    )
+                    .inspect_err(|_| {
+                        history.undo.pop_back();
+                    })?;
+                    select_added_model(&mut state, world, root);
+                    Ok(format!("Instanced {} in the scene", path.display()))
+                })()
+            }
+            AssetRequest::NewDataAsset { folder, type_name } => world
+                .resource::<crate::assets::DataAssetTypes>()
+                .get(type_name)
+                .cloned()
+                .ok_or_else(|| format!("`{type_name}` is not registered"))
+                .and_then(|registered| new_data_asset(&folder, &registered))
+                .map(|path| {
+                    let message = format!("Created {}", path.display());
+                    editor_assets.files_scanned = None;
+                    editor_assets.selected = Some(path.clone());
+                    editor_assets.inspected =
+                        Some(DataInspection::open(path, state.selected));
+                    message
+                }),
+            AssetRequest::SaveDataAsset => {
+                match editor_assets.inspected.as_mut() {
+                    None => Err("No data asset is open".to_owned()),
+                    Some(inspection) => {
+                        inspection.dirty = false;
+                        let saved = save_data_inspection(world, inspection);
+                        inspection.error = saved.as_ref().err().cloned();
+                        saved
+                    }
+                }
+            }
+            AssetRequest::NewSceneVariant(path) => new_scene_variant(&path)
+                .map(|variant| {
+                    let message =
+                        format!("Created variant {}", variant.display());
+                    editor_assets.selected = Some(variant);
+                    message
+                }),
             AssetRequest::AssignTexture(path) => state
                 .selected
                 .filter(|entity| world.get::<MeshRenderer>(*entity).is_some())
@@ -2542,9 +2670,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     }
     if let Some(request) = project_request {
         let opened = match request {
-            ProjectRequest::Create { parent, name } => {
-                create_project(&parent, &name)
-            }
+            ProjectRequest::Create {
+                parent,
+                name,
+                template,
+            } => create_project_from(&parent, &name, template),
             ProjectRequest::Open(path) => open_project(&path),
         };
         match opened {
@@ -3219,6 +3349,45 @@ fn draw_add_object_modal(
                                     Some(EntityRequest::CreateEmpty(parent));
                                 close_requested = true;
                             }
+                        });
+                    egui::CollapsingHeader::new("Environment and UI")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let has_environment = super::inspector::placement::scene_has_environment(world);
+                                let presets: [(&'static str, &'static [&'static str], bool, &str); 2] = [
+                                    (
+                                        "World Environment",
+                                        &super::inspector::placement::ENVIRONMENT_COMPONENTS,
+                                        !has_environment,
+                                        "The scene already has a Sky Light",
+                                    ),
+                                    (
+                                        "HUD Element",
+                                        &[crate::runtime::HUD_ELEMENT_COMPONENT],
+                                        true,
+                                        "",
+                                    ),
+                                ];
+                                for (name, components, enabled, reason) in presets {
+                                    let response = ui.add_enabled(
+                                        enabled,
+                                        egui::Button::new(name)
+                                            .min_size(egui::vec2(142.0, 38.0)),
+                                    );
+                                    if response
+                                        .on_disabled_hover_text(reason)
+                                        .clicked()
+                                    {
+                                        *request = Some(EntityRequest::CreateWith {
+                                            name,
+                                            components,
+                                            parent,
+                                        });
+                                        close_requested = true;
+                                    }
+                                }
+                            });
                         });
                     egui::CollapsingHeader::new("Cameras")
                         .default_open(false)

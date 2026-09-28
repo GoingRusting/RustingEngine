@@ -436,6 +436,8 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<GpuQueryProxy>();
     types.register::<GpuStateMirror>();
     types.register::<HudElement>();
+    types.register::<Joint>();
+    types.register::<Articulation>();
     types.register::<MeshRenderer>();
     types.register::<Name>();
     types.register::<ObjectClasses>();
@@ -468,6 +470,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<DeterminismSupport>();
     types.register::<EventQueue<ClickEvent>>();
     types.register::<EventQueue<CollisionEvent>>();
+    types.register::<EventQueue<JointBroken>>();
     types.register::<EventQueue<GpuPhysicsEvent>>();
     types.register::<EventQueue<GpuPhysicsEventsLost>>();
     types.register::<EventQueue<HudButtonPressed>>();
@@ -485,6 +488,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<PhysicsWorld>();
     types.register::<rusting_core::hierarchy::PropagationFingerprint>();
     types.register::<RandomSeed>();
+    types.register::<super::Connections>();
     types.register::<RenderCameraOverride>();
     types.register::<RenderSettings>();
     types.register::<RuntimeInput>();
@@ -495,9 +499,14 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.ignore::<bevy_ecs::entity_disabling::DefaultQueryFilters>();
     types.ignore::<bevy_ecs::schedule::Schedules>();
     types.ignore::<crate::assets::AssetServer>();
+    types.ignore::<crate::assets::DataAssetTypes>();
     types.ignore::<CpuFrameTimings>();
     types.ignore::<RenderWorld>();
     types.ignore::<SceneComponentRegistry>();
+    types.ignore::<super::signals::SignalHandlers>();
+    // Rebuilt after every restore.
+    types.ignore::<super::ClassIndex>();
+    types.ignore::<bevy_ecs::observer::Observer>();
     #[cfg(feature = "ui")]
     types.ignore::<RuntimeUi>();
 }

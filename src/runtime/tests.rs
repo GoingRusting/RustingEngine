@@ -1801,6 +1801,31 @@ fn player_look_needs_captured_cursor_and_clamps_pitch() {
 }
 
 #[test]
+fn third_person_camera_orbits_behind_the_body() {
+    let mut app = App::new();
+    let player = app.spawn((
+        Transform::default(),
+        PlayerController {
+            camera_distance: 4.0,
+            camera_height: 1.0,
+            pitch: -0.5,
+            ..PlayerController::default()
+        },
+    ));
+    let camera = app.spawn((Transform::default(), Camera::default()));
+    app.set_parent(camera, player).unwrap();
+    app.update(Duration::ZERO).unwrap();
+    // Looking down, the camera rises above the orbit center and stays
+    // behind the body (+Z, since the body faces -Z).
+    let camera = *app.world().get::<Transform>(camera).unwrap();
+    let [x, y, z] = camera.position;
+    assert_eq!(x, 0.0);
+    assert!((y - (1.0 + 4.0 * 0.5_f32.sin())).abs() < 1e-4, "{y}");
+    assert!((z - 4.0 * 0.5_f32.cos()).abs() < 1e-4, "{z}");
+    assert_eq!(camera.rotation, [-0.5, 0.0, 0.0]);
+}
+
+#[test]
 fn player_controller_settings_round_trip_through_scene_registry() {
     let mut app = App::new();
     let player = app.spawn((
@@ -2805,4 +2830,561 @@ fn snapshots_name_unregistered_types() {
     assert!(types[0].ends_with("Unlisted"), "{types:?}");
     app.register_snapshot_component::<Unlisted>();
     assert!(app.snapshot().is_ok());
+}
+
+/// A 0.2 m ball `offset` from a world pivot at [0, 3, 0], held by `kind`
+/// with the ball-side anchor on the pivot and both frames turned by `frame`.
+fn jointed_ball(
+    app: &mut App,
+    offset: [f32; 3],
+    kind: JointKind,
+    frame: [f32; 3],
+) -> bevy_ecs::entity::Entity {
+    let pivot = [0.0, 3.0, 0.0];
+    let ball = cpu_body(
+        app.world_mut(),
+        [
+            pivot[0] + offset[0],
+            pivot[1] + offset[1],
+            pivot[2] + offset[2],
+        ],
+        ColliderShape::Sphere { radius: 0.2 },
+        RigidBodyKind::Dynamic,
+    );
+    app.world_mut().entity_mut(ball).insert(Joint {
+        frame,
+        target_frame: frame,
+        ..Joint::new(
+            kind,
+            bevy_ecs::entity::Entity::PLACEHOLDER,
+            offset.map(|value| -value),
+            pivot,
+        )
+    });
+    ball
+}
+
+/// Turns the joint X axis onto world +Z.
+const X_TO_Z: [f32; 3] = [0.0, -std::f32::consts::FRAC_PI_2, 0.0];
+
+fn from_pivot(app: &App, ball: bevy_ecs::entity::Entity) -> [f32; 3] {
+    let position = app.world().get::<Transform>(ball).unwrap().position;
+    [position[0], position[1] - 3.0, position[2]]
+}
+
+fn length(vector: [f32; 3]) -> f32 {
+    vector.iter().map(|value| value * value).sum::<f32>().sqrt()
+}
+
+#[test]
+fn hinge_pendulum_keeps_its_pivot_and_swings_in_its_plane() {
+    let mut app = App::new();
+    let hinge = JointKind::Hinge {
+        limit: None,
+        spring: None,
+        motor: None,
+    };
+    let ball = jointed_ball(&mut app, [1.0, 0.0, 0.0], hinge, X_TO_Z);
+    let mut lowest = 0.0_f32;
+    for _ in 0..120 {
+        run_fixed_steps(&mut app, 1);
+        let offset = from_pivot(&app, ball);
+        assert!((length(offset) - 1.0).abs() < 0.02, "arm {offset:?}");
+        assert!(offset[2].abs() < 1e-3, "left its plane: {offset:?}");
+        lowest = lowest.min(offset[1]);
+    }
+    assert!(lowest < -0.95, "never swung through the bottom: {lowest}");
+    let spin = app.world().get::<RigidBody>(ball).unwrap().angular_velocity;
+    assert!(spin[0].abs() < 1e-3 && spin[1].abs() < 1e-3, "{spin:?}");
+}
+
+#[test]
+fn hinge_limits_stop_the_swing_and_motors_drive_it() {
+    let mut app = App::new();
+    let limited = JointKind::Hinge {
+        limit: Some([-0.5, 0.5]),
+        spring: None,
+        motor: None,
+    };
+    let ball = jointed_ball(&mut app, [1.0, 0.0, 0.0], limited, X_TO_Z);
+    for _ in 0..120 {
+        run_fixed_steps(&mut app, 1);
+        let offset = from_pivot(&app, ball);
+        let angle = offset[1].atan2(offset[0]);
+        assert!(angle > -0.55, "swung past the limit: {angle}");
+    }
+
+    let mut app = App::new();
+    let motor = JointKind::Hinge {
+        limit: None,
+        spring: None,
+        motor: Some(JointMotor {
+            speed: 2.0,
+            max_force: 100.0,
+        }),
+    };
+    let ball = jointed_ball(&mut app, [1.0, 0.0, 0.0], motor, X_TO_Z);
+    app.world_mut()
+        .get_mut::<RigidBody>(ball)
+        .unwrap()
+        .gravity_scale = 0.0;
+    run_fixed_steps(&mut app, 60);
+    let spin = app.world().get::<RigidBody>(ball).unwrap().angular_velocity;
+    assert!((spin[2] - 2.0).abs() < 0.05, "motor spins {spin:?}");
+}
+
+#[test]
+fn sliders_move_along_their_axis_only() {
+    let mut app = App::new();
+    let slider = JointKind::Slider {
+        limit: Some([-10.0, 1.5]),
+        spring: None,
+        motor: None,
+    };
+    let body = jointed_ball(&mut app, [0.0; 3], slider, [0.0; 3]);
+    app.world_mut()
+        .get_mut::<RigidBody>(body)
+        .unwrap()
+        .linear_velocity = [2.0, 1.0, 0.5];
+    run_fixed_steps(&mut app, 60);
+    let transform = *app.world().get::<Transform>(body).unwrap();
+    let [x, y, z] = transform.position;
+    assert!((x - 1.5).abs() < 0.03, "stops at its upper limit: {x}");
+    assert!((y - 3.0).abs() < 0.02 && z.abs() < 0.02, "{:?}", [x, y, z]);
+    assert!(transform.rotation.iter().all(|angle| angle.abs() < 1e-3));
+}
+
+#[test]
+fn fixed_joints_hold_a_cantilever_in_place() {
+    let mut app = App::new();
+    let body = cpu_body(
+        app.world_mut(),
+        [1.0, 3.0, 0.0],
+        UNIT_BOX,
+        RigidBodyKind::Dynamic,
+    );
+    app.world_mut().entity_mut(body).insert(Joint::new(
+        JointKind::Fixed,
+        bevy_ecs::entity::Entity::PLACEHOLDER,
+        [-1.0, 0.0, 0.0],
+        [0.0, 3.0, 0.0],
+    ));
+    run_fixed_steps(&mut app, 120);
+    let transform = *app.world().get::<Transform>(body).unwrap();
+    assert!(
+        (transform.position[1] - 3.0).abs() < 0.02,
+        "sagged to {:?}",
+        transform.position
+    );
+    assert!(
+        transform.rotation[2].abs() < 0.02,
+        "{:?}",
+        transform.rotation
+    );
+}
+
+#[test]
+fn ropes_cap_the_distance_and_springs_settle_at_their_stretch() {
+    let mut app = App::new();
+    let rope = JointKind::Distance { min: 0.0, max: 1.0 };
+    let ball = jointed_ball(&mut app, [0.5, 0.0, 0.0], rope, [0.0; 3]);
+    // Anchors at the ball center and the pivot.
+    app.world_mut().get_mut::<Joint>(ball).unwrap().anchor = [0.0; 3];
+    for _ in 0..120 {
+        run_fixed_steps(&mut app, 1);
+        let arm = length(from_pivot(&app, ball));
+        assert!(arm < 1.03, "rope stretched to {arm}");
+    }
+
+    let mut app = App::new();
+    let spring = JointKind::Spring {
+        rest_length: 1.0,
+        stiffness: 100.0,
+        damping: 5.0,
+    };
+    let ball = jointed_ball(&mut app, [0.0, -1.0, 0.0], spring, [0.0; 3]);
+    app.world_mut().get_mut::<Joint>(ball).unwrap().anchor = [0.0; 3];
+    let mut lowest = 0.0_f32;
+    for _ in 0..300 {
+        run_fixed_steps(&mut app, 1);
+        lowest = lowest.min(from_pivot(&app, ball)[1]);
+    }
+    let mass = app.world().get::<RigidBody>(ball).unwrap().mass;
+    let rest = -1.0 - mass * 9.81 / 100.0;
+    let y = from_pivot(&app, ball)[1];
+    assert!(lowest < rest - 0.02, "never bounced past rest: {lowest}");
+    assert!((y - rest).abs() < 0.02, "settled at {y}, expected {rest}");
+}
+
+#[test]
+fn cone_twist_joints_keep_the_swing_inside_the_cone() {
+    let mut app = App::new();
+    let cone = JointKind::ConeTwist {
+        swing: 0.3,
+        twist: [-0.1, 0.1],
+    };
+    let ball = jointed_ball(&mut app, [1.0, 0.0, 0.0], cone, [0.0; 3]);
+    for _ in 0..120 {
+        run_fixed_steps(&mut app, 1);
+        let offset = from_pivot(&app, ball);
+        let swing = (offset[1].hypot(offset[2]) / length(offset)).asin();
+        assert!(swing < 0.35, "swung {swing} out of the cone");
+    }
+    let offset = from_pivot(&app, ball);
+    assert!(offset[1] < -0.2, "hangs at the cone edge: {offset:?}");
+}
+
+#[test]
+fn joints_link_bodies_without_contacts_and_round_trip_through_scenes() {
+    let run = || {
+        let mut app = App::new();
+        let world = app.world_mut();
+        cpu_ground(world);
+        let upper =
+            cpu_body(world, [0.0, 3.0, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+        let lower =
+            cpu_body(world, [0.3, 2.2, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+        // Overlapping boxes would fly apart if they collided.
+        world.entity_mut(lower).insert(Joint::new(
+            JointKind::BallSocket,
+            upper,
+            [0.0, 0.4, 0.0],
+            [0.3, -0.4, 0.0],
+        ));
+        run_fixed_steps(&mut app, 90);
+        let world = app.world();
+        assert!(!world
+            .resource::<PhysicsWorld>()
+            .contacts()
+            .iter()
+            .any(|contact| [contact.a, contact.b] == [upper, lower]
+                || [contact.a, contact.b] == [lower, upper]));
+        let position =
+            |entity| world.get::<Transform>(entity).unwrap().position;
+        [position(upper), position(lower)]
+    };
+    let first = run();
+    assert_eq!(first, run(), "joints are not deterministic");
+    assert!(first[1][1] < first[0][1], "{first:?}");
+
+    let game = || {
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app
+    };
+    let mut app = game();
+    let target = app.spawn(Transform::default());
+    let joint = Joint {
+        frame: [0.1, 0.2, 0.3],
+        collide_connected: true,
+        ..Joint::new(
+            JointKind::Generic {
+                linear: [
+                    JointAxis::LOCKED,
+                    JointAxis::FREE,
+                    JointAxis {
+                        motion: AxisMotion::Limited {
+                            min: -1.0,
+                            max: 2.0,
+                        },
+                        spring: Some(JointSpring {
+                            target: 0.5,
+                            stiffness: 10.0,
+                            damping: 1.0,
+                        }),
+                        motor: None,
+                    },
+                ],
+                angular: [JointAxis::FREE; 3],
+            },
+            target,
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        )
+    };
+    let body = app.spawn((Transform::default(), joint));
+    let document = scene_document(app.world_mut(), "joints").unwrap();
+    let mut loaded = game();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let id = |app: &App, entity| app.world().get::<SceneId>(entity).unwrap().0;
+    let (body_id, target_id) = (id(&app, body), id(&app, target));
+    let mut query = loaded.world_mut().query::<(Entity, &SceneId)>();
+    let mut find = |wanted| {
+        query
+            .iter(loaded.world())
+            .find(|(_, id)| id.0 == wanted)
+            .unwrap()
+            .0
+    };
+    let (body, target) = (find(body_id), find(target_id));
+    assert_eq!(
+        *loaded.world().get::<Joint>(body).unwrap(),
+        Joint { target, ..joint }
+    );
+}
+
+#[test]
+fn joints_break_past_their_force_or_torque_and_send_an_event() {
+    // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
+    let hang = |break_force| {
+        let mut app = App::new();
+        let ball = jointed_ball(
+            &mut app,
+            [0.0, -1.0, 0.0],
+            JointKind::BallSocket,
+            [0.0; 3],
+        );
+        app.world_mut().get_mut::<Joint>(ball).unwrap().break_force =
+            break_force;
+        let weight = app.world().get::<RigidBody>(ball).unwrap().mass * 9.81;
+        (app, ball, weight)
+    };
+    let (mut app, ball, weight) = hang(1.0);
+    assert!(weight > 1.5, "{weight}");
+    run_fixed_steps(&mut app, 1);
+    // Events become readable in the frame after they are sent.
+    app.update(Duration::ZERO).unwrap();
+    let world = app.world();
+    assert!(world.get::<Joint>(ball).is_none(), "joint held {weight} N");
+    let events: Vec<_> = world
+        .resource::<EventQueue<JointBroken>>()
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].joint, ball);
+    assert_eq!(events[0].target, bevy_ecs::entity::Entity::PLACEHOLDER);
+    assert!(
+        (events[0].force - weight).abs() < 0.1 * weight,
+        "{events:?}"
+    );
+    run_fixed_steps(&mut app, 30);
+    assert!(from_pivot(&app, ball)[1] < -1.5, "broken joint still holds");
+
+    let (mut app, ball, weight) = hang(0.0);
+    app.world_mut().get_mut::<Joint>(ball).unwrap().break_force = weight * 2.0;
+    run_fixed_steps(&mut app, 60);
+    assert!(app.world().get::<Joint>(ball).is_some());
+    assert!((from_pivot(&app, ball)[1] + 1.0).abs() < 0.02);
+
+    let cantilever = |break_torque| {
+        let mut app = App::new();
+        let body = cpu_body(
+            app.world_mut(),
+            [1.0, 3.0, 0.0],
+            UNIT_BOX,
+            RigidBodyKind::Dynamic,
+        );
+        let joint = Joint {
+            break_torque,
+            ..Joint::new(
+                JointKind::Fixed,
+                bevy_ecs::entity::Entity::PLACEHOLDER,
+                [-1.0, 0.0, 0.0],
+                [0.0, 3.0, 0.0],
+            )
+        };
+        app.world_mut().entity_mut(body).insert(joint);
+        let torque = app.world().get::<RigidBody>(body).unwrap().mass * 9.81;
+        run_fixed_steps(&mut app, 10);
+        (app.world().get::<Joint>(body).is_some(), torque)
+    };
+    let (_, torque) = cantilever(0.0);
+    assert!(!cantilever(torque * 0.5).0, "held {torque} N·m");
+    assert!(cantilever(torque * 2.0).0, "broke under {torque} N·m");
+}
+
+/// Hangs `links` spheres in a row along +X from a fixed articulated base at
+/// [0, 3, 0], each hinged at the previous one's center 0.5 m away.
+fn articulated_chain(
+    app: &mut App,
+    links: usize,
+    kind: JointKind,
+) -> Vec<bevy_ecs::entity::Entity> {
+    let world = app.world_mut();
+    let base = cpu_body(
+        world,
+        [0.0, 3.0, 0.0],
+        ColliderShape::Sphere { radius: 0.1 },
+        RigidBodyKind::Fixed,
+    );
+    world.entity_mut(base).insert(Articulation {});
+    let mut chain = vec![base];
+    for index in 1..=links {
+        let link = cpu_body(
+            world,
+            [0.5 * index as f32, 3.0, 0.0],
+            ColliderShape::Sphere { radius: 0.1 },
+            RigidBodyKind::Dynamic,
+        );
+        world.entity_mut(link).insert(Joint {
+            frame: X_TO_Z,
+            target_frame: X_TO_Z,
+            ..Joint::new(kind, chain[index - 1], [-0.5, 0.0, 0.0], [0.0; 3])
+        });
+        chain.push(link);
+    }
+    chain
+}
+
+fn distance(app: &App, a: bevy_ecs::entity::Entity, b: Entity) -> f32 {
+    let position =
+        |entity| app.world().get::<Transform>(entity).unwrap().position;
+    let (a, b) = (position(a), position(b));
+    length([a[0] - b[0], a[1] - b[1], a[2] - b[2]])
+}
+
+/// Potential and kinetic energy of `links`, treating each as a 0.1 m ball.
+fn chain_energy(app: &App, links: &[Entity]) -> f32 {
+    links
+        .iter()
+        .map(|link| {
+            let height =
+                app.world().get::<Transform>(*link).unwrap().position[1];
+            let rigid = app.world().get::<RigidBody>(*link).unwrap();
+            let (speed, spin) = (
+                length(rigid.linear_velocity),
+                length(rigid.angular_velocity),
+            );
+            rigid.mass
+                * (9.81 * height + 0.5 * speed * speed + 0.002 * spin * spin)
+        })
+        .sum()
+}
+
+#[test]
+fn articulated_chains_swing_without_their_joints_drifting() {
+    for kind in [
+        JointKind::BallSocket,
+        JointKind::Hinge {
+            limit: None,
+            spring: None,
+            motor: None,
+        },
+    ] {
+        let mut app = App::new();
+        let chain = articulated_chain(&mut app, 8, kind);
+        // Self-contacts would add their push-out; this measures the joints.
+        for link in &chain {
+            app.world_mut().entity_mut(*link).insert(CollisionLayers {
+                memberships: 0,
+                filters: 0,
+            });
+        }
+        let start = chain_energy(&app, &chain[1..]);
+        let mut lowest = f32::INFINITY;
+        for _ in 0..240 {
+            run_fixed_steps(&mut app, 1);
+            for pair in chain.windows(2) {
+                let gap = distance(&app, pair[0], pair[1]);
+                assert!(
+                    (gap - 0.5).abs() < 1e-4,
+                    "{kind:?} link drifted: {gap}"
+                );
+            }
+            let energy = chain_energy(&app, &chain[1..]);
+            // The tip's whip peaks near 5% over; a solver that gains
+            // energy grows without bound instead.
+            assert!(energy < start * 1.06, "{kind:?} gained energy: {energy}");
+            let tip = app.world().get::<Transform>(chain[8]).unwrap().position;
+            assert!(tip[2].abs() < 1e-3, "{kind:?} left its plane: {tip:?}");
+            lowest = lowest.min(tip[1]);
+        }
+        assert!(lowest < -0.5, "{kind:?} chain did not fall: {lowest}");
+    }
+}
+
+#[test]
+fn articulated_hinge_limits_hold_exactly_and_motors_drive_them() {
+    let limited = JointKind::Hinge {
+        limit: Some([-0.5, 0.5]),
+        spring: None,
+        motor: None,
+    };
+    let mut app = App::new();
+    let chain = articulated_chain(&mut app, 1, limited);
+    for _ in 0..120 {
+        run_fixed_steps(&mut app, 1);
+        let offset = app.world().get::<Transform>(chain[1]).unwrap().position;
+        let angle = (offset[1] - 3.0).atan2(offset[0]);
+        assert!(angle >= -0.5 - 1e-4, "swung past the limit: {angle}");
+    }
+
+    let motor = JointKind::Hinge {
+        limit: None,
+        spring: None,
+        motor: Some(JointMotor {
+            speed: 2.0,
+            max_force: 100.0,
+        }),
+    };
+    let mut app = App::new();
+    let chain = articulated_chain(&mut app, 1, motor);
+    app.world_mut()
+        .get_mut::<RigidBody>(chain[1])
+        .unwrap()
+        .gravity_scale = 0.0;
+    run_fixed_steps(&mut app, 60);
+    let spin = app
+        .world()
+        .get::<RigidBody>(chain[1])
+        .unwrap()
+        .angular_velocity;
+    assert!((spin[2] - 2.0).abs() < 0.05, "motor spins {spin:?}");
+}
+
+#[test]
+fn floating_articulations_land_rest_and_round_trip_through_scenes() {
+    let run = || {
+        let mut app = App::new();
+        let world = app.world_mut();
+        cpu_ground(world);
+        let torso =
+            cpu_body(world, [0.0, 2.0, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+        world.entity_mut(torso).insert(Articulation {});
+        let mut parts = vec![torso];
+        // Each ball turns about its own center, held 0.9 m from the torso's.
+        for side in [-1.0_f32, 1.0] {
+            let arm = cpu_body(
+                world,
+                [side * 0.9, 2.0, 0.0],
+                ColliderShape::Sphere { radius: 0.3 },
+                RigidBodyKind::Dynamic,
+            );
+            world.entity_mut(arm).insert(Joint::new(
+                JointKind::BallSocket,
+                torso,
+                [0.0; 3],
+                [side * 0.9, 0.0, 0.0],
+            ));
+            parts.push(arm);
+        }
+        run_fixed_steps(&mut app, 240);
+        for arm in &parts[1..] {
+            assert!((distance(&app, torso, *arm) - 0.9).abs() < 1e-4);
+        }
+        parts
+            .iter()
+            .map(|part| app.world().get::<Transform>(*part).unwrap().position)
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(first, run(), "articulations are not deterministic");
+    assert!(first.iter().all(|position| position[1] > 0.2), "{first:?}");
+    assert!(first[0][1] < 0.7, "the torso did not land: {first:?}");
+
+    let game = || {
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app
+    };
+    let mut app = game();
+    app.spawn((Transform::default(), Articulation {}));
+    let document = scene_document(app.world_mut(), "articulation").unwrap();
+    let mut loaded = game();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut query = loaded.world_mut().query::<&Articulation>();
+    assert_eq!(query.iter(loaded.world()).count(), 1);
 }

@@ -2,15 +2,17 @@
 //! types: each field gets the widget its type and hints call for, with
 //! ranges, units, and variant lists from the description.
 
+use std::path::Path;
+
 use bevy_ecs::prelude::World;
 use egui::{ecolor, DragValue, Ui};
 use serde_json::{json, Value};
 
 use super::widgets;
-use crate::assets::AssetServer;
+use crate::assets::{read_data_file, AssetServer};
 use crate::reflect::{
     variant_zero, AssetKind, FieldInfo, Hints, TypeInfo, VariantFields,
-    ASSET_KEY,
+    ASSET_KEY, DATA_KEY,
 };
 use crate::runtime::{Name, SceneId};
 
@@ -120,8 +122,7 @@ fn edit_value(
             pick(ui, label, value, &objects)
         }
         (TypeInfo::Handle(kind), value) => {
-            let assets = loaded_assets(world, *kind);
-            pick(ui, label, value, &assets)
+            edit_handle(ui, world, label, kind, value)
         }
         (TypeInfo::Array(item, len), Value::Array(items)) => {
             edit_array(ui, world, label, item, *len, hints, items)
@@ -328,6 +329,43 @@ fn loaded_assets(world: &World, kind: AssetKind) -> Vec<(Value, String)> {
         .collect()
 }
 
+/// Caption of the choice that keeps a data asset's values in the object.
+const UNIQUE: &str = "Unique (saved with this object)";
+
+/// A drop-down of loaded files. Data asset handles also offer `Unique`,
+/// which keeps a private copy in the object, like Godot's Make Unique, and
+/// edit that copy's fields right here.
+fn edit_handle(
+    ui: &mut Ui,
+    world: &World,
+    label: &str,
+    kind: &AssetKind,
+    value: &mut Value,
+) -> bool {
+    let mut choices = loaded_assets(world, *kind);
+    let Some(embedded) = kind.embedded else {
+        return pick(ui, label, value, &choices);
+    };
+    // Switching a file reference to Unique starts from the file's values.
+    let unique = if value.get(DATA_KEY).is_some() {
+        value.clone()
+    } else {
+        let file = value
+            .get(ASSET_KEY)
+            .and_then(Value::as_str)
+            .and_then(|path| read_data_file(Path::new(path)).ok());
+        json!({ DATA_KEY: file.map_or_else(embedded.default, |(_, data)| data) })
+    };
+    choices.push((unique, UNIQUE.to_owned()));
+    let mut changed = pick(ui, label, value, &choices);
+    if let Some(data) = value.get_mut(DATA_KEY) {
+        ui.indent(label, |ui| {
+            changed |= edit_component(ui, world, &(embedded.info)(), data);
+        });
+    }
+    changed
+}
+
 /// The value a new list item or a switched-on option starts with: the
 /// first object or asset for references, or the type's zero value.
 fn initial_value(world: &World, info: &TypeInfo) -> Value {
@@ -339,7 +377,14 @@ fn initial_value(world: &World, info: &TypeInfo) -> Value {
     };
     match info {
         TypeInfo::Entity => first(scene_objects(world)),
-        TypeInfo::Handle(kind) => first(loaded_assets(world, *kind)),
+        TypeInfo::Handle(kind) => {
+            match (loaded_assets(world, *kind), kind.embedded) {
+                (assets, Some(embedded)) if assets.is_empty() => {
+                    json!({ DATA_KEY: (embedded.default)() })
+                }
+                (assets, _) => first(assets),
+            }
+        }
         other => other.zero_value(),
     }
 }
@@ -365,6 +410,7 @@ fn pick(
     let current = match &*value {
         Value::Null => "None".to_owned(),
         Value::String(text) => format!("{text} (missing)"),
+        other if other.get(DATA_KEY).is_some() => UNIQUE.to_owned(),
         other => other.get(ASSET_KEY).and_then(Value::as_str).map_or_else(
             || other.to_string(),
             |path| format!("{path} (missing)"),

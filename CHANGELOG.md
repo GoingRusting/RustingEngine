@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Reduced-coordinate articulations (`rusting.articulation`): on a root body, it solves the `Fixed`, `Hinge`, `Slider`, and `BallSocket` joints of its tree in joint space. Links never drift apart, hinge and slider limits hold exactly, and contacts on any link move the whole tree. The root floats when it is dynamic.
+- Breakable joints: `break_force` and `break_torque` on `rusting.joint`. When a step's load passes either one, the joint is removed and a `JointBroken` event reports the joint, its target, and the force and torque.
+- CPU physics joints (`rusting.joint`): fixed, hinge, slider, ball socket, cone twist, distance, spring, and a generic six-axis joint whose axes are locked, free, or limited, each with an optional spring and motor. A joint links a body to another body or to the world, and jointed bodies do not collide unless `collide_connected` is set. See "Physics: CPU and GPU" in `docs/concepts.md`.
+- Project templates for a 3D first-person game, a 3D third-person game, and a physics sandbox (`rusting new --template first-person|third-person|sandbox`), next to the 2D platformer. The editor's Create Project form has a Template picker for every template.
+- `PlayerController` third-person mode: `camera_distance` above 0 orbits the child camera behind the body around a point `camera_height` above its center.
+- Optional `rusting-script` crate: sandboxed WebAssembly scripts on objects (`rusting.script` component), run by the Wasmi interpreter with fuel and memory limits. Scripts read and write reflected component fields and the transform, find objects by name, and read input actions. See `docs/scripting.md`.
+- Edit-to-running-game latency test (`tests/iteration_latency.rs`, ignored) for the starter template, with a documented target of 3 seconds for an incremental Debug build after a Rust edit. Measured 0.85 seconds; see `docs/dev-environment.md` "Iteration speed".
+- **Reload Code** in the editor while a game runs: the game saves its objects, the editor rebuilds the Rust code, and the game starts again from the saved objects, so a changed system runs on the same scene. Startup systems and `once` blocks do not run again. If a saved component no longer fits its changed type, the game starts clean and the Console says why.
+- Scenes can contain other scenes, like prefabs. The `rusting.scene_instance` component places a saved scene under an object when the scene loads, with stable IDs and entity references pointed at the copies. Text saves keep only the link; cooked scenes include the placed objects. Instances can nest, and a scene that contains itself fails to load.
+- Changes to the objects of a scene instance are saved as overrides: only the changed fields, per object. Everything else follows later edits to the source scene. Deleted objects stay deleted, and objects added under an instance are kept.
+- Scene variants: **New Variant** in the Assets menu of a `.rscene` file (or `save_scene_variant` in Rust) writes a scene that inherits another one. The variant's changes and a level's changes to a placed variant both save as overrides and stack on top of the base.
+- Instance actions in the Hierarchy right-click menu: Revert Object, Revert Instance, Apply to Source (other instances of the scene keep their own changes), and Unpack Completely, all with undo (`edit_instance` in Rust).
+- Signals: named Rust handlers (`App::add_signal_handler`) connected per entity (`Connections`, `App::connect`) answer typed `EntityEvent`s and component additions and removals. Connections survive snapshots and replays, and scenes save them as `rusting.connections`, checked when a game loads the scene.
+- Fast class lookups: `ClassIndex` (or `App::class_members`) lists the objects in a class, the engine's groups and tags, without scanning the scene.
+- `SceneTree`, a system parameter for finding objects by name, by child name or `Arm/Hand` path, and by class. It returns entities, and your own queries read the components.
+- Game code places scenes at runtime: `AssetServer::load_prefab` returns a `Handle<Prefab>`, and `spawn_prefab(world, handle, transform)` adds a copy with repeatable IDs.
+- The editor's Assets panel places a scene in the open one by double-click or `Instance in Scene`, with undo.
+- Render Settings can now change anti-aliasing (Auto, Off, MSAA 2x, MSAA 4x) and shadow quality (Auto, Low, Medium, High) while the editor runs. `RenderSettings` has the matching `antialiasing` and `shadows` fields.
+- Data assets, like Godot resources: a type that implements `DataAsset` and is registered with `App::register_data_asset` saves as a `.rdata` file. `AssetServer::load_data` shares one copy per file, and `Handle` fields in components and in other data assets save as paths. The editor's Assets panel creates them with **New** and edits them in the Inspector.
+- Unique data assets: a data asset reference can keep its own copy, saved inside the object as `{"$data": value}` instead of a file path. Each copy loads separately, so objects and prefab instances never share it. The Inspector's `Unique` choice copies a file's values into the object, and `AssetServer::duplicate_data` does the same in game code.
+- Data assets hot reload: a running game reads a changed `.rdata` file again within half a second, into the handles it already has. A broken file keeps its last values and reports the error.
+- Add Object has an **Environment and UI** category that creates a World Environment (sky, ambient light and tone mapping) or a HUD Element as its own object.
+
+### Changed
+
+- The Inspector shows components by short name, such as "Sky Light" instead of `rusting.sky_light`, and sorts Add Component by that name.
+- Add Component no longer offers environment settings, HUD elements or tile maps on meshes, cameras, lights or each other. A second sky, ambient light, tone mapping or background is greyed out, because the renderer reads only the first.
+- Render Settings calls the device limit "Max MSAA".
+
+### Fixed
+
+- Fixed a game crashing as it closed on Wayland when its runtime UI was on. The clipboard shut down after the window system connection had already closed.
+
 ## [1.4.0] - 2026-09-27
 
 ### Added

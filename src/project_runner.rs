@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bevy_ecs::entity::Entity;
@@ -20,12 +22,13 @@ use winit::window::{CursorGrabMode, WindowId};
 use crate::rendering::frame_pacer::{select_present_mode, FramePacer};
 use crate::rendering::scene_renderer::{SceneRenderOptions, SceneRenderer};
 use crate::runtime::{
-    apply_gpu_state_samples, load_scene, record_gpu_state_hashes,
-    route_gpu_physics_events, AppError, EventQueue, FrameTime,
-    GpuEventRegistry, GpuPhysicsClassWatches, GpuPhysicsEvent,
-    GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch, HybridPhysicsPlugin,
-    Name, PhysicsBackendStatus, Plugin, RenderExtractPlugin, RenderSettings,
-    RenderWorld, RuntimeInput, SceneLoadMode, ScheduleStage,
+    apply_gpu_state_samples, load_scene, load_scene_document,
+    record_gpu_state_hashes, route_gpu_physics_events, scene_document,
+    write_atomic, AppError, EventQueue, FrameTime, GpuEventRegistry,
+    GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsEventsLost,
+    GpuPhysicsRule, GpuPhysicsWatch, HybridPhysicsPlugin, Name,
+    PhysicsBackendStatus, Plugin, RenderExtractPlugin, RenderSettings,
+    RenderWorld, RuntimeInput, SceneDocument, SceneLoadMode, ScheduleStage,
 };
 use crate::{App, AssetPlugin, AssetServer, Transform};
 
@@ -615,6 +618,51 @@ fn run_simple_game_update(world: &mut World) {
     update(&mut GameScene { world }, &time);
 }
 
+/// What a code reload carries from the old game process to the new one.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CodeReloadState {
+    /// Every scene object with its reflected components.
+    scene: SceneDocument,
+    /// [`GameScene::once`] keys that already ran.
+    once: Vec<String>,
+}
+
+/// Writes the scene objects and the finished [`GameScene::once`] keys to
+/// `path`. Resources and components with no reflection registration are
+/// not kept.
+fn save_code_reload_state(
+    runtime: &mut App,
+    path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let world = runtime.world_mut();
+    let scene = scene_document(world, "code reload")?;
+    let mut once = world
+        .get_resource::<GameOnceState>()
+        .map(|state| state.0.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    once.sort();
+    write_atomic(path, &serde_json::to_vec(&CodeReloadState { scene, once })?)?;
+    Ok(())
+}
+
+/// Replaces the freshly loaded scene with the state saved before a code
+/// reload. Startup systems and [`GameScene::once`] blocks that already ran
+/// do not run again. On error the fresh scene stays, so the game starts
+/// clean.
+fn restore_code_reload_state(
+    runtime: &mut App,
+    path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let state: CodeReloadState = serde_json::from_slice(&std::fs::read(path)?)?;
+    let world = runtime.world_mut();
+    load_scene_document(world, &state.scene, SceneLoadMode::Replace)?;
+    world.insert_resource(GameOnceState(state.once.into_iter().collect()));
+    // Names now belong to the restored entities.
+    world.remove_resource::<SceneNameIndex>();
+    runtime.skip_startup();
+    Ok(())
+}
+
 /// Builds the same ECS and asset stack for windowed and headless games.
 fn load_project_runtime<P: Plugin>(
     scene_path: &Path,
@@ -918,6 +966,9 @@ struct ProjectApplication {
     runtime: App,
     /// Time of the previous frame, used to calculate delta time.
     previous_frame: Instant,
+    /// State file and the flag the standard input reader sets when the
+    /// editor asks for a code reload.
+    code_reload: Option<(PathBuf, Arc<AtomicBool>)>,
 }
 
 impl ProjectApplication {
@@ -931,6 +982,7 @@ impl ProjectApplication {
             window: WindowRunner::new(title),
             runtime,
             previous_frame: Instant::now(),
+            code_reload: None,
         }
     }
 }
@@ -1078,7 +1130,32 @@ impl ApplicationHandler for ProjectApplication {
         }
     }
 
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The egui clipboard talks to the Wayland connection, which closes
+        // when the event loop returns; dropping it later crashes the exit.
+        #[cfg(feature = "ui")]
+        {
+            self.window.ui = None;
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some((path, requested)) = &self.code_reload {
+            if requested.load(Ordering::Relaxed) {
+                // The editor rebuilds and starts the game again after this
+                // process exits.
+                if let Err(error) =
+                    save_code_reload_state(&mut self.runtime, path)
+                {
+                    eprintln!(
+                        "{} could not save the scene: {error}",
+                        crate::project::CODE_RELOAD_CLEAN_MARKER
+                    );
+                }
+                event_loop.exit();
+                return;
+            }
+        }
         self.window.request_next_frame(event_loop, &self.runtime);
     }
 }
@@ -1096,6 +1173,19 @@ pub(crate) fn run_windowed(
     }
     let event_loop = EventLoop::new()?;
     let mut application = ProjectApplication::new(title, runtime);
+    if let Some(path) = std::env::var_os(crate::project::CODE_RELOAD_STATE_ENV)
+    {
+        let requested = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&requested);
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lines().map_while(Result::ok) {
+                if line.trim() == crate::project::CODE_RELOAD_SAVE_COMMAND {
+                    flag.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        application.code_reload = Some((PathBuf::from(path), requested));
+    }
     event_loop.run_app(&mut application)?;
     if let (Some(path), Some(replay)) =
         (replay_out, application.runtime.finish_recording())
@@ -1171,6 +1261,20 @@ pub fn run_project<P: Plugin>(
             )
             .into()),
         };
+    }
+    if let Some(path) = std::env::var_os(crate::project::CODE_RELOAD_STATE_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    {
+        match restore_code_reload_state(&mut runtime, &path) {
+            Ok(()) => eprintln!("{}", crate::project::CODE_RELOAD_KEPT_MARKER),
+            Err(error) => eprintln!(
+                "{} the saved scene does not fit the new code: {error}",
+                crate::project::CODE_RELOAD_CLEAN_MARKER
+            ),
+        }
+        // A crash on the next run must not restore this state again.
+        let _ = std::fs::remove_file(&path);
     }
     run_windowed(title.into(), runtime)
 }
@@ -1371,6 +1475,184 @@ mod tests {
             world: runtime.world_mut(),
         };
         assert!(scene.object("Ball").position()[1] < 5.0);
+    }
+
+    #[derive(
+        bevy_ecs::component::Component,
+        Clone,
+        Default,
+        serde::Serialize,
+        serde::Deserialize,
+    )]
+    struct Health {
+        hp: i32,
+    }
+
+    crate::reflect! {
+        struct Health {
+            hp: i32,
+        }
+    }
+
+    /// The same component after a change that old saved values do not fit.
+    #[derive(
+        bevy_ecs::component::Component,
+        Clone,
+        Default,
+        serde::Serialize,
+        serde::Deserialize,
+    )]
+    struct HealthText {
+        hp: String,
+    }
+
+    crate::reflect! {
+        struct HealthText {
+            hp: String,
+        }
+    }
+
+    /// One build of a test game: its update function and its `Health`.
+    struct TestGame {
+        update: GameUpdate,
+        changed_health: bool,
+    }
+
+    impl Plugin for TestGame {
+        fn build(&self, app: &mut App) -> Result<(), AppError> {
+            let registered = if self.changed_health {
+                app.register_scene_component::<HealthText>("test.health")
+                    .map(drop)
+            } else {
+                app.register_scene_component::<Health>("test.health")
+                    .map(drop)
+            };
+            registered.map_err(|error| AppError::PluginSetup {
+                plugin: "TestGame",
+                message: error.to_string(),
+            })?;
+            app.add_plugin(SimpleGamePlugin {
+                update: self.update,
+            })?;
+            app.add_system(ScheduleStage::Startup, |world: &mut World| {
+                world.spawn((
+                    crate::runtime::SceneId::new(),
+                    Name("Marker".into()),
+                ));
+            });
+            Ok(())
+        }
+    }
+
+    fn count_named(world: &mut World, name: &str) -> usize {
+        let mut query = world.query::<&Name>();
+        query.iter(world).filter(|named| named.0 == name).count()
+    }
+
+    #[test]
+    fn code_reload_keeps_the_scene_and_runs_the_new_code() {
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-code-reload-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("main.rscene");
+        let cooked = directory.join("main.rscene.bin");
+        let state = directory.join("state.json");
+        let mut editor = App::new();
+        editor.add_plugin(AssetPlugin).unwrap();
+        editor.spawn((Name("Ball".into()), Transform::new([0.0, 0.0, 0.0])));
+        crate::runtime::save_scene(editor.world_mut(), &source, "main")
+            .unwrap();
+        crate::runtime::cook_scene(&source, &cooked).unwrap();
+
+        // The old code spawns a coin, gives the ball health, then moves the
+        // ball right and hurts it every frame.
+        fn old_code(scene: &mut GameScene<'_>, _: &FrameTime) {
+            scene.once("setup", |scene| {
+                scene.spawn_cube(
+                    "Coin",
+                    Transform::default(),
+                    &CubeSpawn::new(),
+                );
+                let ball = find_named_entity(scene.world, "Ball").unwrap();
+                scene.world.entity_mut(ball).insert(Health { hp: 10 });
+            });
+            scene.object("Ball").move_x(1.0);
+            let ball = find_named_entity(scene.world, "Ball").unwrap();
+            scene.world.get_mut::<Health>(ball).unwrap().hp -= 1;
+        }
+        // The changed system moves it up instead. Its setup runs only on a
+        // clean start.
+        fn new_code(scene: &mut GameScene<'_>, _: &FrameTime) {
+            scene.once("setup", |scene| {
+                scene.spawn_cube(
+                    "Fresh",
+                    Transform::default(),
+                    &CubeSpawn::new(),
+                );
+            });
+            scene.object("Ball").move_y(1.0);
+        }
+        let frame = std::time::Duration::from_millis(16);
+        let mut old = load_project_runtime(
+            &cooked,
+            TestGame {
+                update: old_code,
+                changed_health: false,
+            },
+        )
+        .unwrap();
+        for _ in 0..3 {
+            old.update(frame).unwrap();
+        }
+        save_code_reload_state(&mut old, &state).unwrap();
+
+        let mut new = load_project_runtime(
+            &cooked,
+            TestGame {
+                update: new_code,
+                changed_health: false,
+            },
+        )
+        .unwrap();
+        restore_code_reload_state(&mut new, &state).unwrap();
+        for _ in 0..2 {
+            new.update(frame).unwrap();
+        }
+        let world = new.world_mut();
+        let ball = find_named_entity(world, "Ball").unwrap();
+        assert_eq!(
+            world.get::<Transform>(ball).unwrap().position,
+            [3.0, 2.0, 0.0]
+        );
+        assert_eq!(world.get::<Health>(ball).unwrap().hp, 7);
+        assert_eq!(count_named(world, "Coin"), 1);
+        assert_eq!(count_named(world, "Fresh"), 0);
+        // Startup ran in the old process only.
+        assert_eq!(count_named(world, "Marker"), 1);
+
+        // Saved values that do not fit the changed component start clean.
+        let mut changed = load_project_runtime(
+            &cooked,
+            TestGame {
+                update: new_code,
+                changed_health: true,
+            },
+        )
+        .unwrap();
+        let error = restore_code_reload_state(&mut changed, &state)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("test.health"), "{error}");
+        changed.update(frame).unwrap();
+        let world = changed.world_mut();
+        let ball = find_named_entity(world, "Ball").unwrap();
+        assert_eq!(
+            world.get::<Transform>(ball).unwrap().position,
+            [0.0, 1.0, 0.0]
+        );
+        assert_eq!(count_named(world, "Coin"), 0);
+        assert_eq!(count_named(world, "Fresh"), 1);
+        assert_eq!(count_named(world, "Marker"), 1);
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

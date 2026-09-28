@@ -4,6 +4,7 @@
 //! integrations consume the ECS state through the `RenderExtract` schedule.
 
 mod actions;
+mod classes;
 mod click;
 mod components;
 mod cpu_physics;
@@ -20,6 +21,9 @@ mod render_benchmark;
 mod render_world;
 mod replay;
 mod scene_file;
+mod scene_instance;
+mod scene_tree;
+mod signals;
 pub mod sim_math;
 mod snapshot;
 mod state_hash;
@@ -31,11 +35,13 @@ mod two_d;
 mod ui;
 
 pub use actions::{ActionMap, InputBinding};
+pub use classes::ClassIndex;
 pub use components::*;
 pub(crate) use cpu_physics::gpu_shape_words;
 pub use cpu_physics::{
-    CharacterMove, CollisionEvent, Contact, GpuCollider, PhysicsWorld, RayHit,
-    Sleeping, SLEEP_STEPS,
+    Articulation, AxisMotion, CharacterMove, CollisionEvent, Contact,
+    GpuCollider, Joint, JointAxis, JointBroken, JointKind, JointMotor,
+    JointSpring, PhysicsWorld, RayHit, Sleeping, SLEEP_STEPS,
 };
 pub use determinism::*;
 pub use events::EventQueue;
@@ -54,6 +60,15 @@ pub use rusting_core::app::AppError;
 pub use rusting_core::input::ClickEvent;
 pub use rusting_core::schedule::{CpuFrameTimings, FrameReport, ScheduleStage};
 pub use scene_file::*;
+pub use scene_instance::{
+    edit_instance, member_id, spawn_prefab, InstanceEdit, InstanceExpanded,
+    InstanceMember, Prefab, SceneInstance, INSTANCE_MEMBER_KEY,
+    SCENE_INSTANCE_COMPONENT,
+};
+pub use scene_tree::SceneTree;
+pub use signals::{
+    Added, Connection, Connections, Removed, Signal, SignalError, SignalEvent,
+};
 pub use snapshot::{SnapshotError, WorldSnapshot};
 pub use state_hash::*;
 pub use time::{FrameTime, RandomSeed, TimeControl};
@@ -155,6 +170,8 @@ impl Default for App {
         // Bevy adds this on the first schedule run. Adding it here keeps its
         // entity id the same before and after, which snapshots rely on.
         world.init_resource::<bevy_ecs::schedule::Schedules>();
+        classes::install(&mut world);
+        world.init_resource::<crate::assets::DataAssetTypes>();
         input::install(&mut world);
         actions::install(&mut world);
         player::bind_default_actions(&mut world.resource_mut::<ActionMap>());
@@ -189,6 +206,7 @@ impl Default for App {
         app.add_event::<ClickEvent>();
         app.add_system(ScheduleStage::Update, click::route_click_events);
         app.add_event::<CollisionEvent>();
+        app.add_event::<JointBroken>();
         // One chain: these systems all write `Transform`, and unordered
         // systems would run in whatever order threads finish.
         app.add_systems(
@@ -272,6 +290,18 @@ impl App {
         Ok(self)
     }
 
+    /// Registers a game's [`DataAsset`](crate::assets::DataAsset) type, so
+    /// the editor can create, list and edit its `.rdata` files. Loading
+    /// works without registering; this only tells tools about the type.
+    pub fn register_data_asset<T: crate::assets::DataAsset>(
+        &mut self,
+    ) -> &mut Self {
+        self.world
+            .resource_mut::<crate::assets::DataAssetTypes>()
+            .register::<T>();
+        self
+    }
+
     /// Records a renamed or removed field of a registered component, so
     /// scenes saved before the change still load. See
     /// [`SceneComponentRegistry::add_migration`].
@@ -345,6 +375,58 @@ impl App {
         events.send(event);
     }
 
+    /// Registers a named signal handler: a system whose input,
+    /// `In<Signal<E>>`, says which signal it answers. Entities run it through
+    /// their [`Connections`]. Register handlers during setup, like systems;
+    /// see the [`signals`] module.
+    pub fn add_signal_handler<E: SignalEvent, M>(
+        &mut self,
+        name: impl Into<String>,
+        handler: impl bevy_ecs::system::IntoSystem<
+            bevy_ecs::system::In<Signal<E>>,
+            (),
+            M,
+        >,
+    ) -> Result<&mut Self, SignalError> {
+        signals::SignalHandlers::register(
+            &mut self.world,
+            name.into(),
+            handler,
+        )?;
+        Ok(self)
+    }
+
+    /// Connects handler `handler` on `source`, with `target` as receiver.
+    pub fn connect(
+        &mut self,
+        source: Entity,
+        handler: &str,
+        target: Entity,
+    ) -> Result<&mut Self, SignalError> {
+        if !signals::SignalHandlers::contains(&self.world, handler) {
+            return Err(SignalError::UnknownHandler(handler.to_owned()));
+        }
+        if self.world.get_entity(target).is_err() {
+            return Err(SignalError::MissingEntity(target));
+        }
+        let mut source = self
+            .world
+            .get_entity_mut(source)
+            .map_err(|_| SignalError::MissingEntity(source))?;
+        let connection = Connection {
+            handler: handler.to_owned(),
+            target,
+        };
+        if let Some(mut connections) = source.get_mut::<Connections>() {
+            connections.list.push(connection);
+        } else {
+            source.insert(Connections {
+                list: vec![connection],
+            });
+        }
+        Ok(self)
+    }
+
     pub fn request_exit(&mut self) {
         self.world.resource_mut::<ExitState>().requested = true;
     }
@@ -413,6 +495,15 @@ impl App {
         })
     }
 
+    /// Entities in an [`ObjectClasses`] class, in ascending entity order.
+    /// One hash lookup; see [`ClassIndex`].
+    pub fn class_members(
+        &self,
+        class: &str,
+    ) -> impl Iterator<Item = Entity> + '_ {
+        self.world.resource::<ClassIndex>().members(class)
+    }
+
     /// Puts the world back to `snapshot`. The app must be built the same
     /// way as the one snapshotted (same plugins and scene) and not be past
     /// the snapshot; a new app from the same setup always works. On error
@@ -421,9 +512,27 @@ impl App {
         &mut self,
         snapshot: &WorldSnapshot,
     ) -> Result<(), SnapshotError> {
-        snapshot::restore_world(&mut self.world, snapshot)?;
+        let mute = |world: &mut World, muted| {
+            if let Some(mut handlers) =
+                world.get_resource_mut::<signals::SignalHandlers>()
+            {
+                handlers.muted = muted;
+            }
+        };
+        mute(&mut self.world, true);
+        let restored = snapshot::restore_world(&mut self.world, snapshot);
+        mute(&mut self.world, false);
+        restored?;
+        classes::rebuild(&mut self.world);
         self.startup_complete = snapshot.startup_complete;
         Ok(())
+    }
+
+    /// Marks startup systems as already run, for a world restored from a
+    /// state where they ran.
+    #[cfg_attr(not(feature = "window"), allow(dead_code))]
+    pub(crate) fn skip_startup(&mut self) {
+        self.startup_complete = true;
     }
 
     /// Advances every schedule once using a caller-provided real-frame delta.

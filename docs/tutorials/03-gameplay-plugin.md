@@ -118,7 +118,8 @@ What each part does:
   the list against the struct, so a field added to one but not the other
   does not compile. Enums, nested structs, `Vec`, `Option`, string-keyed
   maps, `Entity` and `Handle<TextureAsset>` fields work too; an `Entity`
-  saves as the target's object ID and a handle as `{"$asset": path}`. A
+  saves as the target's object ID and a handle as `{"$asset": path}` (or
+  `{"$data": value}` for a [unique data asset](../concepts.md#shared-and-unique-data)). A
   reference to an object that was deleted saves as `null` and loads as
   `None` in an `Option<Entity>`, or as `Entity::PLACEHOLDER` otherwise.
 - **Actions.** `ActionMap::bind` adds a binding to an action name, and

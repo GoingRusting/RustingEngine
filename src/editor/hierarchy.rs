@@ -511,6 +511,58 @@ pub(super) fn draw_hierarchy_area(
                             None,
                         ));
                     }
+                    let member = world
+                        .get::<crate::runtime::InstanceMember>(item.entity)
+                        .is_some();
+                    if member
+                        || world
+                            .get::<crate::runtime::InstanceExpanded>(
+                                item.entity,
+                            )
+                            .is_some()
+                    {
+                        use crate::runtime::InstanceEdit;
+                        EditorTheme::menu_section(ui, "INSTANCE");
+                        for (label, edit, enabled, hint) in [
+                            (
+                                "Revert Object",
+                                InstanceEdit::RevertObject,
+                                member,
+                                "Reset this object to its source scene values",
+                            ),
+                            (
+                                "Revert Instance",
+                                InstanceEdit::Revert,
+                                true,
+                                "Drop every change made to this instance's \
+                                 objects",
+                            ),
+                            (
+                                "Apply to Source",
+                                InstanceEdit::ApplyToSource,
+                                true,
+                                "Write this instance's objects into its source \
+                                 scene file. Undo does not restore the file.",
+                            ),
+                            (
+                                "Unpack Completely",
+                                InstanceEdit::UnpackCompletely,
+                                true,
+                                "Turn the instance into ordinary objects with \
+                                 no link to the source",
+                            ),
+                        ] {
+                            if EditorTheme::menu_action(ui, label, enabled)
+                                .on_hover_text(hint)
+                                .clicked()
+                            {
+                                *entity_request = Some(EntityRequest::Instance(
+                                    item.entity,
+                                    edit,
+                                ));
+                            }
+                        }
+                    }
                     EditorTheme::menu_section(ui, "DANGER");
                     let delete = if count > 1 {
                         format!("Delete {count} Objects")

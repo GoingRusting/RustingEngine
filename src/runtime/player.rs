@@ -8,6 +8,10 @@
 //! is captured: yaw turns the body and pitch tilts its `Camera` children. A
 //! left click captures the cursor and Escape releases it.
 //!
+//! With `camera_distance` above zero the controller is third person: the
+//! `Camera` children orbit behind the body at that distance, around a point
+//! `camera_height` above the body center, and pitch swings them up and down.
+//!
 //! The body moves as its `Collider` shape (unscaled), or as
 //! [`DEFAULT_PLAYER_SHAPE`] without one. Give it a `Collider`, a CPU
 //! `PhysicsBody`, and a kinematic `RigidBody` to make sensors report it and
@@ -67,6 +71,11 @@ pub struct PlayerController {
     pub yaw: f32,
     /// Up/down look in radians, kept within ±89°.
     pub pitch: f32,
+    /// 0 is first person. Above 0, the `Camera` children orbit behind the
+    /// body at this distance in metres.
+    pub camera_distance: f32,
+    /// Height of the third-person orbit center above the body center.
+    pub camera_height: f32,
     #[serde(skip)]
     pub vertical_speed: f32,
     #[serde(skip)]
@@ -87,6 +96,8 @@ impl Default for PlayerController {
             collision_mask: u32::MAX,
             yaw: 0.0,
             pitch: 0.0,
+            camera_distance: 0.0,
+            camera_height: 0.6,
             vertical_speed: 0.0,
             grounded: false,
             jump_requested: false,
@@ -145,9 +156,20 @@ pub(super) fn player_look(
         }
         player.jump_requested |= jump;
         transform.rotation = [0.0, player.yaw, 0.0];
+        // Behind the orbit center along the view direction, which is -Z
+        // tilted up by pitch.
+        let (sin, cos) = sim_math::sin_cos(player.pitch);
+        let distance = player.camera_distance;
         for child in children.into_iter().flat_map(|children| &children.0) {
             if let Ok(mut camera) = cameras.get_mut(*child) {
                 camera.rotation = [player.pitch, 0.0, 0.0];
+                if distance > 0.0 {
+                    camera.position = [
+                        0.0,
+                        player.camera_height - sin * distance,
+                        cos * distance,
+                    ];
+                }
             }
         }
     }

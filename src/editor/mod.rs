@@ -31,9 +31,9 @@ use crate::project::export_built_game;
 #[cfg(test)]
 use crate::project::package_game_files;
 pub use project::{
-    create_project, open_project, EditorPreferences, OpenProject, ProjectError,
-    ProjectManagerState, ProjectManifest, RecentProject,
-    PROJECT_FORMAT_VERSION,
+    create_project, create_project_from, open_project, EditorPreferences,
+    OpenProject, ProjectError, ProjectManagerState, ProjectManifest,
+    ProjectTemplate, RecentProject, PROJECT_FORMAT_VERSION,
 };
 pub use shortcuts::{
     add_mouse_delta, editor_navigation_active, handle_keyboard_input,
@@ -742,7 +742,11 @@ impl Plugin for EditorPlugin {
 #[derive(Clone)]
 enum ProjectRequest {
     /// Creates a project inside the selected parent folder.
-    Create { parent: PathBuf, name: String },
+    Create {
+        parent: PathBuf,
+        name: String,
+        template: ProjectTemplate,
+    },
     /// Opens a folder that already contains a RustingEngine project.
     Open(PathBuf),
 }
@@ -784,6 +788,83 @@ struct EditorAssetState {
     replace_target: Option<PathBuf>,
     /// Dry-run result shown for confirmation before a replacement.
     replace_preview: Option<ReplacePreview>,
+    /// Data asset file the Inspector shows instead of the selected object.
+    inspected: Option<DataInspection>,
+}
+
+/// A `.rdata` file open in the Inspector.
+#[derive(Clone)]
+struct DataInspection {
+    path: PathBuf,
+    type_name: String,
+    /// The file's value in scene form, as the Inspector edits it.
+    value: serde_json::Value,
+    /// Hierarchy selection when the file was opened. Selecting another
+    /// object returns the Inspector to objects.
+    selection: Option<Entity>,
+    /// Edited since the last write.
+    dirty: bool,
+    /// Why the last read or write failed.
+    error: Option<String>,
+}
+
+impl DataInspection {
+    fn open(path: PathBuf, selection: Option<Entity>) -> Self {
+        let (type_name, value, error) =
+            match crate::assets::read_data_file(&path) {
+                Ok((type_name, value)) => (type_name, value, None),
+                Err(error) => (
+                    String::new(),
+                    serde_json::Value::Null,
+                    Some(error.to_string()),
+                ),
+            };
+        Self {
+            path,
+            type_name,
+            value,
+            selection,
+            dirty: false,
+            error,
+        }
+    }
+}
+
+/// Writes a new data asset of `type_name` with its default value in
+/// `folder`, named after the type (`enemy_stats.rdata`,
+/// `enemy_stats_2.rdata`, ...).
+fn new_data_asset(
+    folder: &std::path::Path,
+    registered: &crate::assets::DataAssetType,
+) -> Result<PathBuf, String> {
+    let stem = registered
+        .name
+        .rsplit('.')
+        .next()
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("data");
+    let path = (1..)
+        .map(|number| {
+            let suffix = if number == 1 {
+                String::new()
+            } else {
+                format!("_{number}")
+            };
+            folder.join(format!(
+                "{stem}{suffix}.{}",
+                crate::assets::DATA_EXTENSION
+            ))
+        })
+        .find(|path| !path.exists())
+        .expect("a free file name always exists");
+    std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+    crate::assets::write_data_file(
+        &path,
+        registered.name,
+        registered.default_value(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(path)
 }
 
 /// A checked but unwritten asset replacement.
@@ -861,6 +942,13 @@ struct EditorBuildState {
         std::sync::Mutex<Option<std::sync::mpsc::Receiver<BuildWorkerMessage>>>,
     /// Set by Stop; the worker kills its current process when it sees it.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by Reload Code; the worker asks the running game to save its
+    /// scene and exit.
+    save_state: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The next Play continues from the scene the game saved.
+    code_reload: bool,
+    /// The current Play continues from a saved scene.
+    resuming: bool,
     /// Restart only after the worker confirms its process has exited.
     restart_requested: bool,
     restart_ready: bool,
@@ -908,11 +996,17 @@ impl EditorBuildState {
             ),
         };
         self.console_cursor = 0;
-        self.play_started = matches!(request, BuildRequest::BuildAndRun { .. })
-            .then(std::time::Instant::now);
+        let play = matches!(request, BuildRequest::BuildAndRun { .. });
+        self.play_started = play.then(std::time::Instant::now);
         self.built_after = None;
+        self.resuming = std::mem::take(&mut self.code_reload) && play;
+        if play && !self.resuming {
+            let _ = std::fs::remove_file(code_reload_state_path(&project_root));
+        }
         self.stop = std::sync::Arc::default();
         let stop = std::sync::Arc::clone(&self.stop);
+        self.save_state = std::sync::Arc::default();
+        let save_state = std::sync::Arc::clone(&self.save_state);
         std::thread::spawn(move || {
             let command = match &request {
                 BuildRequest::Check => "check",
@@ -951,7 +1045,8 @@ impl EditorBuildState {
                     );
                 }
             }
-            let finished = match run_streamed(&mut cargo, &sender, &stop) {
+            let finished = match run_streamed(&mut cargo, &sender, &stop, None)
+            {
                 Ok(None) => BuildFinished {
                     success: false,
                     output: "\nCargo task stopped.\n".into(),
@@ -967,6 +1062,7 @@ impl EditorBuildState {
                                 *profile,
                                 sender,
                                 &stop,
+                                &save_state,
                             );
                         } else if let BuildRequest::Export {
                             parent,
@@ -1026,6 +1122,7 @@ impl EditorBuildState {
     /// Asks the worker to kill the running Cargo task or native game.
     fn request_stop(&mut self) {
         self.restart_requested = false;
+        self.code_reload = false;
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -1034,6 +1131,23 @@ impl EditorBuildState {
             self.restart_requested = true;
             self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// Asks the running game to save its scene and exit, then rebuilds and
+    /// starts it again from that scene. While Cargo is still building, this
+    /// restarts the build.
+    fn request_code_reload(&mut self) {
+        if !self.running {
+            return;
+        }
+        self.restart_requested = true;
+        self.code_reload = true;
+        let flag = if self.built_after.is_some() {
+            &self.save_state
+        } else {
+            &self.stop
+        };
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn take_restart_ready(&mut self) -> bool {
@@ -1070,6 +1184,17 @@ impl EditorBuildState {
                     self.running = false;
                     if !finished.success && self.built_after.is_none() {
                         self.note_build_errors();
+                        if self.resuming && !self.restart_requested {
+                            self.code_reload = true;
+                            self.notices.push((
+                                ConsoleLevel::Warning,
+                                "Play",
+                                "The reloaded code did not build. The game's \
+                                 saved scene is kept: fix the error and press \
+                                 Play to continue from it."
+                                    .into(),
+                            ));
+                        }
                     }
                     self.play_started = None;
                     finished_status = Some(finished.success);
@@ -1104,6 +1229,23 @@ impl EditorBuildState {
         };
         if text.contains(BUILD_PASSED) {
             self.built_after = Some(started.elapsed());
+        }
+        for line in text.lines() {
+            if line.starts_with(crate::project::CODE_RELOAD_KEPT_MARKER) {
+                self.notices.push((
+                    ConsoleLevel::Info,
+                    "Play",
+                    "Code reload kept the scene".into(),
+                ));
+            } else if let Some(reason) =
+                line.strip_prefix(crate::project::CODE_RELOAD_CLEAN_MARKER)
+            {
+                self.notices.push((
+                    ConsoleLevel::Warning,
+                    "Play",
+                    format!("Code reload restarted the game clean:{reason}"),
+                ));
+            }
         }
         if let Some(game_ms) = crate::project::first_frame_ms(text) {
             self.notices.push((
@@ -1188,6 +1330,15 @@ impl EditorBuildState {
 /// Output line the worker sends when the game build succeeded.
 const BUILD_PASSED: &str = "Build passed.";
 
+/// File that carries a running game's scene across a code reload.
+fn code_reload_state_path(project_root: &std::path::Path) -> PathBuf {
+    project_root.join("build").join("code_reload_state.json")
+}
+
+/// How long a game may take to save its scene before it is killed.
+const CODE_RELOAD_SAVE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10);
+
 /// Starts the native game and forwards both output streams to the editor.
 fn run_native_game(
     project_root: &std::path::Path,
@@ -1195,6 +1346,7 @@ fn run_native_game(
     profile: GameBuildProfile,
     sender: std::sync::mpsc::Sender<BuildWorkerMessage>,
     stop: &std::sync::atomic::AtomicBool,
+    save_state: &std::sync::atomic::AtomicBool,
 ) {
     let _ = sender.send(BuildWorkerMessage::Output(format!(
         "\n{BUILD_PASSED} Starting native game...\n"
@@ -1209,44 +1361,58 @@ fn run_native_game(
     cargo
         .arg("--manifest-path")
         .arg(manifest)
-        .current_dir(project_root);
-    let finished = match run_streamed(&mut cargo, &sender, stop) {
-        Ok(Some(status)) if status.success() => BuildFinished {
-            success: true,
-            output: "\nNative game exited successfully.\n".into(),
-        },
-        Ok(Some(status)) => BuildFinished {
-            success: false,
-            output: format!("\nNative game exited with status {status}.\n"),
-        },
-        Ok(None) => BuildFinished {
-            success: false,
-            output: "\nNative game stopped.\n".into(),
-        },
-        Err(error) => BuildFinished {
-            success: false,
-            output: format!("\nCould not run native game: {error}\n"),
-        },
-    };
+        .current_dir(project_root)
+        .env(
+            crate::project::CODE_RELOAD_STATE_ENV,
+            code_reload_state_path(project_root),
+        );
+    let finished =
+        match run_streamed(&mut cargo, &sender, stop, Some(save_state)) {
+            Ok(Some(status)) if status.success() => BuildFinished {
+                success: true,
+                output: "\nNative game exited successfully.\n".into(),
+            },
+            Ok(Some(status)) => BuildFinished {
+                success: false,
+                output: format!("\nNative game exited with status {status}.\n"),
+            },
+            Ok(None) => BuildFinished {
+                success: false,
+                output: "\nNative game stopped.\n".into(),
+            },
+            Err(error) => BuildFinished {
+                success: false,
+                output: format!("\nCould not run native game: {error}\n"),
+            },
+        };
     let _ = sender.send(BuildWorkerMessage::Finished(finished));
 }
 
 /// Runs one command and sends each stdout and stderr line to the editor as
 /// it arrives. Returns `None` when `stop` was set and the process was killed.
+/// With `save_state`, the command's standard input is a pipe; setting the
+/// flag sends the game [`crate::project::CODE_RELOAD_SAVE_COMMAND`] and kills
+/// it if it has not exited after [`CODE_RELOAD_SAVE_TIMEOUT`].
 // ponytail: killing `cargo build` can leave its rustc children running until
 // they finish; add a process group kill if that becomes a problem.
 fn run_streamed(
     command: &mut std::process::Command,
     sender: &std::sync::mpsc::Sender<BuildWorkerMessage>,
     stop: &std::sync::atomic::AtomicBool,
+    save_state: Option<&std::sync::atomic::AtomicBool>,
 ) -> std::io::Result<Option<std::process::ExitStatus>> {
-    use std::io::BufRead;
+    use std::io::{BufRead, Write};
     use std::process::Stdio;
 
+    if save_state.is_some() {
+        command.stdin(Stdio::piped());
+    }
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let mut stdin = child.stdin.take();
+    let mut save_requested: Option<std::time::Instant> = None;
     let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
         child.stdout.take().map(|pipe| Box::new(pipe) as _),
         child.stderr.take().map(|pipe| Box::new(pipe) as _),
@@ -1279,6 +1445,31 @@ fn run_streamed(
             let _ = child.wait();
             break None;
         }
+        if save_state.is_some_and(|flag| {
+            flag.swap(false, std::sync::atomic::Ordering::Relaxed)
+        }) {
+            if let Some(stdin) = &mut stdin {
+                let _ = writeln!(
+                    stdin,
+                    "{}",
+                    crate::project::CODE_RELOAD_SAVE_COMMAND
+                )
+                .and_then(|()| stdin.flush());
+            }
+            save_requested = Some(std::time::Instant::now());
+        }
+        if save_requested
+            .is_some_and(|since| since.elapsed() > CODE_RELOAD_SAVE_TIMEOUT)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = sender.send(BuildWorkerMessage::Output(format!(
+                "{} the game did not save its scene within {} s\n",
+                crate::project::CODE_RELOAD_CLEAN_MARKER,
+                CODE_RELOAD_SAVE_TIMEOUT.as_secs()
+            )));
+            break None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     for reader in readers {
@@ -1297,6 +1488,17 @@ enum AssetRequest {
     LoadTexture(PathBuf),
     /// Adds a project glTF file to the scene as one object tree.
     AddModel(PathBuf),
+    /// Places a saved scene in the open scene as a linked instance.
+    InstanceScene(PathBuf),
+    /// Writes a new scene next to this one that inherits it.
+    NewSceneVariant(PathBuf),
+    /// Writes a new data asset of a registered type into a folder.
+    NewDataAsset {
+        folder: PathBuf,
+        type_name: &'static str,
+    },
+    /// Writes the data asset open in the Inspector and reloads it.
+    SaveDataAsset,
     /// Loads an image and uses it as the selected object's base color.
     AssignTexture(PathBuf),
     /// Gives the selected renderer a fresh default material.
@@ -1325,6 +1527,13 @@ enum AssetRequest {
 enum EntityRequest {
     /// Adds an object that only has a name and transform.
     CreateEmpty(Option<Entity>),
+    /// Adds an object made of registered components with default values,
+    /// such as a World Environment or a HUD element.
+    CreateWith {
+        name: &'static str,
+        components: &'static [&'static str],
+        parent: Option<Entity>,
+    },
     /// Adds one of the engine's built-in procedural meshes.
     CreatePrimitive(PrimitiveShape, Option<Entity>),
     /// Adds an inactive perspective camera.
@@ -1341,6 +1550,8 @@ enum EntityRequest {
     Rename(Entity, String),
     /// Moves one object below another object, or back to the scene root.
     Reparent(Vec<Entity>, Option<Entity>),
+    /// Reverts, applies or unpacks the scene instance that holds an object.
+    Instance(Entity, crate::runtime::InstanceEdit),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1396,6 +1607,142 @@ fn free_name(names: &std::collections::HashSet<String>, base: &str) -> String {
         }
     }
     unreachable!("a free object name always exists")
+}
+
+/// Places the scene at `path` in the open scene as one new object with a
+/// `SceneInstance` link, like Godot's "Instantiate Child Scene". Returns the
+/// new root object. The caller takes the undo snapshot.
+fn instance_scene_in_scene(
+    world: &mut World,
+    path: &std::path::Path,
+    open_scene: Option<&std::path::Path>,
+) -> Result<Entity, String> {
+    let source = path.canonicalize().map_err(|error| error.to_string())?;
+    if open_scene
+        .and_then(|open| open.canonicalize().ok())
+        .as_ref()
+        == Some(&source)
+    {
+        return Err("A scene cannot contain an instance of itself".into());
+    }
+    let base = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Scene");
+    let id = SceneId::new().0;
+    let entity: crate::runtime::SceneEntity = serde_json::from_value(
+        serde_json::json!({
+            "id": id,
+            "parent": null,
+            "name": unique_object_name(world, base),
+            "transform": crate::runtime::SceneTransform::from(Transform::default()),
+            "mesh_renderer": null,
+            "camera": null,
+            "visible": null,
+            "components": {
+                crate::runtime::SCENE_INSTANCE_COMPONENT:
+                    serde_json::json!({"source": source}).to_string(),
+            },
+        }),
+    )
+    .map_err(|error| error.to_string())?;
+    let document = crate::runtime::SceneDocument {
+        format_version: crate::runtime::SCENE_FORMAT_VERSION,
+        name: base.to_owned(),
+        entities: vec![entity],
+        render: Default::default(),
+        simulation: Default::default(),
+    };
+    crate::runtime::load_scene_document(
+        world,
+        &document,
+        SceneLoadMode::Additive,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut query = world.query::<(Entity, &SceneId)>();
+    query
+        .iter(world)
+        .find_map(|(entity, found)| (found.0 == id).then_some(entity))
+        .ok_or_else(|| "The instance was not added".to_owned())
+}
+
+/// Runs `edit` on the scene instance that holds `entity` and reloads the
+/// scene. Returns `entity` again after the reload. The caller takes the undo
+/// snapshot; Apply to Source also writes the source file, which Undo does
+/// not restore.
+fn edit_scene_instance(
+    world: &mut World,
+    entity: Entity,
+    edit: crate::runtime::InstanceEdit,
+) -> Result<Option<Entity>, String> {
+    let id = world
+        .get::<SceneId>(entity)
+        .ok_or("Selected object is not part of the saved scene")?
+        .0;
+    let mut document = scene_document(world, "Main Scene")
+        .map_err(|error| error.to_string())?;
+    crate::runtime::edit_instance(&mut document, id, edit)
+        .map_err(|error| error.to_string())?;
+    crate::runtime::load_scene_document(
+        world,
+        &document,
+        SceneLoadMode::Replace,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut query = world.query::<(Entity, &SceneId)>();
+    Ok(query
+        .iter(world)
+        .find_map(|(entity, found)| (found.0 == id).then_some(entity)))
+}
+
+/// Writes the inspected data asset and reloads it, so every handle to the
+/// file sees the edit.
+fn save_data_inspection(
+    world: &mut World,
+    inspection: &DataInspection,
+) -> Result<String, String> {
+    crate::assets::write_data_file(
+        &inspection.path,
+        &inspection.type_name,
+        inspection.value.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let registered = world
+        .resource::<crate::assets::DataAssetTypes>()
+        .get(&inspection.type_name)
+        .cloned()
+        .ok_or_else(|| {
+            format!("`{}` is not registered", inspection.type_name)
+        })?;
+    let mut assets = world.resource_mut::<AssetServer>();
+    registered
+        .reload(&mut assets, &inspection.path)
+        .map_err(|error| error.to_string())?;
+    Ok(format!("Saved {}", inspection.path.display()))
+}
+
+/// Writes `<name>_variant.rscene` (or `_variant_2`, ...) next to `base`, a
+/// scene that inherits `base` like a Godot inherited scene. Returns the new
+/// file. The open scene does not change, so there is no undo step.
+fn new_scene_variant(base: &std::path::Path) -> Result<PathBuf, String> {
+    let stem = base
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("scene");
+    let path = (1..)
+        .map(|number| {
+            let suffix = if number == 1 {
+                String::new()
+            } else {
+                format!("_{number}")
+            };
+            base.with_file_name(format!("{stem}_variant{suffix}.rscene"))
+        })
+        .find(|path| !path.exists())
+        .expect("a free file name always exists");
+    crate::runtime::save_scene_variant(base, &path)
+        .map_err(|error| error.to_string())?;
+    Ok(path)
 }
 
 /// Adds a glTF file to the scene like Blender's importer: one new empty
@@ -1604,6 +1951,29 @@ fn draw_project_manager(
                 ui.text_edit_singleline(&mut manager.project_name);
             });
             ui.horizontal(|ui| {
+                ui.label("Template");
+                gui_elements::EditorTheme::toolbar_combo_box(
+                    ui,
+                    "new_project_template",
+                    manager.template.label(),
+                    180.0,
+                    |ui| {
+                        for choice in ProjectTemplate::ALL {
+                            if gui_elements::EditorTheme::menu_choice(
+                                ui,
+                                choice.label(),
+                                manager.template == choice,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                manager.template = choice;
+                            }
+                        }
+                    },
+                );
+            });
+            ui.horizontal(|ui| {
                 ui.label("Parent folder");
                 if manager.parent_directory.as_os_str().is_empty() {
                     ui.colored_label(
@@ -1639,6 +2009,7 @@ fn draw_project_manager(
                     request = Some(ProjectRequest::Create {
                         parent: manager.parent_directory.clone(),
                         name: manager.project_name.clone(),
+                        template: manager.template,
                     });
                 }
             }

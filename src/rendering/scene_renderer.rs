@@ -90,8 +90,9 @@ use crate::assets::{
 use crate::rendering::debug_overlay::{DebugLine, RenderDebugOverlay};
 use crate::rendering::frame_passes::{FramePass, FrameResource};
 use crate::runtime::{
-    CpuFrameTimings, CullingMode, GpuConditionInstruction, Projection,
-    QualityProfile, RawGpuPhysicsEvent, RenderBounds, RenderWorld, ToneMapping,
+    Antialiasing, CpuFrameTimings, CullingMode, GpuConditionInstruction,
+    Projection, QualityProfile, RawGpuPhysicsEvent, RenderBounds, RenderWorld,
+    ShadowQuality, ToneMapping,
 };
 
 #[derive(Debug)]
@@ -440,6 +441,20 @@ struct ShadowUpload {
 /// distance in front of the camera it covers, for a resolved profile.
 /// Higher profiles cover more distance at a finer texel size; every Vulkan
 /// device supports 4096-texel 2D images.
+/// Shadow map size and reach for a shadow setting, where `Auto` follows
+/// the resolved quality profile.
+pub fn shadow_settings_for(
+    shadows: ShadowQuality,
+    profile: QualityProfile,
+) -> (u32, f32) {
+    shadow_settings(match shadows {
+        ShadowQuality::Auto => profile,
+        ShadowQuality::Low => QualityProfile::Eco,
+        ShadowQuality::Medium => QualityProfile::Balanced,
+        ShadowQuality::High => QualityProfile::High,
+    })
+}
+
 pub fn shadow_settings(profile: QualityProfile) -> (u32, f32) {
     match profile {
         QualityProfile::Eco => (1024, 30.0),
@@ -1177,6 +1192,11 @@ pub struct SceneRenderer {
     /// The same passes with a multisampled scene subpass, when the device
     /// supports it; see [`RendererCapabilities::msaa_samples`].
     msaa_passes: Option<MainPasses>,
+    /// Sample count `msaa_passes` were built for; rebuilt when a frame asks
+    /// for another count.
+    msaa_pass_samples: u32,
+    /// Swapchain format the main passes write, kept to rebuild them.
+    output_format: Format,
     /// Multisampled HDR color and depth that resolve into `hdr` and `depth`.
     /// Only allocated while frames use `msaa_passes`.
     msaa_targets: Option<(Arc<ImageView>, Arc<ImageView>)>,
@@ -1498,6 +1518,8 @@ impl SceneRenderer {
             memory_allocator,
             passes,
             msaa_passes,
+            msaa_pass_samples: capabilities.msaa_samples,
+            output_format,
             msaa_targets: None,
             scene_samples: 1,
             physics_pipeline,
@@ -1776,11 +1798,24 @@ impl SceneRenderer {
             quality,
             &self.capabilities,
         );
-        let samples = if msaa_enabled(quality) {
-            self.capabilities.msaa_samples
-        } else {
-            1
-        };
+        let samples = scene_sample_count(
+            render_world.antialiasing,
+            quality,
+            &self.capabilities,
+        );
+        if samples > 1 && samples != self.msaa_pass_samples {
+            // In-flight frames keep the old passes alive through their
+            // command buffers; ensure_depth drops the cached framebuffers.
+            let msaa = create_main_passes(
+                &self.queue,
+                self.output_format,
+                samples,
+                Some(&self.passes),
+            )?;
+            msaa.name(" (MSAA)");
+            self.msaa_passes = Some(msaa);
+            self.msaa_pass_samples = samples;
+        }
         self.ensure_depth(extent, samples)?;
         let active = match &self.msaa_passes {
             Some(msaa) if samples > 1 => msaa.clone(),
@@ -1992,7 +2027,8 @@ impl SceneRenderer {
         }
         let gpu_cull = cull_sets.last();
         let early_cull = occlusion.then(|| &cull_sets[0]);
-        let (shadow_size, shadow_distance) = shadow_settings(quality);
+        let (shadow_size, shadow_distance) =
+            shadow_settings_for(render_world.shadows, quality);
         if self.shadow_framebuffer.extent()[0] != shadow_size {
             // In-flight frames keep the old map alive through their command
             // buffers.
@@ -6071,6 +6107,8 @@ pub struct RendererCapabilities {
     /// HDR and depth targets and resolve depth (Vulkan 1.2 or
     /// `VK_KHR_depth_stencil_resolve`), otherwise 1.
     pub msaa_samples: u32,
+    /// The device can also run 2x MSAA; Vulkan only guarantees 4x.
+    pub msaa_2x: bool,
 }
 
 /// Largest scene MSAA count up to 4 both target kinds support, or 1 without
@@ -6098,6 +6136,25 @@ fn msaa_sample_count(
 /// `Eco` skips it to save target memory and bandwidth.
 pub fn msaa_enabled(profile: QualityProfile) -> bool {
     profile != QualityProfile::Eco
+}
+
+/// Scene sample count for an anti-aliasing setting on this device. A count
+/// the device lacks falls back to the next lower one.
+pub fn scene_sample_count(
+    antialiasing: Antialiasing,
+    profile: QualityProfile,
+    capabilities: &RendererCapabilities,
+) -> u32 {
+    let wanted = match antialiasing {
+        Antialiasing::Auto if msaa_enabled(profile) => 4,
+        Antialiasing::Auto | Antialiasing::Off => 1,
+        Antialiasing::Msaa2 => 2,
+        Antialiasing::Msaa4 => 4,
+    };
+    match wanted.min(capabilities.msaa_samples) {
+        2 if !capabilities.msaa_2x => 1,
+        samples => samples,
+    }
 }
 
 /// Which optional features a feature and extension set provides, in the
@@ -6135,6 +6192,12 @@ impl RendererCapabilities {
                 enabled: enabled[index],
             });
         let properties = physical.properties();
+        let depth_resolve =
+            (device.api_version() >= vulkano::Version::V1_2
+                || device.enabled_extensions().khr_depth_stencil_resolve)
+                && properties.supported_depth_resolve_modes.is_some_and(
+                    |modes| modes.intersects(ResolveModes::SAMPLE_ZERO),
+                );
         Self {
             device_name: properties.device_name.clone(),
             integrated_gpu: properties.device_type
@@ -6158,12 +6221,13 @@ impl RendererCapabilities {
             msaa_samples: msaa_sample_count(
                 properties.framebuffer_color_sample_counts,
                 properties.framebuffer_depth_sample_counts,
-                (device.api_version() >= vulkano::Version::V1_2
-                    || device.enabled_extensions().khr_depth_stencil_resolve)
-                    && properties.supported_depth_resolve_modes.is_some_and(
-                        |modes| modes.intersects(ResolveModes::SAMPLE_ZERO),
-                    ),
+                depth_resolve,
             ),
+            msaa_2x: depth_resolve
+                && properties
+                    .framebuffer_color_sample_counts
+                    .intersection(properties.framebuffer_depth_sample_counts)
+                    .intersects(SampleCounts::SAMPLE_2),
         }
     }
 }
@@ -7419,13 +7483,18 @@ mod tests {
             eprintln!("skipping: no Vulkan driver present");
             return;
         }
-        let mut scene = SlabScene::new(&[(
-            0.0,
-            MaterialAsset {
-                model: MaterialModel::Unlit,
-                ..MaterialAsset::default()
-            },
-        )]);
+        // Large enough that 2x MSAA, whose two samples sit on a diagonal,
+        // also splits some edge pixels.
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    ..MaterialAsset::default()
+                },
+            )],
+            [32, 32],
+        );
         // A white slab whose edge crosses the view at a slant.
         let rotation = Matrix4::new_rotation(Vector3::new(0.0, 0.0, 0.5));
         scene.render_world.renderables[0].transform.matrix = (rotation
@@ -7469,6 +7538,75 @@ mod tests {
             "switching back drops MSAA"
         );
         assert!(scene.renderer.msaa_targets.is_none());
+
+        // Explicit settings override the profile, and 2x rebuilds the
+        // multisampled passes when the device has it.
+        scene.render_world.antialiasing = Antialiasing::Off;
+        assert_eq!(shades(&mut scene, QualityProfile::High), 2, "MSAA off");
+        let capabilities = scene.renderer.capabilities().clone();
+        for setting in [Antialiasing::Msaa2, Antialiasing::Msaa4] {
+            scene.render_world.antialiasing = setting;
+            let expected =
+                scene_sample_count(setting, QualityProfile::Eco, &capabilities);
+            let smooth = shades(&mut scene, QualityProfile::Eco);
+            assert_eq!(scene.renderer.scene_samples, expected, "{setting:?}");
+            assert_eq!(smooth > 2, expected > 1, "{setting:?}");
+        }
+    }
+
+    #[test]
+    fn antialiasing_settings_pick_a_count_the_device_has() {
+        let device = |msaa_samples, msaa_2x| RendererCapabilities {
+            device_name: String::new(),
+            integrated_gpu: false,
+            device_local_bytes: 8 << 30,
+            multi_draw_indirect: Capability::default(),
+            draw_indirect_count: Capability::default(),
+            bindless_textures: Capability::default(),
+            memory_budget: Capability::default(),
+            sampler_anisotropy: Capability::default(),
+            timestamp_queries: false,
+            msaa_samples,
+            msaa_2x,
+        };
+        let count = |setting, profile, caps: &RendererCapabilities| {
+            scene_sample_count(setting, profile, caps)
+        };
+        let full = device(4, true);
+        assert_eq!(count(Antialiasing::Auto, QualityProfile::High, &full), 4);
+        assert_eq!(count(Antialiasing::Auto, QualityProfile::Eco, &full), 1);
+        assert_eq!(count(Antialiasing::Off, QualityProfile::High, &full), 1);
+        assert_eq!(count(Antialiasing::Msaa2, QualityProfile::Eco, &full), 2);
+        assert_eq!(count(Antialiasing::Msaa4, QualityProfile::Eco, &full), 4);
+        let no_2x = device(4, false);
+        assert_eq!(count(Antialiasing::Msaa2, QualityProfile::High, &no_2x), 1);
+        let only_2x = device(2, true);
+        assert_eq!(
+            count(Antialiasing::Msaa4, QualityProfile::High, &only_2x),
+            2
+        );
+        let none = device(1, false);
+        assert_eq!(count(Antialiasing::Msaa4, QualityProfile::High, &none), 1);
+    }
+
+    #[test]
+    fn shadow_settings_override_the_profile() {
+        assert_eq!(
+            shadow_settings_for(ShadowQuality::Auto, QualityProfile::Eco),
+            (1024, 30.0)
+        );
+        assert_eq!(
+            shadow_settings_for(ShadowQuality::High, QualityProfile::Eco),
+            (4096, 80.0)
+        );
+        assert_eq!(
+            shadow_settings_for(ShadowQuality::Low, QualityProfile::High),
+            (1024, 30.0)
+        );
+        assert_eq!(
+            shadow_settings_for(ShadowQuality::Medium, QualityProfile::High),
+            (2048, 50.0)
+        );
     }
 
     #[test]
@@ -8156,6 +8294,7 @@ mod tests {
             sampler_anisotropy: Capability::default(),
             timestamp_queries: false,
             msaa_samples: 1,
+            msaa_2x: false,
         };
         let path = |mode, instances, gpu_owned, quality, integrated| {
             select_culling_path(
@@ -8317,6 +8456,7 @@ mod tests {
                 sampler_anisotropy: Capability::default(),
                 timestamp_queries: false,
                 msaa_samples: 1,
+                msaa_2x: false,
             };
         let auto = |caps| resolve_quality(QualityProfile::Auto, &caps);
         assert_eq!(auto(capabilities(true, 16)), QualityProfile::Eco);

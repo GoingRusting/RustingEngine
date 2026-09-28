@@ -58,7 +58,9 @@ fn execute(args: &[String]) -> CliResult {
                 Some(template) => {
                     cli::new_project(Path::new(parent), name, template)
                 }
-                None => usage("--template takes 3d, 2d, or starter"),
+                None => usage(
+                    "--template takes 3d, first-person, third-person, sandbox, 2d, or starter",
+                ),
             }
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),

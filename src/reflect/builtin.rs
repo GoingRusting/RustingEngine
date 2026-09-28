@@ -3,15 +3,19 @@
 
 use std::path::PathBuf;
 
+use bevy_ecs::entity::Entity;
+
 use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
-    AmbientLight, AutoSimulation, BurstEmitter, Counter, CullingMode,
-    DeterminismMode, Easing, HudAnchor, HudElement, PhysicsSettings,
-    PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
-    QualityProfile, RandomSeed, RenderBounds, RenderSettings, SceneBackground,
-    SkyLight, SoundCue, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
-    TweenProperty, TweenRepeat,
+    AmbientLight, Antialiasing, Articulation, AutoSimulation, AxisMotion,
+    BurstEmitter, Connection, Connections, Counter, CullingMode,
+    DeterminismMode, Easing, HudAnchor, HudElement, Joint, JointAxis,
+    JointKind, JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode,
+    Pickup, PlatformerController, PlayerController, QualityProfile, RandomSeed,
+    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
+    ShadowQuality, SkyLight, SoundCue, TileKind, TileMap, ToneMapper,
+    ToneMapping, Tween, TweenProperty, TweenRepeat,
 };
 
 crate::reflect! {
@@ -81,10 +85,107 @@ crate::reflect! {
         },
         yaw: f32 { unit: "rad", doc: "0 looks toward -Z" },
         pitch: f32 { unit: "rad", min: -1.55, max: 1.55 },
+        camera_distance: f32 {
+            unit: "m", min: 0.0,
+            doc: "0 is first person; above 0 the camera orbits behind",
+        },
+        camera_height: f32 {
+            unit: "m", doc: "third-person orbit center above the body",
+        },
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_requested: bool,
     }
+}
+
+crate::reflect! {
+    struct JointSpring {
+        target: f32 { unit: "m or rad" },
+        stiffness: f32 { unit: "N/m or N·m/rad", min: 0.0 },
+        damping: f32 { unit: "N·s/m or N·m·s/rad", min: 0.0 },
+    }
+}
+
+crate::reflect! {
+    struct JointMotor {
+        speed: f32 { unit: "m/s or rad/s" },
+        max_force: f32 { unit: "N or N·m", min: 0.0 },
+    }
+}
+
+crate::reflect! {
+    enum AxisMotion {
+        Locked,
+        Free,
+        Limited {
+            min: f32 { unit: "m or rad" },
+            max: f32 { unit: "m or rad" },
+        },
+    }
+}
+
+crate::reflect! {
+    struct JointAxis {
+        motion: AxisMotion,
+        spring: Option<JointSpring>,
+        motor: Option<JointMotor>,
+    }
+}
+
+crate::reflect! {
+    enum JointKind {
+        Fixed,
+        Hinge {
+            limit: Option<[f32; 2]> { unit: "rad", doc: "min, max" },
+            spring: Option<JointSpring>,
+            motor: Option<JointMotor>,
+        },
+        Slider {
+            limit: Option<[f32; 2]> { unit: "m", doc: "min, max" },
+            spring: Option<JointSpring>,
+            motor: Option<JointMotor>,
+        },
+        BallSocket,
+        ConeTwist {
+            swing: f32 { unit: "rad", min: 0.0 },
+            twist: [f32; 2] { unit: "rad", doc: "min, max about X" },
+        },
+        Distance {
+            min: f32 { unit: "m", min: 0.0 },
+            max: f32 { unit: "m", min: 0.0 },
+        },
+        Spring {
+            rest_length: f32 { unit: "m", min: 0.0 },
+            stiffness: f32 { unit: "N/m", min: 0.0 },
+            damping: f32 { unit: "N·s/m", min: 0.0 },
+        },
+        Generic {
+            linear: [JointAxis; 3] { doc: "X, Y, Z along the target frame" },
+            angular: [JointAxis; 3] { doc: "twist about X, swing about Y, Z" },
+        },
+    }
+}
+
+crate::reflect! {
+    struct Joint {
+        target: Entity { doc: "body this one hangs from; null is the world" },
+        kind: JointKind,
+        anchor: [f32; 3] { unit: "m", doc: "in this body's local space" },
+        frame: [f32; 3] {
+            unit: "rad", doc: "joint axes in this body's local space; X is the hinge, slider, and twist axis",
+        },
+        target_anchor: [f32; 3] {
+            unit: "m", doc: "in the target's local space, or world space",
+        },
+        target_frame: [f32; 3] { unit: "rad", doc: "in the target's local space" },
+        collide_connected: bool { doc: "false keeps the two bodies from colliding" },
+        break_force: f32 { unit: "N", min: 0.0, doc: "0 never breaks" },
+        break_torque: f32 { unit: "N·m", min: 0.0, doc: "0 never breaks" },
+    }
+}
+
+crate::reflect! {
+    struct Articulation {}
 }
 
 crate::reflect! {
@@ -187,6 +288,33 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    struct Connection {
+        handler: String {
+            doc: "name the game registered with App::add_signal_handler",
+        },
+        target: Entity { doc: "object passed to the handler as the receiver" },
+    }
+}
+
+crate::reflect! {
+    struct Connections {
+        list: Vec<Connection> {
+            doc: "signal handlers run, in order, when this object emits",
+        },
+    }
+}
+
+crate::reflect! {
+    struct SceneInstance {
+        source: PathBuf {
+            unit: "scene file",
+            doc: "placed under this object on load, relative to this scene; \
+                  empty places nothing",
+        },
+    }
+}
+
+crate::reflect! {
     struct SceneBackground {
         color: [f32; 4] {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
@@ -244,6 +372,14 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    enum Antialiasing { Auto, Off, Msaa2, Msaa4 }
+}
+
+crate::reflect! {
+    enum ShadowQuality { Auto, Low, Medium, High }
+}
+
+crate::reflect! {
     struct RenderSettings {
         quality: QualityProfile,
         vsync: bool,
@@ -254,6 +390,8 @@ crate::reflect! {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
         },
         culling: CullingMode,
+        antialiasing: Antialiasing,
+        shadows: ShadowQuality,
     }
 }
 

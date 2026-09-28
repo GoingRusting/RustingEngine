@@ -24,7 +24,7 @@ pub mod tests;
 
 pub use assets::{
     spawn_gltf_nodes, spawn_gltf_nodes_in_world, AlphaMode, AssetPlugin,
-    AssetServer, Handle, ImportedGltfLight, ImportedGltfNode,
+    AssetServer, DataAsset, Handle, ImportedGltfLight, ImportedGltfNode,
     ImportedGltfPrimitive, MaterialAsset, MaterialModel, MeshAsset,
     PrimitiveShape, SceneAsset, TextureAsset, TextureFilter, TextureSampler,
     TextureWrap,

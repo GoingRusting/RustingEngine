@@ -52,7 +52,9 @@ use bevy_ecs::prelude::{Resource, World};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::assets::{AssetError, AssetServer, Handle, MeshAsset, TextureAsset};
+use crate::assets::{
+    AssetError, AssetServer, DataAsset, Handle, MeshAsset, TextureAsset,
+};
 use crate::runtime::SceneId;
 
 /// A type with a reflected description. Implement it with
@@ -157,6 +159,20 @@ pub struct AssetKind {
     path: fn(&AssetServer, u64) -> Option<PathBuf>,
     load: fn(&mut AssetServer, &Path) -> Result<u64, AssetError>,
     paths: fn(&AssetServer) -> Vec<PathBuf>,
+    /// Set for data assets, whose values can also live inside a scene.
+    pub embedded: Option<EmbeddedKind>,
+}
+
+/// How a data asset handle saves a value that has no file of its own: as
+/// `{"$data": value}` in the scene or file that refers to it.
+#[derive(Clone, Copy)]
+pub struct EmbeddedKind {
+    /// The data asset type's description.
+    pub info: fn() -> TypeInfo,
+    /// The type's `Default` value in scene form.
+    pub default: fn() -> Value,
+    embed: fn(&AssetServer, u64) -> Result<Value, ReflectProblem>,
+    insert: fn(&mut AssetServer, Value) -> Result<u64, ReflectProblem>,
 }
 
 impl AssetKind {
@@ -167,6 +183,12 @@ impl AssetKind {
         path: &Path,
     ) -> Result<u64, AssetError> {
         (self.load)(assets, path)
+    }
+
+    /// Path of the loaded asset `key` points at, if it came from a file.
+    #[must_use]
+    pub fn path_of(&self, assets: &AssetServer, key: u64) -> Option<PathBuf> {
+        (self.path)(assets, key)
     }
 
     /// Paths of every loaded asset of this kind, sorted.
@@ -242,6 +264,7 @@ impl ReflectAsset for TextureAsset {
         path: texture_path,
         load: load_texture,
         paths: texture_paths,
+        embedded: None,
     };
 }
 
@@ -251,7 +274,104 @@ impl ReflectAsset for MeshAsset {
         path: mesh_path,
         load: load_mesh,
         paths: mesh_paths,
+        embedded: None,
     };
+}
+
+fn data_path<T: DataAsset>(assets: &AssetServer, key: u64) -> Option<PathBuf> {
+    assets
+        .data
+        .store::<T>()?
+        .path(Handle::from_key(key))
+        .map(Path::to_path_buf)
+}
+
+fn load_data<T: DataAsset>(
+    assets: &mut AssetServer,
+    path: &Path,
+) -> Result<u64, AssetError> {
+    assets.load_data::<T>(path).map(Handle::key)
+}
+
+fn data_paths<T: DataAsset>(assets: &AssetServer) -> Vec<PathBuf> {
+    assets.data.store::<T>().map_or_else(Vec::new, |store| {
+        store.paths().map(|(_, path)| path.to_path_buf()).collect()
+    })
+}
+
+impl<T: DataAsset> ReflectAsset for T {
+    const KIND: AssetKind = AssetKind {
+        name: T::NAME,
+        path: data_path::<T>,
+        load: load_data::<T>,
+        paths: data_paths::<T>,
+        embedded: Some(EmbeddedKind {
+            info: T::type_info,
+            default: default_data::<T>,
+            embed: embed_data::<T>,
+            insert: insert_data::<T>,
+        }),
+    };
+}
+
+pub(crate) fn default_data<T: DataAsset>() -> Value {
+    serde_json::to_value(T::default()).unwrap_or(Value::Null)
+}
+
+fn embed_data<T: DataAsset>(
+    assets: &AssetServer,
+    key: u64,
+) -> Result<Value, ReflectProblem> {
+    assets.embedded_data::<T>(Handle::from_key(key))
+}
+
+fn insert_data<T: DataAsset>(
+    assets: &mut AssetServer,
+    value: Value,
+) -> Result<u64, ReflectProblem> {
+    assets.insert_embedded_data::<T>(value).map(Handle::key)
+}
+
+/// Turns a handle key into its scene form: `{"$asset": path}` for an
+/// asset loaded from a file, `{"$data": value}` for a data asset without
+/// one.
+pub fn handle_to_scene(
+    kind: &AssetKind,
+    assets: &AssetServer,
+    value: &mut Value,
+) -> Result<(), ReflectProblem> {
+    let key = value
+        .as_u64()
+        .ok_or(ReflectProblem::WrongKind("a handle key"))?;
+    *value = match (kind.path_of(assets, key), kind.embedded) {
+        (Some(path), _) => json!({ ASSET_KEY: path }),
+        (None, Some(embedded)) => {
+            json!({ DATA_KEY: (embedded.embed)(assets, key)? })
+        }
+        (None, None) => return Err(ReflectProblem::UnsavedAsset),
+    };
+    Ok(())
+}
+
+/// Turns a handle's scene form back into a key. A file loads once and is
+/// shared; every `{"$data": value}` becomes its own copy.
+pub fn handle_from_scene(
+    kind: &AssetKind,
+    assets: &mut AssetServer,
+    value: &mut Value,
+) -> Result<(), ReflectProblem> {
+    let key = if let Some(path) = value.get(ASSET_KEY).and_then(Value::as_str) {
+        kind.load(assets, Path::new(path))
+            .map_err(|error| ReflectProblem::Asset(error.to_string()))?
+    } else if let (Some(data), Some(embedded)) =
+        (value.get_mut(DATA_KEY), kind.embedded)
+    {
+        (embedded.insert)(assets, data.take())?
+    } else {
+        return Err(ReflectProblem::WrongKind(HANDLE_FORM));
+    };
+    *value = key.into();
+    Ok(())
 }
 
 impl<T: ReflectAsset> Reflect for Handle<T> {
@@ -480,6 +600,10 @@ macro_rules! reflect {
 pub const VERSION_KEY: &str = "$version";
 /// Key of a saved asset reference: `{"$asset": path}`.
 pub const ASSET_KEY: &str = "$asset";
+/// Key of a data asset saved inside the scene or file that refers to it:
+/// `{"$data": value}`.
+pub const DATA_KEY: &str = "$data";
+const HANDLE_FORM: &str = "{\"$asset\": path} or {\"$data\": value}";
 
 /// One step in the history of a reflected component. Each registered step
 /// raises the component's version by one; values saved at an older version
@@ -553,7 +677,13 @@ impl Display for ReflectError {
             "component `{}` at `{path}` (saved version {}, current {}): ",
             self.component, self.saved_version, self.current_version
         )?;
-        match &self.problem {
+        Display::fmt(&self.problem, formatter)
+    }
+}
+
+impl Display for ReflectProblem {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
             ReflectProblem::UnknownField => formatter.write_str(
                 "the type has no such field; register a rename or remove \
                  migration instead of dropping the saved value",
@@ -653,7 +783,7 @@ impl TypeInfo {
             Self::Struct(_) => "an object with the type's fields",
             Self::Enum(_) => "a variant name or {\"Variant\": payload}",
             Self::Entity => "an object ID or null",
-            Self::Handle(_) => "{\"$asset\": path}",
+            Self::Handle(_) => HANDLE_FORM,
         }
     }
 
@@ -678,8 +808,9 @@ impl TypeInfo {
                         .as_str()
                         .is_some_and(|text| text.parse::<Uuid>().is_ok())
             }
-            Self::Handle(_) => {
+            Self::Handle(kind) => {
                 value.get(ASSET_KEY).is_some_and(Value::is_string)
+                    || kind.embedded.is_some() && value.get(DATA_KEY).is_some()
             }
         }
     }
@@ -962,16 +1093,10 @@ pub fn to_scene_form(
             Ok(())
         }
         TypeInfo::Handle(kind) => {
-            let key = value
-                .as_u64()
-                .ok_or(ReflectProblem::WrongKind("a handle key"))?;
             let assets = world
                 .get_resource::<AssetServer>()
                 .ok_or(ReflectProblem::UnsavedAsset)?;
-            let path =
-                (kind.path)(assets, key).ok_or(ReflectProblem::UnsavedAsset)?;
-            *value = json!({ ASSET_KEY: path });
-            Ok(())
+            handle_to_scene(kind, assets, value)
         }
         _ => Ok(()),
     })
@@ -1016,18 +1141,10 @@ pub fn from_scene_form(
             Ok(())
         }
         TypeInfo::Handle(kind) => {
-            let path = value
-                .get(ASSET_KEY)
-                .and_then(Value::as_str)
-                .ok_or(ReflectProblem::WrongKind("{\"$asset\": path}"))?;
             let mut assets = world
                 .get_resource_mut::<AssetServer>()
                 .ok_or(ReflectProblem::Asset("no AssetServer".into()))?;
-            let key = kind
-                .load(&mut assets, Path::new(path))
-                .map_err(|error| ReflectProblem::Asset(error.to_string()))?;
-            *value = key.into();
-            Ok(())
+            handle_from_scene(kind, &mut assets, value)
         }
         _ => Ok(()),
     })

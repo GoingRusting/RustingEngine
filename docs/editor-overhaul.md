@@ -135,6 +135,15 @@ item are named in parentheses.
   game's `coin_run.spin`) load as `UnregisteredComponents` and save back
   unchanged, but the Inspector does not show them. Show them as read-only
   JSON first, then editable JSON validated on the next game load.
+- Scene instances (prefabs): changes to placed objects save as overrides,
+  but nothing shows which fields are overridden. The Inspector should mark
+  overridden fields with a per-field revert arrow, as Godot does (only
+  whole-object and whole-instance revert exist). Unpack is always complete;
+  a one-level unpack that keeps nested instances linked is missing, and
+  Undo does not restore a source file written by Apply to Source. The
+  Hierarchy should mark instance roots and tint their children,
+  editing `source` in the Inspector should re-read the scene at once, and
+  scenes should also be draggable into the Scene View like models.
 - Reflected Inspector gaps: string-keyed maps (such as `TileMap.tiles`)
   edit existing entries but cannot add or rename keys; field `doc` hints
   are not shown as tooltips; the asset drop-down for handle fields lists
@@ -160,8 +169,6 @@ item are named in parentheses.
   (its Import button copies files without a sidecar), license/changed/
   not-imported badges, and a Generate dialog that runs a `project.json`
   generator hook with a prompt (`rusting asset generate` covers it today).
-- New Project dialog: add a template picker (3d, 2d, starter). The CLI's
-  `rusting new --template` already takes all three.
 - Art-direction presets: `rusting preset apply` has no editor picker yet.
   Presets should skip ACES tone mapping and keep HUD size hierarchy on 2D
   unlit scenes; the starter exercise corrects both by patch today.
@@ -172,6 +179,15 @@ item are named in parentheses.
   path, and the scene file needs to store the color space per slot.
 - Material assets as files (`.rmaterial`) that several scenes share. Today
   every scene stores its materials inline.
+- Data assets: Inspector edits to a `.rdata` file are file writes with no
+  undo. The Handle field picker lists only data assets that are already
+  loaded, so it cannot pick an unloaded `.rdata` file. Renamed or removed
+  fields fail to load instead of migrating. A unique value cannot be
+  saved out as a new `.rdata` file yet (Godot's Save As on a sub-resource),
+  and every scene load or Inspector edit of a unique value adds a copy
+  while the old one stays in memory. A `.rdata` file open in the Inspector
+  does not re-read changes made outside the editor; the next edit
+  overwrites them.
 - LOD group authoring: edit a mesh's `.rlod` levels and hand-over values in
   the Inspector, preview the active level in the viewport, and hot reload
   `.rlod` files. Import glTF `MSFT_lod` into LOD groups.
@@ -198,14 +214,18 @@ item are named in parentheses.
 - Project-wide search (M20).
 - 2D path: Edit mode does not run App schedules, so a `rusting.tile_map`
   shows no tiles until Play. Run `build_tile_maps` in Edit mode (or draw a
-  preview), add a tile painter, and offer the 3D/2D template choice in the
-  New Project dialog (the CLI has `new --template 2d`).
+  preview), and add a tile painter.
 
 ### Play workflow
 
 - Native Stop/Restart and embedded Preview with Pause/Step are implemented
   in M6. Preview runs the editor's ECS systems and restores the authored
   scene, undo history, and transient entities on Stop.
+- Reload Code: reload automatically when a project `.rs` file is saved.
+  Keep resources across a reload (they need a reflection registration
+  first). A reload restarts the game process, so the window and GPU
+  resources are created again; the Windows path, where a running game's
+  executable is locked, has not been tried.
 - Remote scene tree and inspector for a running game (M20).
 - Show `RuntimeUi` in the embedded Preview. Update systems already draw
   into the App's `RuntimeUi` pass while Preview runs, but the Game area does
@@ -224,6 +244,9 @@ item are named in parentheses.
   groups loaded next to meshes, in the stats area.
 - Profiler area with per-pass GPU timestamps and CPU/GPU history is done.
   Add per-pass history selection and frame capture/export (M20).
+- Anti-aliasing and shadow quality in Render Settings are session
+  options. Save them in project settings (or `SceneRenderSettings`, which
+  needs cooked scene format 8 with a legacy struct for format 7).
 - Render Bounds are edited as numbers in the Inspector only. Add viewport
   handles to drag box faces and the sphere radius, plus a "Fit to Mesh"
   action. Multi-selection edits only the active object.

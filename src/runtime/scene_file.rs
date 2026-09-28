@@ -64,6 +64,24 @@ pub enum SceneIoError {
     Runtime(super::AppError),
     /// A component value that does not fit its reflected type.
     Reflection(Box<ReflectError>),
+    /// The source scene of a [`super::SceneInstance`] could not be placed.
+    Instance {
+        path: PathBuf,
+        error: Box<SceneIoError>,
+    },
+    /// A scene instance contains, directly or through other instances, the
+    /// scene it is placed in.
+    InstanceCycle(PathBuf),
+    /// An instance operation named an object that no scene instance placed.
+    NotAnInstance(Uuid),
+    /// A prefab handle whose scene is not loaded in the `AssetServer`.
+    MissingPrefab(u64),
+    /// A signal connection of `object` names an unregistered handler or an
+    /// object that does not exist.
+    Connection {
+        object: Uuid,
+        problem: super::SignalError,
+    },
 }
 
 impl Display for SceneIoError {
@@ -141,6 +159,28 @@ impl Display for SceneIoError {
             ),
             Self::Runtime(error) => Display::fmt(error, formatter),
             Self::Reflection(error) => Display::fmt(error, formatter),
+            Self::Instance { path, error } => write!(
+                formatter,
+                "could not instance scene `{}`: {error}",
+                path.display()
+            ),
+            Self::InstanceCycle(path) => write!(
+                formatter,
+                "scene `{}` contains an instance of itself",
+                path.display()
+            ),
+            Self::MissingPrefab(key) => {
+                write!(formatter, "prefab {key} is not loaded")
+            }
+            Self::NotAnInstance(id) => {
+                write!(formatter, "object {id} is not part of a scene instance")
+            }
+            Self::Connection { object, problem } => {
+                write!(
+                    formatter,
+                    "signal connection on object {object}: {problem}"
+                )
+            }
         }
     }
 }
@@ -749,6 +789,11 @@ pub const BACKGROUND_COMPONENT: &str = "rusting.background";
 pub const COUNTER_COMPONENT: &str = "rusting.counter";
 /// Registry name of the built-in collectable.
 pub const PICKUP_COMPONENT: &str = "rusting.pickup";
+pub const CONNECTIONS_COMPONENT: &str = "rusting.connections";
+/// Registry name of the built-in CPU physics joint.
+pub const JOINT_COMPONENT: &str = "rusting.joint";
+/// Registry name of the built-in reduced-coordinate articulation root.
+pub const ARTICULATION_COMPONENT: &str = "rusting.articulation";
 /// Registry name of the built-in text tile map.
 pub const TILE_MAP_COMPONENT: &str = "rusting.tile_map";
 /// Registry name of the built-in side-view platformer controller.
@@ -810,6 +855,18 @@ impl Default for SceneComponentRegistry {
             .register::<super::PlatformerController>(
                 PLATFORMER_CONTROLLER_COMPONENT,
             )
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::SceneInstance>(super::SCENE_INSTANCE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Connections>(CONNECTIONS_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Joint>(JOINT_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Articulation>(ARTICULATION_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
     }
@@ -1319,6 +1376,18 @@ pub fn scene_document(
                 components.insert(component_name.clone(), value);
             }
         }
+        if let Some(member) = world.get::<super::InstanceMember>(entity) {
+            components.insert(
+                super::INSTANCE_MEMBER_KEY.to_owned(),
+                super::scene_instance::member_marker(*member),
+            );
+        }
+        if let Some(expanded) = world.get::<super::InstanceExpanded>(entity) {
+            components.insert(
+                super::scene_instance::INSTANCE_EXPANDED_KEY.to_owned(),
+                serde_json::to_string(expanded)?,
+            );
+        }
         entities.push(SceneEntity {
             id: id.0,
             parent,
@@ -1369,7 +1438,57 @@ pub fn save_scene(
     name: impl Into<String>,
 ) -> Result<(), SceneIoError> {
     let mut document = scene_document(world, name)?;
+    // Instance members come back from their source file on the next load,
+    // with the overrides this writes.
+    super::scene_instance::fold_instance_members(&mut document)?;
     let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        relativize_scene_assets(&mut document, parent)?;
+    }
+    write_atomic(path, &serde_json::to_vec_pretty(&document)?)?;
+    Ok(())
+}
+
+/// Writes a variant of the scene at `base` to `path`, like Godot's inherited
+/// scenes. The variant holds one object that instances `base`, so every
+/// object and field comes from `base` until the variant overrides it, and
+/// later edits to `base` reach every field the variant did not change.
+/// Fails without writing when `base` cannot load or already contains `path`.
+pub fn save_scene_variant(
+    base: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> Result<(), SceneIoError> {
+    let (base, path) = (absolute_path(base.as_ref())?, path.as_ref());
+    let stem = |path: &Path| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Scene")
+            .to_owned()
+    };
+    let root: SceneEntity = serde_json::from_value(serde_json::json!({
+        "id": Uuid::new_v4(),
+        "name": stem(&base),
+        "transform": SceneTransform::from(Transform::default()),
+        "components": {
+            super::SCENE_INSTANCE_COMPONENT:
+                serde_json::to_string(&super::SceneInstance {
+                    source: base.clone(),
+                })?,
+        },
+    }))?;
+    let mut document = SceneDocument {
+        format_version: SCENE_FORMAT_VERSION,
+        name: stem(path),
+        entities: vec![root],
+        render: Default::default(),
+        simulation: Default::default(),
+    };
+    // Expanding once proves `base` loads and does not contain the variant.
+    super::scene_instance::expand_instances(
+        &document,
+        &mut vec![absolute_path(path)?],
+    )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         relativize_scene_assets(&mut document, parent)?;
@@ -1452,6 +1571,14 @@ pub fn cook_scene(
     if let Some(parent) = source.parent() {
         absolutize_scene_assets(&mut document, parent)?;
     }
+    // A cooked scene carries its instance members, so a game ships without
+    // the source scenes.
+    let mut document = super::scene_instance::expand_instances(
+        &document,
+        &mut vec![absolute_path(source)?],
+    )?
+    .into_owned();
+    validate_scene_structure(&document)?;
     if let Some(determinism) = project_determinism(source) {
         document.simulation.determinism = determinism;
     }
@@ -1474,6 +1601,8 @@ fn map_scene_asset_paths(
     mut convert: impl FnMut(&Path) -> Result<PathBuf, SceneIoError>,
 ) -> Result<(), SceneIoError> {
     for entity in &mut document.entities {
+        super::scene_instance::map_instance_source(entity, &mut convert)?;
+        super::scene_instance::map_override_paths(entity, &mut convert)?;
         for serialized in entity.components.values_mut() {
             // Only reflected handles write this key; skip parsing the rest.
             if !serialized.contains(reflect::ASSET_KEY) {
@@ -1512,7 +1641,7 @@ fn map_scene_asset_paths(
 }
 
 /// Converts scene-relative asset paths to normalized absolute paths.
-fn absolutize_scene_assets(
+pub(super) fn absolutize_scene_assets(
     document: &mut SceneDocument,
     scene_folder: &Path,
 ) -> Result<(), SceneIoError> {
@@ -1527,7 +1656,7 @@ fn absolutize_scene_assets(
 }
 
 /// Converts absolute paths to paths relative to the scene being written.
-fn relativize_scene_assets(
+pub(super) fn relativize_scene_assets(
     document: &mut SceneDocument,
     scene_folder: &Path,
 ) -> Result<(), SceneIoError> {
@@ -1550,7 +1679,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf, SceneIoError> {
 }
 
 /// Removes `.` and `..` without requiring the final file to exist.
-fn normalize_lexical(path: &Path) -> PathBuf {
+pub(crate) fn normalize_lexical(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -1565,7 +1694,7 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 }
 
 /// Builds a relative path when both paths use the same platform root.
-fn path_relative_to(base: &Path, target: &Path) -> Option<PathBuf> {
+pub(crate) fn path_relative_to(base: &Path, target: &Path) -> Option<PathBuf> {
     let base = base.components().collect::<Vec<_>>();
     let target = target.components().collect::<Vec<_>>();
     let common = base
@@ -1598,13 +1727,18 @@ pub fn load_scene_document(
     if document.format_version > SCENE_FORMAT_VERSION {
         return Err(SceneIoError::UnsupportedVersion(document.format_version));
     }
+    let document =
+        &*super::scene_instance::expand_instances(document, &mut Vec::new())?;
     validate_scene_structure(document)?;
     let registry = world.resource::<SceneComponentRegistry>();
     let registrations = registry.registrations.clone();
     let keep_unregistered = registry.keep_unregistered;
     for entity in &document.entities {
         for name in entity.components.keys() {
-            if !keep_unregistered && !registrations.contains_key(name) {
+            if !keep_unregistered
+                && !registrations.contains_key(name)
+                && !super::scene_instance::is_instance_key(name)
+            {
                 return Err(SceneIoError::UnknownComponent(name.clone()));
             }
         }
@@ -1685,6 +1819,18 @@ pub fn load_scene_document(
             }
             let mut unregistered = BTreeMap::new();
             for (name, serialized) in &scene_entity.components {
+                if name == super::INSTANCE_MEMBER_KEY {
+                    let member =
+                        super::scene_instance::parse_member_marker(serialized)?;
+                    world.entity_mut(entity).insert(member);
+                    continue;
+                }
+                if name == super::scene_instance::INSTANCE_EXPANDED_KEY {
+                    let expanded =
+                        super::scene_instance::parse_expanded(serialized)?;
+                    world.entity_mut(entity).insert(expanded);
+                    continue;
+                }
                 match registrations.get(name) {
                     Some(registration) => restore_component(
                         world,
@@ -1704,6 +1850,10 @@ pub fn load_scene_document(
                     .entity_mut(entity)
                     .insert(UnregisteredComponents(unregistered));
             }
+        }
+        // Tools load scenes without the game's handlers.
+        if !keep_unregistered {
+            super::signals::validate_connections(world, &spawned)?;
         }
         Ok(())
     })();
@@ -1737,12 +1887,23 @@ pub fn validate_scene_structure(
         if parents.insert(entity.id, entity.parent).is_some() {
             return Err(SceneIoError::DuplicateEntity(entity.id));
         }
-        if let Some(name) = entity.name.as_deref() {
+        // Two instances of one scene have members with the same names.
+        if let Some(name) = entity
+            .name
+            .as_deref()
+            .filter(|_| !super::scene_instance::is_member(entity))
+        {
             if !names.insert(name) {
                 return Err(SceneIoError::DuplicateName(name.to_owned()));
             }
         }
     }
+    // Objects added under an instance's objects name a parent that only
+    // exists once the instance is expanded; loading checks them again then.
+    let unexpanded = document
+        .entities
+        .iter()
+        .any(super::scene_instance::is_unexpanded_root);
     for entity in &document.entities {
         let mut ancestor = entity.parent;
         let mut visited = HashSet::new();
@@ -1750,10 +1911,11 @@ pub fn validate_scene_structure(
             if !visited.insert(id) || id == entity.id {
                 return Err(SceneIoError::HierarchyCycle(entity.id));
             }
-            ancestor = parents
-                .get(&id)
-                .copied()
-                .ok_or(SceneIoError::MissingParent(id))?;
+            ancestor = match parents.get(&id) {
+                Some(parent) => *parent,
+                None if unexpanded => None,
+                None => return Err(SceneIoError::MissingParent(id)),
+            };
         }
     }
     Ok(())
@@ -1974,10 +2136,12 @@ fn preload_component_assets(
                 let TypeInfo::Handle(kind) = info else {
                     return Ok(());
                 };
-                let path = value
-                    .get(reflect::ASSET_KEY)
-                    .and_then(Value::as_str)
-                    .ok_or(ReflectProblem::WrongKind("{\"$asset\": path}"))?;
+                // Data saved in the scene loads with its component.
+                let Some(path) =
+                    value.get(reflect::ASSET_KEY).and_then(Value::as_str)
+                else {
+                    return Ok(());
+                };
                 kind.load(&mut assets, Path::new(path))
                     .map(drop)
                     .map_err(|error| ReflectProblem::Asset(error.to_string()))

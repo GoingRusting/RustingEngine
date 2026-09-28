@@ -7,16 +7,20 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use bevy_ecs::entity::Entity;
+
 use super::file_dialogs::{DialogPurpose, FileDialogs};
 use super::gui_elements::EditorTheme;
 use super::icons::paint_editor_icon;
-use super::{AssetRequest, EditorAssetState, EditorIcon};
+use super::{AssetRequest, DataInspection, EditorAssetState, EditorIcon};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AssetKind {
     Model,
     Image,
     Scene,
+    /// A `.rdata` data asset; see [`crate::assets::DataAsset`].
+    Data,
     Other,
 }
 
@@ -25,6 +29,7 @@ pub(super) fn asset_kind(path: &Path) -> AssetKind {
         "gltf" | "glb" => AssetKind::Model,
         "png" | "jpg" | "jpeg" | "bmp" | "tga" => AssetKind::Image,
         "rscene" => AssetKind::Scene,
+        crate::assets::DATA_EXTENSION => AssetKind::Data,
         _ => AssetKind::Other,
     }
 }
@@ -147,15 +152,18 @@ pub(super) fn asset_rows(
 }
 
 /// Draws the Assets area and records the chosen action in `request`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_assets_area(
     ui: &mut egui::Ui,
     assets: &mut EditorAssetState,
     project_root: &str,
     files: &[PathBuf],
-    has_selection: bool,
+    selection: Option<Entity>,
+    data_types: &[&'static str],
     dialogs: &mut FileDialogs,
     request: &mut Option<AssetRequest>,
 ) {
+    let root = PathBuf::from(project_root).join("assets");
     let mut import = false;
     ui.horizontal(|ui| {
         import = EditorTheme::toolbar_icon_button(
@@ -167,6 +175,38 @@ pub(super) fn draw_assets_area(
         )
         .on_hover_text("Copy models and images into the project")
         .clicked();
+        ui.add_enabled_ui(!data_types.is_empty(), |ui| {
+            ui.menu_button("New", |ui| {
+                EditorTheme::menu_section(ui, "DATA ASSET");
+                // Into the selected folder, or the selected file's folder.
+                let folder = match &assets.selected {
+                    Some(path) if path.is_dir() => path.clone(),
+                    Some(path) => path
+                        .parent()
+                        .map_or_else(|| root.clone(), Path::to_path_buf),
+                    None => root.clone(),
+                };
+                for &type_name in data_types {
+                    let label =
+                        super::inspector::placement::component_label(type_name);
+                    if EditorTheme::menu_action(ui, &label, true)
+                        .on_hover_text(type_name)
+                        .clicked()
+                    {
+                        *request = Some(AssetRequest::NewDataAsset {
+                            folder: folder.clone(),
+                            type_name,
+                        });
+                        ui.close_menu();
+                    }
+                }
+            })
+            .response
+            .on_disabled_hover_text(
+                "The game registers no data asset types \
+                 (App::register_data_asset)",
+            );
+        });
         ui.add(
             egui::TextEdit::singleline(&mut assets.filter)
                 .hint_text("Filter files")
@@ -175,7 +215,6 @@ pub(super) fn draw_assets_area(
     });
     ui.add_space(2.0);
 
-    let root = PathBuf::from(project_root).join("assets");
     let rows = asset_rows(&root, files, &assets.filter, &assets.collapsed);
     let mut replace = None;
     let footer = EditorTheme::ROW_HEIGHT;
@@ -190,7 +229,7 @@ pub(super) fn draw_assets_area(
                     ui,
                     row,
                     assets,
-                    has_selection,
+                    selection,
                     request,
                     &mut decode_budget,
                     &mut replace,
@@ -249,18 +288,19 @@ fn draw_row(
     ui: &mut egui::Ui,
     row: &AssetRow,
     assets: &mut EditorAssetState,
-    has_selection: bool,
+    selection: Option<Entity>,
     request: &mut Option<AssetRequest>,
     decode_budget: &mut usize,
     replace: &mut Option<PathBuf>,
 ) {
+    let has_selection = selection.is_some();
     let kind = asset_kind(&row.path);
     let icon = match (row.folder, kind) {
         (true, _) => EditorIcon::Folder,
         (_, AssetKind::Model) => EditorIcon::Mesh,
         (_, AssetKind::Image) => EditorIcon::Image,
         (_, AssetKind::Scene) => EditorIcon::Tree,
-        (_, AssetKind::Other) => EditorIcon::File,
+        (_, AssetKind::Data | AssetKind::Other) => EditorIcon::File,
     };
     let selected = assets.selected.as_ref() == Some(&row.path);
     let response = EditorTheme::tree_row(
@@ -295,7 +335,7 @@ fn draw_row(
         // Files with actions stand out from support files like `.bin`.
         let badge_color = match kind {
             AssetKind::Model => EditorTheme::ACTIVE_OBJECT,
-            AssetKind::Image => EditorTheme::LINK,
+            AssetKind::Image | AssetKind::Data => EditorTheme::LINK,
             AssetKind::Scene | AssetKind::Other => EditorTheme::TEXT_MUTED,
         };
         let galley = ui.painter().layout_no_wrap(
@@ -357,11 +397,16 @@ fn draw_row(
             assets.collapsed.insert(row.path.clone());
         }
         assets.selected = Some(row.path.clone());
+        if kind == AssetKind::Data && !row.folder {
+            assets.inspected =
+                Some(DataInspection::open(row.path.clone(), selection));
+        }
     }
     if row.folder {
         return;
     }
     let add_model = || AssetRequest::AddModel(row.path.clone());
+    let instance = || AssetRequest::InstanceScene(row.path.clone());
     let use_image = || AssetRequest::AssignTexture(row.path.clone());
     match kind {
         AssetKind::Model => {
@@ -370,13 +415,19 @@ fn draw_row(
         AssetKind::Image => {
             response.dnd_set_drag_payload(ImageDrag(row.path.clone()));
         }
-        AssetKind::Scene | AssetKind::Other => {}
+        AssetKind::Scene | AssetKind::Data | AssetKind::Other => {}
     }
     let thumbnail = assets.thumbnails.get(&row.path).cloned().flatten();
     let response = match kind {
         AssetKind::Model => response.on_hover_text(
             "Double-click or drag into the Scene View to add the model",
         ),
+        AssetKind::Scene => response.on_hover_text(
+            "Double-click to instance this scene in the open one",
+        ),
+        AssetKind::Data => {
+            response.on_hover_text("Click to edit this data asset")
+        }
         AssetKind::Image => response.on_hover_ui(|ui| {
             if let Some(thumbnail) = &thumbnail {
                 ui.image((thumbnail.id(), thumbnail.size_vec2()));
@@ -393,6 +444,7 @@ fn draw_row(
     if response.double_clicked() {
         match kind {
             AssetKind::Model => *request = Some(add_model()),
+            AssetKind::Scene => *request = Some(instance()),
             AssetKind::Image if has_selection => *request = Some(use_image()),
             AssetKind::Image => {
                 *request = Some(AssetRequest::LoadTexture(row.path.clone()));
@@ -440,7 +492,37 @@ fn draw_row(
                     ui.close_menu();
                 }
             }
-            AssetKind::Scene | AssetKind::Other => {
+            AssetKind::Scene => {
+                EditorTheme::menu_section(ui, "SCENE");
+                if EditorTheme::menu_action(ui, "Instance in Scene", true)
+                    .clicked()
+                {
+                    *request = Some(instance());
+                    ui.close_menu();
+                }
+                if EditorTheme::menu_action(ui, "New Variant", true)
+                    .on_hover_text(
+                        "Create a scene that inherits this one and keeps \
+                         following its edits",
+                    )
+                    .clicked()
+                {
+                    *request =
+                        Some(AssetRequest::NewSceneVariant(row.path.clone()));
+                    ui.close_menu();
+                }
+            }
+            AssetKind::Data => {
+                EditorTheme::menu_section(ui, "DATA ASSET");
+                if EditorTheme::menu_action(ui, "Edit in Inspector", true)
+                    .clicked()
+                {
+                    assets.inspected =
+                        Some(DataInspection::open(row.path.clone(), selection));
+                    ui.close_menu();
+                }
+            }
+            AssetKind::Other => {
                 ui.label(
                     egui::RichText::new("No actions for this file type")
                         .color(EditorTheme::TEXT_MUTED),
@@ -604,7 +686,8 @@ mod tests {
                         assets,
                         &root.to_string_lossy(),
                         &files,
-                        false,
+                        None,
+                        &[],
                         &mut dialogs,
                         &mut None,
                     );

@@ -9,12 +9,19 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
-use bevy_ecs::prelude::{Local, ResMut, Resource};
+use bevy_ecs::prelude::{Local, Res, ResMut, Resource};
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::{
     App, AppError, Camera, DirectionalLight, MeshRenderer, Name, Plugin,
     PointLight, ScheduleStage, SpotLight,
+};
+
+mod data;
+
+pub use data::{
+    read_data_file, write_data_file, DataAsset, DataAssetType, DataAssetTypes,
+    DataAssets, DATA_EXTENSION,
 };
 
 /// A compact typed asset identity. Reused slots receive a new generation, so
@@ -1147,7 +1154,11 @@ pub struct AssetServer {
     pub textures: Assets<TextureAsset>,
     pub materials: Assets<MaterialAsset>,
     pub scenes: Assets<SceneAsset>,
+    /// Scenes loaded for placing at runtime; see [`AssetServer::load_prefab`].
+    pub prefabs: Assets<crate::runtime::Prefab>,
     pub lod_groups: Assets<LodGroupAsset>,
+    /// Game-defined data assets; see [`DataAsset`].
+    pub data: DataAssets,
     pub fallback_mesh: Handle<MeshAsset>,
     /// Shared smooth sphere used by the editor's Add Sphere action.
     pub builtin_sphere: Handle<MeshAsset>,
@@ -1321,6 +1332,7 @@ impl AssetServer {
     pub fn take_reload_failures(&mut self) -> Vec<AssetError> {
         let mut failures = self.meshes.take_reload_failures();
         failures.extend(self.textures.take_reload_failures());
+        failures.append(&mut self.data.failures);
         failures
     }
 
@@ -1328,6 +1340,7 @@ impl AssetServer {
     pub fn take_reloaded(&mut self) -> Vec<PathBuf> {
         let mut reloaded = self.meshes.take_reloaded();
         reloaded.extend(self.textures.take_reloaded());
+        reloaded.append(&mut self.data.reloaded);
         reloaded
     }
 
@@ -1859,7 +1872,9 @@ impl Default for AssetServer {
             textures,
             materials,
             scenes: Assets::default(),
+            prefabs: Assets::default(),
             lod_groups: Assets::default(),
+            data: DataAssets::default(),
             fallback_mesh,
             builtin_sphere,
             builtin_primitives,
@@ -2393,11 +2408,15 @@ pub const HOT_RELOAD_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 
 fn poll_asset_loads(
     mut server: ResMut<AssetServer>,
+    data_types: Option<Res<DataAssetTypes>>,
     mut last_scan: Local<Option<Instant>>,
 ) {
     if last_scan.is_none_or(|last| last.elapsed() >= HOT_RELOAD_SCAN_INTERVAL) {
         *last_scan = Some(Instant::now());
         server.reload_changed();
+        if let Some(data_types) = data_types {
+            data_types.reload_changed(&mut server);
+        }
     }
     server.meshes.poll_loads();
     server.textures.poll_loads();

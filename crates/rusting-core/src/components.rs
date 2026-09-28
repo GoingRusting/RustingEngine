@@ -352,6 +352,35 @@ pub enum CullingMode {
     FrustumAndOcclusion,
 }
 
+/// Multisample anti-aliasing. `Auto` follows the quality profile: off on
+/// `Eco`, the most samples the device offers (up to 4) otherwise. A count
+/// the device lacks falls back to the next lower one.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+pub enum Antialiasing {
+    #[default]
+    Auto,
+    Off,
+    Msaa2,
+    Msaa4,
+}
+
+/// Shadow map resolution and reach. `Auto` follows the quality profile.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+pub enum ShadowQuality {
+    #[default]
+    Auto,
+    /// 1024 px map, 30 m reach.
+    Low,
+    /// 2048 px map, 50 m reach.
+    Medium,
+    /// 4096 px map, 80 m reach.
+    High,
+}
+
 #[derive(bevy_ecs::prelude::Resource, Clone, Debug, PartialEq)]
 pub struct RenderSettings {
     pub quality: QualityProfile,
@@ -362,6 +391,8 @@ pub struct RenderSettings {
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
     pub culling: CullingMode,
+    pub antialiasing: Antialiasing,
+    pub shadows: ShadowQuality,
 }
 
 impl Default for RenderSettings {
@@ -374,6 +405,8 @@ impl Default for RenderSettings {
             render_scale: 1.0,
             background_color: [0.025, 0.04, 0.07, 1.0],
             culling: CullingMode::Auto,
+            antialiasing: Antialiasing::Auto,
+            shadows: ShadowQuality::Auto,
         }
     }
 }

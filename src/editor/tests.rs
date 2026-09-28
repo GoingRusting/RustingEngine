@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::DataAsset;
+
 use super::*;
 
 #[test]
@@ -735,7 +737,7 @@ fn streamed_command_sends_lines_early_and_stops_on_request() {
     let worker = std::thread::spawn(move || {
         let mut command = std::process::Command::new("sh");
         command.args(["-c", "echo first; exec sleep 30"]);
-        run_streamed(&mut command, &sender, &worker_stop)
+        run_streamed(&mut command, &sender, &worker_stop, None)
     });
 
     // The first line arrives while the process still runs.
@@ -745,6 +747,89 @@ fn streamed_command_sends_lines_early_and_stops_on_request() {
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(worker.join().unwrap().unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn streamed_game_gets_the_save_command_on_standard_input() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let save = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_save = std::sync::Arc::clone(&save);
+    let worker = std::thread::spawn(move || {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "echo ready; read line; echo \"got $line\""]);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        run_streamed(&mut command, &sender, &stop, Some(&worker_save))
+    });
+    let next = || match receiver.recv_timeout(Duration::from_secs(10)) {
+        Ok(BuildWorkerMessage::Output(text)) => text,
+        _ => panic!("no output"),
+    };
+    assert_eq!(next(), "ready\n");
+    save.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        next(),
+        format!("got {}\n", crate::project::CODE_RELOAD_SAVE_COMMAND)
+    );
+    assert!(worker.join().unwrap().unwrap().unwrap().success());
+}
+
+#[test]
+fn code_reload_saves_a_running_game_and_resumes_after_a_failed_build() {
+    let mut build = EditorBuildState {
+        running: true,
+        play_started: Some(std::time::Instant::now()),
+        built_after: Some(Duration::from_secs(1)),
+        ..EditorBuildState::default()
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    *build.receiver.get_mut().unwrap() = Some(receiver);
+    // A running game is asked to save, not killed.
+    build.request_code_reload();
+    assert!(build.save_state.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!build.stop.load(std::sync::atomic::Ordering::Relaxed));
+    sender
+        .send(BuildWorkerMessage::Output(format!(
+            "{} could not save the scene: no\n",
+            crate::project::CODE_RELOAD_CLEAN_MARKER
+        )))
+        .unwrap();
+    sender
+        .send(BuildWorkerMessage::Finished(BuildFinished {
+            success: true,
+            output: "exited".into(),
+        }))
+        .unwrap();
+    assert_eq!(build.poll(), Some(true));
+    assert!(build.take_restart_ready());
+    assert!(build.code_reload);
+    let notices = build.take_notices();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].0, ConsoleLevel::Warning);
+    assert!(notices[0].2.contains("could not save the scene"));
+
+    // The rebuilt code fails: the saved scene waits for the next Play.
+    build.code_reload = false;
+    build.resuming = true;
+    build.running = true;
+    build.play_started = Some(std::time::Instant::now());
+    build.built_after = None;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    *build.receiver.get_mut().unwrap() = Some(receiver);
+    sender
+        .send(BuildWorkerMessage::Finished(BuildFinished {
+            success: false,
+            output: "failed".into(),
+        }))
+        .unwrap();
+    assert_eq!(build.poll(), Some(false));
+    assert!(build.code_reload);
+    assert!(build.take_notices()[0].2.contains("press Play to continue"));
+
+    // While Cargo still builds, Reload Code restarts the build.
+    build.running = true;
+    build.request_code_reload();
+    assert!(build.stop.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[test]
@@ -886,6 +971,74 @@ fn added_models_keep_their_node_tree_under_one_saved_root() {
     // Every object saves with the scene.
     let mut ids = world.query::<&SceneId>();
     assert_eq!(ids.iter(world).count(), 6);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
+#[test]
+fn scenes_instance_as_one_linked_root_but_not_into_themselves() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-instance-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let prefab = folder.join("coin.rscene");
+    let mut source = App::new();
+    source.add_plugin(crate::AssetPlugin).unwrap();
+    source.spawn((SceneId::new(), Name("Coin".into()), Transform::default()));
+    crate::runtime::save_scene(source.world_mut(), &prefab, "Coin").unwrap();
+
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+    let open = folder.join("main.rscene");
+    let root = instance_scene_in_scene(world, &prefab, Some(&open)).unwrap();
+    assert_eq!(world.get::<Name>(root).unwrap().0, "coin");
+    assert!(world.get::<crate::runtime::SceneInstance>(root).is_some());
+    let mut members =
+        world.query::<(&Name, &Parent, &crate::runtime::InstanceMember)>();
+    let members = members
+        .iter(world)
+        .map(|(name, parent, _)| (name.0.clone(), parent.0))
+        .collect::<Vec<_>>();
+    assert_eq!(members, vec![("Coin".to_owned(), root)]);
+
+    // Hierarchy instance actions reload the scene and keep the object.
+    let mut coins = world
+        .query_filtered::<&mut Transform, bevy_ecs::query::With<crate::runtime::InstanceMember>>(
+        );
+    coins.single_mut(world).unwrap().position = [5.0, 0.0, 0.0];
+    let root =
+        edit_scene_instance(world, root, crate::runtime::InstanceEdit::Revert)
+            .unwrap()
+            .unwrap();
+    let mut coins = world
+        .query_filtered::<&Transform, bevy_ecs::query::With<crate::runtime::InstanceMember>>();
+    assert_eq!(coins.single(world).unwrap().position, [0.0; 3]);
+    let root = edit_scene_instance(
+        world,
+        root,
+        crate::runtime::InstanceEdit::UnpackCompletely,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(world.get::<crate::runtime::SceneInstance>(root).is_none());
+    let mut members = world.query::<&crate::runtime::InstanceMember>();
+    assert_eq!(members.iter(world).count(), 0);
+
+    let error =
+        instance_scene_in_scene(world, &prefab, Some(&prefab)).unwrap_err();
+    assert!(error.contains("itself"), "{error}");
+
+    // New Variant picks a free name and the variant instances its base.
+    let first = new_scene_variant(&prefab).unwrap();
+    let second = new_scene_variant(&prefab).unwrap();
+    assert_eq!(first, folder.join("coin_variant.rscene"));
+    assert_eq!(second, folder.join("coin_variant_2.rscene"));
+    let variant = crate::runtime::read_scene_document(&first).unwrap();
+    assert_eq!(variant.entities.len(), 1);
+    assert_eq!(
+        variant.entities[0].components
+            [crate::runtime::SCENE_INSTANCE_COMPONENT],
+        r#"{"source":"coin.rscene"}"#
+    );
     let _ = std::fs::remove_dir_all(folder);
 }
 
@@ -1746,4 +1899,58 @@ fn replacing_an_imported_asset_previews_then_writes_on_confirm() {
         assets.message
     );
     std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct LootTable {
+    gold: u32,
+}
+
+crate::reflect! {
+    struct LootTable { gold: u32 }
+}
+
+impl DataAsset for LootTable {
+    const NAME: &'static str = "test.loot_table";
+}
+
+#[test]
+fn data_assets_are_created_edited_and_reloaded_from_the_editor() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.register_data_asset::<LootTable>();
+    let world = app.world_mut();
+    let registered = world
+        .resource::<crate::assets::DataAssetTypes>()
+        .get(LootTable::NAME)
+        .unwrap()
+        .clone();
+
+    // New picks a free name from the type and writes the default value.
+    let first = new_data_asset(&folder, &registered).unwrap();
+    let second = new_data_asset(&folder, &registered).unwrap();
+    assert_eq!(first, folder.join("loot_table.rdata"));
+    assert_eq!(second, folder.join("loot_table_2.rdata"));
+
+    let handle = world
+        .resource_mut::<AssetServer>()
+        .load_data::<LootTable>(&first)
+        .unwrap();
+    let mut inspection = DataInspection::open(first.clone(), None);
+    assert_eq!(inspection.type_name, LootTable::NAME);
+    assert!(inspection.error.is_none());
+
+    // Saving writes the file and loaded handles see the new value.
+    inspection.value["gold"] = serde_json::json!(25);
+    save_data_inspection(world, &inspection).unwrap();
+    let assets = world.resource::<AssetServer>();
+    assert_eq!(assets.data.get(handle).unwrap().gold, 25);
+
+    let broken = folder.join("broken.rdata");
+    std::fs::write(&broken, "{").unwrap();
+    assert!(DataInspection::open(broken, None).error.is_some());
+    let _ = std::fs::remove_dir_all(folder);
 }

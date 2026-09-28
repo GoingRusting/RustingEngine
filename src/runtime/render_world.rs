@@ -129,6 +129,8 @@ pub struct RenderWorld {
     /// Requested profile; the renderer resolves `Auto` from device capabilities.
     pub quality: super::QualityProfile,
     pub culling: super::CullingMode,
+    pub antialiasing: super::Antialiasing,
+    pub shadows: super::ShadowQuality,
     cached: HashMap<Entity, ExtractedRenderable>,
     renderables_signature: Option<u64>,
     /// Tick and component counts seen by the last signature hash.
@@ -216,10 +218,12 @@ pub fn extract_render_world(world: &mut World) {
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
     let render_settings = world.resource::<super::RenderSettings>();
-    let (background_color, quality, culling) = (
+    let (background_color, quality, culling, antialiasing, shadows) = (
         render_settings.background_color,
         render_settings.quality,
         render_settings.culling,
+        render_settings.antialiasing,
+        render_settings.shadows,
     );
 
     let mut render_world = world.resource_mut::<RenderWorld>();
@@ -323,6 +327,8 @@ pub fn extract_render_world(world: &mut World) {
     render_world.background_color = background_color;
     render_world.quality = quality;
     render_world.culling = culling;
+    render_world.antialiasing = antialiasing;
+    render_world.shadows = shadows;
 }
 
 /// True unless no `GlobalTransform`, `MeshRenderer`, `Visibility`, or

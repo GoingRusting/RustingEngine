@@ -50,7 +50,9 @@ cross between them.
 - **Rendering:** a Vulkan renderer with PBR materials, lights, shadows,
   instancing, indirect drawing, and GPU frustum culling.
 - **Physics:** fixed-step CPU and GPU physics with built-in and custom
-  compute shaders, stable GPU body IDs, object classes, and GPU conditions
+  compute shaders, CPU joints (hinge, slider, ball socket, cone twist,
+  distance, spring, and six-axis with limits, springs, and motors),
+  reduced-coordinate articulations for drift-free chains and ragdolls, stable GPU body IDs, object classes, and GPU conditions
   that send small events back to Rust.
 - **Determinism:** a per-project determinism mode, seeded random streams, a
   world-state hash for every tick, replays, and `rusting determinism` to
@@ -116,6 +118,7 @@ cargo run --bin rusting -- doctor --json
 cargo run --bin rusting -- new /tmp "My Game" --json
 cargo run --bin rusting -- new /tmp "My Platformer" --template 2d --json
 cargo run --bin rusting -- new /tmp "Coin Run" --template starter --json
+cargo run --bin rusting -- new /tmp "My Shooter" --template first-person --json
 cargo run --bin rusting -- project inspect "/tmp/My Game" --json
 cargo run --bin rusting -- scene inspect "/tmp/My Game/scenes/main.rscene" --json
 cargo run --bin rusting -- scene query "/tmp/My Game/scenes/main.rscene" --name Cube --json
@@ -304,6 +307,14 @@ license is rejected.
 starter look (`daylight`, `golden_hour`, `night`, `flat_toy`) as ordinary
 scene data: sun, ambient and sky light, tone mapping, `rusting.background`,
 camera field of view, and HUD text size and color.
+
+`new --template first-person` creates a lit room with crates and a
+kinematic capsule player: `rusting.player_controller` walks with WASD, runs
+with Shift, jumps with Space, and looks with the mouse once a click captures
+the cursor. `--template third-person` is the same room with a visible player
+body; the controller's `camera_distance` swings the child camera behind the
+body. `--template sandbox` drops a stack of dynamic boxes and two balls onto
+a walled floor, a starting point for physics experiments.
 
 For 2D games, `new --template 2d` creates a side-view platformer. Sprites
 are `MeshRenderer`s with the `Quad` primitive and an unlit material, the
