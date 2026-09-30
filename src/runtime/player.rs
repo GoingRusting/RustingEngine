@@ -29,10 +29,12 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut, With, Without};
 use serde::{Deserialize, Serialize};
 
+use super::cpu_physics::world_position;
 use super::sim_math;
 use super::{
     ActionMap, Camera, CharacterMove, Children, Collider, ColliderShape,
-    FrameTime, InputBinding, KeyCode, MouseButton, PhysicsWorld, RuntimeInput,
+    FrameTime, GlobalTransform, InputBinding, KeyCode, MouseButton, Parent,
+    PhysicsWorld, RuntimeInput,
 };
 use crate::Transform;
 
@@ -183,8 +185,9 @@ pub(super) fn player_look(
         // Behind the orbit center along the view direction, which is -Z
         // tilted up by pitch.
         let (sin, cos) = sim_math::sin_cos(player.pitch);
+        let orbit = player.camera_distance > 0.0;
         let mut distance = player.camera_distance;
-        if distance > 0.0 {
+        if orbit {
             // Stop a camera-sized sphere at the first solid collider behind
             // the orbit center, ignoring the player's own body.
             let [x, y, z] = transform.position;
@@ -206,7 +209,7 @@ pub(super) fn player_look(
         for child in children.into_iter().flat_map(|children| &children.0) {
             if let Ok(mut camera) = cameras.get_mut(*child) {
                 camera.rotation = [player.pitch, 0.0, 0.0];
-                if distance > 0.0 {
+                if orbit {
                     camera.position = [
                         0.0,
                         player.camera_height - sin * distance,
@@ -219,6 +222,7 @@ pub(super) fn player_look(
 }
 
 /// Per fixed step: walking, gravity, jumping, and collision sliding.
+#[allow(clippy::type_complexity)]
 pub(super) fn player_move(
     time: Res<FrameTime>,
     input: Res<RuntimeInput>,
@@ -230,7 +234,10 @@ pub(super) fn player_move(
         &mut Transform,
         Option<&Collider>,
     )>,
-    floors: Query<&Transform, Without<PlayerController>>,
+    floors: Query<
+        (&Transform, Option<&Parent>, Option<&GlobalTransform>),
+        Without<PlayerController>,
+    >,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
     let axis = |positive, negative| {
@@ -275,7 +282,11 @@ pub(super) fn player_move(
             player.floor,
             player.collision_mask,
             entity,
-            |floor| floors.get(floor).ok().map(|floor| floor.position),
+            |floor| {
+                floors.get(floor).ok().map(|(t, parent, global)| {
+                    world_position(t, parent, global)
+                })
+            },
         );
 
         let moved = physics.move_character_on_foot(
@@ -293,9 +304,10 @@ pub(super) fn player_move(
         {
             player.vertical_speed = 0.0;
         }
-        player.floor = moved
-            .floor
-            .and_then(|floor| Some((floor, floors.get(floor).ok()?.position)));
+        player.floor = moved.floor.and_then(|floor| {
+            let (t, parent, global) = floors.get(floor).ok()?;
+            Some((floor, world_position(t, parent, global)))
+        });
         transform.position = moved.position;
     }
 }

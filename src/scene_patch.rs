@@ -490,6 +490,20 @@ fn fill_defaults(
     Ok(())
 }
 
+/// The first object key of `wanted` that `kept` does not have, as a path.
+fn dropped_key(wanted: &Value, kept: &Value, path: &str) -> Option<String> {
+    let (Value::Object(wanted), Value::Object(kept)) = (wanted, kept) else {
+        return None;
+    };
+    wanted.iter().find_map(|(key, value)| {
+        let path = format!("{path}/{}", escape(key));
+        match kept.get(key) {
+            Some(kept) => dropped_key(value, kept, &path),
+            None => Some(path),
+        }
+    })
+}
+
 /// Applies `patch` to a parsed scene. Nothing changes on error.
 pub fn apply_patch(
     document: &SceneDocument,
@@ -538,7 +552,13 @@ pub fn apply_patch(
         apply_operation(&mut entities, index, operation)?;
     }
     let (defaults, component_defaults) = crate::schema::defaults();
+    // Entities the patch did not touch are not this patch's to reject.
+    let untouched: std::collections::HashSet<String> =
+        before.iter().map(Value::to_string).collect();
     for entity in &mut entities {
+        if untouched.contains(&entity.to_string()) {
+            continue;
+        }
         let Value::Object(sections) = entity else {
             continue;
         };
@@ -572,6 +592,16 @@ pub fn apply_patch(
     scene["entities"] = Value::Array(stored);
     let patched: SceneDocument = serde_json::from_value(scene)
         .map_err(|error| PatchError::Invalid(error.to_string()))?;
+    // serde drops a key it does not know, so a mistyped scene setting would
+    // report success and change nothing.
+    if let Ok(Value::Object(mut kept)) = serde_json::to_value(&patched) {
+        kept.remove("entities");
+        if let Some(path) = dropped_key(&settings, &Value::Object(kept), "") {
+            return Err(PatchError::Invalid(format!(
+                "unknown scene setting `{path}`"
+            )));
+        }
+    }
     validate_scene_structure(&patched)
         .map_err(|error| PatchError::Invalid(error.to_string()))?;
     let unvalidated_components = validate_components(&patched)?;
@@ -841,6 +871,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("cannot change"), "{error}");
+    }
+
+    #[test]
+    fn a_mistyped_scene_setting_is_an_error() {
+        let path = scene_file("typo");
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set_scene", "path": "/render/qualty", "value": "High"},
+            ]})),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("/render/qualty"), "{error}");
     }
 
     #[test]

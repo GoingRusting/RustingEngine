@@ -430,6 +430,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::WaterBody>();
     types.register::<super::WaterMesh>();
     types.register::<super::FluidParticle>();
+    types.register::<super::fluid::OwnedSurface>();
     types.register::<super::FluidVolume>();
     types.register::<Children>();
     types.register::<Collider>();
@@ -476,6 +477,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<Visibility>();
 
     types.register::<ActionMap>();
+    types.register::<super::actions::SceneBindings>();
     types.register::<AutoAllocationPolicy>();
     types.register::<DeterminismMode>();
     types.register::<DeterminismSupport>();

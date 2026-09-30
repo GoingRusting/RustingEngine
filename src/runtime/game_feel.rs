@@ -600,18 +600,27 @@ impl Default for AmbientOcclusion {
     }
 }
 
-/// Loads the image of each added or changed [`EnvironmentMap`].
+/// Loads the image of each added or changed [`EnvironmentMap`]. A map whose
+/// load failed (file missing or not written yet) is tried again about every
+/// two seconds.
 pub(super) fn load_environment_maps(
     assets: Option<ResMut<crate::assets::AssetServer>>,
-    mut maps: Query<
-        &mut EnvironmentMap,
-        bevy_ecs::query::Changed<EnvironmentMap>,
-    >,
+    mut maps: Query<&mut EnvironmentMap>,
+    mut frame: bevy_ecs::prelude::Local<u32>,
 ) {
     let Some(mut assets) = assets else {
         return;
     };
+    *frame = frame.wrapping_add(1);
     for mut map in &mut maps {
+        let retry = map.handle.is_none()
+            && !map.texture.as_os_str().is_empty()
+            && (*frame).is_multiple_of(120);
+        if !bevy_ecs::change_detection::DetectChanges::is_changed(&map)
+            && !retry
+        {
+            continue;
+        }
         let map = map.bypass_change_detection();
         map.handle = (!map.texture.as_os_str().is_empty())
             .then(|| {

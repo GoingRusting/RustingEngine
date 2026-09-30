@@ -812,6 +812,28 @@ mod tests {
     };
 
     #[test]
+    fn a_press_before_the_first_update_leaves_no_stale_binding() {
+        use crate::runtime::InputAction;
+        let mut app = App::new();
+        let owner = app
+            .world_mut()
+            .spawn(InputAction {
+                action: "fire".into(),
+                inputs: vec!["KeyF".into()],
+            })
+            .id();
+        press(app.world_mut(), "fire", true).unwrap();
+        app.update(std::time::Duration::from_millis(16)).unwrap();
+        app.world_mut().despawn(owner);
+        app.update(std::time::Duration::from_millis(16)).unwrap();
+        assert!(app
+            .world()
+            .resource::<ActionMap>()
+            .bindings("fire")
+            .is_empty());
+    }
+
+    #[test]
     fn whole_numbers_above_the_f32_range_match_exactly() {
         assert!(!close(
             &serde_json::json!(16_777_216_u64),

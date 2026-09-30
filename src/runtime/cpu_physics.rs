@@ -36,7 +36,7 @@ use crate::runtime::sim_math;
 use crate::runtime::{
     Collider, ColliderShape, CollisionLayers, EventQueue, FrameTime,
     GlobalTransform, GpuProxyOf, MeshRenderer, Parent, PhysicsBody,
-    PhysicsSettings, RigidBody, RigidBodyKind, SimulationClass,
+    PhysicsSettings, PhysicsSolver, RigidBody, RigidBodyKind, SimulationClass,
 };
 use crate::Transform;
 
@@ -90,6 +90,22 @@ pub struct CharacterMove {
     pub floor: Option<Entity>,
     /// True when the move touched a surface facing down (a ceiling).
     pub ceiling: bool,
+}
+
+/// Where an object is in the world: the propagated pose for a child, the
+/// local position otherwise (a root's own position is never a frame stale).
+pub(crate) fn world_position(
+    transform: &Transform,
+    parent: Option<&Parent>,
+    global: Option<&GlobalTransform>,
+) -> [f32; 3] {
+    match (parent, global) {
+        (Some(_), Some(global)) => {
+            let column = global.matrix[3];
+            [column[0], column[1], column[2]]
+        }
+        _ => transform.position,
+    }
 }
 
 impl CharacterMove {
@@ -1092,9 +1108,16 @@ impl PhysicsWorld {
 /// falls when its floor goes away. Contacts between a sleeper and a fixed
 /// body are never recorded, so this checks bounding spheres instead.
 // ponytail: every changed body against every sleeper; a moving kinematic
-// platform pays this each step. Use the broad phase if that shows.
+// platform beside a large sleeping pile pays this each step. Use the broad
+// phase if that shows.
 fn wake_on_lost_support(world: &World, bodies: &mut [Body]) {
     const MARGIN: f32 = 0.05;
+    let sleepers: Vec<usize> = (0..bodies.len())
+        .filter(|&index| bodies[index].asleep)
+        .collect();
+    if sleepers.is_empty() {
+        return;
+    }
     let index: HashMap<Entity, usize> = bodies
         .iter()
         .enumerate()
@@ -1117,15 +1140,16 @@ fn wake_on_lost_support(world: &World, bodies: &mut [Body]) {
                 || old.kind != now.kind)
     });
     let mut wake = Vec::new();
-    for old in changed.filter(|old| !old.sensor) {
-        for (index, body) in bodies.iter().enumerate() {
-            let reach = old.bounding_radius() + body.bounding_radius() + MARGIN;
-            if body.asleep
-                && body.entity != old.entity
-                && (body.position - old.position).norm_squared()
+    for other in changed.filter(|other| !other.sensor) {
+        for &sleeper in &sleepers {
+            let body = &bodies[sleeper];
+            let reach =
+                other.bounding_radius() + body.bounding_radius() + MARGIN;
+            if body.entity != other.entity
+                && (body.position - other.position).norm_squared()
                     <= reach * reach
             {
-                wake.push(index);
+                wake.push(sleeper);
             }
         }
     }
@@ -1185,11 +1209,20 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
     let mut used = MeshCache::new();
     let mut bodies = query
         .iter(world)
-        .filter(|(_, _, _, physics, ..)| {
-            matches!(
-                physics.simulation,
-                SimulationClass::Cpu | SimulationClass::Static
-            )
+        .filter(|(_, _, _, physics, rigid, ..)| {
+            // A fixed GPU body never moves, so CPU queries and the player
+            // can stand on it as a static collider.
+            match physics.simulation {
+                SimulationClass::Cpu | SimulationClass::Static => true,
+                SimulationClass::Gpu => {
+                    matches!(
+                        physics.solver,
+                        PhysicsSolver::Full | PhysicsSolver::Simplified
+                    ) && rigid
+                        .is_some_and(|rigid| rigid.kind == RigidBodyKind::Fixed)
+                }
+                _ => false,
+            }
         })
         .filter_map(
             |(
@@ -1219,7 +1252,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                     kind: RigidBodyKind::Fixed,
                     ..RigidBody::default()
                 });
-                let kind = if physics.simulation == SimulationClass::Static {
+                let kind = if physics.simulation != SimulationClass::Cpu {
                     RigidBodyKind::Fixed
                 } else {
                     rigid.kind
@@ -1277,7 +1310,9 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                             pose.rotation[2],
                         ),
                         sensor: collider.sensor,
-                        proxy: proxy.is_some(),
+                        // GPU bodies already collide with each other on the GPU.
+                        proxy: proxy.is_some()
+                            || physics.simulation == SimulationClass::Gpu,
                         layers: layers.copied().unwrap_or_default(),
                         friction: collider.friction.max(0.0),
                         restitution: collider.restitution.clamp(0.0, 1.0),
@@ -1785,6 +1820,17 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
                 *other != index && !target.sensor && body.interacts_with(target)
             })
             .filter_map(|(_, target)| {
+                // Most targets are nowhere near the ray: rule them out with
+                // a bounding sphere before building a grown copy.
+                let offset = target.position - body.position;
+                let along = offset.dot(&direction);
+                let size = target.bounding_radius() + pad;
+                if along < -size
+                    || along > travel + reach + size
+                    || (offset - direction * along).norm() > size
+                {
+                    return None;
+                }
                 let target_grown = grown(target, pad);
                 let (distance, normal) =
                     ray_body(body.position, direction, &target_grown)?;

@@ -4184,3 +4184,157 @@ fn a_water_body_draws_one_surface_floats_a_light_ball_and_carries_it() {
     assert!(heavy[1] < -1.0, "heavy ball sinks: {heavy:?}");
     assert!(light[0] > 0.5, "the current carries the ball: {light:?}");
 }
+
+#[test]
+fn a_fixed_gpu_box_is_solid_to_cpu_queries_but_a_dynamic_one_is_not() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let fixed =
+        cpu_body(world, [0.0, 0.0, -3.0], UNIT_BOX, RigidBodyKind::Fixed);
+    world.get_mut::<PhysicsBody>(fixed).unwrap().simulation =
+        SimulationClass::Gpu;
+    let dynamic =
+        cpu_body(world, [0.0, 0.0, 3.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    world.get_mut::<PhysicsBody>(dynamic).unwrap().simulation =
+        SimulationClass::Gpu;
+    run_fixed_steps(&mut app, 2);
+    let physics = app.world().resource::<PhysicsWorld>();
+    assert!(physics
+        .raycast([0.0; 3], [0.0, 0.0, -1.0], 10.0, u32::MAX)
+        .is_some());
+    assert!(physics
+        .raycast([0.0; 3], [0.0, 0.0, 1.0], 10.0, u32::MAX)
+        .is_none());
+    // GPU bodies collide with each other on the GPU, not through this list.
+    assert!(physics.gpu_colliders().is_empty());
+}
+
+#[test]
+fn a_switched_off_fluid_surface_and_its_mesh_are_removed() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let material = app
+        .world()
+        .resource::<crate::assets::AssetServer>()
+        .fallback_material;
+    let settings = FluidSettings::default();
+    let fluid = Fluid::block([0.0, 1.0, 0.0], [3, 3, 3], settings.spacing);
+    let mut volume = FluidVolume::new(settings, fluid);
+    volume.surface = Some(crate::runtime::FluidSurface::new(material));
+    let owner = app.world_mut().spawn(volume).id();
+    run_fixed_steps(&mut app, 2);
+    let meshes = |app: &mut App| {
+        app.world()
+            .resource::<crate::assets::AssetServer>()
+            .meshes
+            .len()
+    };
+    let with_surface = meshes(&mut app);
+    app.world_mut()
+        .get_mut::<FluidVolume>(owner)
+        .unwrap()
+        .surface = None;
+    run_fixed_steps(&mut app, 2);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&MeshRenderer>().iter(world).count(), 0);
+    assert_eq!(meshes(&mut app), with_surface - 1);
+}
+
+#[test]
+fn a_scene_input_action_unbinds_when_its_component_goes() {
+    use crate::runtime::{ActionMap, InputAction};
+    let mut app = App::new();
+    let owner = app
+        .world_mut()
+        .spawn(InputAction {
+            action: "fire".into(),
+            inputs: vec!["KeyF".into()],
+        })
+        .id();
+    run_fixed_steps(&mut app, 1);
+    app.update(Duration::from_millis(16)).unwrap();
+    assert_eq!(
+        app.world().resource::<ActionMap>().bindings("fire").len(),
+        1
+    );
+    app.world_mut().despawn(owner);
+    app.update(Duration::from_millis(16)).unwrap();
+    assert!(app
+        .world()
+        .resource::<ActionMap>()
+        .bindings("fire")
+        .is_empty());
+}
+
+#[test]
+fn a_tiny_time_scale_under_overload_does_not_panic() {
+    fn sluggish(_: ResMut<Counts>) {
+        std::thread::sleep(Duration::from_millis(3));
+    }
+    let mut app = EngineBuilder::new()
+        .fixed_delta(Duration::from_millis(1))
+        .max_fixed_steps(4)
+        .build()
+        .unwrap();
+    app.insert_resource(Counts::default())
+        .add_systems(ScheduleStage::FixedUpdate, sluggish);
+    app.update(Duration::from_millis(50)).unwrap();
+    // Overloaded now; one fixed step of scaled time overflows `Duration`.
+    app.world_mut().resource_mut::<TimeControl>().time_scale = 1e-300;
+    app.update(Duration::from_millis(50)).unwrap();
+}
+
+#[test]
+fn tile_map_rectangles_stop_at_the_cell_cap() {
+    let mut map = TileMap::default();
+    let edge = MAX_TILE_CELLS as f32 * map.tile_size;
+    assert_eq!(
+        map.cell_at([edge - 0.01, -0.01]),
+        Some((MAX_TILE_CELLS - 1, 0))
+    );
+    assert_eq!(map.cell_at([edge + 0.01, -0.01]), None);
+    // One rebuild per row, so the widest rectangle is quick.
+    let far = (MAX_TILE_CELLS - 1, 3);
+    assert!(map.fill_rect((0, 0), far, '#'));
+    assert_eq!(map.rows.len(), 4);
+    assert!(map.rows.iter().all(|row| row.len() == MAX_TILE_CELLS));
+    assert!(!map.fill_rect((0, 0), far, '#'));
+}
+
+#[test]
+fn a_platformer_rides_a_platform_whose_parent_moves() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let root = world
+        .spawn((
+            Transform::new([0.0; 3]),
+            Tween {
+                from: [0.0; 3],
+                to: [3.0, 0.0, 0.0],
+                duration: 1.0,
+                delay: 0.5,
+                easing: Easing::Linear,
+                repeat: TweenRepeat::Once,
+                ..Tween::default()
+            },
+        ))
+        .id();
+    let platform = cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [2.0, 0.5, 2.0],
+        },
+        RigidBodyKind::Kinematic,
+    );
+    let runner = world
+        .spawn((
+            Transform::new([0.0, 0.6, 0.0]),
+            PlatformerController::default(),
+        ))
+        .id();
+    app.set_parent(platform, root).unwrap();
+    run_fixed_steps(&mut app, 120);
+    let x = app.world().get::<Transform>(runner).unwrap().position[0];
+    assert!((x - 3.0).abs() < 0.05, "rode to {x}");
+}

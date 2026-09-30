@@ -226,6 +226,17 @@ pub(super) fn shift_pick_selection(
     (next, Some(picked))
 }
 
+/// Icon tint by object kind, so cameras, lights and meshes read apart.
+fn icon_color(icon: super::EditorIcon) -> egui::Color32 {
+    use super::EditorIcon;
+    match icon {
+        EditorIcon::Camera => gui_elements::EditorTheme::ICON_CAMERA,
+        EditorIcon::Light => gui_elements::EditorTheme::WARNING,
+        EditorIcon::Mesh => gui_elements::EditorTheme::LINK,
+        _ => gui_elements::EditorTheme::TEXT_MUTED,
+    }
+}
+
 fn entity_icon(world: &World, entity: Entity) -> super::EditorIcon {
     use super::EditorIcon;
     if world.get::<Camera>(entity).is_some() {
@@ -277,7 +288,7 @@ pub(super) fn draw_hierarchy_area(
         state.selection = state.selected.into_iter().collect();
     }
 
-    ui.horizontal(|ui| {
+    gui_elements::kit::toolbar(ui, |ui| {
         if EditorTheme::toolbar_icon_button(
             ui,
             "",
@@ -291,13 +302,13 @@ pub(super) fn draw_hierarchy_area(
             state.add_object_parent = None;
             state.add_object_modal_open = true;
         }
-        ui.add(
-            egui::TextEdit::singleline(&mut state.hierarchy_filter)
-                .hint_text("Search")
-                .desired_width(f32::INFINITY),
+        gui_elements::kit::search_field(
+            ui,
+            &mut state.hierarchy_filter,
+            "Search objects",
         );
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
 
     let visible = filter_items(entities, &state.hierarchy_filter);
     let visible_entities =
@@ -305,281 +316,294 @@ pub(super) fn draw_hierarchy_area(
     let (toggle, range) =
         ui.input(|input| (input.modifiers.command, input.modifiers.shift));
 
-    egui::ScrollArea::both()
-        .id_salt("hierarchy_panel_scroll")
-        .auto_shrink([false, false])
-        .scroll_bar_visibility(
-            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
-        )
-        // Only rows inside the scrolled view are drawn. The inline rename row
-        // is a little taller, which shifts later rows by a few pixels.
-        .show_rows(ui, EditorTheme::ROW_HEIGHT, visible.len(), |ui, rows| {
-            for item in &visible[rows] {
-                let item = *item;
-                if state.rename_target == Some(item.entity) {
-                    draw_inline_rename(ui, item, state, entity_request);
-                    continue;
-                }
-                let visible_now = world
-                    .get::<Visibility>(item.entity)
-                    .is_none_or(|visibility| visibility.visible);
-                // Rows hidden by themselves or an ancestor are dimmed, as in
-                // Blender's outliner.
-                let response = ui
-                    .scope(|ui| {
-                        if !crate::runtime::visible_in_hierarchy(
-                            world,
-                            item.entity,
-                        ) {
-                            ui.multiply_opacity(0.45);
-                        }
-                        let label = if is_preview_spawned(state, item.entity) {
-                            format!("{}  [Runtime]", item.name)
-                        } else {
-                            item.name.clone()
-                        };
-                        EditorTheme::tree_row(
-                            ui,
-                            &label,
-                            item.depth,
-                            state.selection.contains(&item.entity),
-                            state.selected == Some(item.entity),
-                            Some(entity_icon(world, item.entity)),
-                        )
-                    })
-                    .inner;
-
-                // Eye toggle, drawn over the row's right edge. It is
-                // registered after the row, so it wins the click.
-                let eye_rect = egui::Rect::from_center_size(
-                    egui::pos2(
-                        response.rect.right() - 12.0,
-                        response.rect.center().y,
-                    ),
-                    egui::vec2(18.0, 18.0),
-                );
-                let eye = ui
-                    .interact(
-                        eye_rect,
-                        ui.id().with(("hierarchy_eye", item.entity)),
-                        egui::Sense::click(),
-                    )
-                    .on_hover_text(if visible_now { "Hide" } else { "Show" });
-                super::icons::paint_editor_icon(
-                    ui.painter(),
-                    if visible_now {
-                        super::EditorIcon::Eye
-                    } else {
-                        super::EditorIcon::EyeClosed
-                    },
-                    eye_rect,
-                    if eye.hovered() {
-                        EditorTheme::TEXT
-                    } else {
-                        EditorTheme::TEXT_MUTED
-                    },
-                );
-                if eye.clicked() {
-                    *entity_request = Some(EntityRequest::SetVisible(
-                        item.entity,
-                        !visible_now,
-                    ));
-                }
-
-                response.dnd_set_drag_payload(HierarchyDrag(item.entity));
-                if let Some(payload) =
-                    response.dnd_hover_payload::<HierarchyDrag>()
-                {
-                    let valid = can_reparent(world, payload.0, item.entity);
-                    ui.painter().rect_stroke(
-                        response.rect,
-                        f32::from(EditorTheme::RADIUS),
-                        egui::Stroke::new(
-                            2.0_f32,
-                            if valid {
-                                EditorTheme::ACCENT_HOVER
+    gui_elements::kit::list_well(ui, 20.0, |ui| {
+        egui::ScrollArea::both()
+            .id_salt("hierarchy_panel_scroll")
+            .auto_shrink([false, false])
+            .scroll_bar_visibility(
+                egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+            )
+            // Only rows inside the scrolled view are drawn. The inline rename row
+            // is a little taller, which shifts later rows by a few pixels.
+            .show_rows(ui, EditorTheme::ROW_HEIGHT, visible.len(), |ui, rows| {
+                for item in &visible[rows] {
+                    let item = *item;
+                    if state.rename_target == Some(item.entity) {
+                        draw_inline_rename(ui, item, state, entity_request);
+                        continue;
+                    }
+                    let visible_now = world
+                        .get::<Visibility>(item.entity)
+                        .is_none_or(|visibility| visibility.visible);
+                    // Rows hidden by themselves or an ancestor are dimmed, as in
+                    // Blender's outliner.
+                    let response = ui
+                        .scope(|ui| {
+                            if !crate::runtime::visible_in_hierarchy(
+                                world,
+                                item.entity,
+                            ) {
+                                ui.multiply_opacity(0.45);
+                            }
+                            let label = if is_preview_spawned(state, item.entity) {
+                                format!("{}  [Runtime]", item.name)
                             } else {
-                                crate::editor::gui_elements::EditorTheme::ERROR
-                            },
-                        ),
-                        egui::StrokeKind::Inside,
-                    );
-                }
-                // An image dropped on a mesh object becomes its base color.
-                if let Some(payload) = response
-                    .dnd_release_payload::<super::assets_panel::ImageDrag>()
-                {
-                    *asset_request = Some(AssetRequest::SetMaterialTexture {
-                        entity: item.entity,
-                        slot: 0,
-                        path: payload.0.clone(),
-                    });
-                }
-                if let Some(payload) =
-                    response.dnd_release_payload::<HierarchyDrag>()
-                {
-                    // Dragging a selected row moves the whole selection.
-                    let moved = if state.selection.contains(&payload.0) {
-                        state.selection.clone()
-                    } else {
-                        vec![payload.0]
-                    };
-                    let moved: Vec<Entity> = moved
-                        .into_iter()
-                        .filter(|entity| {
-                            can_reparent(world, *entity, item.entity)
+                                item.name.clone()
+                            };
+                            let icon = entity_icon(world, item.entity);
+                            EditorTheme::tree_row_tinted(
+                                ui,
+                                &label,
+                                item.depth,
+                                state.selection.contains(&item.entity),
+                                state.selected == Some(item.entity),
+                                Some(icon),
+                                Some(icon_color(icon)),
+                            )
                         })
-                        .collect();
-                    if !moved.is_empty() {
-                        *entity_request = Some(EntityRequest::Reparent(
-                            moved,
-                            Some(item.entity),
+                        .inner;
+
+                    // Eye toggle, drawn over the row's right edge. It is
+                    // registered after the row, so it wins the click.
+                    let eye_rect = egui::Rect::from_center_size(
+                        egui::pos2(
+                            response.rect.right() - 12.0,
+                            response.rect.center().y,
+                        ),
+                        egui::vec2(18.0, 18.0),
+                    );
+                    let eye = ui
+                        .interact(
+                            eye_rect,
+                            ui.id().with(("hierarchy_eye", item.entity)),
+                            egui::Sense::click(),
+                        )
+                        .on_hover_text(if visible_now { "Hide" } else { "Show" });
+                    super::icons::paint_editor_icon(
+                        ui.painter(),
+                        if visible_now {
+                            super::EditorIcon::Eye
+                        } else {
+                            super::EditorIcon::EyeClosed
+                        },
+                        eye_rect,
+                        if eye.hovered() {
+                            EditorTheme::TEXT
+                        } else {
+                            EditorTheme::TEXT_MUTED
+                        },
+                    );
+                    if eye.clicked() {
+                        *entity_request = Some(EntityRequest::SetVisible(
+                            item.entity,
+                            !visible_now,
                         ));
                     }
-                }
 
-                // Right-click keeps an existing multi-selection so the
-                // context menu acts on all of it.
-                let right_click_keeps = response.secondary_clicked()
-                    && state.selection.contains(&item.entity);
-                if (response.clicked() || response.secondary_clicked())
-                    && !right_click_keeps
-                {
-                    let (selection, primary) = if response.clicked() {
-                        click_selection(
-                            &state.selection,
-                            state.selected,
-                            &visible_entities,
-                            item.entity,
-                            toggle,
-                            range,
-                        )
-                    } else {
-                        (vec![item.entity], Some(item.entity))
-                    };
-                    state.selection = selection;
-                    match primary.and_then(|primary| {
-                        entities.iter().find(|item| item.entity == primary)
-                    }) {
-                        Some(primary) => select_item(
-                            world,
-                            primary,
-                            state,
-                            edited_transform,
-                            edited_camera,
-                            edited_physics,
-                            edited_rigid_body,
-                            edited_collider,
-                        ),
-                        None => state.selected = None,
-                    }
-                }
-                if response.double_clicked() {
-                    start_rename(state, item);
-                }
-                response.context_menu(|ui| {
-                    ui.set_min_width(220.0);
-                    let count = state.selection.len();
-                    EditorTheme::menu_section(ui, "OBJECT");
-                    if EditorTheme::menu_action(ui, "Add Child Object...", true)
-                        .clicked()
+                    response.dnd_set_drag_payload(HierarchyDrag(item.entity));
+                    if let Some(payload) =
+                        response.dnd_hover_payload::<HierarchyDrag>()
                     {
-                        state.add_object_parent = Some(item.entity);
-                        state.add_object_modal_open = true;
+                        let valid = can_reparent(world, payload.0, item.entity);
+                        ui.painter().rect_stroke(
+                            response.rect,
+                            f32::from(EditorTheme::RADIUS),
+                            egui::Stroke::new(
+                                2.0_f32,
+                                if valid {
+                                    EditorTheme::ACCENT_HOVER
+                                } else {
+                                    crate::editor::gui_elements::EditorTheme::ERROR
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
                     }
-                    if EditorTheme::menu_action(ui, "Rename", true).clicked() {
+                    // An image dropped on a mesh object becomes its base color.
+                    if let Some(payload) = response
+                        .dnd_release_payload::<super::assets_panel::ImageDrag>()
+                    {
+                        *asset_request = Some(AssetRequest::SetMaterialTexture {
+                            entity: item.entity,
+                            slot: 0,
+                            path: payload.0.clone(),
+                        });
+                    }
+                    if let Some(payload) =
+                        response.dnd_release_payload::<HierarchyDrag>()
+                    {
+                        // Dragging a selected row moves the whole selection.
+                        let moved = if state.selection.contains(&payload.0) {
+                            state.selection.clone()
+                        } else {
+                            vec![payload.0]
+                        };
+                        let moved: Vec<Entity> = moved
+                            .into_iter()
+                            .filter(|entity| {
+                                can_reparent(world, *entity, item.entity)
+                            })
+                            .collect();
+                        if !moved.is_empty() {
+                            *entity_request = Some(EntityRequest::Reparent(
+                                moved,
+                                Some(item.entity),
+                            ));
+                        }
+                    }
+
+                    // Right-click keeps an existing multi-selection so the
+                    // context menu acts on all of it.
+                    let right_click_keeps = response.secondary_clicked()
+                        && state.selection.contains(&item.entity);
+                    if (response.clicked() || response.secondary_clicked())
+                        && !right_click_keeps
+                    {
+                        let (selection, primary) = if response.clicked() {
+                            click_selection(
+                                &state.selection,
+                                state.selected,
+                                &visible_entities,
+                                item.entity,
+                                toggle,
+                                range,
+                            )
+                        } else {
+                            (vec![item.entity], Some(item.entity))
+                        };
+                        state.selection = selection;
+                        match primary.and_then(|primary| {
+                            entities.iter().find(|item| item.entity == primary)
+                        }) {
+                            Some(primary) => select_item(
+                                world,
+                                primary,
+                                state,
+                                edited_transform,
+                                edited_camera,
+                                edited_physics,
+                                edited_rigid_body,
+                                edited_collider,
+                            ),
+                            None => state.selected = None,
+                        }
+                    }
+                    if response.double_clicked() {
                         start_rename(state, item);
                     }
-                    let duplicate = if count > 1 {
-                        format!("Duplicate {count} Objects")
-                    } else {
-                        "Duplicate".to_owned()
-                    };
-                    if EditorTheme::menu_action(ui, &duplicate, true).clicked()
-                    {
-                        *entity_request = Some(EntityRequest::Duplicate(
-                            state.selection.clone(),
-                        ));
-                    }
-                    if world.get::<Parent>(item.entity).is_some()
-                        && EditorTheme::menu_action(
-                            ui,
-                            "Move to Scene Root",
-                            true,
-                        )
-                        .clicked()
-                    {
-                        *entity_request = Some(EntityRequest::Reparent(
-                            vec![item.entity],
-                            None,
-                        ));
-                    }
-                    let member = world
-                        .get::<crate::runtime::InstanceMember>(item.entity)
-                        .is_some();
-                    if member
-                        || world
-                            .get::<crate::runtime::InstanceExpanded>(
-                                item.entity,
+                    response.context_menu(|ui| {
+                        ui.set_min_width(220.0);
+                        let count = state.selection.len();
+                        EditorTheme::menu_section(ui, "OBJECT");
+                        if EditorTheme::menu_action(ui, "Add Child Object...", true)
+                            .clicked()
+                        {
+                            state.add_object_parent = Some(item.entity);
+                            state.add_object_modal_open = true;
+                        }
+                        if EditorTheme::menu_action(ui, "Rename", true).clicked() {
+                            start_rename(state, item);
+                        }
+                        let duplicate = if count > 1 {
+                            format!("Duplicate {count} Objects")
+                        } else {
+                            "Duplicate".to_owned()
+                        };
+                        if EditorTheme::menu_action(ui, &duplicate, true).clicked()
+                        {
+                            *entity_request = Some(EntityRequest::Duplicate(
+                                state.selection.clone(),
+                            ));
+                        }
+                        if world.get::<Parent>(item.entity).is_some()
+                            && EditorTheme::menu_action(
+                                ui,
+                                "Move to Scene Root",
+                                true,
                             )
-                            .is_some()
-                    {
-                        use crate::runtime::InstanceEdit;
-                        EditorTheme::menu_section(ui, "INSTANCE");
-                        for (label, edit, enabled, hint) in [
-                            (
-                                "Revert Object",
-                                InstanceEdit::RevertObject,
-                                member,
-                                "Reset this object to its source scene values",
-                            ),
-                            (
-                                "Revert Instance",
-                                InstanceEdit::Revert,
-                                true,
-                                "Drop every change made to this instance's \
-                                 objects",
-                            ),
-                            (
-                                "Apply to Source",
-                                InstanceEdit::ApplyToSource,
-                                true,
-                                "Write this instance's objects into its source \
-                                 scene file. Undo does not restore the file.",
-                            ),
-                            (
-                                "Unpack Completely",
-                                InstanceEdit::UnpackCompletely,
-                                true,
-                                "Turn the instance into ordinary objects with \
-                                 no link to the source",
-                            ),
-                        ] {
-                            if EditorTheme::menu_action(ui, label, enabled)
-                                .on_hover_text(hint)
-                                .clicked()
-                            {
-                                *entity_request = Some(EntityRequest::Instance(
+                            .clicked()
+                        {
+                            *entity_request = Some(EntityRequest::Reparent(
+                                vec![item.entity],
+                                None,
+                            ));
+                        }
+                        let member = world
+                            .get::<crate::runtime::InstanceMember>(item.entity)
+                            .is_some();
+                        if member
+                            || world
+                                .get::<crate::runtime::InstanceExpanded>(
                                     item.entity,
-                                    edit,
-                                ));
+                                )
+                                .is_some()
+                        {
+                            use crate::runtime::InstanceEdit;
+                            EditorTheme::menu_section(ui, "INSTANCE");
+                            for (label, edit, enabled, hint) in [
+                                (
+                                    "Revert Object",
+                                    InstanceEdit::RevertObject,
+                                    member,
+                                    "Reset this object to its source scene values",
+                                ),
+                                (
+                                    "Revert Instance",
+                                    InstanceEdit::Revert,
+                                    true,
+                                    "Drop every change made to this instance's \
+                                     objects",
+                                ),
+                                (
+                                    "Apply to Source",
+                                    InstanceEdit::ApplyToSource,
+                                    true,
+                                    "Write this instance's objects into its source \
+                                     scene file. Undo does not restore the file.",
+                                ),
+                                (
+                                    "Unpack Completely",
+                                    InstanceEdit::UnpackCompletely,
+                                    true,
+                                    "Turn the instance into ordinary objects with \
+                                     no link to the source",
+                                ),
+                            ] {
+                                if EditorTheme::menu_action(ui, label, enabled)
+                                    .on_hover_text(hint)
+                                    .clicked()
+                                {
+                                    *entity_request = Some(EntityRequest::Instance(
+                                        item.entity,
+                                        edit,
+                                    ));
+                                }
                             }
                         }
-                    }
-                    EditorTheme::menu_section(ui, "DANGER");
-                    let delete = if count > 1 {
-                        format!("Delete {count} Objects")
-                    } else {
-                        "Delete".to_owned()
-                    };
-                    if EditorTheme::menu_action(ui, &delete, true).clicked() {
-                        *entity_request = Some(EntityRequest::Delete(
-                            state.selection.clone(),
-                        ));
-                    }
-                });
-            }
-        });
+                        EditorTheme::menu_section(ui, "DANGER");
+                        let delete = if count > 1 {
+                            format!("Delete {count} Objects")
+                        } else {
+                            "Delete".to_owned()
+                        };
+                        if EditorTheme::menu_action(ui, &delete, true).clicked() {
+                            *entity_request = Some(EntityRequest::Delete(
+                                state.selection.clone(),
+                            ));
+                        }
+                    });
+                }
+            });
+    });
+    let selected = state.selection.len();
+    gui_elements::kit::footer(
+        ui,
+        &if selected > 0 {
+            format!("{} objects · {selected} selected", entities.len())
+        } else {
+            format!("{} objects", entities.len())
+        },
+    );
 }
 
 fn start_rename(state: &mut EditorState, item: &HierarchyItem) {

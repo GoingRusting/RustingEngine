@@ -2,8 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Code-review fixes:
+  - A fixed GPU body only becomes a CPU collider with a Full or Simplified solver and an explicit Fixed rigid body.
+  - Fluid Block and Water Body no longer share a material; water and fluid coupling skip GPU and child bodies; water and the player's platform ride use the parent's world position.
+  - A fluid surface or water surface that is switched off, removed or orphaned is despawned and its mesh and material freed. A resting fluid keeps its mesh, and the surface mesh is indexed and welded.
+  - Fluid blocks are capped at 50,000 particles; `Fluid::step` ignores `dt <= 0`; `GameScene::restore` brings back fluid particles.
+  - Scene `InputAction` bindings follow the component (edit, removal, scene replace); game-code bindings stay.
+  - `set_scene` rejects mistyped setting names, and unrelated entities no longer fail a patch's field check.
+  - Third-person camera collision at distance 0, `set_tile` growth (max 4096 cells), environment map load retry, CPU fast-body sweep prefilter, `EditorTheme::ICON_CAMERA`.
+  - Not changed: the slow-motion clamp is recorded before replay, so replays are exact by design; `Sleeping` bodies wake when buoyancy changes their velocity.
+- The first-person player, raycasts and CPU bodies pass through fixed boxes whose simulation is GPU. A fixed GPU body never moves, so it now also stands in the CPU collision world as a static collider (GPU bodies still collide with each other on the GPU). Dynamic GPU bodies stay invisible to CPU queries; use `GpuQueryProxy` for those.
+- A Blend material at Opacity 0 is no longer faintly visible. Reflections are not scaled by alpha, so it still drew a faint mirror; a surface with alpha 0 and no transmission now draws nothing.
+
 ### Added
 
+- Add Component picker redesign: a wide two-pane popup. The left list is grouped and searchable (search also matches descriptions); hovering a row shows its name, "What it does", "Use it for" and the Add button on the right. Blocked components show why. Help text lives in `placement::component_help`.
+- Hierarchy and Assets visual pass: both panels use the shared toolbar, search field with clear button, bordered list well and footer (object/selection count, file count or status message). Hierarchy icons are tinted by kind (camera, light, mesh).
 - `rusting.water` (`WaterBody`): water for seas, lakes and rivers. A rectangle of animated waves (three sine waves, deterministic) that dynamic bodies with sphere, box or capsule colliders float in, with a `flow_speed` current along `flow_direction` for rivers. Add it from Add Object > Environment and UI > Water. Use Fluid Block only for small splashing volumes.
 - `runtime::fluid_surface`: fluid is drawn as one smooth surface mesh (density grid plus marching tetrahedra, deterministic) in place of a sphere per particle. `rusting.fluid_block` `visible` now draws a translucent "Water" surface; the new `show_particles` adds the debug spheres. Code sets `FluidVolume::surface` to `FluidSurface::new(material)`. The mesh is rebuilt and uploaded every fixed tick (CPU), so keep fluids to a few thousand particles.
 - Materials have a name (Inspector Material section, Name field; imported glTF materials keep their glTF name). The Mesh Renderer combos show names, or "Material 1" and "Mesh 1" for unnamed ones, in place of hex ids. Cooked scenes are format 9; format 8 files still load.

@@ -39,6 +39,9 @@ impl EditorTheme {
     pub const ERROR: egui::Color32 = egui::Color32::from_rgb(255, 128, 128);
     /// Outline of toggled accent controls and link-like text.
     pub const LINK: egui::Color32 = egui::Color32::from_rgb(130, 190, 255);
+    /// Hierarchy icon tint for cameras.
+    pub const ICON_CAMERA: egui::Color32 =
+        egui::Color32::from_rgb(178, 148, 235);
     pub const BUTTON: egui::Color32 = egui::Color32::from_rgb(53, 57, 67);
     pub const BUTTON_HOVER: egui::Color32 = egui::Color32::from_rgb(65, 70, 82);
     /// X, Y, and Z axis colors used by vector fields and gizmos.
@@ -400,6 +403,19 @@ impl EditorTheme {
         primary: bool,
         icon: Option<EditorIcon>,
     ) -> egui::Response {
+        Self::tree_row_tinted(ui, text, depth, selected, primary, icon, None)
+    }
+
+    /// [`Self::tree_row`] with a color for the icon of an unselected row.
+    pub fn tree_row_tinted(
+        ui: &mut egui::Ui,
+        text: &str,
+        depth: usize,
+        selected: bool,
+        primary: bool,
+        icon: Option<EditorIcon>,
+        icon_color: Option<egui::Color32>,
+    ) -> egui::Response {
         const INDENT: f32 = 18.0;
         const ICON: f32 = 16.0;
         let text_left = if icon.is_some() {
@@ -466,7 +482,7 @@ impl EditorTheme {
             let color = if primary {
                 Self::ACTIVE_OBJECT
             } else {
-                Self::TEXT_MUTED
+                icon_color.unwrap_or(Self::TEXT_MUTED)
             };
             paint_editor_icon(ui.painter(), icon, rect, color);
         }

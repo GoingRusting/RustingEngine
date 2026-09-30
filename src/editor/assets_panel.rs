@@ -165,7 +165,7 @@ pub(super) fn draw_assets_area(
 ) {
     let root = PathBuf::from(project_root).join("assets");
     let mut import = false;
-    ui.horizontal(|ui| {
+    super::gui_elements::kit::toolbar(ui, |ui| {
         import = EditorTheme::toolbar_icon_button(
             ui,
             "Import",
@@ -207,35 +207,36 @@ pub(super) fn draw_assets_area(
                  (App::register_data_asset)",
             );
         });
-        ui.add(
-            egui::TextEdit::singleline(&mut assets.filter)
-                .hint_text("Filter files")
-                .desired_width(f32::INFINITY),
+        super::gui_elements::kit::search_field(
+            ui,
+            &mut assets.filter,
+            "Filter files",
         );
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
 
     let rows = asset_rows(&root, files, &assets.filter, &assets.collapsed);
     let mut replace = None;
     let footer = EditorTheme::ROW_HEIGHT;
-    egui::ScrollArea::vertical()
-        .id_salt("assets_panel_scroll")
-        .auto_shrink([false, false])
-        .max_height((ui.available_height() - footer).max(0.0))
-        .show_rows(ui, EditorTheme::ROW_HEIGHT, rows.len(), |ui, range| {
-            let mut decode_budget = THUMBNAILS_PER_FRAME;
-            for row in &rows[range] {
-                draw_row(
-                    ui,
-                    row,
-                    assets,
-                    selection,
-                    request,
-                    &mut decode_budget,
-                    &mut replace,
-                );
-            }
-        });
+    super::gui_elements::kit::list_well(ui, footer, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("assets_panel_scroll")
+            .auto_shrink([false, false])
+            .show_rows(ui, EditorTheme::ROW_HEIGHT, rows.len(), |ui, range| {
+                let mut decode_budget = THUMBNAILS_PER_FRAME;
+                for row in &rows[range] {
+                    draw_row(
+                        ui,
+                        row,
+                        assets,
+                        selection,
+                        request,
+                        &mut decode_budget,
+                        &mut replace,
+                    );
+                }
+            });
+    });
     if let Some(target) = replace {
         if !dialogs.is_open() {
             let extensions = [extension(&target)];
@@ -263,13 +264,14 @@ pub(super) fn draw_assets_area(
             );
         });
     }
-    if let Some(message) = &assets.message {
-        ui.label(
-            egui::RichText::new(message)
-                .small()
-                .color(EditorTheme::TEXT_MUTED),
-        );
-    }
+    let count = rows.iter().filter(|row| !row.folder).count();
+    super::gui_elements::kit::footer(
+        ui,
+        &assets
+            .message
+            .clone()
+            .unwrap_or_else(|| format!("{count} files")),
+    );
     if import {
         dialogs.pick_files(
             DialogPurpose::ImportFiles,

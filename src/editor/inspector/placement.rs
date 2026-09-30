@@ -19,6 +19,15 @@ use crate::runtime::{
     FOG_COMPONENT, HUD_ELEMENT_COMPONENT, SKY_LIGHT_COMPONENT,
     TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
+use crate::runtime::{
+    ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT, BURST_EMITTER_COMPONENT,
+    CONNECTIONS_COMPONENT, COUNTER_COMPONENT, FLUID_BLOCK_COMPONENT,
+    INPUT_ACTION_COMPONENT, JOINT_COMPONENT, PHYSICS_SYNC_COMPONENT,
+    PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
+    PLAYER_CONTROLLER_COMPONENT, REFLECTION_PROBE_COMPONENT,
+    RENDER_BOUNDS_COMPONENT, SCENE_INSTANCE_COMPONENT, SOUND_CUE_COMPONENT,
+    TWEEN_COMPONENT, WATER_COMPONENT,
+};
 
 /// Components that together make a World Environment object.
 pub(in crate::editor) const ENVIRONMENT_COMPONENTS: [&str; 3] = [
@@ -128,6 +137,139 @@ fn first_with<T: Component>(world: &World) -> Option<Entity> {
         .min_by_key(|entity| entity.index_u32())
 }
 
+/// Plain-English help for the Add Component picker: what the component does,
+/// and when to add it. Game components get a generic line.
+pub(in crate::editor) fn component_help(
+    name: &str,
+) -> (&'static str, &'static str) {
+    match name {
+        "physics" => (
+            "Makes the object solid: it gets a collider, a body type and a simulation class.",
+            "Walls, floors, crates, balls: anything that should be hit, pushed or stood on.",
+        ),
+        PLAYER_CONTROLLER_COMPONENT => (
+            "First-person walking, jumping and mouse look, with collision against CPU and static colliders.",
+            "On the object that is your player. Put a Camera on a child to see through it.",
+        ),
+        PLATFORMER_CONTROLLER_COMPONENT => (
+            "Side-view running and jumping for 2D levels.",
+            "On the hero of a 2D platformer.",
+        ),
+        TWEEN_COMPONENT => (
+            "Moves, rotates or scales the object smoothly over time.",
+            "Doors, lifts, spinning pickups, simple animation without code.",
+        ),
+        SOUND_CUE_COMPONENT => (
+            "Plays a sound when its trigger happens.",
+            "Footsteps, pickups, hits, ambient loops.",
+        ),
+        BURST_EMITTER_COMPONENT => (
+            "Fires a burst of short-lived particles.",
+            "Sparks, dust, explosions, hit effects.",
+        ),
+        FLUID_BLOCK_COMPONENT => (
+            "Fills the object's box with fluid particles that splash and settle.",
+            "Small splashing volumes such as a bucket. For seas and rivers use Water.",
+        ),
+        WATER_COMPONENT => (
+            "A rectangle of animated waves that light objects float in, with an optional current.",
+            "Seas, lakes and rivers.",
+        ),
+        COUNTER_COMPONENT => (
+            "A named number the scene can change and react to.",
+            "Score, lives, coins collected, keys held.",
+        ),
+        PICKUP_COMPONENT => (
+            "Collected when the player touches it; it can add to a counter.",
+            "Coins, health, keys.",
+        ),
+        CONNECTIONS_COMPONENT => (
+            "Wires events from this object to actions on other objects.",
+            "Button opens door, trigger plays sound, without writing code.",
+        ),
+        JOINT_COMPONENT => (
+            "Links this body to another one with a hinge, slider or spring.",
+            "Doors, swings, chains, suspensions.",
+        ),
+        ARTICULATION_COMPONENT => (
+            "A chain of joints driven as one system.",
+            "Robot arms, ragdolls, rigged mechanisms.",
+        ),
+        INPUT_ACTION_COMPONENT => (
+            "Names a keyboard, mouse or gamepad input so scripts and connections can use it.",
+            "Custom controls such as Fire or Interact.",
+        ),
+        PHYSICS_SYNC_COMPONENT => (
+            "Chooses how a GPU body's pose is read back to the CPU.",
+            "Only when game code or events need the exact position of a GPU body.",
+        ),
+        AUTO_SIMULATION_COMPONENT => (
+            "Lets the engine pick CPU or GPU physics for this body.",
+            "When you do not want to choose the simulation class yourself.",
+        ),
+        RENDER_BOUNDS_COMPONENT => (
+            "Overrides the box used to decide if the object is on screen.",
+            "Meshes that animate outside their box and pop out of view.",
+        ),
+        SKY_LIGHT_COMPONENT => (
+            "Sets the sky colors and sun-like ambient light for the scene.",
+            "Once per scene, on an Environment object.",
+        ),
+        AMBIENT_LIGHT_COMPONENT => (
+            "Adds a flat light that reaches every surface, including shadows.",
+            "Lift dark shadows in interiors.",
+        ),
+        TONE_MAPPING_COMPONENT => (
+            "Maps bright scene colors to the screen: exposure and contrast.",
+            "When the picture is too bright, too dark or washed out.",
+        ),
+        BACKGROUND_COMPONENT => (
+            "Fills the screen behind everything with one color.",
+            "2D games or scenes with no sky.",
+        ),
+        ENVIRONMENT_MAP_COMPONENT => (
+            "Uses an image of the surroundings for reflections and sky light.",
+            "Shiny materials that need realistic reflections.",
+        ),
+        REFLECTION_PROBE_COMPONENT => (
+            "Captures reflections of a local area.",
+            "Indoor rooms with shiny floors or glass.",
+        ),
+        FOG_COMPONENT => (
+            "Fades distant objects into a color.",
+            "Mood, depth, hiding the far clip plane.",
+        ),
+        BLOOM_COMPONENT => (
+            "Makes very bright areas glow.",
+            "Lamps, sun, magic, neon.",
+        ),
+        AMBIENT_OCCLUSION_COMPONENT => (
+            "Darkens creases and contact points for depth.",
+            "Make objects look grounded. Costs some GPU time.",
+        ),
+        HUD_ELEMENT_COMPONENT => (
+            "A piece of screen UI: text, bar or image at a screen position.",
+            "Score, health bar, crosshair.",
+        ),
+        TILE_MAP_COMPONENT => (
+            "A grid of tiles drawn and collided as one 2D object.",
+            "2D levels.",
+        ),
+        SCENE_INSTANCE_COMPONENT => (
+            "Places another scene file inside this one.",
+            "Reusable prefabs such as a room, enemy or pickup.",
+        ),
+        _ if name.starts_with("rusting.") => (
+            "Built-in engine component.",
+            "See the Inspector section after adding it.",
+        ),
+        _ => (
+            "A component from your game's code.",
+            "Added with default values; its behavior comes from your game.",
+        ),
+    }
+}
+
 /// Display name for a registered component: the part after the last `.`,
 /// in title case, so `rusting.sky_light` reads "Sky Light" and a game's
 /// `my_game.health` reads "Health".
@@ -170,6 +312,18 @@ mod tests {
         PICKUP_COMPONENT, SCENE_INSTANCE_COMPONENT, TWEEN_COMPONENT,
     };
     use crate::Transform;
+
+    #[test]
+    fn every_engine_component_has_specific_help() {
+        let app = App::new();
+        for name in crate::runtime::registered_component_names(app.world())
+            .iter()
+            .filter(|name| name.starts_with("rusting."))
+        {
+            let (what, _) = component_help(name);
+            assert_ne!(what, "Built-in engine component.", "{name}");
+        }
+    }
 
     #[test]
     fn component_labels_drop_the_namespace() {

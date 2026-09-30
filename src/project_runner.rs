@@ -143,6 +143,7 @@ pub struct GameSnapshot {
     once: GameOnceState,
     physics: Option<crate::runtime::PhysicsWorld>,
     next_order: Option<crate::runtime::NextSpawnOrder>,
+    fluids: Vec<(uuid::Uuid, crate::runtime::Fluid)>,
     /// Each scene object's id, entity, solve order and sleep state.
     objects:
         Vec<(uuid::Uuid, Entity, Option<crate::runtime::SpawnOrder>, bool)>,
@@ -186,7 +187,8 @@ impl GameScene<'_> {
     /// since are removed, and moved, hidden or despawned ones return with
     /// their starting components. [`Self::once`] blocks run again. Time,
     /// input and resources carry on. Returns false when the game was not
-    /// started from a scene file.
+    /// started from a scene file, or when that file no longer loads (the
+    /// error is logged and the scene stays as it was).
     pub fn restart(&mut self) -> bool {
         let Some(start) = self.world.remove_resource::<StartingScene>() else {
             return false;
@@ -194,9 +196,10 @@ impl GameScene<'_> {
         let loaded =
             load_scene_document(self.world, &start.0, SceneLoadMode::Replace);
         self.world.insert_resource(start);
-        // ponytail: a start that loaded once reloads the same way, so a
-        // failure here is an engine bug, not a game error.
-        loaded.expect("the starting scene reloads");
+        if let Err(error) = loaded {
+            eprintln!("restart: the starting scene no longer loads: {error}");
+            return false;
+        }
         forget_old_scene(self.world);
         true
     }
@@ -264,6 +267,7 @@ impl GameScene<'_> {
                 .world
                 .get_resource::<crate::runtime::NextSpawnOrder>()
                 .copied(),
+            fluids: crate::runtime::capture_fluids(self.world),
             objects,
         })
     }
@@ -316,6 +320,7 @@ impl GameScene<'_> {
             physics.rename_bodies(&renamed);
             self.world.insert_resource(physics);
         }
+        crate::runtime::restore_fluids(self.world, &snapshot.fluids);
         self.world.insert_resource(snapshot.once.clone());
         self.world.remove_resource::<SceneNameIndex>();
         Ok(())
@@ -867,7 +872,10 @@ impl GameScene<'_> {
         cameras
             .iter(self.world)
             .filter(|(_, camera)| camera.active)
-            .max_by_key(|(entity, camera)| (camera.priority, *entity))
+            .max_by_key(|(entity, camera)| {
+                // Same tie-break as the renderer, so aim matches the screen.
+                (camera.priority, std::cmp::Reverse(entity.to_bits()))
+            })
             .map(|(entity, camera)| (entity, *camera))
     }
 
@@ -892,7 +900,8 @@ impl GameScene<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if an object called `name` already exists.
+    /// Panics if an object called `name`, or one of the copied children's
+    /// names, already exists.
     pub fn spawn_copy(
         &mut self,
         template: &str,
@@ -901,9 +910,6 @@ impl GameScene<'_> {
     ) -> Option<Entity> {
         let name = name.into();
         let template = find_named_entity(self.world, template)?;
-        if find_named_entity(self.world, &name).is_some() {
-            panic!("scene object `{name}` already exists");
-        }
         let copy = copy_tree(self.world, template, Some(&name));
         if let Some(mut transform) = self.world.get_mut::<Transform>(copy) {
             transform.position = position;
@@ -1375,8 +1381,14 @@ fn forget_old_scene(world: &mut World) {
 
 /// Clones `entity` and its descendants, naming the copy `name` (unnamed
 /// when `None`). Each copy gets a new `SceneId`; named children become
-/// `"<name>/<child>"`, parented to the copy.
+/// `"<name>/<child>"`, parented to the copy. Panics when a copy's name is
+/// taken, so the name index never points two names at one object.
 fn copy_tree(world: &mut World, entity: Entity, name: Option<&str>) -> Entity {
+    if let Some(name) = name {
+        if find_named_entity(world, name).is_some() {
+            panic!("scene object `{name}` already exists");
+        }
+    }
     let copy =
         world
             .entity_mut(entity)
@@ -3232,6 +3244,21 @@ mod tests {
             .record_cursor_position([800.0, 300.0]);
         let (_, right) = scene.pointer_ray().unwrap();
         assert!(right[0] > 0.1 && right[1] < 0.0, "{right:?}");
+    }
+
+    #[test]
+    #[should_panic(expected = "`Copy/Glow` already exists")]
+    fn spawn_copy_refuses_a_child_name_that_is_taken() {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let template = world.spawn(Name("Ember".into())).id();
+        let glow = world.spawn(Name("Glow".into())).id();
+        rusting_core::hierarchy::set_parent(world, glow, template).unwrap();
+        world.spawn(Name("Copy/Glow".into()));
+        let mut scene = GameScene {
+            world: app.world_mut(),
+        };
+        scene.spawn_copy("Ember", "Copy", [0.0; 3]);
     }
 
     #[test]

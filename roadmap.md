@@ -3101,3 +3101,9 @@ Sundering (Milestones 24-29):
 22. Build the Sundering slices in order, adding balance and operations tooling as each slice requires it.
 
 The next concrete editor task is a Shortcuts settings panel. It must display the central action map, let a user rebind one action at a time, detect duplicate bindings, and persist choices inside project editor settings. Then add focus-selection and interactive translate/rotate/scale handles. Explicit frame contexts and an offscreen scene viewport target remain the next renderer-architecture task.
+
+### Review-fix pass verification
+
+- fmt, clippy (default, `--no-default-features`, `--features rusting_engine/gpu-tests`) clean.
+- `cargo test --workspace`: 457 lib tests pass; with `rusting_engine/gpu-tests`: 533 pass, 0 failed.
+- New tests: fixed GPU box solid to CPU queries, switched-off fluid surface reaped, scene `InputAction` unbinds, mistyped scene setting errors, huge fluid block cap.

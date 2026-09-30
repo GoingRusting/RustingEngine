@@ -52,7 +52,8 @@ pub use cpu_physics::{
 pub use determinism::*;
 pub use events::EventQueue;
 pub use fluid::{
-    Fluid, FluidBlock, FluidParticle, FluidSettings, FluidSurface, FluidVolume,
+    capture_fluids, restore_fluids, Fluid, FluidBlock, FluidParticle,
+    FluidSettings, FluidSurface, FluidVolume,
 };
 pub use game_feel::*;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
@@ -242,6 +243,7 @@ impl Default for App {
                 fluid::couple_fluids,
                 fluid::step_fluids,
                 fluid::sync_fluid_visuals,
+                fluid::reap_surfaces,
                 fluid::sync_fluid_surfaces,
                 water::float_in_water,
                 water::sync_water,
@@ -576,7 +578,11 @@ impl App {
         // fixed step of scaled time, whatever `time_scale` is.
         let real_delta = match control.time_scale {
             scale if self.overloaded && scale > 0.0 && scale.is_finite() => {
-                real_delta.min(control.fixed_delta.div_f64(scale))
+                // A tiny scale overflows `Duration`; no clamp is needed then.
+                Duration::try_from_secs_f64(
+                    control.fixed_delta.as_secs_f64() / scale,
+                )
+                .map_or(real_delta, |step| real_delta.min(step))
             }
             _ => real_delta,
         };

@@ -51,6 +51,10 @@ impl Default for TileKind {
     }
 }
 
+/// Farthest column or row `set_tile` may grow a map to; a stray coordinate
+/// must not allocate gigabytes.
+pub const MAX_TILE_CELLS: usize = 4096;
+
 /// A grid of square tiles written as text rows, top row first. Each
 /// character looks up its [`TileKind`] in `tiles`; characters without one
 /// (such as space or `.`) are empty. The entity's `Transform` position is
@@ -90,13 +94,15 @@ impl TileMap {
     }
 
     /// The cell under a point relative to the map origin, if the point is
-    /// right of and below the origin. The cell may lie past the last row or
-    /// column.
+    /// right of and below the origin and within [`MAX_TILE_CELLS`] of it. The
+    /// cell may lie past the last row or column.
     #[must_use]
     pub fn cell_at(&self, local: [f32; 2]) -> Option<(usize, usize)> {
         let column = (local[0] / self.tile_size).floor();
         let row = (-local[1] / self.tile_size).floor();
-        (column >= 0.0 && row >= 0.0).then_some((column as usize, row as usize))
+        let range = 0.0..MAX_TILE_CELLS as f32;
+        (range.contains(&column) && range.contains(&row))
+            .then_some((column as usize, row as usize))
     }
 
     /// The character in a cell; `.` past the end of the grid.
@@ -139,11 +145,26 @@ impl TileMap {
         to: (usize, usize),
         character: char,
     ) -> bool {
+        let columns = from.0.min(to.0)..=from.0.max(to.0);
         let mut changed = false;
+        // One pass per row: `set_cell` per cell rebuilds the row each time.
         for row in from.1.min(to.1)..=from.1.max(to.1) {
-            for column in from.0.min(to.0)..=from.0.max(to.0) {
-                changed |= self.set_cell(column, row, character);
+            if columns
+                .clone()
+                .all(|column| self.cell(column, row) == character)
+            {
+                continue;
             }
+            if self.rows.len() <= row {
+                self.rows.resize(row + 1, String::new());
+            }
+            let mut cells: Vec<char> = self.rows[row].chars().collect();
+            if cells.len() <= *columns.end() {
+                cells.resize(columns.end() + 1, '.');
+            }
+            cells[columns.clone()].fill(character);
+            self.rows[row] = cells.into_iter().collect();
+            changed = true;
         }
         changed
     }
@@ -439,6 +460,7 @@ pub(super) fn platformer_jump(
 }
 
 /// Per fixed step: running, gravity, jumping, and collision sliding.
+#[allow(clippy::type_complexity)]
 pub(super) fn platformer_move(
     time: Res<FrameTime>,
     input: Res<RuntimeInput>,
@@ -450,8 +472,19 @@ pub(super) fn platformer_move(
         &mut Transform,
         Option<&Collider>,
     )>,
-    floors: Query<&Transform, Without<PlatformerController>>,
+    floors: Query<
+        (
+            &Transform,
+            Option<&super::Parent>,
+            Option<&super::GlobalTransform>,
+        ),
+        Without<PlatformerController>,
+    >,
 ) {
+    let floor_at = |floor: Entity| {
+        let (t, parent, global) = floors.get(floor).ok()?;
+        Some(super::cpu_physics::world_position(t, parent, global))
+    };
     let dt = time.fixed_delta.as_secs_f32();
     let run = f32::from(u8::from(actions.held(&input, PLAYER_RIGHT)))
         - f32::from(u8::from(actions.held(&input, PLAYER_LEFT)));
@@ -473,7 +506,7 @@ pub(super) fn platformer_move(
             player.floor,
             player.collision_mask,
             entity,
-            |floor| floors.get(floor).ok().map(|floor| floor.position),
+            floor_at,
         );
         let moved = physics.move_character(
             shape,
@@ -494,7 +527,7 @@ pub(super) fn platformer_move(
         }
         player.floor = moved
             .floor
-            .and_then(|floor| Some((floor, floors.get(floor).ok()?.position)));
+            .and_then(|floor| Some((floor, floor_at(floor)?)));
         transform.position = moved.position;
     }
 }

@@ -1,6 +1,6 @@
 //! Engine integration for reusable named input actions.
 
-use bevy_ecs::prelude::{Component, World};
+use bevy_ecs::prelude::{Component, Resource, World};
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub use rusting_core::input::{ActionMap, InputBinding};
@@ -14,7 +14,8 @@ pub(super) fn install(world: &mut World) {
 /// Binds a named action to keys and mouse buttons from scene data, so game
 /// code and scenarios can use an action no Rust code bound. Inputs are winit
 /// key names (`KeyF`, `Space`, `ArrowUp`, `Digit1`) or `MouseLeft`,
-/// `MouseRight` and `MouseMiddle`. Removing the component does not unbind.
+/// `MouseRight` and `MouseMiddle`. Removing or editing the component updates
+/// the bindings.
 #[derive(
     Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
 )]
@@ -56,22 +57,51 @@ fn input_names<'de, D: Deserializer<'de>>(
     Ok(names)
 }
 
-/// Adds every [`InputAction`]'s bindings to the [`ActionMap`]. Runs each
-/// frame; bindings already there are skipped.
+/// What the scene's [`InputAction`]s bound last, so a change can undo it.
+/// A resource, so the schedule and scenario presses share one record.
+#[derive(Resource, Clone, Default)]
+pub(super) struct SceneBindings {
+    declared: Vec<(String, String)>,
+    bound: Vec<(String, InputBinding)>,
+}
+
+/// Makes the [`ActionMap`] match the scene's [`InputAction`]s. Runs each
+/// frame but only does work when the declared inputs changed: it drops the
+/// bindings it added before, so an edited, removed or replaced component
+/// stops firing. Bindings game code added itself stay.
 pub fn bind_input_actions(world: &mut World) {
+    let mut scene =
+        world.remove_resource::<SceneBindings>().unwrap_or_default();
+    sync_bindings(world, &mut scene);
+    world.insert_resource(scene);
+}
+
+fn sync_bindings(world: &mut World, scene: &mut SceneBindings) {
     let mut query = world.query::<&InputAction>();
-    let bindings: Vec<(String, InputBinding)> = query
+    let mut declared: Vec<(String, String)> = query
         .iter(world)
         .flat_map(|action| {
-            action.inputs.iter().filter_map(|name| {
-                Some((action.action.clone(), parse_input(name).ok()?))
-            })
+            action
+                .inputs
+                .iter()
+                .map(|name| (action.action.clone(), name.clone()))
         })
         .collect();
-    let mut map = world.resource_mut::<ActionMap>();
-    for (action, binding) in bindings {
-        if !map.bindings(&action).contains(&binding) {
-            map.bind(action, binding);
+    declared.sort();
+    if scene.declared != declared {
+        let mut map = world.resource_mut::<ActionMap>();
+        for (action, binding) in scene.bound.drain(..) {
+            map.unbind(&action, binding);
         }
+        for (action, name) in &declared {
+            let Ok(binding) = parse_input(name) else {
+                continue;
+            };
+            if !map.bindings(action).contains(&binding) {
+                map.bind(action.clone(), binding);
+                scene.bound.push((action.clone(), binding));
+            }
+        }
+        scene.declared = declared;
     }
 }
