@@ -8,6 +8,7 @@ mod button;
 mod combo_box;
 mod forms;
 mod icon_button;
+pub mod kit;
 mod style;
 mod theme;
 

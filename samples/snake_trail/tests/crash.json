@@ -1,0 +1,14 @@
+{
+ "name": "Turning back is ignored; steering up runs the snake into the top wall",
+ "ticks": 120,
+ "steps": [
+  {"tick": 5, "press": "left"},
+  {"tick": 6, "release": "left"},
+  {"tick": 12, "expect": {"entity": "Head", "path": "/transform/position", "equals": [-3.5, -0.5, 0.1], "tolerance": 0.001}},
+  {"tick": 13, "press": "up"},
+  {"tick": 14, "release": "up"},
+  {"tick": 15, "within": 90, "expect": {"entity": "Crashed Counter", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 100, "expect": {"entity": "Head", "path": "/transform/position", "equals": [-3.5, 4.5, 0.1], "tolerance": 0.001}},
+  {"tick": 100, "capture": "shots/crashed.png"}
+ ]
+}

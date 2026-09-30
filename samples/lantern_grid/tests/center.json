@@ -1,0 +1,20 @@
+{
+ "name": "The scramble leaves 11 lanterns lit, and clicking the center flips it and its four neighbours",
+ "ticks": 40,
+ "steps": [
+  {"tick": 2, "expect": {"entity": "Lit Counter", "path": "/components/rusting.counter/value", "equals": 11}},
+  {"tick": 2, "expect": {"entity": "Cell 2 2", "path": "/mesh_renderer/material/Inline/emissive", "equals": [0, 0, 0]}},
+  {"tick": 2, "capture": "shots/scrambled.png"},
+  {"tick": 5, "pointer": [0.5, 0.5]},
+  {"tick": 6, "press": "select"},
+  {"tick": 7, "release": "select"},
+  {"tick": 10, "expect": {"entity": "Lit Counter", "path": "/components/rusting.counter/value", "equals": 16}},
+  {"tick": 10, "expect": {"entity": "Moves Counter", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 10, "expect": {"entity": "Cell 2 2", "path": "/mesh_renderer/material/Inline/emissive", "equals": [2.4, 1.5, 0.45], "tolerance": 0.001}},
+  {"tick": 10, "expect": {"entity": "Cell 1 1", "path": "/mesh_renderer/material/Inline/emissive", "equals": [0, 0, 0]}},
+  {"tick": 20, "pointer": [0.95, 0.5]},
+  {"tick": 21, "press": "select"},
+  {"tick": 22, "release": "select"},
+  {"tick": 25, "expect": {"entity": "Moves Counter", "path": "/components/rusting.counter/value", "equals": 1}}
+ ]
+}

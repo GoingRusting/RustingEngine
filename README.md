@@ -240,7 +240,8 @@ from `seed`. Steps run at fixed ticks:
 - `capture` writes a PNG relative to the scenario file. Without Vulkan, it is
   skipped rather than failed.
 
-The run stops at the first failed step. A failure exits 1 with
+The run stops at the first failed step, unless the scenario sets
+`"keep_going": true`, which reports every failed step. A failure exits 1 with
 `SCENARIO_FAILED` and the message `tick T step S: ...`. The JSON report,
 including the value the failed check saw, is under `data.scenario`. Game
 binaries run a scenario themselves when `RUSTING_TEST_SCENARIO` names the
@@ -356,7 +357,7 @@ See [the included space project](testGame/src/main.rs) and
 - `src/cli.rs`, `src/bin/rusting.rs` — the `rusting` command-line tool
 - `src/project_runner.rs` — the short native Rust game API and game window
 - `testGame` — the 10,000-cube space project shown above
-- `samples` — the starter game and the vertical-slice sample
+- `samples` — the starter game, the Hammer Run obstacle course, the Target Range shooting gallery, the Sky Hop platformer, the Ember Arena survival game, the Tower Topple throwing game, the Crate Keeper puzzle, the Brick Bounce brick breaker, the Core Defense turret shooter, the Putt Course mini golf hole, the Lantern Grid puzzle, the Snake Trail arcade game, the Night Vault stealth game, and the vertical-slice sample
 - `benchmarks` — render benchmark baselines
 - `docs` — getting started, concepts, tutorials, and guides
 
@@ -364,6 +365,9 @@ More documentation:
 
 - [Documentation index](docs/README.md): getting started, core concepts, and
   tutorials
+- [Game-making skill for LLM agents](skills/rusting-game/SKILL.md): copy
+  it to `.claude/skills/rusting-game/` or give it to any agent that builds
+  games with the `rusting` CLI
 - [Editor guide](editor_gui.md)
 - [Architecture](architecture.md)
 - [Roadmap](roadmap.md)

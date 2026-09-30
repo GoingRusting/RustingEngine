@@ -9,6 +9,22 @@ use crate::editor::gui_elements::{icon_button_sized, EditorTheme};
 use crate::editor::icons::paint_editor_icon;
 use crate::editor::EditorIcon;
 
+/// Gives the next property row drawn directly in `ui` a description, shown
+/// under its label in the label's tooltip.
+pub fn describe_next_row(ui: &Ui, doc: &'static str) {
+    ui.data_mut(|data| {
+        data.insert_temp(ui.id().with("property_row_doc"), doc);
+    });
+}
+
+/// Takes the doc set by [`describe_next_row`], so rows that draw their own
+/// label (such as collapsible sections) can show it too.
+pub fn take_row_doc(ui: &Ui) -> Option<&'static str> {
+    ui.data_mut(|data| {
+        data.remove_temp::<&'static str>(ui.id().with("property_row_doc"))
+    })
+}
+
 /// Draws one labeled row and returns what `add` returned.
 pub fn property_row<R>(
     ui: &mut Ui,
@@ -16,6 +32,7 @@ pub fn property_row<R>(
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
     let label_width = (ui.available_width() * 0.4).clamp(64.0, 150.0);
+    let doc = take_row_doc(ui);
     ui.horizontal(|ui| {
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(label_width, EditorTheme::ROW_HEIGHT),
@@ -29,7 +46,10 @@ pub fn property_row<R>(
             egui::TextStyle::Body.resolve(ui.style()),
             EditorTheme::TEXT_MUTED,
         );
-        response.on_hover_text(label);
+        match doc {
+            Some(doc) => response.on_hover_text(format!("{label}\n{doc}")),
+            None => response.on_hover_text(label),
+        };
         add(ui)
     })
     .inner
@@ -174,62 +194,100 @@ pub fn section(
         );
     let mut remove = false;
     egui::Frame::new()
-        .fill(EditorTheme::PANEL_RAISED)
-        .corner_radius(EditorTheme::RADIUS)
-        .inner_margin(egui::Margin::symmetric(2, 1))
+        .fill(EditorTheme::PANEL)
+        .stroke(egui::Stroke::new(1.0_f32, EditorTheme::BORDER_SOFT))
+        .corner_radius(egui::CornerRadius::same(5))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let remove_width = if removable { 24.0 } else { 0.0 };
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(
-                        ui.available_width() - remove_width,
-                        EditorTheme::ROW_HEIGHT - 2.0,
-                    ),
-                    egui::Sense::click(),
-                );
-                let arrow = egui::Rect::from_center_size(
-                    egui::pos2(rect.left() + 9.0, rect.center().y),
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let open = state.is_open();
+            let (band, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), EditorTheme::ROW_HEIGHT + 4.0),
+                egui::Sense::click(),
+            );
+            let top = egui::CornerRadius {
+                nw: 5,
+                ne: 5,
+                sw: if open { 0 } else { 5 },
+                se: if open { 0 } else { 5 },
+            };
+            ui.painter().rect_filled(
+                band,
+                top,
+                if response.hovered() {
+                    EditorTheme::BUTTON
+                } else {
+                    EditorTheme::PANEL_RAISED
+                },
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    band.min + egui::vec2(0.0, 5.0),
+                    egui::vec2(3.0, band.height() - 10.0),
+                ),
+                egui::CornerRadius::same(2),
+                EditorTheme::ACCENT,
+            );
+            paint_editor_icon(
+                ui.painter(),
+                if open {
+                    EditorIcon::ChevronDown
+                } else {
+                    EditorIcon::ChevronRight
+                },
+                egui::Rect::from_center_size(
+                    egui::pos2(band.left() + 16.0, band.center().y),
                     egui::vec2(14.0, 14.0),
+                ),
+                EditorTheme::TEXT_MUTED,
+            );
+            ui.painter().text(
+                egui::pos2(band.left() + 28.0, band.center().y),
+                egui::Align2::LEFT_CENTER,
+                title,
+                egui::FontId::proportional(13.0),
+                EditorTheme::TEXT_STRONG,
+            );
+            if removable {
+                let button = egui::Rect::from_center_size(
+                    egui::pos2(band.right() - 16.0, band.center().y),
+                    egui::vec2(20.0, 18.0),
                 );
-                paint_editor_icon(
-                    ui.painter(),
-                    if state.is_open() {
-                        EditorIcon::ChevronDown
-                    } else {
-                        EditorIcon::ChevronRight
-                    },
-                    arrow,
-                    EditorTheme::TEXT_MUTED,
-                );
-                ui.painter().text(
-                    egui::pos2(rect.left() + 20.0, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    title,
-                    egui::FontId::proportional(13.0),
-                    EditorTheme::TEXT,
-                );
-                if response.clicked() {
-                    state.toggle(ui);
-                }
-                if removable {
-                    remove = icon_button_sized(
-                        ui,
-                        EditorIcon::Close,
-                        false,
-                        true,
-                        egui::vec2(20.0, 18.0),
+                remove = ui
+                    .scope_builder(
+                        egui::UiBuilder::new().max_rect(button),
+                        |ui| {
+                            icon_button_sized(
+                                ui,
+                                EditorIcon::Close,
+                                false,
+                                true,
+                                button.size(),
+                            )
+                            .on_hover_text("Remove component")
+                            .clicked()
+                        },
                     )
-                    .on_hover_text("Remove component")
-                    .clicked();
-                }
+                    .inner;
+            }
+            if response.clicked() && !remove {
+                state.toggle(ui);
+            }
+            state.store(ui.ctx());
+            state.show_body_unindented(ui, |ui| {
+                ui.painter().hline(
+                    band.x_range(),
+                    band.bottom(),
+                    egui::Stroke::new(1.0_f32, EditorTheme::BORDER_SOFT),
+                );
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        body(ui);
+                    });
             });
         });
-    state.store(ui.ctx());
-    state.show_body_unindented(ui, |ui| {
-        ui.add_space(2.0);
-        body(ui);
-        ui.add_space(4.0);
-    });
+    ui.add_space(4.0);
     remove
 }
 
@@ -258,5 +316,43 @@ mod tests {
         });
         assert_eq!(starts.len(), 2);
         assert_eq!(starts[0], starts[1]);
+    }
+
+    #[test]
+    fn a_described_row_shows_its_doc_in_the_label_tooltip() {
+        let context = egui::Context::default();
+        context.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let pointer = egui::pos2(20.0, 20.0);
+        let mut tooltips = Vec::new();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                events: vec![egui::Event::PointerMoved(pointer)],
+                time: Some(f64::from(frame)),
+                ..Default::default()
+            };
+            let output = context.run(input, |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let mut number = 1.0_f32;
+                    describe_next_row(ui, "m/s along the ground");
+                    drag(ui, "Speed", DragValue::new(&mut number));
+                });
+            });
+            tooltips = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => {
+                        Some(text.galley.text().to_owned())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(
+            tooltips
+                .iter()
+                .any(|text| text == "Speed\nm/s along the ground"),
+            "{tooltips:?}"
+        );
     }
 }

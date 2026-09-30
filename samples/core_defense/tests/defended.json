@@ -1,0 +1,13 @@
+{
+ "name": "The last kill wins and no more drones come",
+ "ticks": 320,
+ "steps": [
+  {"tick": 0, "set": {"entity": "Kills Counter", "path": "/components/rusting.counter/value", "value": 24}},
+  {"tick": 1, "pointer": [0.5, 0.85]},
+  {"tick": 100, "press": "fire"},
+  {"tick": 101, "release": "fire"},
+  {"tick": 102, "within": 180, "expect": {"entity": "Kills Counter", "path": "/components/rusting.counter/value", "equals": 25}},
+  {"tick": 200, "capture": "shots/defended.png"},
+  {"tick": 300, "expect": {"entity": "Drone 2", "path": "", "exists": false}}
+ ]
+}

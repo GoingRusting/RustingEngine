@@ -11,6 +11,10 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::post_effects::{
+    BloomChain, OcclusionParams, OcclusionTargets, PostPipelines,
+};
+
 use nalgebra::{
     Matrix4, Orthographic3, Perspective3, Point3, Vector3, Vector4,
 };
@@ -22,10 +26,10 @@ use vulkano::buffer::{
 };
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, BufferCopy, CommandBufferUsage, CopyBufferInfo,
-    CopyBufferToImageInfo, DrawIndexedIndirectCommand,
-    PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
-    SubpassContents,
+    AutoCommandBufferBuilder, BlitImageInfo, BufferCopy, CommandBufferUsage,
+    CopyBufferInfo, CopyBufferToImageInfo, CopyImageInfo,
+    DrawIndexedIndirectCommand, ImageBlit, PrimaryAutoCommandBuffer,
+    RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
 };
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
@@ -36,10 +40,10 @@ use vulkano::image::sampler::{
     BorderColor, Filter, Sampler, SamplerAddressMode, SamplerCreateInfo,
     SamplerMipmapMode,
 };
-use vulkano::image::view::{ImageView, ImageViewCreateInfo};
+use vulkano::image::view::{ImageView, ImageViewCreateInfo, ImageViewType};
 use vulkano::image::{
-    Image, ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageUsage,
-    SampleCount, SampleCounts,
+    Image, ImageCreateInfo, ImageLayout, ImageSubresourceLayers,
+    ImageSubresourceRange, ImageUsage, SampleCount, SampleCounts,
 };
 use vulkano::instance::debug::DebugUtilsLabel;
 use vulkano::memory::allocator::{
@@ -48,7 +52,8 @@ use vulkano::memory::allocator::{
 use vulkano::memory::MemoryHeapFlags;
 use vulkano::pipeline::compute::ComputePipelineCreateInfo;
 use vulkano::pipeline::graphics::color_blend::{
-    AttachmentBlend, ColorBlendAttachmentState, ColorBlendState,
+    AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState,
+    ColorBlendState,
 };
 use vulkano::pipeline::graphics::depth_stencil::{
     CompareOp, DepthState, DepthStencilState,
@@ -78,6 +83,7 @@ use vulkano::render_pass::{
     AttachmentReference, Framebuffer, FramebufferCreateInfo, RenderPass,
     RenderPassCreateInfo, ResolveModes, Subpass,
 };
+use vulkano::shader::SpecializationConstant;
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{GpuFuture, PipelineStage};
 use vulkano::DeviceSize;
@@ -91,12 +97,12 @@ use crate::rendering::debug_overlay::{DebugLine, RenderDebugOverlay};
 use crate::rendering::frame_passes::{FramePass, FrameResource};
 use crate::runtime::{
     Antialiasing, CpuFrameTimings, CullingMode, GpuConditionInstruction,
-    Projection, QualityProfile, RawGpuPhysicsEvent, RenderBounds, RenderWorld,
-    ShadowQuality, ToneMapping,
+    Projection, QualityProfile, RawGpuPhysicsEvent, ReflectionProbe,
+    RenderBounds, RenderWorld, ShadowQuality, ToneMapping,
 };
 
 #[derive(Debug)]
-pub struct SceneRenderError(String);
+pub struct SceneRenderError(pub(super) String);
 
 impl Display for SceneRenderError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
@@ -428,13 +434,56 @@ struct RenderInstanceUpload {
     /// 2 blend); z: mask cutoff as `f32` bits; w: bit 0 casts shadows, bit 1
     /// receives shadows.
     physics: [u32; 4],
+    /// x: transmission; y: index of refraction; z: thickness.
+    transmission: [f32; 4],
+    /// xy: texture repeats per face; zw: texture offset.
+    uv_transform: [f32; 4],
 }
+
+/// Rougher surfaces keep the environment reflection only; the shader fades
+/// screen-space reflections out toward it.
+const SSR_MAX_ROUGHNESS: f32 = 0.5;
+
+/// Most reflection probes a frame samples; later ones are ignored.
+const MAX_REFLECTION_PROBES: usize = 4;
+/// Side length in texels of each captured probe face.
+const PROBE_FACE_SIZE: u32 = 128;
+/// View direction and up vector of each probe face, in layer order. The
+/// fragment shader's `PROBE_FORWARD` and `PROBE_UP` match.
+const PROBE_FACES: [([f32; 3], [f32; 3]); 6] = [
+    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+    ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+    ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
+    ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+    ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+];
 
 /// Light-space transform of the shadowed directional light, per frame.
 #[repr(C)]
 #[derive(BufferContents, Clone, Copy)]
 struct ShadowUpload {
     light_view_projection: [[f32; 4]; 4],
+    /// Environment map: x is 1 when bound, y its intensity, z its last mip
+    /// level.
+    environment: [f32; 4],
+    /// Opaque scene color copy: x is 1 when bound, y its last mip level, z
+    /// is 1 when the depth pyramid holds the opaque depth for screen-space
+    /// reflections.
+    scene_color: [f32; 4],
+    /// Scene viewport in target pixels: offset in xy, size in zw.
+    viewport: [f32; 4],
+    /// Per reflection probe, two rows: box center and intensity, then half
+    /// size and last mip level. `environment.w` counts the probes.
+    probes: [[f32; 4]; 2 * MAX_REFLECTION_PROBES],
+    /// Inverse of the camera's view projection, for fog rays.
+    inverse_view_projection: [[f32; 4]; 4],
+    /// Fog color in rgb and density in w; density 0 turns fog off.
+    fog: [f32; 4],
+    /// Fog height, height falloff, sun scatter and sky affect.
+    fog_shape: [f32; 4],
+    /// x is 1 when binding 6 holds this frame's ambient occlusion.
+    ambient_occlusion: [f32; 4],
 }
 
 /// Side length in texels of the directional shadow map and the view
@@ -811,6 +860,12 @@ struct PreparedRenderInstances {
     batches: Vec<PreparedRenderBatch>,
     /// Blended instances, stored after every batched instance.
     blended: Vec<BlendedInstance>,
+    /// Whether any blended instance transmits light, so the frame copies the
+    /// opaque scene color for it to sample.
+    refractive: bool,
+    /// Batches smooth enough for screen-space reflections, drawn again over
+    /// the opaque copy.
+    glossy_batches: Vec<usize>,
     /// Uploaded mesh revisions the bounds below were computed from.
     mesh_revisions: Vec<(u64, u64)>,
     /// World bounds by instance index. `None` never culls: GPU-physics
@@ -1076,6 +1131,28 @@ pub struct SceneRenderOptions<'a> {
     pub debug_overlay: Option<&'a RenderDebugOverlay>,
     /// What the scene pass shows; games always use [`SceneDebugView::Lit`].
     pub debug_view: SceneDebugView,
+    /// Scene effects this view draws when the scene has them. Games draw
+    /// all of them; the editor's Scene view can switch each one off.
+    pub effects: SceneEffects,
+}
+
+/// Atmosphere effects a view may leave out, like Blender's viewport
+/// "Scene World" toggle but per effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneEffects {
+    pub fog: bool,
+    pub bloom: bool,
+    pub ambient_occlusion: bool,
+}
+
+impl Default for SceneEffects {
+    fn default() -> Self {
+        Self {
+            fog: true,
+            bloom: true,
+            ambient_occlusion: true,
+        }
+    }
 }
 
 /// Diagnostic output of the scene pass, like Godot's viewport debug draw.
@@ -1111,6 +1188,7 @@ impl<'a> SceneRenderOptions<'a> {
             viewport: SceneViewport::full(extent),
             debug_overlay: None,
             debug_view: SceneDebugView::Lit,
+            effects: SceneEffects::default(),
         }
     }
 }
@@ -1221,8 +1299,28 @@ pub struct SceneRenderer {
     depth: Arc<ImageView>,
     /// Float scene color before tone mapping; same size as `depth`.
     hdr: Arc<ImageView>,
-    /// Reads `hdr` as the input attachment of the tone-mapping subpass.
+    /// Opaque part of `hdr`, copied on frames with refracting materials.
+    scene_color: Arc<ImageView>,
+    scene_color_sampler: Arc<Sampler>,
+    /// Six faces per captured reflection probe, as array layers with mips;
+    /// sampled with `scene_color_sampler`.
+    probe_maps: Arc<ImageView>,
+    /// Probes `probe_maps` was captured for.
+    probe_keys: Vec<([f32; 3], ReflectionProbe)>,
+    /// Reads `hdr` as the input attachment of the tone-mapping subpass,
+    /// and the bloom glow.
     tonemap_set: Arc<DescriptorSet>,
+    /// Bloom and ambient occlusion compute pipelines.
+    post_pipelines: PostPipelines,
+    /// Rebuilt with `hdr`.
+    bloom_chain: BloomChain,
+    /// Rebuilt with `depth`.
+    occlusion: OcclusionTargets,
+    /// Depth-only opaque pass into `depth` that ambient occlusion traces;
+    /// shares the main pipeline layout.
+    depth_prepass_pipeline: Arc<GraphicsPipeline>,
+    /// Rebuilt with `depth`.
+    depth_prepass_framebuffer: Arc<Framebuffer>,
     depth_extent: [u32; 2],
     /// Per-change instance uploads. Arenas are reused once no in-flight
     /// frame references them and double in size when an upload outgrows them.
@@ -1368,6 +1466,18 @@ impl SceneRenderer {
             create_shadow_pass(&queue, &memory_allocator, &pipeline)?;
         let depth = create_depth(&memory_allocator, initial_extent, 1)?;
         let hdr = create_hdr(&memory_allocator, initial_extent, 1)?;
+        let scene_color =
+            create_scene_color(&memory_allocator, initial_extent)?;
+        let probe_maps = create_probe_maps(&memory_allocator, 1, 1)?;
+        let scene_color_sampler = Sampler::new(
+            queue.device().clone(),
+            SamplerCreateInfo {
+                address_mode: [SamplerAddressMode::ClampToEdge; 3],
+                lod: 0.0..=vulkano::image::sampler::LOD_CLAMP_NONE,
+                ..SamplerCreateInfo::simple_repeat_linear()
+            },
+        )
+        .map_err(|error| SceneRenderError(error.to_string()))?;
         let instance_allocator = SubbufferAllocator::new(
             memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
@@ -1464,8 +1574,24 @@ impl SceneRenderer {
             white_texture.clone(),
             white_texture.clone(),
         ];
-        let tonemap_set =
-            create_tonemap_set(&descriptor_allocator, &tonemap_pipeline, &hdr)?;
+        let post_pipelines = PostPipelines::new(&queue)?;
+        let bloom_chain = BloomChain::new(
+            &memory_allocator,
+            &descriptor_allocator,
+            &post_pipelines,
+            &hdr,
+        )?;
+        let occlusion =
+            OcclusionTargets::new(&memory_allocator, initial_extent)?;
+        let depth_prepass_pipeline = create_depth_prepass(&queue, &pipeline)?;
+        let depth_prepass_framebuffer =
+            create_depth_prepass_framebuffer(&depth_prepass_pipeline, &depth)?;
+        let tonemap_set = create_tonemap_set(
+            &descriptor_allocator,
+            &tonemap_pipeline,
+            &hdr,
+            &bloom_chain,
+        )?;
         let depth_pyramid = create_depth_pyramid(
             &memory_allocator,
             &descriptor_allocator,
@@ -1537,7 +1663,16 @@ impl SceneRenderer {
             shadow_sampler,
             depth,
             hdr,
+            scene_color,
+            scene_color_sampler,
+            probe_maps,
+            probe_keys: Vec::new(),
             tonemap_set,
+            post_pipelines,
+            bloom_chain,
+            occlusion,
+            depth_prepass_pipeline,
+            depth_prepass_framebuffer,
             depth_extent: initial_extent,
             prepared_meshes: HashMap::new(),
             prepared_meshes_revision: 0,
@@ -1760,6 +1895,13 @@ impl SceneRenderer {
         }
         // Before this context's timestamp queries are reset and reused.
         self.collect_cull_readbacks();
+        let probes = &render_world.reflection_probes[..render_world
+            .reflection_probes
+            .len()
+            .min(MAX_REFLECTION_PROBES)];
+        if self.probe_keys != probes {
+            self.capture_probes(probes, render_world, assets)?;
+        }
         self.counters = RenderCounters::default();
         let preparation_start = std::time::Instant::now();
         self.prepare_visible_meshes(render_world, assets)?;
@@ -1856,7 +1998,10 @@ impl SceneRenderer {
             };
         }
         self.last_culling_path = path;
-        self.prepare_materials(assets)?;
+        self.prepare_materials(
+            assets,
+            render_world.environment.map(|(texture, _)| texture),
+        )?;
 
         let carry = self.prepared_physics.as_mut().unwrap().carry.take();
         let physics = self.prepared_physics.as_ref().unwrap();
@@ -2041,6 +2186,44 @@ impl SceneRenderer {
         let light_view_projection = lights.shadow.map(|(_, direction)| {
             shadow_view_projection(eye, forward, direction, shadow_distance)
         });
+        // Refracting materials and screen-space reflections sample a copy
+        // of the opaque scene, so the scene pass splits before blended
+        // draws. Debug views skip it; Eco skips reflections.
+        let reflections = options.debug_view == SceneDebugView::Lit
+            && !render_world.reflections_disabled
+            && quality != QualityProfile::Eco;
+        let (refraction, glossy) = self.prepared_instances.as_ref().map_or(
+            (false, false),
+            |prepared| {
+                (prepared.refractive, !prepared.glossy_batches.is_empty())
+            },
+        );
+        let lit = options.debug_view == SceneDebugView::Lit;
+        // ponytail: refraction still needs the copy even with reflections off.
+        let split = lit && (refraction || (reflections && glossy));
+        // Atmosphere belongs to the lit look; debug views show raw shading.
+        let effects = options.effects;
+        let fog = render_world
+            .fog
+            .filter(|fog| lit && effects.fog && fog.density > 0.0);
+        let bloom = render_world
+            .bloom
+            .filter(|bloom| lit && effects.bloom && bloom.intensity > 0.0);
+        let ambient_occlusion =
+            render_world.ambient_occlusion.filter(|occlusion| {
+                lit && effects.ambient_occlusion
+                    && quality != QualityProfile::Eco
+                    && occlusion.radius > 0.0
+                    && occlusion.intensity > 0.0
+            });
+        let environment =
+            render_world.environment.and_then(|(texture, intensity)| {
+                let prepared = self.prepared_textures.get(&texture.key())?;
+                Some((
+                    (prepared.view.clone()?, prepared.sampler.clone()),
+                    intensity,
+                ))
+            });
         let shadow_upload = self.frame_contexts[self.frame_index]
             .transient
             .allocate_sized::<ShadowUpload>()
@@ -2053,6 +2236,69 @@ impl SceneRenderer {
                 light_view_projection: light_view_projection
                     .unwrap_or_else(Matrix4::identity)
                     .into(),
+                environment: {
+                    let mut row = environment.as_ref().map_or(
+                        [0.0; 4],
+                        |((view, _), intensity)| {
+                            let last_mip = view.image().mip_levels() - 1;
+                            [1.0, *intensity, last_mip as f32, 0.0]
+                        },
+                    );
+                    row[3] = self.probe_keys.len() as f32;
+                    row
+                },
+                scene_color: if split {
+                    let last_mip = self.scene_color.image().mip_levels() - 1;
+                    [
+                        1.0,
+                        last_mip as f32,
+                        f32::from(u8::from(reflections)),
+                        0.0,
+                    ]
+                } else {
+                    [0.0; 4]
+                },
+                viewport: [
+                    viewport.offset[0] as f32,
+                    viewport.offset[1] as f32,
+                    viewport.extent[0] as f32,
+                    viewport.extent[1] as f32,
+                ],
+                probes: {
+                    let last_mip = self.probe_maps.image().mip_levels() - 1;
+                    let mut rows = [[0.0; 4]; 2 * MAX_REFLECTION_PROBES];
+                    for (index, (center, probe)) in
+                        self.probe_keys.iter().enumerate()
+                    {
+                        let [x, y, z] = *center;
+                        let [ex, ey, ez] = probe.extents;
+                        rows[2 * index] = [x, y, z, probe.intensity];
+                        rows[2 * index + 1] = [ex, ey, ez, last_mip as f32];
+                    }
+                    rows
+                },
+                inverse_view_projection: clip
+                    .try_inverse()
+                    .unwrap_or_else(Matrix4::identity)
+                    .into(),
+                fog: fog.map_or([0.0; 4], |fog| {
+                    let [r, g, b] = fog.color;
+                    [r.max(0.0), g.max(0.0), b.max(0.0), fog.density]
+                }),
+                fog_shape: fog.map_or([0.0; 4], |fog| {
+                    [
+                        fog.height,
+                        fog.height_falloff.max(0.0),
+                        fog.sun_scatter.max(0.0),
+                        fog.sky_affect.clamp(0.0, 1.0),
+                    ]
+                }),
+                ambient_occlusion: [
+                    f32::from(u8::from(ambient_occlusion.is_some())),
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
             };
         let shadow_set = DescriptorSet::new(
             self.descriptor_allocator.clone(),
@@ -2064,10 +2310,94 @@ impl SceneRenderer {
                     self.shadow_sampler.clone(),
                 ),
                 WriteDescriptorSet::buffer(1, shadow_upload),
+                {
+                    let (view, sampler) = environment.map_or_else(
+                        || self.white_texture.clone(),
+                        |(texture, _)| texture,
+                    );
+                    WriteDescriptorSet::image_view_sampler(2, view, sampler)
+                },
+                {
+                    let (view, sampler) = if split {
+                        (
+                            self.scene_color.clone(),
+                            self.scene_color_sampler.clone(),
+                        )
+                    } else {
+                        self.white_texture.clone()
+                    };
+                    WriteDescriptorSet::image_view_sampler(3, view, sampler)
+                },
+                {
+                    let (view, sampler) = if split && reflections {
+                        (
+                            self.depth_pyramid.view.clone(),
+                            self.depth_pyramid.sampler.clone(),
+                        )
+                    } else {
+                        self.white_texture.clone()
+                    };
+                    WriteDescriptorSet::image_view_sampler(4, view, sampler)
+                },
+                WriteDescriptorSet::image_view_sampler(
+                    5,
+                    self.probe_maps.clone(),
+                    self.scene_color_sampler.clone(),
+                ),
+                {
+                    let (view, sampler) = if ambient_occlusion.is_some() {
+                        (
+                            self.occlusion.view.clone(),
+                            self.post_pipelines.nearest.clone(),
+                        )
+                    } else {
+                        self.white_texture.clone()
+                    };
+                    WriteDescriptorSet::image_view_sampler(6, view, sampler)
+                },
             ],
             [],
         )
         .map_err(|error| SceneRenderError(error.to_string()))?;
+        let occlusion_params = ambient_occlusion
+            .map(|settings| {
+                let upload = self.frame_contexts[self.frame_index]
+                    .transient
+                    .allocate_sized::<OcclusionParams>()
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                self.counters.upload_bytes += upload.size();
+                let forward = Vector3::from(forward).normalize();
+                *upload
+                    .write()
+                    .map_err(|error| SceneRenderError(error.to_string()))? =
+                    OcclusionParams {
+                        view_projection: clip.into(),
+                        inverse_view_projection: clip
+                            .try_inverse()
+                            .unwrap_or_else(Matrix4::identity)
+                            .into(),
+                        viewport: [
+                            viewport.offset[0] as f32,
+                            viewport.offset[1] as f32,
+                            viewport.extent[0] as f32,
+                            viewport.extent[1] as f32,
+                        ],
+                        forward: [
+                            forward.x,
+                            forward.y,
+                            forward.z,
+                            forward.dot(&Vector3::from(eye)),
+                        ],
+                        settings: [
+                            settings.radius,
+                            settings.intensity,
+                            0.0,
+                            0.0,
+                        ],
+                    };
+                Ok::<_, SceneRenderError>(upload)
+            })
+            .transpose()?;
 
         let mut reads = Vec::new();
         // First upload and count of each step's commands.
@@ -2450,9 +2780,11 @@ impl SceneRenderer {
             self.counters.upload_bytes += staging.size();
             commands
                 .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                    staging, image,
+                    staging,
+                    image.clone(),
                 ))
                 .map_err(|error| SceneRenderError(error.to_string()))?;
+            record_mip_chain(&mut commands, &image)?;
         }
         if let Some((old_states, regions)) = carry {
             commands
@@ -2745,19 +3077,21 @@ impl SceneRenderer {
                 draw_commands.clone().slice(group as u64..group as u64 + 1)
             })
         };
-        // Binds the scene state and draws the opaque batches from `cull`'s
-        // outputs, or from the CPU list without one. Returns the bound
-        // material set.
-        let draw_opaque = |commands: &mut AutoCommandBufferBuilder<
+        // Binds the scene state and draws the opaque batches, or only the
+        // listed ones, with `pipeline` from `cull`'s outputs, or from the CPU
+        // list without one. Returns the bound material set.
+        let draw_batches = |commands: &mut AutoCommandBufferBuilder<
             PrimaryAutoCommandBuffer,
         >,
-                           cull: Option<&GpuCullSet>|
+                            cull: Option<&GpuCullSet>,
+                            pipeline: &Arc<GraphicsPipeline>,
+                            only: Option<&[usize]>|
          -> Result<
             Option<Arc<DescriptorSet>>,
             SceneRenderError,
         > {
             commands
-                .bind_pipeline_graphics(active.pipeline.clone())
+                .bind_pipeline_graphics(pipeline.clone())
                 .map_err(|error| SceneRenderError(error.to_string()))?
                 .bind_descriptor_sets(
                     PipelineBindPoint::Graphics,
@@ -2781,6 +3115,9 @@ impl SceneRenderer {
                 .map_err(|error| SceneRenderError(error.to_string()))?;
             let mut bound_texture: Option<Arc<DescriptorSet>> = None;
             for (group, batch) in render_instances.batches.iter().enumerate() {
+                if only.is_some_and(|only| !only.contains(&group)) {
+                    continue;
+                }
                 // The GPU list reserves each batch's full range; the CPU list
                 // holds only the visible instances.
                 let (list, first, count) = match (cull, visibility) {
@@ -2827,6 +3164,48 @@ impl SceneRenderer {
             }
             Ok(bound_texture)
         };
+        if let Some(params) = occlusion_params {
+            // Occlusion frames only have last frame's visible set culled
+            // this early.
+            // ponytail: objects that just came into view miss the prepass
+            // for one frame and neither cast nor receive occlusion; cull a
+            // frustum set for the prepass if that flicker shows.
+            commands
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        clear_values: vec![Some(1.0_f32.into())],
+                        ..RenderPassBeginInfo::framebuffer(
+                            self.depth_prepass_framebuffer.clone(),
+                        )
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            passes.begin(&mut commands, FramePass::DepthPrepass)?;
+            draw_batches(
+                &mut commands,
+                early_cull.or(gpu_cull),
+                &self.depth_prepass_pipeline,
+                None,
+            )?;
+            passes.end(&mut commands)?;
+            commands
+                .end_render_pass(Default::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            passes.begin(&mut commands, FramePass::AmbientOcclusion)?;
+            let dispatches = self.occlusion.record(
+                &mut commands,
+                &self.descriptor_allocator,
+                &self.post_pipelines,
+                &self.depth,
+                params,
+            )?;
+            count_work(&recorded, 0, dispatches, 0);
+            passes.end(&mut commands)?;
+        }
         let background = Some(render_world.background_color.into());
         if let Some(early) = early_cull {
             // Last frame's visible opaque set lays down depth for the
@@ -2845,7 +3224,7 @@ impl SceneRenderer {
                 )
                 .map_err(|error| SceneRenderError(error.to_string()))?;
             passes.begin(&mut commands, FramePass::Scene)?;
-            draw_opaque(&mut commands, Some(early))?;
+            draw_batches(&mut commands, Some(early), &active.pipeline, None)?;
             passes.end(&mut commands)?;
             commands
                 .next_subpass(Default::default(), SubpassBeginInfo::default())
@@ -2892,20 +3271,32 @@ impl SceneRenderer {
             )?;
             passes.end(&mut commands)?;
         }
-        let (main_pass, clear_values) = if occlusion {
-            (active.late_render_pass.clone(), clears(None, None))
-        } else {
-            (
-                active.render_pass.clone(),
-                clears(background, Some(1.0_f32.into())),
-            )
-        };
+        // Frames that split for the scene color copy, or end the pass for
+        // bloom, keep HDR and depth after the draws and continue them in the
+        // late pass.
+        let (main_pass, clear_values) =
+            match (occlusion, split || bloom.is_some()) {
+                (true, false) => {
+                    (active.late_render_pass.clone(), clears(None, None))
+                }
+                (true, true) => {
+                    (active.middle_render_pass.clone(), clears(None, None))
+                }
+                (false, false) => (
+                    active.render_pass.clone(),
+                    clears(background, Some(1.0_f32.into())),
+                ),
+                (false, true) => (
+                    active.early_render_pass.clone(),
+                    clears(background, Some(1.0_f32.into())),
+                ),
+            };
         commands
             .begin_render_pass(
                 RenderPassBeginInfo {
                     render_pass: main_pass,
                     clear_values,
-                    ..RenderPassBeginInfo::framebuffer(framebuffer)
+                    ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
                 },
                 SubpassBeginInfo {
                     contents: SubpassContents::Inline,
@@ -2920,7 +3311,92 @@ impl SceneRenderer {
             FramePass::Scene
         };
         passes.begin(&mut commands, scene_pass)?;
-        let mut bound_texture = draw_opaque(&mut commands, gpu_cull)?;
+        let mut bound_texture =
+            draw_batches(&mut commands, gpu_cull, &active.pipeline, None)?;
+        if fog.is_some_and(|fog| fog.sky_affect > 0.0) {
+            // Same layout as the scene pipelines, so their sets and camera
+            // stay bound.
+            commands
+                .bind_pipeline_graphics(active.sky_pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            count_work(&recorded, 1, 0, 1);
+            unsafe {
+                commands
+                    .draw(3, 1, 0, 0)
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+            }
+        }
+        if split {
+            passes.end(&mut commands)?;
+            commands
+                .next_subpass(Default::default(), SubpassBeginInfo::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                // See the early pass: the NVIDIA driver needs a subpass-1
+                // pipeline bound when the pass ends.
+                .bind_pipeline_graphics(active.tonemap_pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .end_render_pass(Default::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            passes.begin(&mut commands, FramePass::SceneColor)?;
+            commands
+                .copy_image(CopyImageInfo::images(
+                    self.hdr.image().clone(),
+                    self.scene_color.image().clone(),
+                ))
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            record_mip_chain(&mut commands, self.scene_color.image())?;
+            if reflections {
+                // Mip 0 of the pyramid is the depth the reflection march reads.
+                let (set, size) = &self.depth_pyramid.mips[0];
+                let pipeline = &self.depth_pyramid_copy_pipeline;
+                commands
+                    .bind_pipeline_compute(pipeline.clone())
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .bind_descriptor_sets(
+                        PipelineBindPoint::Compute,
+                        pipeline.layout().clone(),
+                        0,
+                        set.clone(),
+                    )
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                count_work(&recorded, 0, 1, 0);
+                unsafe {
+                    commands
+                        .dispatch([size[0].div_ceil(8), size[1].div_ceil(8), 1])
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                }
+            }
+            passes.end(&mut commands)?;
+            commands
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        // Bloom ends this pass again after the blended draws.
+                        render_pass: if bloom.is_some() {
+                            active.middle_render_pass.clone()
+                        } else {
+                            active.late_render_pass.clone()
+                        },
+                        clear_values: clears(None, None),
+                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            passes.begin(&mut commands, FramePass::Transparent)?;
+            bound_texture = match &render_instances.glossy_batches {
+                glossy if reflections && !glossy.is_empty() => draw_batches(
+                    &mut commands,
+                    gpu_cull,
+                    &active.reflection_pipeline,
+                    Some(glossy),
+                )?,
+                // The tone-map pipeline replaced the scene pipelines.
+                _ => None,
+            };
+        }
         // On the GPU paths every blended instance keeps a draw whose count
         // the cull pass sets to 0 or 1.
         let (blended_list, mut blended) = match (gpu_cull, visibility) {
@@ -2984,6 +3460,40 @@ impl SceneRenderer {
         // The whole target is tone mapped, so area outside the viewport shows
         // the background like the old clear did.
         passes.end(&mut commands)?;
+        if let Some(settings) = bloom {
+            // Bloom samples the finished HDR outside the render pass, then
+            // an empty late pass continues to tone mapping.
+            commands
+                .next_subpass(Default::default(), SubpassBeginInfo::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                // See the early pass: the NVIDIA driver needs a subpass-1
+                // pipeline bound when the pass ends.
+                .bind_pipeline_graphics(active.tonemap_pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .end_render_pass(Default::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            passes.begin(&mut commands, FramePass::Bloom)?;
+            let dispatches = self.bloom_chain.record(
+                &mut commands,
+                &self.post_pipelines,
+                &settings,
+            )?;
+            count_work(&recorded, 0, dispatches, 0);
+            passes.end(&mut commands)?;
+            commands
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        render_pass: active.late_render_pass.clone(),
+                        clear_values: clears(None, None),
+                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+        }
         commands
             .next_subpass(Default::default(), SubpassBeginInfo::default())
             .map_err(|error| SceneRenderError(error.to_string()))?;
@@ -3004,6 +3514,12 @@ impl SceneRenderer {
                 tonemap_fragment_shader::ToneMap {
                     exposure: tone.exposure,
                     mapper: tone.mapper as u32,
+                    bloom: bloom.map_or(0.0, |bloom| bloom.intensity),
+                    padding: 0.0,
+                    inv_extent: [
+                        1.0 / extent[0] as f32,
+                        1.0 / extent[1] as f32,
+                    ],
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -3166,6 +3682,134 @@ impl SceneRenderer {
         Ok(fence.boxed())
     }
 
+    /// Renders the six faces of each probe from its center into a new
+    /// `probe_maps`. A temporary renderer draws them, so this renderer's
+    /// caches, GPU physics and occlusion history stay untouched.
+    // ponytail: the temporary renderer builds every pipeline again, so a
+    // probe moved every frame stutters; keep one around if probes animate.
+    // Faces are tone mapped with Linear, so captured light clamps at 1.
+    fn capture_probes(
+        &mut self,
+        probes: &[([f32; 3], ReflectionProbe)],
+        render_world: &RenderWorld,
+        assets: &AssetServer,
+    ) -> Result<(), SceneRenderError> {
+        let error = |error: &dyn Display| SceneRenderError(error.to_string());
+        // Set first, so a failed capture is not retried every frame.
+        self.probe_keys = probes.to_vec();
+        if probes.is_empty() {
+            return Ok(());
+        }
+        let size = PROBE_FACE_SIZE;
+        let maps = create_probe_maps(
+            &self.memory_allocator,
+            6 * probes.len() as u32,
+            size,
+        )?;
+        let mut capturer = SceneRenderer::new(
+            self.queue.clone(),
+            self.memory_allocator.clone(),
+            HDR_COLOR_FORMAT,
+            [size; 2],
+        )?;
+        let mut world = render_world.clone();
+        world.reflection_probes.clear();
+        world.physics_enabled = false;
+        world.physics_tick = 0;
+        world.gpu_physics_commands.clear();
+        world.gpu_physics_command_ticks.clear();
+        world.tone_mapping = None;
+        // The scene adds its own bloom over the reflection, and occlusion
+        // at the probe's viewpoint would not match the reflected surface.
+        // Fog stays: it is part of what the surroundings look like.
+        world.bloom = None;
+        world.ambient_occlusion = None;
+        // Occlusion would test each face against the previous face's depth.
+        world.culling = CullingMode::Frustum;
+        let device = self.queue.device().clone();
+        // Faces render into their own images: vulkano cannot track a
+        // framebuffer view of one layer of a mipmapped array.
+        let mut faces = Vec::new();
+        for (center, _) in probes {
+            for &basis in &PROBE_FACES {
+                world.active_camera = Some(crate::runtime::ExtractedCamera {
+                    entity: bevy_ecs::entity::Entity::PLACEHOLDER,
+                    transform: probe_face_transform(*center, basis),
+                    projection: Projection::Perspective {
+                        vertical_fov_radians: std::f32::consts::FRAC_PI_2,
+                        near: 0.05,
+                        far: 1_000.0,
+                    },
+                    priority: 0,
+                });
+                let face = Image::new(
+                    self.memory_allocator.clone(),
+                    ImageCreateInfo {
+                        format: HDR_COLOR_FORMAT,
+                        extent: [size, size, 1],
+                        usage: ImageUsage::COLOR_ATTACHMENT
+                            | ImageUsage::TRANSFER_SRC,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo::default(),
+                )
+                .map_err(|e| error(&e))?;
+                capturer
+                    .render(
+                        vulkano::sync::now(device.clone()).boxed(),
+                        ImageView::new_default(face.clone())
+                            .map_err(|e| error(&e))?,
+                        [size; 2],
+                        SceneRenderOptions::game([size; 2]),
+                        &world,
+                        assets,
+                    )?
+                    .then_signal_fence_and_flush()
+                    .map_err(|e| error(&e))?
+                    .wait(None)
+                    .map_err(|e| error(&e))?;
+                faces.push(face);
+            }
+        }
+        let mut commands = AutoCommandBufferBuilder::primary(
+            self.command_allocator.clone(),
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .map_err(|e| error(&e))?;
+        for (layer, face) in faces.into_iter().enumerate() {
+            commands
+                .copy_image(CopyImageInfo {
+                    regions: [vulkano::command_buffer::ImageCopy {
+                        src_subresource: face.subresource_layers(),
+                        dst_subresource: ImageSubresourceLayers {
+                            mip_level: 0,
+                            array_layers: layer as u32..layer as u32 + 1,
+                            ..maps.image().subresource_layers()
+                        },
+                        extent: [size, size, 1],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..CopyImageInfo::images(face, maps.image().clone())
+                })
+                .map_err(|e| error(&e))?;
+        }
+        record_mip_chain(&mut commands, maps.image())?;
+        vulkano::sync::now(device)
+            .then_execute(
+                self.queue.clone(),
+                commands.build().map_err(|e| error(&e))?,
+            )
+            .map_err(|e| error(&e))?
+            .then_signal_fence_and_flush()
+            .map_err(|e| error(&e))?
+            .wait(None)
+            .map_err(|e| error(&e))?;
+        self.probe_maps = maps;
+        Ok(())
+    }
+
     fn prepare_visible_meshes(
         &mut self,
         render_world: &RenderWorld,
@@ -3250,9 +3894,11 @@ impl SceneRenderer {
     /// Uploads the base-color textures of the materials in use. Textures
     /// still loading are skipped and sample white until they publish.
     /// Uploads every map of the materials in use and builds their set 1.
+    /// The environment map uploads with them.
     fn prepare_materials(
         &mut self,
         assets: &AssetServer,
+        environment: Option<Handle<TextureAsset>>,
     ) -> Result<(), SceneRenderError> {
         let materials = self
             .prepared_instances
@@ -3278,6 +3924,7 @@ impl SceneRenderer {
             .iter()
             .filter_map(|material| assets.materials.get(*material))
             .flat_map(|material| slots(material).into_iter().flatten())
+            .chain(environment)
             .collect::<Vec<_>>();
         for &handle in &used {
             let revision = assets.textures.revision(handle).unwrap_or(0);
@@ -3618,12 +4265,16 @@ impl SceneRenderer {
                 ]));
             }
         }
-        let (order, batches, blended_start) =
-            render_batch_order(&renderables, |material| {
+        let (order, batches, blended_start) = render_batch_order(
+            &renderables,
+            |material| {
                 assets.materials.get(material).is_some_and(|material| {
                     material.alpha_mode == AlphaMode::Blend
+                        || material.transmission > 0.0
                 })
-            });
+            },
+            |material| material_group(assets.materials.get(material)),
+        );
         let mut instances = Vec::with_capacity(order.len().max(1));
         for &index in &order {
             let renderable = renderables[index];
@@ -3674,6 +4325,22 @@ impl SceneRenderer {
                     u32::from(renderable.cast_shadows)
                         | u32::from(renderable.receive_shadows) << 1,
                 ],
+                transmission: material.map_or([0.0; 4], |material| {
+                    [
+                        material.transmission,
+                        material.ior,
+                        material.thickness,
+                        0.0,
+                    ]
+                }),
+                uv_transform: material.map_or(
+                    [1.0, 1.0, 0.0, 0.0],
+                    |material| {
+                        let [x, y] = material.uv_scale;
+                        let [u, v] = material.uv_offset;
+                        [x, y, u, v]
+                    },
+                ),
             });
         }
         // ponytail: GPU-physics bodies sort by their last CPU transform;
@@ -3775,11 +4442,30 @@ impl SceneRenderer {
             .map_err(|error| SceneRenderError(error.to_string()))?
             .copy_from_slice(&instances);
         self.counters.upload_bytes += upload.size();
+        let refractive = instances[blended_start..]
+            .iter()
+            .any(|instance| instance.transmission[0] > 0.0);
+        let glossy_batches = batches
+            .iter()
+            .enumerate()
+            .filter(|(_, batch)| {
+                assets
+                    .materials
+                    .get(batch.material)
+                    .is_some_and(|material| {
+                        material.model == MaterialModel::Pbr
+                            && material.roughness < SSR_MAX_ROUGHNESS
+                    })
+            })
+            .map(|(group, _)| group)
+            .collect();
         let instances = upload;
         self.prepared_instances = Some(PreparedRenderInstances {
             renderables_revision: render_world.renderables_revision,
             physics_revision: render_world.gpu_physics_revision,
             material_revisions,
+            refractive,
+            glossy_batches,
             instances,
             batches,
             blended,
@@ -4401,6 +5087,8 @@ impl SceneRenderer {
         if extent != self.depth_extent {
             self.depth = create_depth(&self.memory_allocator, extent, 1)?;
             self.hdr = create_hdr(&self.memory_allocator, extent, 1)?;
+            self.scene_color =
+                create_scene_color(&self.memory_allocator, extent)?;
             self.depth_pyramid = create_depth_pyramid(
                 &self.memory_allocator,
                 &self.descriptor_allocator,
@@ -4408,10 +5096,23 @@ impl SceneRenderer {
                 &self.depth_pyramid_reduce_pipeline,
                 &self.depth,
             )?;
+            self.bloom_chain = BloomChain::new(
+                &self.memory_allocator,
+                &self.descriptor_allocator,
+                &self.post_pipelines,
+                &self.hdr,
+            )?;
+            self.occlusion =
+                OcclusionTargets::new(&self.memory_allocator, extent)?;
+            self.depth_prepass_framebuffer = create_depth_prepass_framebuffer(
+                &self.depth_prepass_pipeline,
+                &self.depth,
+            )?;
             self.tonemap_set = create_tonemap_set(
                 &self.descriptor_allocator,
                 &self.passes.tonemap_pipeline,
                 &self.hdr,
+                &self.bloom_chain,
             )?;
             self.depth_extent = extent;
             // Cached framebuffers still point at the old depth and HDR images.
@@ -4447,12 +5148,37 @@ fn lod_groups(assets: &AssetServer) -> HashMap<u64, &LodGroupAsset> {
     groups
 }
 
-/// Sorts objects so equal meshes and materials can use one instanced draw.
-/// Blended objects go last and are not batched; the returned index is where
-/// they start in the order.
+/// What a draw needs from a material besides the per-instance data: its
+/// textures and whether screen-space reflections draw it. Materials that
+/// agree share a batch, so a scene of many flat colors draws once per mesh.
+type MaterialGroup = ([Option<u64>; MATERIAL_TEXTURES], bool);
+
+fn material_group(material: Option<&MaterialAsset>) -> MaterialGroup {
+    let Some(material) = material else {
+        return ([None; MATERIAL_TEXTURES], false);
+    };
+    let key = |texture: &Option<Handle<TextureAsset>>| texture.map(Handle::key);
+    (
+        [
+            key(&material.base_color_texture),
+            key(&material.normal_texture),
+            key(&material.metallic_roughness_texture),
+            key(&material.occlusion_texture),
+            key(&material.emissive_texture),
+        ],
+        material.model == MaterialModel::Pbr
+            && material.roughness < SSR_MAX_ROUGHNESS,
+    )
+}
+
+/// Sorts objects so equal meshes and material groups can use one instanced
+/// draw. Blended objects go last and are not batched; the returned index is
+/// where they start in the order. A batch names its first material, whose
+/// texture set the whole batch binds.
 fn render_batch_order(
     renderables: &[crate::runtime::ExtractedRenderable],
     is_blended: impl Fn(Handle<MaterialAsset>) -> bool,
+    group_of: impl Fn(Handle<MaterialAsset>) -> MaterialGroup,
 ) -> (Vec<usize>, Vec<PreparedRenderBatch>, usize) {
     let blended = renderables
         .iter()
@@ -4464,7 +5190,13 @@ fn render_batch_order(
         (
             blended[*index],
             renderable.mesh.key(),
-            renderable.material.key(),
+            group_of(renderable.material),
+            // Blended objects stay one draw each.
+            if blended[*index] {
+                renderable.material.key()
+            } else {
+                0
+            },
         )
     });
     let blended_start = order.partition_point(|index| !blended[*index]);
@@ -4473,7 +5205,7 @@ fn render_batch_order(
     for (instance, index) in order[..blended_start].iter().copied().enumerate()
     {
         let renderable = renderables[index];
-        let key = (renderable.mesh.key(), renderable.material.key());
+        let key = (renderable.mesh.key(), group_of(renderable.material));
         if previous_key != Some(key) {
             batches.push(PreparedRenderBatch {
                 mesh_key: key.0,
@@ -4601,7 +5333,13 @@ fn texture_sampler(
         SamplerCreateInfo {
             mag_filter: filter(sampler.mag_filter),
             min_filter: filter(sampler.min_filter),
-            mipmap_mode: SamplerMipmapMode::Nearest,
+            // Blend mips for smooth filtering; the default LOD range of
+            // 0..=0 would never leave the full-size level.
+            mipmap_mode: match sampler.min_filter {
+                TextureFilter::Nearest => SamplerMipmapMode::Nearest,
+                TextureFilter::Linear => SamplerMipmapMode::Linear,
+            },
+            lod: 0.0..=vulkano::image::sampler::LOD_CLAMP_NONE,
             anisotropy: sampler_anisotropy(
                 queue.device().enabled_features().sampler_anisotropy,
                 queue
@@ -4723,6 +5461,37 @@ fn pass_time(
 /// the GPU-written command sets the real count and `count` only bounds the
 /// bound range. The slice start stands in for `firstInstance`, which
 /// indirect draws may not set without `drawIndirectFirstInstance`.
+/// Fills mips 1 and up of `image`, each a linear downscale of the one above.
+fn record_mip_chain(
+    commands: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    image: &Arc<Image>,
+) -> Result<(), SceneRenderError> {
+    let [width, height, _] = image.extent();
+    let size =
+        |level: u32| [(width >> level).max(1), (height >> level).max(1), 1];
+    let layers = |mip_level| ImageSubresourceLayers {
+        mip_level,
+        ..image.subresource_layers()
+    };
+    for level in 1..image.mip_levels() {
+        commands
+            .blit_image(BlitImageInfo {
+                regions: [ImageBlit {
+                    src_subresource: layers(level - 1),
+                    src_offsets: [[0; 3], size(level - 1)],
+                    dst_subresource: layers(level),
+                    dst_offsets: [[0; 3], size(level)],
+                    ..Default::default()
+                }]
+                .into(),
+                filter: Filter::Linear,
+                ..BlitImageInfo::images(image.clone(), image.clone())
+            })
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn draw_instances(
     commands: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     mesh: &PreparedMesh,
@@ -4778,7 +5547,10 @@ fn count_work(
 /// validation messages. Does nothing without `ext_debug_utils`.
 // ponytail: transient suballocator arenas (instances, visibility lists,
 // cull commands) stay unnamed; name their arenas if a capture needs them.
-fn name_object<T: vulkano::VulkanObject + DeviceOwned>(object: &T, name: &str) {
+pub(super) fn name_object<T: vulkano::VulkanObject + DeviceOwned>(
+    object: &T,
+    name: &str,
+) {
     let device = object.device();
     if device.instance().enabled_extensions().ext_debug_utils {
         let result = device.set_debug_utils_object_name(object, Some(name));
@@ -4908,7 +5680,11 @@ fn create_texture(
                 TextureColorSpace::Linear => Format::R8G8B8A8_UNORM,
             },
             extent: [width, height, 1],
-            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+            mip_levels: 32 - width.max(height).leading_zeros(),
+            // Transfer source for the mip chain blits.
+            usage: ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST
+                | ImageUsage::SAMPLED,
             ..Default::default()
         },
         AllocationCreateInfo {
@@ -5096,11 +5872,16 @@ fn create_hdr(
             format: HDR_COLOR_FORMAT,
             extent: [extent[0].max(1), extent[1].max(1), 1],
             samples: sample_count(samples)?,
-            // The single-sample HDR is the tone-mapping input.
+            // The single-sample HDR is the tone-mapping input and the source
+            // of the scene color copy.
+            // Bloom samples it too.
             usage: if samples > 1 {
                 ImageUsage::COLOR_ATTACHMENT
             } else {
-                ImageUsage::COLOR_ATTACHMENT | ImageUsage::INPUT_ATTACHMENT
+                ImageUsage::COLOR_ATTACHMENT
+                    | ImageUsage::INPUT_ATTACHMENT
+                    | ImageUsage::TRANSFER_SRC
+                    | ImageUsage::SAMPLED
             },
             ..Default::default()
         },
@@ -5122,15 +5903,107 @@ fn create_hdr(
         .map_err(|error| SceneRenderError(error.to_string()))
 }
 
+/// Mipmapped copy of the opaque scene HDR that refracting materials sample.
+fn create_scene_color(
+    allocator: &Arc<StandardMemoryAllocator>,
+    extent: [u32; 2],
+) -> Result<Arc<ImageView>, SceneRenderError> {
+    let [width, height] = [extent[0].max(1), extent[1].max(1)];
+    let image = Image::new(
+        allocator.clone(),
+        ImageCreateInfo {
+            format: HDR_COLOR_FORMAT,
+            extent: [width, height, 1],
+            mip_levels: 32 - width.max(height).leading_zeros(),
+            usage: ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST
+                | ImageUsage::SAMPLED,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    name_object(&*image, "Scene color copy");
+    ImageView::new_default(image)
+        .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// Array image of `layers` square faces with a full mip chain, viewed as a 2D
+/// array even with one layer.
+fn create_probe_maps(
+    allocator: &Arc<StandardMemoryAllocator>,
+    layers: u32,
+    size: u32,
+) -> Result<Arc<ImageView>, SceneRenderError> {
+    let image = Image::new(
+        allocator.clone(),
+        ImageCreateInfo {
+            format: HDR_COLOR_FORMAT,
+            extent: [size, size, 1],
+            array_layers: layers,
+            mip_levels: 32 - size.leading_zeros(),
+            usage: ImageUsage::COLOR_ATTACHMENT
+                | ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST
+                | ImageUsage::SAMPLED,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    name_object(&*image, "Reflection probes");
+    ImageView::new(
+        image.clone(),
+        ImageViewCreateInfo {
+            view_type: ImageViewType::Dim2dArray,
+            ..ImageViewCreateInfo::from_image(&image)
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// Camera transform at `center` looking along `forward`, the camera's -Z.
+fn probe_face_transform(
+    center: [f32; 3],
+    (forward, up): ([f32; 3], [f32; 3]),
+) -> crate::runtime::GlobalTransform {
+    let forward = Vector3::from(forward);
+    let up = Vector3::from(up);
+    let right = forward.cross(&up);
+    let back = -forward;
+    crate::runtime::GlobalTransform {
+        matrix: [
+            [right.x, right.y, right.z, 0.0],
+            [up.x, up.y, up.z, 0.0],
+            [back.x, back.y, back.z, 0.0],
+            [center[0], center[1], center[2], 1.0],
+        ],
+    }
+}
+
 fn create_tonemap_set(
     allocator: &Arc<StandardDescriptorSetAllocator>,
     pipeline: &Arc<GraphicsPipeline>,
     hdr: &Arc<ImageView>,
+    bloom: &BloomChain,
 ) -> Result<Arc<DescriptorSet>, SceneRenderError> {
     DescriptorSet::new(
         allocator.clone(),
         pipeline.layout().set_layouts()[0].clone(),
-        [WriteDescriptorSet::image_view(0, hdr.clone())],
+        [
+            WriteDescriptorSet::image_view(0, hdr.clone()),
+            WriteDescriptorSet::image_view_sampler(
+                1,
+                bloom.view.clone(),
+                bloom.sampler.clone(),
+            ),
+        ],
         [],
     )
     .map_err(|error| SceneRenderError(error.to_string()))
@@ -5146,11 +6019,18 @@ struct MainPasses {
     /// Occlusion frames: the rest of the scene over the early pass, then
     /// tone mapping.
     late_render_pass: Arc<RenderPass>,
+    /// Refraction frames with occlusion culling: the late opaque draws
+    /// between the early pass and the scene color copy.
+    middle_render_pass: Arc<RenderPass>,
     pipeline: Arc<GraphicsPipeline>,
     blend_pipeline: Arc<GraphicsPipeline>,
+    /// Adds screen-space reflections over glossy opaque surfaces.
+    reflection_pipeline: Arc<GraphicsPipeline>,
     debug_pipeline: Arc<GraphicsPipeline>,
     debug_on_top_pipeline: Arc<GraphicsPipeline>,
     tonemap_pipeline: Arc<GraphicsPipeline>,
+    /// Height fog over the background after the opaque draws.
+    sky_pipeline: Arc<GraphicsPipeline>,
 }
 
 impl MainPasses {
@@ -5165,14 +6045,23 @@ impl MainPasses {
             &*self.late_render_pass,
             &format!("Late scene pass{suffix}"),
         );
+        name_object(
+            &*self.middle_render_pass,
+            &format!("Middle scene pass{suffix}"),
+        );
         name_object(&*self.pipeline, &format!("Opaque{suffix}"));
         name_object(&*self.blend_pipeline, &format!("Blended{suffix}"));
+        name_object(
+            &*self.reflection_pipeline,
+            &format!("Reflections{suffix}"),
+        );
         name_object(&*self.debug_pipeline, &format!("Debug lines{suffix}"));
         name_object(
             &*self.debug_on_top_pipeline,
             &format!("Debug lines on top{suffix}"),
         );
         name_object(&*self.tonemap_pipeline, &format!("Tone map{suffix}"));
+        name_object(&*self.sky_pipeline, &format!("Sky fog{suffix}"));
     }
 }
 
@@ -5224,7 +6113,7 @@ fn create_main_passes(
                             format: HDR_COLOR_FORMAT,
                             samples: 1,
                             load_op: DontCare,
-                            store_op: DontCare,
+                            store_op: $hdr_store,
                         },
                         depth: {
                             format: Format::D32_SFLOAT,
@@ -5295,7 +6184,8 @@ fn create_main_passes(
     let render_pass = main_pass!(Store, Clear, DontCare, Clear, DontCare);
     let early_render_pass = main_pass!(DontCare, Clear, Store, Clear, Store);
     let late_render_pass = main_pass!(Store, Load, DontCare, Load, DontCare);
-    let (pipeline, blend_pipeline) = create_pipelines(
+    let middle_render_pass = main_pass!(DontCare, Load, Store, Load, Store);
+    let [pipeline, blend_pipeline, reflection_pipeline] = create_pipelines(
         queue.clone(),
         render_pass.clone(),
         samples,
@@ -5317,11 +6207,19 @@ fn create_main_passes(
             render_pass.clone(),
             shared.map(|passes| passes.tonemap_pipeline.layout().clone()),
         )?,
+        sky_pipeline: create_sky_pipeline(
+            queue,
+            render_pass.clone(),
+            samples,
+            pipeline.layout().clone(),
+        )?,
         render_pass,
         early_render_pass,
         late_render_pass,
+        middle_render_pass,
         pipeline,
         blend_pipeline,
+        reflection_pipeline,
     })
 }
 
@@ -5432,35 +6330,219 @@ fn create_tonemap_pipeline(
     .map_err(|error| SceneRenderError(error.to_string()))
 }
 
-/// Creates the opaque/mask pipeline and the alpha-blend pipeline. Both share
-/// one layout so descriptor sets and push constants stay bound between them.
+/// Sky fog over the background in subpass 0: drawn at the far plane with
+/// `LessOrEqual`, so only pixels no surface covered pass. The background
+/// is kept by the fog's transmittance in alpha and the in-scattered light
+/// added: `color = fog.rgb + background * fog.a`.
+fn create_sky_pipeline(
+    queue: &Arc<Queue>,
+    render_pass: Arc<RenderPass>,
+    samples: u32,
+    layout: Arc<PipelineLayout>,
+) -> Result<Arc<GraphicsPipeline>, SceneRenderError> {
+    let stage = |module: Result<Arc<vulkano::shader::ShaderModule>, _>| {
+        module
+            .map_err(|error: vulkano::Validated<vulkano::VulkanError>| {
+                SceneRenderError(error.to_string())
+            })?
+            .entry_point("main")
+            .map(PipelineShaderStageCreateInfo::new)
+            .ok_or_else(|| {
+                SceneRenderError("sky fog entry point is missing".into())
+            })
+    };
+    let subpass = Subpass::from(render_pass, 0)
+        .ok_or_else(|| SceneRenderError("scene subpass is missing".into()))?;
+    GraphicsPipeline::new(
+        queue.device().clone(),
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: [
+                stage(sky_vertex_shader::load(queue.device().clone()))?,
+                stage(sky_fragment_shader::load(queue.device().clone()))?,
+            ]
+            .into_iter()
+            .collect(),
+            vertex_input_state: Some(Default::default()),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState {
+                rasterization_samples: sample_count(samples)?,
+                ..Default::default()
+            }),
+            depth_stencil_state: Some(DepthStencilState {
+                depth: Some(DepthState {
+                    write_enable: false,
+                    compare_op: CompareOp::LessOrEqual,
+                }),
+                ..Default::default()
+            }),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                1,
+                ColorBlendAttachmentState {
+                    blend: Some(AttachmentBlend {
+                        src_color_blend_factor: BlendFactor::One,
+                        dst_color_blend_factor: BlendFactor::SrcAlpha,
+                        color_blend_op: BlendOp::Add,
+                        src_alpha_blend_factor: BlendFactor::Zero,
+                        dst_alpha_blend_factor: BlendFactor::One,
+                        alpha_blend_op: BlendOp::Add,
+                    }),
+                    ..Default::default()
+                },
+            )),
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// Single-sample depth-only pass into the scene depth that ambient
+/// occlusion traces, and its pipeline on the main layout. The pass leaves
+/// depth in the layout the trace samples it in.
+fn create_depth_prepass(
+    queue: &Arc<Queue>,
+    main_pipeline: &Arc<GraphicsPipeline>,
+) -> Result<Arc<GraphicsPipeline>, SceneRenderError> {
+    let device = queue.device().clone();
+    let render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            depth: {
+                format: Format::D32_SFLOAT,
+                samples: 1,
+                load_op: Clear,
+                store_op: Store,
+                initial_layout: ImageLayout::Undefined,
+                final_layout: FramePass::DepthPrepass
+                    .next_layout(FrameResource::SceneDepth)
+                    .expect("ambient occlusion samples the prepass depth"),
+            }
+        },
+        pass: {
+            color: [],
+            depth_stencil: {depth}
+        }
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    name_object(&*render_pass, "Depth prepass");
+    let vertex = vertex_shader::load(device.clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("scene vertex entry point is missing".into())
+        })?;
+    let fragment = depth_prepass_fragment_shader::load(device.clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("prepass fragment entry point is missing".into())
+        })?;
+    let subpass = Subpass::from(render_pass, 0)
+        .ok_or_else(|| SceneRenderError("prepass subpass is missing".into()))?;
+    let pipeline = GraphicsPipeline::new(
+        device,
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: [
+                PipelineShaderStageCreateInfo::new(vertex.clone()),
+                PipelineShaderStageCreateInfo::new(fragment),
+            ]
+            .into_iter()
+            .collect(),
+            vertex_input_state: Some(
+                [SceneVertex::per_vertex(), VisibleInstance::per_instance()]
+                    .definition(&vertex)
+                    .map_err(|error| SceneRenderError(error.to_string()))?,
+            ),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState {
+                cull_mode: CullMode::Back,
+                front_face: FrontFace::CounterClockwise,
+                ..Default::default()
+            }),
+            multisample_state: Some(MultisampleState::default()),
+            depth_stencil_state: Some(DepthStencilState {
+                depth: Some(DepthState::simple()),
+                ..Default::default()
+            }),
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(main_pipeline.layout().clone())
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    name_object(&*pipeline, "Depth prepass");
+    Ok(pipeline)
+}
+
+/// Framebuffer of the depth prepass over `depth`.
+fn create_depth_prepass_framebuffer(
+    pipeline: &Arc<GraphicsPipeline>,
+    depth: &Arc<ImageView>,
+) -> Result<Arc<Framebuffer>, SceneRenderError> {
+    let PipelineSubpassType::BeginRenderPass(subpass) = pipeline.subpass()
+    else {
+        unreachable!("the prepass pipeline uses a render pass");
+    };
+    Framebuffer::new(
+        subpass.render_pass().clone(),
+        FramebufferCreateInfo {
+            attachments: vec![depth.clone()],
+            ..Default::default()
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// Creates the opaque/mask, alpha-blend and reflection overlay pipelines.
+/// They share one layout so descriptor sets and push constants stay bound
+/// between them.
 fn create_pipelines(
     queue: Arc<Queue>,
     render_pass: Arc<RenderPass>,
     samples: u32,
     layout: Option<Arc<PipelineLayout>>,
-) -> Result<(Arc<GraphicsPipeline>, Arc<GraphicsPipeline>), SceneRenderError> {
+) -> Result<[Arc<GraphicsPipeline>; 3], SceneRenderError> {
     let vertex = vertex_shader::load(queue.device().clone())
         .map_err(|error| SceneRenderError(error.to_string()))?
         .entry_point("main")
         .ok_or_else(|| {
             SceneRenderError("scene vertex entry point is missing".into())
         })?;
-    let fragment = fragment_shader::load(queue.device().clone())
-        .map_err(|error| SceneRenderError(error.to_string()))?
-        .entry_point("main")
-        .ok_or_else(|| {
-            SceneRenderError("scene fragment entry point is missing".into())
-        })?;
-    let stages = [
-        PipelineShaderStageCreateInfo::new(vertex.clone()),
-        PipelineShaderStageCreateInfo::new(fragment),
-    ];
+    let fragment_module = fragment_shader::load(queue.device().clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?;
+    // `PASS` in the fragment shader.
+    let stages = |pass: u32| {
+        let fragment = fragment_module
+            .specialize(
+                [(0, SpecializationConstant::U32(pass))]
+                    .into_iter()
+                    .collect(),
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?
+            .entry_point("main")
+            .ok_or_else(|| {
+                SceneRenderError("scene fragment entry point is missing".into())
+            })?;
+        Ok::<_, SceneRenderError>([
+            PipelineShaderStageCreateInfo::new(vertex.clone()),
+            PipelineShaderStageCreateInfo::new(fragment),
+        ])
+    };
     let layout = match layout {
         Some(layout) => layout,
         None => PipelineLayout::new(
             queue.device().clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages(0)?)
                 .into_pipeline_layout_create_info(queue.device().clone())
                 .map_err(|error| SceneRenderError(error.to_string()))?,
         )
@@ -5469,12 +6551,13 @@ fn create_pipelines(
     let subpass = Subpass::from(render_pass, 0)
         .ok_or_else(|| SceneRenderError("scene subpass is missing".into()))?;
     let rasterization_samples = sample_count(samples)?;
-    let create = |blend: bool| {
+    // Pass 0 opaque, 1 blended, 2 reflection overlay; see `PASS`.
+    let create = |pass: u32| {
         GraphicsPipeline::new(
             queue.device().clone(),
             None,
             GraphicsPipelineCreateInfo {
-                stages: stages.iter().cloned().collect(),
+                stages: stages(pass)?.into_iter().collect(),
                 vertex_input_state: Some(
                     [
                         SceneVertex::per_vertex(),
@@ -5499,10 +6582,15 @@ fn create_pipelines(
                 }),
                 // Blended surfaces test against opaque depth but do not write
                 // it, so farther blended surfaces drawn later still show.
+                // The overlay redraws opaque surfaces at their own depth.
                 depth_stencil_state: Some(DepthStencilState {
                     depth: Some(DepthState {
-                        write_enable: !blend,
-                        ..DepthState::simple()
+                        write_enable: pass == 0,
+                        compare_op: if pass == 2 {
+                            CompareOp::LessOrEqual
+                        } else {
+                            CompareOp::Less
+                        },
                     }),
                     ..Default::default()
                 }),
@@ -5510,7 +6598,19 @@ fn create_pipelines(
                     ColorBlendState::with_attachment_states(
                         1,
                         ColorBlendAttachmentState {
-                            blend: blend.then(AttachmentBlend::alpha),
+                            // Premultiplied: the shader scales diffuse and
+                            // emissive by alpha but not reflections, so
+                            // clear glass still mirrors its surroundings.
+                            // The overlay adds a signed difference.
+                            blend: match pass {
+                                1 => Some(AttachmentBlend {
+                                    src_color_blend_factor: BlendFactor::One,
+                                    src_alpha_blend_factor: BlendFactor::One,
+                                    ..AttachmentBlend::alpha()
+                                }),
+                                2 => Some(AttachmentBlend::additive()),
+                                _ => None,
+                            },
                             ..Default::default()
                         },
                     ),
@@ -5526,7 +6626,7 @@ fn create_pipelines(
         )
         .map_err(|error| SceneRenderError(error.to_string()))
     };
-    Ok((create(false)?, create(true)?))
+    Ok([create(0)?, create(1)?, create(2)?])
 }
 
 /// Pipeline, framebuffer, shadow map, and comparison sampler.
@@ -5756,7 +6856,7 @@ fn create_debug_pipeline(
     .map_err(|error| SceneRenderError(error.to_string()))
 }
 
-fn create_compute_pipeline(
+pub(super) fn create_compute_pipeline(
     queue: &Arc<Queue>,
     module: Result<
         Arc<vulkano::shader::ShaderModule>,
@@ -6346,6 +7446,8 @@ struct RenderInstance {
     vec4 emissive;
     vec4 surface;
     uvec4 physics;
+    vec4 transmission;
+    vec4 uv_transform;
 };
 layout(set = 0, binding = 1) readonly buffer RenderInstances {
     RenderInstance data[];
@@ -6357,6 +7459,7 @@ layout(location = 4) out vec2 v_uv;
 layout(location = 5) out vec4 v_tangent;
 layout(location = 6) flat out vec4 v_emissive;
 layout(location = 7) flat out vec4 v_surface;
+layout(location = 8) flat out vec4 v_transmission;
 // Index into render_instances from the per-frame visible list.
 layout(location = 4) in uint instance_index;
 void main() {
@@ -6382,11 +7485,12 @@ void main() {
     v_color = instance.color;
     v_world_position = world_position.xyz;
     v_alpha = instance.physics.yzw;
-    v_uv = uv;
+    v_uv = uv * instance.uv_transform.xy + instance.uv_transform.zw;
     // Tangents follow the surface, so they take the model's linear part.
     v_tangent = vec4(mat3(model) * tangent.xyz, tangent.w);
     v_emissive = instance.emissive;
     v_surface = instance.surface;
+    v_transmission = instance.transmission;
 }
 "
                         }
@@ -6396,7 +7500,8 @@ void main() {
 mod fragment_shader {
     vulkano_shaders::shader! {
                             ty: "fragment",
-                            src: r"
+                            include: ["src/shaders"],
+                            src: r#"
 #version 450
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec4 v_color;
@@ -6406,6 +7511,7 @@ layout(location = 4) in vec2 v_uv;
 layout(location = 5) in vec4 v_tangent;
 layout(location = 6) flat in vec4 v_emissive;
 layout(location = 7) flat in vec4 v_surface;
+layout(location = 8) flat in vec4 v_transmission;
 layout(location = 0) out vec4 f_color;
 layout(set = 1, binding = 0) uniform sampler2D base_color_texture;
 layout(set = 1, binding = 1) uniform sampler2D normal_texture;
@@ -6432,14 +7538,166 @@ layout(set = 0, binding = 2) readonly buffer Lights {
 layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
 layout(set = 2, binding = 1) readonly buffer Shadow {
     mat4 light_view_projection;
+    vec4 environment;
+    vec4 scene_color;
+    vec4 viewport;
+    vec4 probes[8];
+    mat4 inverse_view_projection;
+    vec4 fog;
+    vec4 fog_shape;
+    vec4 ambient_occlusion;
 } shadow;
-// Fraction of the shadowed light reaching this fragment, 3x3 PCF.
-vec3 hemisphere(vec3 direction) {
+layout(set = 2, binding = 2) uniform sampler2D environment_map;
+layout(set = 2, binding = 3) uniform sampler2D scene_color;
+// Mip 0 of the depth pyramid: the opaque depth the reflection march tests.
+layout(set = 2, binding = 4) uniform sampler2D scene_depth;
+// Six faces per reflection probe; see PROBE_FACES.
+layout(set = 2, binding = 5) uniform sampler2DArray probe_maps;
+// Screen-space ambient occlusion per target pixel when
+// shadow.ambient_occlusion.x is 1.
+layout(set = 2, binding = 6) uniform sampler2D ambient_occlusion;
+#include "fog.glsl"
+// 0 opaque, 1 blended, 2 screen-space reflection overlay on opaque surfaces.
+layout(constant_id = 0) const uint PASS = 0u;
+// Matches SSR_MAX_ROUGHNESS.
+const float SSR_MAX_ROUGHNESS = 0.5;
+// Light arriving from `direction`: the equirectangular environment map at
+// mip `lod` (image top is +Y), else the ambient hemisphere.
+vec3 environment(vec3 direction, float lod) {
+    if (shadow.environment.x > 0.5) {
+        vec2 uv = vec2(
+            atan(direction.z, direction.x) / (2.0 * PI) + 0.5,
+            acos(clamp(direction.y, -1.0, 1.0)) / PI
+        );
+        // Keep the poles off the opposite edge a repeating sampler wraps to,
+        // measured on the coarser of the two mips a trilinear lookup blends.
+        float half_texel =
+            0.5 / float(textureSize(environment_map, int(ceil(lod))).y);
+        uv.y = clamp(uv.y, half_texel, 1.0 - half_texel);
+        return textureLod(environment_map, uv, lod).rgb * shadow.environment.y;
+    }
     return mix(
         camera.ground_ambient.rgb,
         camera.ambient.rgb,
         direction.y * 0.5 + 0.5
     );
+}
+const vec3 PROBE_FORWARD[6] = vec3[](
+    vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
+    vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0)
+);
+const vec3 PROBE_UP[6] = vec3[](
+    vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0),
+    vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0)
+);
+// Light arriving at `position` from `direction`: the environment at mip
+// `lod`, overlaid by the reflection probes whose box holds the position.
+// Each probe traces `direction` to its box wall and looks up the captured
+// face toward that point; `rough` in 0..1 picks the probe mip.
+vec3 surroundings(vec3 position, vec3 direction, float lod, float rough) {
+    vec3 sky = environment(direction, lod);
+    vec4 sum = vec4(0.0);
+    for (int i = 0; i < int(shadow.environment.w); ++i) {
+        vec3 center = shadow.probes[2 * i].xyz;
+        vec3 extents = shadow.probes[2 * i + 1].xyz;
+        vec3 local = position - center;
+        vec3 inside = extents - abs(local);
+        float margin = min(inside.x, min(inside.y, inside.z));
+        if (margin <= 0.0) {
+            continue;
+        }
+        vec3 toward = step(0.0, direction) * 2.0 - 1.0;
+        vec3 wall = (extents - local * toward)
+            / max(abs(direction), vec3(1e-5));
+        vec3 d = local + direction * min(wall.x, min(wall.y, wall.z));
+        vec3 a = abs(d);
+        int face = a.x >= a.y && a.x >= a.z ? (d.x > 0.0 ? 0 : 1)
+            : a.y >= a.z ? (d.y > 0.0 ? 2 : 3)
+            : (d.z > 0.0 ? 4 : 5);
+        vec3 forward = PROBE_FORWARD[face];
+        vec3 up = PROBE_UP[face];
+        vec2 uv = vec2(dot(d, cross(forward, up)), -dot(d, up))
+            / dot(d, forward) * 0.5 + 0.5;
+        vec3 light = textureLod(
+            probe_maps,
+            vec3(uv, float(6 * i + face)),
+            rough * shadow.probes[2 * i + 1].w
+        ).rgb * shadow.probes[2 * i].w;
+        // Fades in over the outer tenth of the box.
+        float weight = clamp(
+            margin / (0.1 * min(extents.x, min(extents.y, extents.z))),
+            0.0,
+            1.0
+        );
+        sum += vec4(light * weight, weight);
+    }
+    return sum.w > 0.0 ? mix(sky, sum.rgb / sum.w, min(sum.w, 1.0)) : sky;
+}
+// Target pixel of a point in normalized device coordinates.
+vec2 screen_pixel(vec2 ndc) {
+    return shadow.viewport.xy + (ndc * 0.5 + 0.5) * shadow.viewport.zw;
+}
+float scene_depth_at(vec2 ndc) {
+    return texelFetch(scene_depth, ivec2(screen_pixel(ndc)), 0).r;
+}
+// Screen-space reflection: marches `direction` from the fragment through the
+// opaque depth copy. Returns the opaque color copy where the ray crosses the
+// depth surface, weighted down near the screen edge, at the end of the
+// march, and toward SSR_MAX_ROUGHNESS; weight 0 on a miss.
+// ponytail: linear march with growing steps and a binary refine; march the
+// depth pyramid (Hi-Z) if long rays skip thin objects.
+vec4 trace_reflection(vec3 direction, float roughness) {
+    const int STEPS = 64;
+    vec3 position = v_world_position;
+    vec4 start = camera.view_projection * vec4(position, 1.0);
+    float previous = start.z / start.w;
+    float step_length = 0.02 * max(start.w, 1.0);
+    for (int i = 0; i < STEPS; ++i) {
+        vec3 next = position + direction * step_length;
+        vec4 clip = camera.view_projection * vec4(next, 1.0);
+        if (clip.w <= 0.0) {
+            break;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || ndc.z < 0.0
+            || ndc.z > 1.0) {
+            break;
+        }
+        float scene = scene_depth_at(ndc.xy);
+        // A hit crosses the depth surface within this step; a ray that is
+        // far behind it passed behind a foreground object and marches on.
+        if (i > 0 && ndc.z > scene
+            && ndc.z - scene <= 2.0 * (ndc.z - previous) + 1e-5) {
+            vec3 low = position;
+            vec3 high = next;
+            for (int j = 0; j < 5; ++j) {
+                vec3 middle = (low + high) * 0.5;
+                vec4 c = camera.view_projection * vec4(middle, 1.0);
+                if (c.z / c.w > scene_depth_at(c.xy / c.w)) {
+                    high = middle;
+                } else {
+                    low = middle;
+                }
+            }
+            vec4 c = camera.view_projection * vec4(high, 1.0);
+            vec2 hit = clamp(c.xy / c.w, -1.0, 1.0);
+            vec2 edge = 1.0 - smoothstep(0.8, 1.0, abs(hit));
+            float weight = edge.x * edge.y
+                * (1.0 - smoothstep(0.75, 1.0, float(i) / float(STEPS)))
+                * (1.0 - smoothstep(0.5 * SSR_MAX_ROUGHNESS, SSR_MAX_ROUGHNESS,
+                    roughness));
+            vec3 color = textureLod(
+                scene_color,
+                screen_pixel(hit) / vec2(textureSize(scene_color, 0)),
+                roughness * shadow.scene_color.y
+            ).rgb;
+            return vec4(color, weight);
+        }
+        previous = ndc.z;
+        position = next;
+        step_length *= 1.08;
+    }
+    return vec4(0.0);
 }
 float shadow_factor(vec3 surface_normal) {
     vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
@@ -6474,10 +7732,22 @@ void main() {
         discard;
     }
     float alpha = v_alpha.x == 2u ? base_color.a : 1.0;
+    // Opacity 0 draws nothing: reflections are not scaled by alpha, so a
+    // fully clear surface would otherwise still show a faint mirror.
+    if (v_alpha.x == 2u && alpha <= 0.0 && v_transmission.x <= 0.0) {
+        discard;
+    }
+    // Transmitted light comes from the opaque scene copy when the frame has
+    // one; without it, transmission only makes the surface see-through.
+    float transmission = v_transmission.x;
+    bool refracts = transmission > 0.0 && shadow.scene_color.x > 0.5;
+    alpha = refracts ? 1.0 : alpha * (1.0 - transmission);
     // light_info.z is the SceneDebugView: 1 unshaded, 2 normals.
     bool unlit = v_emissive.w > 0.5 && camera.light_info.z != 2u;
     if (unlit || camera.light_info.z == 1u) {
-        f_color = vec4(base_color.rgb, alpha);
+        // Fog is off in debug views.
+        vec4 haze = fog_at(v_world_position);
+        f_color = vec4(base_color.rgb * alpha * haze.a + haze.rgb * alpha, alpha);
         return;
     }
     vec3 normal = normalize(v_normal);
@@ -6490,7 +7760,7 @@ void main() {
         normal = normalize(mat3(tangent, bitangent, normal) * sampled);
     }
     if (camera.light_info.z == 2u) {
-        f_color = vec4(normal * 0.5 + 0.5, alpha);
+        f_color = vec4((normal * 0.5 + 0.5) * alpha, alpha);
         return;
     }
     // glTF packs roughness in green and metallic in blue.
@@ -6498,23 +7768,54 @@ void main() {
     float metallic = clamp(v_surface.x * packed.b, 0.0, 1.0);
     float roughness = clamp(v_surface.y * packed.g, 0.04, 1.0);
     float occlusion = texture(occlusion_texture, v_uv).r;
+    // Blended surfaces are not in the depth the occlusion was traced from.
+    if (PASS != 1u && shadow.ambient_occlusion.x > 0.5) {
+        occlusion *= texelFetch(ambient_occlusion, ivec2(gl_FragCoord.xy), 0).r;
+    }
     vec3 view_dir = camera.eye.w > 0.5
         ? normalize(camera.eye.xyz - v_world_position)
         : normalize(camera.eye.xyz);
     float n_dot_v = max(dot(normal, view_dir), 0.0001);
     vec3 f0 = mix(vec3(0.04), base_color.rgb, metallic);
-    vec3 diffuse_color = base_color.rgb * (1.0 - metallic);
+    // Premultiplied by alpha; specular is not, see the blend pipeline.
+    vec3 diffuse_color = base_color.rgb * (1.0 - metallic) * alpha
+        * (refracts ? 1.0 - transmission : 1.0);
     float a2 = roughness * roughness * roughness * roughness;
     float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
     // Hemisphere environment: diffuse from the normal, specular from the
     // reflection direction with roughness-aware Fresnel.
-    // ponytail: two-color hemisphere, no cubemap or HDRI; the sky system
-    // milestone brings image-based lighting.
+    // ponytail: without an environment map, a two-color hemisphere. With
+    // one, mip levels stand in for prefiltered radiance and irradiance.
     vec3 reflected = reflect(-view_dir, normal);
     vec3 env_fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0)
         * pow(1.0 - n_dot_v, 5.0);
-    vec3 result = (hemisphere(normal) * diffuse_color * (1.0 - env_fresnel)
-        + hemisphere(reflected) * env_fresnel) * occlusion;
+    float last_mip = shadow.environment.z;
+    vec3 reflection = surroundings(
+        v_world_position, reflected, roughness * last_mip, roughness);
+    // Surfaces drawn after the opaque copy see the scene in their
+    // reflections. The overlay adds the difference over the opaque pass.
+    vec4 traced = vec4(0.0);
+    if (PASS != 0u && shadow.scene_color.z > 0.5
+        && roughness < SSR_MAX_ROUGHNESS) {
+        traced = trace_reflection(reflected, roughness);
+    }
+    // The overlay's difference is seen through the same fog as the
+    // opaque surface under it.
+    vec4 haze = fog_at(v_world_position);
+    if (PASS == 2u) {
+        f_color = vec4(
+            (traced.rgb - reflection) * traced.a * env_fresnel * occlusion
+                * haze.a,
+            0.0
+        );
+        return;
+    }
+    reflection = mix(reflection, traced.rgb, traced.a);
+    vec3 result = (surroundings(
+            v_world_position, normal, max(last_mip - 1.0, 0.0), 1.0)
+            * diffuse_color * (1.0 - env_fresnel)
+        + reflection * env_fresnel)
+        * occlusion;
     // ponytail: every fragment loops over every uploaded light, bounded by
     // the quality profile's light budget; add clustered or tiled culling if
     // scenes need more local lights than the budget.
@@ -6575,10 +7876,32 @@ void main() {
         result += ((1.0 - fresnel) * diffuse_color + specular * PI)
             * radiance * n_dot_l;
     }
-    result += v_emissive.rgb * texture(emissive_texture, v_uv).rgb;
-    f_color = vec4(result, alpha);
+    if (refracts) {
+        // What is behind, seen along the ray bent at the surface after it
+        // crosses `thickness`, tinted by the base color and blurred by
+        // roughness.
+        // ponytail: one refraction at the entry face, no exit face, and
+        // blended objects behind are missing from the copy.
+        vec3 refracted = refract(-view_dir, normal, 1.0 / v_transmission.y);
+        vec4 clip = camera.view_projection
+            * vec4(v_world_position + refracted * v_transmission.z, 1.0);
+        vec2 pixel = shadow.viewport.xy
+            + (clip.xy / clip.w * 0.5 + 0.5) * shadow.viewport.zw;
+        vec3 behind = textureLod(
+            scene_color,
+            pixel / vec2(textureSize(scene_color, 0)),
+            roughness * shadow.scene_color.y
+        ).rgb;
+        result += behind * base_color.rgb * transmission * (1.0 - env_fresnel);
+    }
+    result += v_emissive.rgb * texture(emissive_texture, v_uv).rgb * alpha;
+    // Premultiplied like the rest: blended surfaces add fog by coverage.
+    // ponytail: refracted and screen-space reflected light comes from the
+    // fogged opaque copy, so it is fogged twice over the stretch in front of
+    // this surface; trace the fog per sample if dense fog shows it.
+    f_color = vec4(result * haze.a + haze.rgb * alpha, alpha);
 }
-"
+"#
                         }
 }
 
@@ -6614,6 +7937,8 @@ struct RenderInstance {
     vec4 emissive;
     vec4 surface;
     uvec4 physics;
+    vec4 transmission;
+    vec4 uv_transform;
 };
 layout(set = 0, binding = 1) readonly buffer RenderInstances {
     RenderInstance data[];
@@ -6719,14 +8044,25 @@ mod tonemap_fragment_shader {
         src: r"
 #version 450
 layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput scene;
-// mapper follows ToneMapper: 0 Linear, 1 Reinhard, 2 ACES.
+// Mip 0 of the bloom chain, half the target size.
+layout(set = 0, binding = 1) uniform sampler2D bloom;
+// mapper follows ToneMapper: 0 Linear, 1 Reinhard, 2 ACES. bloom is the
+// glow's intensity, 0 when the frame has none; inv_extent is one over the
+// target size in pixels.
 layout(push_constant) uniform ToneMap {
     float exposure;
     uint mapper;
+    float bloom;
+    float padding;
+    vec2 inv_extent;
 } tone;
 layout(location = 0) out vec4 f_color;
 void main() {
     vec4 hdr = subpassLoad(scene);
+    if (tone.bloom > 0.0) {
+        hdr.rgb += textureLod(bloom, gl_FragCoord.xy * tone.inv_extent, 0.0).rgb
+            * tone.bloom;
+    }
     vec3 c = max(hdr.rgb * tone.exposure, 0.0);
     if (tone.mapper == 1u) {
         c = c / (1.0 + c);
@@ -6735,6 +8071,93 @@ void main() {
         c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);
     }
     f_color = vec4(clamp(c, 0.0, 1.0), hdr.a);
+}
+"
+    }
+}
+
+/// Fullscreen triangle at the far plane for the sky fog pass, with its
+/// clip-space position for the fragment shader.
+#[rustfmt::skip]
+mod sky_vertex_shader {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: r"
+#version 450
+layout(location = 0) out vec2 v_ndc;
+void main() {
+    vec2 ndc = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2))
+        * 2.0 - 1.0;
+    v_ndc = ndc;
+    gl_Position = vec4(ndc, 1.0, 1.0);
+}
+"
+    }
+}
+
+/// Fogs the background where no surface was drawn. The output alpha is
+/// the share of the background that shows through; see `create_sky_pipeline`.
+#[rustfmt::skip]
+mod sky_fragment_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        include: ["src/shaders"],
+        src: r#"
+#version 450
+layout(location = 0) in vec2 v_ndc;
+layout(location = 0) out vec4 f_color;
+layout(push_constant) uniform Camera {
+    mat4 view_projection;
+    vec4 eye;
+    vec4 ambient;
+    vec4 ground_ambient;
+    uvec4 light_info;
+} camera;
+struct Light {
+    vec4 position_kind;
+    vec4 direction_range;
+    vec4 color_intensity;
+    vec4 spot_angles;
+};
+layout(set = 0, binding = 2) readonly buffer Lights {
+    Light data[];
+} lights;
+layout(set = 2, binding = 1) readonly buffer Shadow {
+    mat4 light_view_projection;
+    vec4 environment;
+    vec4 scene_color;
+    vec4 viewport;
+    vec4 probes[8];
+    mat4 inverse_view_projection;
+    vec4 fog;
+    vec4 fog_shape;
+    vec4 ambient_occlusion;
+} shadow;
+#include "fog.glsl"
+void main() {
+    f_color = fog_sky(v_ndc);
+}
+"#
+    }
+}
+
+/// Depth-only scene pass for ambient occlusion: discards masked texels
+/// like the lit pass so cutout holes do not occlude.
+#[rustfmt::skip]
+mod depth_prepass_fragment_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+#version 450
+layout(location = 1) in vec4 v_color;
+layout(location = 3) flat in uvec3 v_alpha;
+layout(location = 4) in vec2 v_uv;
+layout(set = 1, binding = 0) uniform sampler2D base_color_texture;
+void main() {
+    float alpha = v_color.a * texture(base_color_texture, v_uv).a;
+    if (v_alpha.x == 1u && alpha < uintBitsToFloat(v_alpha.y)) {
+        discard;
+    }
 }
 "
     }
@@ -6769,6 +8192,8 @@ struct RenderInstance {
     vec4 emissive;
     vec4 surface;
     uvec4 physics;
+    vec4 transmission;
+    vec4 uv_transform;
 };
 layout(set = 0, binding = 1) readonly buffer RenderInstances {
     RenderInstance data[];
@@ -7132,6 +8557,10 @@ mod tests {
             offset_of!(RenderInstanceUpload, physics),
             offset_of!(Reflected, physics)
         );
+        assert_eq!(
+            offset_of!(RenderInstanceUpload, uv_transform),
+            offset_of!(Reflected, uv_transform)
+        );
     }
 
     #[test]
@@ -7252,14 +8681,60 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let (order, batches, blended_start) =
-            render_batch_order(&renderables, |_| false);
+        let (order, batches, blended_start) = render_batch_order(
+            &renderables,
+            |_| false,
+            |m| ([Some(m.key()), None, None, None, None], false),
+        );
 
         assert_eq!(order.len(), 10_000);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].first_instance, 0);
         assert_eq!(batches[0].instance_count, 10_000);
         assert_eq!(blended_start, 10_000);
+    }
+
+    #[test]
+    fn materials_that_differ_only_in_color_share_a_batch() {
+        let mut assets = AssetServer::default();
+        let colored = (0..4)
+            .map(|index| {
+                assets.materials.insert(MaterialAsset {
+                    base_color: [index as f32 / 4.0, 0.0, 0.0, 1.0],
+                    roughness: 0.8,
+                    ..MaterialAsset::default()
+                })
+            })
+            .collect::<Vec<_>>();
+        // Glossy surfaces draw again for reflections, so they batch apart.
+        let glossy = assets.materials.insert(MaterialAsset {
+            roughness: 0.2,
+            ..MaterialAsset::default()
+        });
+        let renderables = colored
+            .iter()
+            .chain([&glossy])
+            .enumerate()
+            .map(|(index, material)| crate::runtime::ExtractedRenderable {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(index as u32)
+                    .unwrap(),
+                transform: crate::runtime::GlobalTransform::default(),
+                mesh: assets.fallback_mesh,
+                material: *material,
+                cast_shadows: true,
+                receive_shadows: true,
+                bounds: None,
+            })
+            .collect::<Vec<_>>();
+
+        let (_, batches, _) = render_batch_order(
+            &renderables,
+            |_| false,
+            |material| material_group(assets.materials.get(material)),
+        );
+
+        let counts = batches.iter().map(|b| b.instance_count);
+        assert_eq!(counts.collect::<Vec<_>>(), [4, 1]);
     }
 
     #[test]
@@ -7292,8 +8767,11 @@ mod tests {
             renderable(4, assets.fallback_material, 0.0),
         ];
 
-        let (order, batches, blended_start) =
-            render_batch_order(&renderables, |material| material == glass);
+        let (order, batches, blended_start) = render_batch_order(
+            &renderables,
+            |material| material == glass,
+            |m| ([Some(m.key()), None, None, None, None], false),
+        );
 
         assert_eq!(blended_start, 2);
         assert_eq!(batches.len(), 1);
@@ -7325,6 +8803,7 @@ mod tests {
         image: Arc<Image>,
         extent: [u32; 2],
         debug_view: SceneDebugView,
+        effects: SceneEffects,
     }
 
     impl SlabScene {
@@ -7426,6 +8905,7 @@ mod tests {
                 image,
                 extent,
                 debug_view: SceneDebugView::Lit,
+                effects: SceneEffects::default(),
             }
         }
 
@@ -7437,6 +8917,7 @@ mod tests {
                     self.extent,
                     SceneRenderOptions {
                         debug_view: self.debug_view,
+                        effects: self.effects,
                         ..SceneRenderOptions::game(self.extent)
                     },
                     &self.render_world,
@@ -7470,6 +8951,258 @@ mod tests {
                 )),
                 &self.image,
             )
+        }
+    }
+
+    /// Renders `scene` and returns the pixel at `[column, row]` as
+    /// `[r, g, b]`.
+    fn render_pixel(scene: &mut SlabScene, [x, y]: [u32; 2]) -> [u8; 3] {
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let index = ((y * scene.extent[0] + x) * 4) as usize;
+        let [b, g, r, _]: [u8; 4] =
+            scene.pixels()[index..index + 4].try_into().unwrap();
+        [r, g, b]
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn fog_hides_distant_surfaces_and_the_sky() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The white slab is about 5 m from the camera.
+        let mut scene = SlabScene::new(&[(0.0, MaterialAsset::default())]);
+        let center = [4, 4];
+        let [r, g, b] = render_pixel(&mut scene, center);
+        assert!(r > 100 && g > 100 && b > 100, "clear: {r} {g} {b}");
+        let fog = crate::runtime::Fog {
+            color: [1.0, 0.0, 0.0],
+            density: 1.0,
+            height_falloff: 0.0,
+            ..crate::runtime::Fog::default()
+        };
+        scene.render_world.fog = Some(fog);
+        let [r, g, b] = render_pixel(&mut scene, center);
+        assert!(r > 150 && g < 50 && b < 50, "dense fog: {r} {g} {b}");
+        // Fog far below the surface has thinned out to nothing.
+        scene.render_world.fog = Some(crate::runtime::Fog {
+            height: -10.0,
+            height_falloff: 5.0,
+            ..fog
+        });
+        let [r, g, b] = render_pixel(&mut scene, center);
+        assert!(r > 100 && g > 100 && b > 100, "low fog: {r} {g} {b}");
+        // Debug views show raw shading.
+        scene.render_world.fog = Some(fog);
+        scene.debug_view = SceneDebugView::Unshaded;
+        let [r, g, b] = render_pixel(&mut scene, center);
+        assert!(g > 100 && b > 100, "unshaded: {r} {g} {b}");
+        // The editor can switch fog off in its Scene view.
+        scene.debug_view = SceneDebugView::Lit;
+        scene.effects.fog = false;
+        let [r, g, b] = render_pixel(&mut scene, center);
+        assert!(g > 100 && b > 100, "fog switched off: {r} {g} {b}");
+
+        let mut sky = SlabScene::new(&[]);
+        sky.render_world.fog = Some(fog);
+        let [r, g, b] = render_pixel(&mut sky, center);
+        assert!(r > 150 && g < 20 && b < 20, "fogged sky: {r} {g} {b}");
+        sky.render_world.fog = Some(crate::runtime::Fog {
+            sky_affect: 0.0,
+            ..fog
+        });
+        assert_eq!(render_pixel(&mut sky, center), [0, 0, 0]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn bloom_spreads_bright_light_into_its_surroundings() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [50.0, 50.0, 50.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            )],
+            [32, 32],
+        );
+        // A bright square about three pixels wide in the center.
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(0.2, 0.2, 0.1))
+                .into();
+        let beside = [22, 16];
+        assert_eq!(render_pixel(&mut scene, beside), [0, 0, 0]);
+        scene.render_world.bloom = Some(crate::runtime::Bloom::default());
+        let [r, g, b] = render_pixel(&mut scene, beside);
+        assert!(r > 5 && r == g && g == b, "glow: {r} {g} {b}");
+        assert!(scene
+            .renderer
+            .last_frame_passes()
+            .contains(&FramePass::Bloom));
+        scene.effects.bloom = false;
+        assert_eq!(render_pixel(&mut scene, beside), [0, 0, 0]);
+        scene.effects.bloom = true;
+        // Below the threshold nothing glows.
+        scene.render_world.bloom = Some(crate::runtime::Bloom {
+            threshold: 100.0,
+            ..crate::runtime::Bloom::default()
+        });
+        assert_eq!(render_pixel(&mut scene, beside), [0, 0, 0]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn ambient_occlusion_darkens_surfaces_next_to_occluders() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A wall, and a second slab 0.3 m in front of its left half.
+        let mut scene = SlabScene::with_extent(
+            &[
+                (0.0, MaterialAsset::default()),
+                (0.3, MaterialAsset::default()),
+            ],
+            [32, 32],
+        );
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(-2.0, 0.0, 0.3))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    4.0, 4.0, 0.1,
+                )))
+            .into();
+        // Eco turns ambient occlusion off.
+        scene.render_world.quality = QualityProfile::High;
+        let (near, far) = ([17, 16], [30, 16]);
+        let before = [
+            render_pixel(&mut scene, near),
+            render_pixel(&mut scene, far),
+        ];
+        assert_eq!(before[0], before[1], "no occlusion without the component");
+        scene.render_world.ambient_occlusion =
+            Some(crate::runtime::AmbientOcclusion {
+                radius: 0.5,
+                intensity: 1.0,
+            });
+        let [near, far] = [
+            render_pixel(&mut scene, near),
+            render_pixel(&mut scene, far),
+        ];
+        assert!(
+            u32::from(near[1]) + 10 < u32::from(far[1]),
+            "crease {near:?} is darker than open wall {far:?}"
+        );
+        assert_eq!(far, before[1], "open wall is unoccluded");
+        let passes = scene.renderer.last_frame_passes();
+        assert!(passes.contains(&FramePass::DepthPrepass));
+        assert!(passes.contains(&FramePass::AmbientOcclusion));
+        scene.effects.ambient_occlusion = false;
+        assert_eq!(render_pixel(&mut scene, [17, 16])[1], before[0][1]);
+        scene.effects.ambient_occlusion = true;
+        scene.render_world.quality = QualityProfile::Eco;
+        let eco = render_pixel(&mut scene, [17, 16]);
+        assert!(!scene
+            .renderer
+            .last_frame_passes()
+            .contains(&FramePass::AmbientOcclusion));
+        assert_eq!(eco[1], before[0][1], "Eco skips ambient occlusion");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn atmosphere_effects_combine_with_every_scene_path() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        use crate::runtime::{Antialiasing, CullingMode};
+        // Glossy metal splits the pass for screen-space reflections.
+        let materials = [
+            MaterialAsset::default(),
+            MaterialAsset {
+                metallic: 1.0,
+                roughness: 0.1,
+                ..MaterialAsset::default()
+            },
+        ];
+        for material in materials {
+            for culling in
+                [CullingMode::Frustum, CullingMode::FrustumAndOcclusion]
+            {
+                for antialiasing in [Antialiasing::Off, Antialiasing::Msaa4] {
+                    let mut scene = SlabScene::with_extent(
+                        &[(0.0, material.clone()), (0.3, material.clone())],
+                        [32, 32],
+                    );
+                    scene.render_world.renderables[1].transform.matrix =
+                        (Matrix4::new_translation(&Vector3::new(
+                            -2.0, 0.0, 0.3,
+                        )) * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                            4.0, 4.0, 0.1,
+                        )))
+                        .into();
+                    scene.render_world.quality = QualityProfile::High;
+                    scene.render_world.culling = culling;
+                    scene.render_world.antialiasing = antialiasing;
+                    scene.render_world.fog = Some(crate::runtime::Fog {
+                        density: 0.05,
+                        ..crate::runtime::Fog::default()
+                    });
+                    scene.render_world.bloom =
+                        Some(crate::runtime::Bloom::default());
+                    scene.render_world.ambient_occlusion =
+                        Some(crate::runtime::AmbientOcclusion {
+                            radius: 0.5,
+                            intensity: 1.0,
+                        });
+                    // Occlusion culling needs a frame to fill its history.
+                    for _ in 0..2 {
+                        render_pixel(&mut scene, [0, 0]);
+                    }
+                    let label =
+                        format!("{culling:?} {antialiasing:?} {material:?}");
+                    let passes = scene.renderer.last_frame_passes();
+                    for pass in [
+                        FramePass::DepthPrepass,
+                        FramePass::AmbientOcclusion,
+                        FramePass::Bloom,
+                        FramePass::ToneMap,
+                    ] {
+                        assert!(passes.contains(&pass), "{label}: {pass:?}");
+                    }
+                    let near = render_pixel(&mut scene, [17, 16]);
+                    let far = render_pixel(&mut scene, [30, 16]);
+                    assert!(
+                        near[1] < far[1],
+                        "{label}: crease {near:?} is darker than {far:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -8812,6 +10545,7 @@ mod tests {
                     },
                     debug_overlay: Some(&overlay),
                     debug_view: SceneDebugView::Lit,
+                    effects: SceneEffects::default(),
                 },
                 &scene.render_world,
                 &scene.assets,
@@ -11412,6 +13146,396 @@ mod tests {
         scene.debug_view = SceneDebugView::Normals;
         let [r, g] = frame(&mut scene, ToneMapper::Reinhard, 1.0);
         assert!(r == g && r.abs_diff(188) <= 1, "normals: {r} {g}");
+    }
+
+    /// A 64x32 equirectangular map, red where `red(column, row)` holds and
+    /// blue elsewhere. Column 48 faces +Z; row 0 is straight up.
+    fn environment_texture(
+        scene: &mut SlabScene,
+        red: impl Fn(u32, u32) -> bool,
+    ) -> Handle<TextureAsset> {
+        let [width, height] = [64, 32];
+        let rgba8 = (0..height)
+            .flat_map(|row| (0..width).map(move |column| (column, row)))
+            .flat_map(|(column, row)| {
+                if red(column, row) {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 255, 255]
+                }
+            })
+            .collect();
+        scene.assets.textures.insert(TextureAsset {
+            size: [width, height],
+            rgba8,
+            color_space: TextureColorSpace::Linear,
+            sampler: TextureSampler::default(),
+        })
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn clear_glass_shows_what_is_behind_it_and_reflects_the_environment() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Clear glass in front of an unlit green slab, facing the camera.
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    model: crate::assets::MaterialModel::Unlit,
+                    base_color: [0.0, 1.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            ),
+            (
+                1.0,
+                MaterialAsset {
+                    alpha_mode: AlphaMode::Blend,
+                    base_color: [1.0, 1.0, 1.0, 0.02],
+                    roughness: 0.0,
+                    ..MaterialAsset::default()
+                },
+            ),
+        ]);
+        // The glass reflects +Z, the red side of the map.
+        scene.render_world.environment = Some((
+            environment_texture(&mut scene, |column, _| column >= 32),
+            1.0,
+        ));
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let [b, g, r, _] = scene.center_pixel();
+        assert!(g > 240, "the green slab shows through: {r} {g} {b}");
+        // Four percent at normal incidence, not scaled away by a tiny alpha.
+        assert!(r > 20 && b < r / 2, "the glass reflects red: {r} {g} {b}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_blend_material_at_opacity_zero_draws_nothing() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    model: crate::assets::MaterialModel::Unlit,
+                    base_color: [0.0, 1.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            ),
+            (
+                1.0,
+                MaterialAsset {
+                    alpha_mode: AlphaMode::Blend,
+                    base_color: [1.0, 1.0, 1.0, 0.0],
+                    roughness: 0.0,
+                    ..MaterialAsset::default()
+                },
+            ),
+        ]);
+        scene.render_world.environment = Some((
+            environment_texture(&mut scene, |column, _| column >= 32),
+            1.0,
+        ));
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let [b, g, r, _] = scene.center_pixel();
+        assert!(
+            r < 3 && b < 3 && g > 240,
+            "only the green slab shows: {r} {g} {b}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn mirror_floor_reflects_the_scene_in_screen_space() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A mirror floor with an unlit red wall behind the point the camera
+        // looks at. No light or environment map: only the traced wall is red.
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    metallic: 1.0,
+                    roughness: 0.0,
+                    ..MaterialAsset::default()
+                },
+            ),
+            (
+                -1.0,
+                MaterialAsset {
+                    model: crate::assets::MaterialModel::Unlit,
+                    base_color: [1.0, 0.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            ),
+        ]);
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(4.0, 0.1, 4.0))
+                .into();
+        scene.render_world.ambient_light = None;
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        let eye = Vector3::new(0.0, 2.0, 5.0);
+        camera.transform.matrix = (Matrix4::new_translation(&eye)
+            * nalgebra::Rotation3::rotation_between(&-Vector3::z(), &-eye)
+                .unwrap()
+                .to_homogeneous())
+        .into();
+        camera.projection = Projection::Orthographic {
+            vertical_size: 4.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let mut floor = |quality| {
+            scene.render_world.quality = quality;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let [b, g, r, _] = scene.center_pixel();
+            [r, g, b]
+        };
+        let [r, g, b] = floor(QualityProfile::High);
+        assert!(
+            r > 150 && g < r / 2 && b < r / 2,
+            "floor mirrors the wall: {r} {g} {b}"
+        );
+        // Eco skips the trace and the floor sees only the gray hemisphere.
+        let [r, g, b] = floor(QualityProfile::Eco);
+        assert!(
+            r.abs_diff(g) < 10 && g.abs_diff(b) < 10,
+            "Eco has no traced wall: {r} {g} {b}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn reflection_probe_shows_the_scene_behind_the_camera() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The camera looks straight down at a mirror floor. An unlit red
+        // ceiling over the -X half sits behind the camera, so neither the
+        // view nor screen-space reflections can see it; only the probe can.
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    metallic: 1.0,
+                    roughness: 0.0,
+                    ..MaterialAsset::default()
+                },
+            ),
+            (
+                0.0,
+                MaterialAsset {
+                    model: crate::assets::MaterialModel::Unlit,
+                    base_color: [1.0, 0.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            ),
+        ]);
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(10.0, 0.1, 10.0))
+                .into();
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(-3.0, 3.0, 0.0))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    6.0, 0.1, 10.0,
+                )))
+            .into();
+        scene.render_world.ambient_light = None;
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        // Screen right is +X.
+        camera.transform = probe_face_transform(
+            [0.0, 2.0, 0.0],
+            ([0.0, -1.0, 0.0], [0.0, 0.0, -1.0]),
+        );
+        camera.projection = Projection::Orthographic {
+            vertical_size: 4.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let mut floor = |probes: Vec<([f32; 3], ReflectionProbe)>| {
+            scene.render_world.reflection_probes = probes;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            let pixel = |column: usize| {
+                let [b, g, r, _]: [u8; 4] =
+                    pixels[(4 * 8 + column) * 4..][..4].try_into().unwrap();
+                [r, g, b]
+            };
+            (pixel(1), pixel(6))
+        };
+        let (left, right) = floor(Vec::new());
+        assert!(
+            left[0] < 150 && right[0] < 150,
+            "no probe: {left:?} {right:?}"
+        );
+        let probe = ReflectionProbe {
+            extents: [5.0, 2.5, 5.0],
+            intensity: 1.0,
+        };
+        let (left, right) = floor(vec![([0.0, 1.0, 0.0], probe)]);
+        assert!(
+            left[0] > 150 && left[1] < left[0] / 2 && left[2] < left[0] / 2,
+            "the -X floor reflects the red ceiling: {left:?}"
+        );
+        assert!(right[0] < 150, "the +X floor does not: {right:?}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn transmissive_glass_tints_the_refracted_backdrop() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Green-tinted transmissive glass in front of an unlit white slab.
+        // Without the scene color copy it would fade to alpha 0 and let the
+        // white through untinted.
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    model: crate::assets::MaterialModel::Unlit,
+                    base_color: [1.0, 1.0, 1.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            ),
+            (
+                1.0,
+                MaterialAsset {
+                    base_color: [0.0, 1.0, 0.0, 1.0],
+                    roughness: 0.0,
+                    transmission: 1.0,
+                    thickness: 0.1,
+                    ..MaterialAsset::default()
+                },
+            ),
+        ]);
+        // Occlusion frames split the late pass instead of the only one.
+        for culling in [CullingMode::Frustum, CullingMode::FrustumAndOcclusion]
+        {
+            scene.render_world.culling = culling;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let [b, g, r, _] = scene.center_pixel();
+            assert!(
+                g > 200 && r < g / 3 && b < g / 3,
+                "{culling:?}: the white backdrop shows through green: {r} {g} {b}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn smooth_metal_reflects_the_environment_map() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::new(&[(
+            0.0,
+            MaterialAsset {
+                metallic: 1.0,
+                roughness: 0.0,
+                ..MaterialAsset::default()
+            },
+        )]);
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(4.0, 0.1, 4.0))
+                .into();
+        scene.render_world.ambient_light = None;
+        // Upper half red (sky), lower half blue (ground).
+        scene.render_world.environment =
+            Some((environment_texture(&mut scene, |_, row| row < 16), 1.0));
+        let look_from = |scene: &mut SlabScene, side: Vector3<f32>| {
+            let camera = scene.render_world.active_camera.as_mut().unwrap();
+            camera.transform.matrix = (Matrix4::new_translation(&(side * 5.0))
+                * nalgebra::Rotation3::rotation_between(
+                    &-Vector3::z(),
+                    &-side,
+                )
+                .unwrap()
+                .to_homogeneous())
+            .into();
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let [b, g, r, _] = scene.center_pixel();
+            [r, g, b]
+        };
+        let [r, g, b] = look_from(&mut scene, Vector3::y());
+        assert!(r > 200 && g == 0 && b < 20, "top reflects sky: {r} {g} {b}");
+        let [r, g, b] = look_from(&mut scene, -Vector3::y());
+        assert!(
+            r < 20 && g == 0 && b > 200,
+            "bottom reflects ground: {r} {g} {b}"
+        );
+
+        // Fully rough, it sees the blurred average of both halves.
+        let material = scene.render_world.renderables[0].material;
+        scene.assets.materials.get_mut(material).unwrap().roughness = 1.0;
+        scene.render_world.renderables_revision += 1;
+        let [r, g, b] = look_from(&mut scene, Vector3::y());
+        assert!(r > 40 && b > 40 && g == 0, "rough blurs: {r} {g} {b}");
     }
 
     #[test]

@@ -177,7 +177,375 @@ Dependency cycles between runtime, renderer, physics, assets, and editor are not
 
 The existing `Engine::new`, `add_cube`, `add_sphere`, `add_gltf`, and `run` API remains temporarily available as a deprecated compatibility facade implemented over the new runtime.
 
-## Milestone 0: Correctness stabilization
+## Current focus: agent-built games and the editor
+
+Owner direction (2026-09): the editor, example games, and a workflow where an
+agent builds a whole game end to end with the `rusting` CLI and project files
+alone, with no MCP server or glue scripts. Deep physics items are paused.
+
+Method: build a small game with the CLI only, log every gap, fix the gaps,
+keep the game as a sample, then repeat with another genre. Editor work comes
+from the `docs/editor-overhaul.md` backlog, and the CLI and the editor should
+share one undoable command layer.
+
+- [x] Game 1, Hammer Run (`samples/hammer_run`). Evidence: `rusting check`
+  and its three scenarios pass from the repository; captures show the course,
+  the HUD and a collected gem; `hammer_hits` fails with the respawn code
+  removed.
+- [x] Gap: `scene patch` rejected partial built-in sections. Missing fields
+  now take their defaults. Evidence: `scene_patch::tests::created_sections_take_defaults_for_missing_fields`.
+- [x] Gap: patches needed UUIDs, so an agent had to query first. `id` and
+  `parent` take unique names. Evidence: `scene_patch::tests::operations_address_entities_by_unique_name`.
+- [x] Gap: new projects had no guide for an agent. `rusting new` writes
+  `AGENTS.md`. Evidence: `project::tests` create-project test.
+- [x] Gap: scenarios could only check exact ticks or "holds through".
+  `within` passes on the first tick a check holds. Evidence:
+  `scenario::tests::within_passes_on_the_first_tick_the_check_holds`.
+- [x] Gap: game code could not see contacts or the ECS world.
+  `GameScene::touching` and `GameScene::world`. Evidence: Hammer Run's
+  `hammer_hits` scenario.
+- [x] Gap: CLI commands needed an explicit project root; they default to
+  `.`. Evidence: `project_root_defaults_to_the_current_folder` in
+  `src/bin/rusting.rs`.
+- [x] Gap: `scene patch` could not change scene-level fields. `set_scene`
+  does. Evidence: `scene_patch::tests::set_scene_changes_scene_fields_but_not_entities`.
+- [x] Gap: a scenario could not set up state. `set` steps write a transform
+  or component value before a tick. Evidence:
+  `scenario::tests::set_steps_move_entities_before_the_tick_runs`, and a
+  Hammer Run scenario that sets the `Goal Count` counter and the player's
+  position.
+- [x] Gap: `GameScene` had no counter helper. `GameScene::counter(name)`.
+  Evidence: `project_runner::tests::game_code_reads_and_sets_counters_by_name`.
+  Other components stay behind `world()`.
+- [ ] Gap (deferred with deep physics): a kinematic player is never pushed
+  by dynamic bodies, so hazards need game code. Pushing it out of overlaps
+  was tried: the solver treats the kinematic player as infinite mass, so a
+  motorised sweeper stalls against it and only nudges it a few centimetres.
+  Real knockback needs the player as a finite-mass body in the solver. The
+  agent guide documents the `touching` pattern instead.
+- [x] Gap: `run --ticks` reported nothing about the end state. It saves the
+  scene to `build/final.rscene` for `scene query`; game `eprintln!` output is
+  in the `--json` result. Evidence: `rusting run samples/hammer_run --ticks
+  120` then `rusting scene query samples/hammer_run/build/final.rscene`.
+- [x] Game 2, Target Range (`samples/target_range`), a first-person
+  shooting gallery. Evidence: `rusting test samples/target_range
+  samples/target_range/tests` passes all three scenarios; a capture shows
+  the targets, crosshair and HUD.
+- [x] Gap: games had no custom input. `rusting.input_action` binds a named
+  action to keys and mouse buttons from the scene; `GameScene::pressed` and
+  `held` read it. Evidence:
+  `project_runner::tests::scene_input_actions_bind_and_report_presses`.
+- [x] Gap: game code could not ray cast or remove objects.
+  `GameScene::raycast`, `aim` (along the active camera), `despawn`,
+  `set_visible` and `trigger`. Evidence:
+  `project_runner::tests::aim_hits_what_the_camera_faces_and_despawn_removes_it`.
+- [x] Gap: a scenario could not check that an object is gone. Expectations
+  take `"exists": false`. Evidence:
+  `scenario::tests::exists_checks_entities_and_paths` and Target Range's
+  `first_shot`.
+- [x] Gap: `rusting test` ran one file per call. With a folder, or no
+  argument (`tests/`), it runs every scenario and lists each result.
+  Evidence: `rusting test` in `samples/target_range`.
+- [x] Gap: `rusting new` wrote no `.gitignore`, so `target/` and `build/`
+  showed up in git. Evidence: `project::tests` create-project test.
+- [x] Game 3, Sky Hop (`samples/sky_hop`), a 2D platformer. Evidence:
+  `rusting test` in `samples/sky_hop` passes all four scenarios, including
+  `clear_level`, which finishes the level with timed inputs only; a capture
+  shows the tile map, coin and HUD.
+- [x] Gap: character controllers did not ride moving platforms and stuck to
+  ceilings while rising. Both now follow the floor body's motion and stop
+  rising at a ceiling. Evidence:
+  `runtime::tests::controllers_ride_moving_platforms_and_stop_at_ceilings`
+  and Sky Hop's `ride_lift`.
+- [x] Gap: the editor showed no tile map tiles or background color until
+  Play, so Sky Hop's level was blank while editing. Edit mode now runs
+  `build_tile_maps` and `apply_scene_background`; a clicked tile selects its
+  map, and tiles stay out of the Hierarchy and the saved scene. Evidence:
+  `editor::tests::edit_mode_builds_tile_maps_without_listing_or_saving_tiles`.
+- [x] Gap: tile maps could only be edited as text rows. The Inspector's
+  Tile Painter paints and erases cells from the Scene View, one Undo step
+  per stroke. Evidence:
+  `editor::picking::tests::scene_view_points_paint_the_tile_map_cell_under_them`
+  and `runtime::tests::tile_map_cells_are_found_by_position_and_painted_with_padding`.
+- [x] Tile Painter tools, as in Godot: Rectangle fills the cells between
+  the pressed and released cells, Fill flood fills the joined cells that
+  match the clicked one, and the cell under the pointer (or the dragged
+  rectangle) is outlined in the Scene View. Each is one Undo step.
+  Evidence: `runtime::tests::tile_map_rectangles_and_flood_fills_paint_regions`,
+  `editor::overlay::tests::tile_rect_lines_outline_the_cells_between_two_corners`
+  and `editor::picking::tests::scene_view_points_paint_the_tile_map_cell_under_them`.
+  The Scene View input path has no automated test; try it by hand.
+- [x] Tile Painter Line tool paints Bresenham's line from the pressed cell
+  to the released one, with each cell outlined while dragging, and Fill
+  no longer grows the grid when clicked outside the used area. Evidence:
+  `runtime::tests::tile_map_rectangles_and_flood_fills_paint_regions`
+  (line cells, `fill_line`, fill outside the grid). The Scene View input
+  path has no automated test; try it by hand.
+- [x] Tile Painter palette: the brush is a row of swatches, one per tile in
+  its color with its character on top, then Erase and Off, as in Godot's
+  TileSet panel. Evidence:
+  `editor::inspector::tests::the_tile_palette_shows_each_tile_color_and_picks_a_brush`.
+- [x] Tile Painter tool shortcuts, Godot's keys: D Paint, R Rectangle, L
+  Line, B Fill. They apply only while a brush is active on a selected tile
+  map in Edit mode, where they win over the Scene View keys (R rotates
+  otherwise), and they are rebindable in their own Keyboard Shortcuts
+  section. Evidence:
+  `editor::shortcuts::tests::tile_tool_keys_apply_only_while_a_brush_paints_a_tile_map`.
+- [x] Game 4, Ember Arena (`samples/ember_arena`), a third-person arena
+  survival game lit by fog, bloom, ambient occlusion and point lights.
+  Evidence: `rusting test` in `samples/ember_arena` passes all three
+  scenarios (`ember_burns`, `pulse_quenches`, `game_over`); captures in
+  `tests/shots/` show the fogged arena, gate glow and ember lights.
+- [x] Gap: game code could not spawn copies of a scene object, so enemies
+  had to be pre-placed. `GameScene::spawn_copy` copies a template object and
+  its children (children are named `"<copy>/<child>"` so names stay unique),
+  and `GameScene::in_class` lists the objects in a class. Evidence:
+  `project_runner::tests::spawn_copy_clones_the_template_tree_and_in_class_lists_it`.
+- [x] Gap: a patch that created a registered component with some fields
+  missing failed with "missing field". Registered components now take
+  defaults like built-in sections. Evidence:
+  `scene_patch::tests::created_sections_take_defaults_for_missing_fields`.
+- [x] Gap: lights on hidden objects still lit the scene, so a hidden
+  template's glow showed. Light extraction skips objects hidden by
+  themselves or a parent, as meshes already did. Evidence:
+  `runtime::render_world::tests::lights_under_hidden_objects_are_not_extracted`.
+- [x] Game 5, Tower Topple (`samples/tower_topple`), a first-person game:
+  thrown balls knock two towers and a pyramid off their stands, with ten
+  balls per round. Evidence: `rusting test` in `samples/tower_topple`
+  passes all three scenarios (`topple_pyramid`, `win_and_restart`,
+  `out_of_balls`); `tests/shots/` shows the throw and the win text.
+- [x] Gap: game code could not launch a projectile: there was no camera
+  ray to aim along, a template copy could not switch from kinematic to
+  dynamic, and a velocity set on a sleeping body was lost.
+  `GameScene::camera_ray`, `GameScene::set_body_kind`, and
+  `set_linear_velocity` waking the body cover it. Evidence:
+  `project_runner::tests::a_kinematic_template_copy_launches_along_the_camera_ray`.
+- [x] Gap: a round could not be restarted without resetting every object
+  by hand. `GameScene::restart` reloads the starting scene and reruns
+  `once` setup. Evidence:
+  `project_runner::tests::restart_puts_the_starting_scene_back_and_reruns_setup`.
+- [x] Gap: hidden HUD elements were still drawn, so a win message could
+  not be hidden by game code. Evidence:
+  `runtime::tests::hidden_hud_elements_are_not_drawn`.
+- [x] Gap: a thrown ball passed through the pyramid. The continuous
+  collision sweep cast only the ball's center, which slipped through the
+  seam between two blocks, and it stopped the ball dead on a dynamic
+  target instead of pushing it. The sweep now casts against colliders
+  grown by the ball's radius and leaves the momentum to the contact solve.
+  Evidence:
+  `runtime::tests::a_fast_ball_between_two_dynamic_boxes_pushes_both_back`
+  (fails on the old sweep) and `fast_cpu_bodies_do_not_tunnel_through_thin_walls`.
+- [x] Gap: HUD text wrapped when it grew ("14 / 14" broke onto two lines).
+  HUD labels now break only at `\n`. Evidence: `tests/shots/win.png` in
+  `samples/tower_topple`.
+- [x] Game 6, Crate Keeper (`samples/crate_keeper`), a top-down
+  crate-pushing puzzle on a tile map grid. Evidence: `rusting test` in
+  `samples/crate_keeper` passes all three scenarios (`solve`, `blocked`,
+  `restart`); `tests/shots/solved.png` shows every crate on a gold square
+  and the win text.
+- [x] Gap: game code could not read the tile map, so grid games had to
+  duplicate the level layout in code. `GameScene::tile` reads and
+  `GameScene::set_tile` writes the cell under a world position. Evidence:
+  `project_runner::tests::game_code_reads_and_writes_tile_map_cells_by_world_position`.
+- [x] Gap: scenario `tolerance` applied only to single numbers, so a
+  position check failed on `0.10000000149` against `0.1`. It now applies to
+  every number in an array or object. Evidence:
+  `scenario::tests::tolerance_applies_to_every_number_in_a_vector_or_object`.
+- [x] Game 7, Brick Bounce (`samples/brick_bounce`), a 2D brick breaker
+  with a dynamic ball bouncing off fixed walls and bricks and a kinematic
+  paddle. Evidence: `rusting test` in `samples/brick_bounce` passes all
+  four scenarios (`first_hit`, `lose_ball`, `paddle_limits`,
+  `win_and_restart`); `tests/shots/playing.png` shows a broken brick and
+  the returning ball. The ball's z stays 0 through bounces.
+- [x] Gap: game code could set a body's velocity but not read it, so
+  constant-speed balls needed `world()` queries. `GameScene::linear_velocity`
+  reads it. Evidence:
+  `project_runner::tests::a_kinematic_template_copy_launches_along_the_camera_ray`.
+- [x] Game 8, Core Defense (`samples/core_defense`), a top-down turret
+  shooter aimed with the mouse cursor. Evidence: `rusting test` in
+  `samples/core_defense` passes all four scenarios (`aimed_shot`,
+  `missed_shot`, `core_falls`, `defended`); `tests/shots/firing.png` shows a
+  bolt flying at the first drone.
+- [x] Gap: game code had no ray through the mouse cursor, and scenarios
+  could not move the cursor, so mouse aiming could not be written or tested.
+  `GameScene::pointer_ray` returns it, and the `pointer` scenario step places
+  the cursor at a fraction of the view. Evidence:
+  `project_runner::tests::pointer_ray_goes_through_the_cursor`,
+  `scenario::tests::pointer_steps_place_the_cursor_in_the_capture_sized_view`.
+- [x] Gap: `GameObject` could set rotation and scale but not read them back.
+  `GameObject::rotation` and `GameObject::scale` read them. Evidence: Core
+  Defense bolts fly along their stored yaw.
+- [x] Game 9, Putt Course (`samples/putt_course`), a mini golf hole with a
+  dynamic ball rolling on physics, a charged putt aimed with the mouse, a
+  kinematic sweeper and a sensor cup. Evidence: `rusting test` in
+  `samples/putt_course` passes all four scenarios (`first_putt`,
+  `overcharge`, `sink`, `too_fast`); `tests/shots/aiming.png` shows the aim
+  arrow at half power and `tests/shots/sunk.png` the win text after one
+  stroke.
+- [x] Gap: six of eight games defined their own `value`, `add` and
+  `complete` counter helpers, and a helper that borrows the scene cannot be
+  nested in another scene call. `GameScene::counter_value`,
+  `add_to_counter` and `counter_complete` do it in one call. Evidence:
+  `project_runner::tests::game_code_reads_and_sets_counters_by_name`.
+- [x] Gap: game code had no short way to draw seeded random numbers; it
+  had to read `RandomSeed` and `FrameTime` through `world()`, and earlier
+  samples used fixed lists instead. `GameScene::random(stream)` draws from
+  the seed, the fixed tick and the stream. Evidence:
+  `project_runner::tests::game_randomness_repeats_for_a_seed_and_varies_by_tick_and_stream`.
+- [x] Game 10, Lantern Grid (`samples/lantern_grid`), a lights-out puzzle
+  played with mouse clicks on a top-down orthographic board. Evidence:
+  `rusting test samples/lantern_grid` passes both scenarios (`center`,
+  `solve`); `tests/shots/scrambled.png` shows the 11 lit lanterns of the
+  fixed scramble and `tests/shots/solved.png` the full board with the win
+  text after three moves.
+- [x] Gap: game code could not recolor one object. Scene materials are
+  shared by value, so editing one through `world()` recolored every object
+  with the same color. `GameScene::color`, `set_color` and `set_emissive`
+  give the object its own material. Evidence:
+  `project_runner::tests::game_code_recolors_one_object_without_touching_shared_materials`.
+- [x] Gap: `rusting test samples/game` read the project folder as a
+  scenario and failed on `project.json`, and a scenario path was resolved
+  from the current folder rather than the project. A lone project argument
+  now runs its `tests/` folder, and scenario paths are looked up in the
+  project first. Evidence:
+  `rusting::tests::project_root_defaults_to_the_current_folder`;
+  `rusting test samples/lantern_grid` from the repository root.
+- [x] Game 11, Snake Trail (`samples/snake_trail`), a snake game on the
+  2D template: grid steps on fixed ticks, walls read from a
+  `rusting.tile_map`, and a tail grown with `spawn_copy`. Evidence:
+  `rusting test samples/snake_trail` passes all three scenarios (`eat`,
+  `crash`, `win`); `tests/shots/grown.png` shows the four-cell snake after
+  the first apple and `tests/shots/won.png` the win text.
+- [x] Gap: game code had no way to set a counter to a value; Putt Course,
+  Lantern Grid and Snake Trail each wrote the same borrow-and-assign
+  helper. `GameScene::set_counter` does it. Evidence:
+  `project_runner::tests::game_code_reads_and_sets_counters_by_name`.
+- [x] Game 12, Night Vault (`samples/night_vault`), a third-person stealth
+  game at night: guards patrol on fixed-tick paths with spot lights, see
+  the player through a view cone and a line-of-sight raycast, and raise an
+  alert meter; crates and hedges block their view. Evidence:
+  `rusting test samples/night_vault` passes all three scenarios (`spotted`,
+  `hidden`, `heist`); `tests/shots/spotted.png` shows the lose text with a
+  guard's lamp on the floor and `tests/shots/escaped.png` the win text at
+  the vault door.
+- [x] Gap: the third-person camera went through walls behind the player
+  and showed only the sky. A camera-sized sphere cast from the orbit
+  center now stops the camera in front of the first solid collider,
+  ignoring the player's own body. Evidence:
+  `runtime::tests::third_person_camera_stops_in_front_of_a_wall_behind_the_body`;
+  the Night Vault captures with the player backed against a hedge.
+- [x] Gap: game code could only restart the scene it started with, so a
+  game had no levels, menus or separate end screens.
+  `GameScene::load_scene(path)` replaces the scene with another project
+  scene file, which `restart` then returns to. Evidence:
+  `project_runner::tests::load_scene_switches_to_another_project_scene`
+  (a missing file leaves the scene as it was; `once` runs again; restart
+  returns to the loaded level). `rusting export` still ships only the main
+  scene.
+- [x] `skills/rusting-game/SKILL.md`: a skill file for LLM agents that
+  build games on the engine, with the CLI loop, scene and patch format,
+  the `GameScene` API, determinism rules for game code, the scenario format
+  and its pitfalls, and a done checklist, taken from the twelve sample
+  games.
+- [x] Gap: `rusting export` should copy every scene a game loads, not only
+  the main one. Export now copies the project's `scenes/` folder; checked in `export_package_contains_executable_scene_assets_and_readme`.
+- [x] Gap: a misspelled field in a partial scene component is dropped and
+  takes its default without a diagnostic (Night Vault's moon used
+  `intensity` instead of `illuminance` and lit the night at full sun).
+  `rusting scene patch` and `rusting check` should report unknown fields.
+  Done for `scene patch`: unit tests `a_misspelled_field_in_a_section_is_an_error` and `a_full_material_and_light_pass_the_field_check`; full check green. `rusting check` reads scenes strictly through serde already.
+- [x] Gap (Same Shift): game projects built the engine unoptimized, so a
+  busy CPU physics scene took 20 to 35 ms per tick and the fixed-step
+  catch-up spiraled to near 0 FPS. The `rusting new` template and every
+  sample `Cargo.toml` now build dependencies with `opt-level = 3`. When a
+  frame hits `max_fixed_steps` and its steps take longer than the time they
+  simulate, the next frames run one step each (slow motion instead of a
+  freeze) until steps are fast again, with one warning that names the
+  likely cause. The clamp happens before the replay recorder, so replays
+  step the same way. `rusting run --ticks N --json` reports
+  `timings.headless_ms_per_tick`. Evidence:
+  `runtime::tests::fixed_steps_slower_than_real_time_fall_back_to_slow_motion`.
+- [x] Gap (Same Shift): `restart` and `load_scene` did not repeat physics,
+  because the CPU solver ordered bodies by `Entity`, and a reload hands out
+  entities in a different order. Bodies now sort by `SpawnOrder`, the
+  object's rank by scene ID within its document; runtime spawns take the
+  next number. Joints and articulations index bodies by map and sort by
+  body order. Evidence:
+  `project_runner::tests::restart_repeats_a_physics_pile_exactly` (a
+  12-box pile saved in reverse ID order matches after `restart` with
+  tolerance 0; fails with the old entity sort).
+- [x] Gap (Same Shift): game code had no snapshot, body reset, starting
+  state, look direction or class hash. Added `GameScene::snapshot`,
+  `restore` (keeps velocities, sleep and solver caches, renamed to the new
+  entities), `reset_body`, `set_angular_velocity`, `angular_velocity`,
+  `initial`, `set_look` and `state_hash(class)`; `set_body_kind` to
+  `Kinematic` or `Fixed` now zeroes velocities. The prelude exports
+  `Entity`, `World`, `Name`, `RigidBody`, `PlayerController` and
+  `PhysicsWorld`. Evidence:
+  `project_runner::tests::body_calls_stop_spin_and_reset_bodies_and_set_look_turns_the_player`
+  and `restart_repeats_a_physics_pile_exactly` (restored mid-fall run
+  matches the run that went on; fails without the solver-state rename).
+- [x] Gap (Same Shift): sleeping bodies floated when their support was
+  removed or moved. Sleepers near a body that gameplay removed, moved or
+  changed wake on the next step. Evidence:
+  `runtime::tests::sleeping_cpu_bodies_fall_when_their_support_is_removed_or_moved`.
+- [x] Gap (Same Shift): scenarios had no way to record a value. A `log`
+  step records `entity.path` (every tick with `until`) and never fails;
+  `rusting test --json` lists the lines. Evidence:
+  `scenario::tests::log_steps_record_a_value_every_tick_and_never_fail`.
+- [ ] Gap (Same Shift): GPU bodies reach game code 1 to 3 frames late and
+  cannot be reset or teleported after setup. Document their feature set
+  and let game code move one to a pose with zero velocity.
+- [ ] Gap (Same Shift): a camera that renders into a texture or a screen
+  rectangle, for monitors and split screen.
+- [ ] Gap: `RenderSettings::render_scale` is declared and reflected but no
+  renderer code reads it, so setting it does nothing. The tone map is a
+  subpass that reads the HDR target as an input attachment, so a scaled scene
+  needs the tone map to become its own pass that samples the smaller target
+  (a resolution scale and an upscale filter).
+- [ ] Gap: `rusting capture` does not run game code.
+- [x] Gap: a scenario stops at its first failed check. `"keep_going": true` in the scenario file reports every failure; test `keep_going_reports_every_failed_check`.
+- [ ] Gap: a windowed `rusting run` shows no on-screen FPS or frame time.
+  `RUSTING_PERF=1` prints fps, update/render split, CPU phases, GPU pass
+  times and draw counts to stderr once a second and shows fps and frame
+  time in the window title. An in-game overlay is still open.
+- [x] Perf (Same Shift, RTX 3060, 1080p, clean GPU): 355 to about 1000 fps.
+  Swapchain image count 2 to 4 (Wayland throttled Immediate with 2), a
+  `reflections` render setting that skips the scene copy, mip chain and depth
+  pyramid, and batching by mesh and texture group (97 to 18 draws, 0.56 to
+  0.22 ms recording). Evidence: `RUSTING_PERF=1` lines in CHANGELOG, test
+  `materials_that_differ_only_in_color_share_a_batch`,
+  `the_reflections_setting_reaches_the_render_world`; full check green with
+  and without `--features gpu-tests`. Note: a second game instance on the
+  GPU halves every number; close it before measuring.
+- [x] Gap (Same Shift): a scenario `expect` with tolerance 0 failed on
+  every printed spelling of an f32 value, because serde_json parses decimal
+  text only to within an f64 ulp. A value that is an exact f32 now also
+  matches any number that rounds to the same f32. Evidence:
+  `scenario::tests::a_printed_f32_matches_itself_with_tolerance_zero`.
+- [x] Gap (Same Shift): cube side faces showed images upside down. Cube
+  UVs follow glTF: v = 0 is the image's first row, at the top of each side
+  face and the -Z edge of the top and bottom faces (spheres already did).
+  Evidence:
+  `assets::tests::cube_side_faces_show_the_first_image_row_at_the_top`.
+- [x] Gap (Same Shift): textures could not repeat. Materials have
+  `uv_scale` and `uv_offset`, saved in scenes (default `[1, 1]` and
+  `[0, 0]`), reflected for the Inspector and applied in the vertex shader.
+  Evidence: `rendering::scene_renderer::tests::render_instance_layout_matches_shader_struct`
+  checks the new `uv_transform` field against the shader struct.
+- [x] Gap (Same Shift): `rusting schema` called scene texture slots a
+  "project path"; they are plain strings relative to the scene file, not
+  `{"$asset": ...}`. The `mesh_renderer` entry now says so and lists
+  `uv_scale` and `uv_offset`.
+- [x] Gap (Same Shift): the player controller climbed boxes on the round
+  bottom of its capsule and could not be kept from pushing dynamic bodies.
+  `PlayerController` has `max_slope` (default 45°), `max_step_height`
+  (default 0.3 m) and `push_bodies` (default true), and
+  `PhysicsWorld::move_character_on_foot` walks with the first two. With
+  `push_bodies` off the solver drops the player's contacts with dynamic
+  bodies, which still block its movement. Evidence:
+  `runtime::tests::players_step_onto_low_ledges_but_not_high_ones_and_can_leave_crates_alone`.
+
 
 Goal: establish a trustworthy baseline before adding architecture or features.
 
@@ -719,6 +1087,10 @@ Goal: eliminate frame-loop stalls and host/GPU races while making rendering deri
     change.
   The `Auto` heuristic is static, marked with a `ponytail:` comment. Whether
   it picks the right profile on a real UHD 620 is hardware tier.
+  The editor's Project area shows the resolved profile, marked "(Auto)"
+  when it was picked automatically, and counts loaded LOD groups next to
+  meshes. Evidence:
+  `editor::tests::project_area_shows_lod_groups_and_the_resolved_auto_quality`.
 - [x] Remove shader variants as user-facing performance controls; choose implementation variants automatically.
   The ECS/editor path (`SceneRenderer`) exposes no performance variant:
   - It builds one scene pipeline.
@@ -846,6 +1218,13 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
   modes": second pipeline, per-frame back-to-front sort. Evidence: GPU test
   `alpha_modes_render_opaque_mask_and_sorted_blend` (fails with sorting
   disabled), unit test `blended_objects_render_last_unbatched_and_back_to_front`.
+  Later: blending is premultiplied. Diffuse and emissive scale by alpha,
+  specular and environment reflections do not, so glass at alpha 0 still
+  mirrors its surroundings. Known ceiling: no refraction or colored tint of
+  what is behind; that needs a copy of the opaque color (Milestone 13
+  "Refractive glass"). Evidence: GPU test
+  `clear_glass_shows_what_is_behind_it_and_reflects_the_environment` (fails
+  with the old `SrcAlpha` color factor: no red reflection).
 - [x] Add one shadowed directional light.
   The first uploaded `DirectionalLight` with `shadows: true` is shadowed;
   its index reaches the fragment shader in `light_info.y`, and receivers
@@ -1072,6 +1451,14 @@ Goal: deliver a coherent, production-shaped forward renderer for the vertical sl
   become 96 sphere lines of radius 3). fmt and clippy are clean in all
   three configurations. Tests: 190+49+15, and 226+49+15 with `gpu-tests`.
   Not covered by a test: driving the egui combo box through a real frame.
+  Later: a selected override shows a handle on each box face (or at the
+  sphere's radius on each local axis). Dragging one moves that face along
+  the object's local axis, stopping at the opposite face, or sets the
+  radius; each drag is one Undo step. "Fit to Mesh" wraps the override
+  around the mesh box again. Evidence: unit test
+  `dragging_render_bounds_handles_moves_one_face_in_local_space` (a 2x
+  X-scaled box's +X face dragged 2 m moves local max X by 1, min stays,
+  face clamping and sphere radius).
 - [x] Report submitted, visible, and culled instance counts plus culling compute time in the profiler.
   `SceneRenderer::culling_stats()` returns `CullingStats`: the path,
   submitted, visible, and culled counts, and the culling time. The
@@ -1424,7 +1811,7 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add a dockable area-tree layout with selectable editor types and project-local persistence.
 - [x] Replace the bootstrap Vulkan egui integration with an engine-owned texture/mesh upload path and render pass. Evidence: see Milestone 4 "Engine-owned egui compositing pass" (`EguiPainter` GPU tests, editor smoke run).
 - [x] Add a central editor-shortcut action map; `Numpad 0` toggles Scene View fly-camera pointer capture while Escape remains a normal UI key.
-- [x] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map. Evidence: the "Keyboard Shortcuts" area type lists every action by context (Editor, Scene View, Transform, Fly Camera); clicking a key waits for the next key press, Escape cancels, and a key taken from another action in the same context leaves that action unbound. The map is saved to `editor_shortcuts.json` in the user config folder and loaded over the defaults at startup. Undo, Redo, Save scene, Delete selection and Rename are now `EditorAction`s (Ctrl+Z, Ctrl+Shift+Z, Ctrl+S, Delete, F2) that the window-event handler queues and the view runs like the menu entries; the Hierarchy's hard-coded Delete/X/F2 keys are gone. Tests: `editor::shortcuts::tests::{editor_actions_need_their_exact_modifiers, captured_key_binds_the_waiting_action_and_escape_cancels, saved_shortcuts_load_over_the_defaults}`, `editor::tests::{queued_shortcuts_delete_and_undo_like_the_menu, shortcuts_area_lists_every_action_with_its_key}`; the editor starts cleanly. Limits: one key per action, so X no longer deletes by default; widget-local keys (Enter/Escape in the rename field, Escape to cancel a gizmo drag) stay fixed. Follow-ups are in `docs/editor-overhaul.md`.
+- [x] Add a Settings panel for rebinding and persisting shortcuts, then route every editor command through the same action map. Evidence: the "Keyboard Shortcuts" area type lists every action by context (Editor, Scene View, Transform, Fly Camera); clicking a key waits for the next key press, Escape cancels, and a key taken from another action in the same context leaves that action unbound. The map is saved to `editor_shortcuts.json` in the user config folder and loaded over the defaults at startup. Undo, Redo, Save scene, Delete selection and Rename are now `EditorAction`s (Ctrl+Z, Ctrl+Shift+Z, Ctrl+S, Delete, F2) that the window-event handler queues and the view runs like the menu entries; the Hierarchy's hard-coded Delete/X/F2 keys are gone. Tests: `editor::shortcuts::tests::{editor_actions_need_their_exact_modifiers, captured_key_binds_the_waiting_action_and_escape_cancels, saved_shortcuts_load_over_the_defaults}`, `editor::tests::{queued_shortcuts_delete_and_undo_like_the_menu, shortcuts_area_lists_every_action_with_its_key}`; the editor starts cleanly. Each action can also take a second key (right-click removes it); Redo also answers Ctrl+Y. A file saved before second keys existed keeps the default ones (test `second_keys_trigger_actions_and_move_between_actions`). Limits: at most two keys per action, and X does not delete by default because it picks the X axis in the Scene View; widget-local keys (Enter/Escape in the rename field, Escape to cancel a gizmo drag) stay fixed. Follow-ups are in `docs/editor-overhaul.md`.
 - [x] Route keyboard and mouse focus correctly between all viewport navigation modes and UI. Evidence: the Scene View takes pointer events only when egui's topmost layer under the cursor is the viewport (`EditorViewport::hovered`, test `editor::shortcuts::tests::covered_viewport_does_not_take_pointer_events`), and keys only when no text field wants them. Losing window focus ends fly and orbit navigation (`release_editor_navigation`). Pointer capture falls back from `Locked` to `Confined` on Windows and X11. While fly or orbit navigation is active, the editor now keeps presses, pointer motion, the wheel and text away from egui, so they cannot click, scroll or type into UI under the hidden cursor; releases still pass, so egui never keeps a button held (`ui_receives_during_navigation`, test `navigation_keeps_presses_and_motion_away_from_the_ui`). The view also drops text-field focus while navigating. Editor commands run only when no text field has focus and no navigation or transform is active. Limit: the grab fallback and focus loss need a real window to verify by hand.
 - [x] Add DPI scaling, font configuration, and theme persistence.
   Evidence: OS display scale reaches egui through egui-winit (initial
@@ -1469,6 +1856,15 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
   snapshot (`registered_inspectors_draw_and_edit_their_component`). Limits:
   built-in components (Transform, lights, physics) keep their hand-written
   sections instead of registry entries.
+  Reflected fields show their `doc` hint under the label in the label's
+  tooltip, as Godot shows property descriptions. Evidence:
+  `editor::inspector::widgets::tests::a_described_row_shows_its_doc_in_the_label_tooltip`.
+  A field drawn as a foldable group (a nested struct, list or map) shows
+  its doc in the group header's tooltip. Evidence:
+  `editor::inspector::reflected::tests::a_described_section_shows_its_doc_on_the_header`.
+  A string-keyed map field adds an entry from a key field and removes one
+  with its button; an empty or existing key adds nothing. Evidence:
+  `editor::inspector::reflected::tests::map_entries_can_be_added_by_key_and_removed`.
 - [x] Asset browser with folders, thumbnails, filtering, and drag/drop assignment.
   Evidence: the Assets area is a foldable FileSystem tree with a filter
   (`rows_put_folders_first_hide_caches_and_fold`). Image rows show a decoded
@@ -1496,9 +1892,9 @@ The editor should use `egui` and `egui-winit`. Rendering should go through an en
 - [x] Add editor-only Scene View overlays: XZ grid, selected-object local axes, and real mesh-bounds box.
 - [x] Select the nearest rendered object by clicking Scene View, using an editor ray against transformed mesh bounds instead of requiring a physics collider.
 - [x] Add a selection outline that remains readable when the object is behind other geometry. Selected mesh bounds and camera/light wire shapes now use the depth-independent debug pass with thicker lines; grid and unselected helpers remain depth tested. Evidence: `selection_outline_ignores_depth_without_changing_other_helpers` and the full workspace checks, including serial GPU tests. This is a wire outline of the authored bounds, not a pixel silhouette.
-- [x] Translate, rotate, and scale gizmos with local/global modes and snapping. The Scene View toolbar now toggles world or object axes and snaps move to 1 unit, rotation to 15°, and scale to 0.1 factor steps. Global scale projects the chosen world axes onto local scale axes because `Transform` has no shear representation. Each drag still takes one snapshot undo step. Evidence: `gizmo_snap_quantizes_move_scale_and_rotation`, `global_gizmo_axes_ignore_object_rotation`, `global_rotation_uses_parent_space_axis`, `global_scale_on_rotated_object_uses_matching_local_axis`, and the full workspace checks.
+- [x] Translate, rotate, and scale gizmos with local/global modes and snapping. The Scene View toolbar now toggles world or object axes and snaps move to 1 unit, rotation to 15°, and scale to 0.1 factor steps. Global scale projects the chosen world axes onto local scale axes because `Transform` has no shear representation. Each drag still takes one snapshot undo step. The menu beside Snap sets the move, rotation and scale increments. Evidence: `gizmo_snap_quantizes_move_scale_and_rotation`, `global_gizmo_axes_ignore_object_rotation`, `global_rotation_uses_parent_space_axis`, `global_scale_on_rotated_object_uses_matching_local_axis`, and the full workspace checks.
 - [x] Add FPS-style Scene View fly camera: Numpad 0 captures/releases the pointer, mouse changes yaw/pitch, WASD moves, Space/Ctrl move vertically, and Shift boosts speed.
-- [x] Add camera orbit, pan, focus-selection, and framing controls after fly camera input is stable. Middle drag orbits around the view pivot, Shift+middle drag pans, the wheel dollies, and F or the Scene View Frame button centers and fits the selected mesh or object. Evidence: `orbit_keeps_the_pivot_fixed_and_dolly_moves_toward_it`, `focus_places_selected_object_in_front_of_camera`, and the full workspace checks.
+- [x] Add camera orbit, pan, focus-selection, and framing controls after fly camera input is stable. Middle drag orbits around the view pivot, Shift+middle drag pans, the wheel dollies, and F or the Scene View Frame button centers and fits the selected mesh or object. Evidence: `orbit_keeps_the_pivot_fixed_and_dolly_moves_toward_it`, `focus_places_selected_object_in_front_of_camera`, and the full workspace checks. Home frames every rendered object, and Numpad 1, 3 and 7 turn to the front, right and top views around the same pivot. Evidence: `numpad_views_keep_the_pivot_and_frame_all_sees_every_mesh`. Ctrl turns to the opposite views, Numpad 9 looks at the pivot from the other side of the current view (evidence: the same test, which checks right to left and a tilted view to its mirror), and Numpad 5 (or VIEW > Orthographic in the viewport menu) toggles an orthographic view sized to the orbit pivot. Evidence: `orthographic_view_matches_the_pivot_size_and_follows_the_dolly`.
 - [x] Create empty, cube, and camera objects; duplicate, rename, delete, and reparent entities.
 - [x] Add/remove/edit registered compiled components through the generic JSON inspector.
 - [x] Assign meshes, materials, textures, and physics shapes by typed handle. Mesh Renderer now lists saveable `Handle<MeshAsset>` and loaded `Handle<MaterialAsset>` choices with snapshot undo; the Material section already picks `Handle<TextureAsset>` values, and the typed ColliderShape picker selects primitive or mesh collider shapes (mesh shapes use the renderer's typed mesh handle). Evidence: `mesh_picker_excludes_transient_unsaved_handles`, `typed_asset_assignment_snapshots_once_and_rejects_unsaved_meshes`, and the full workspace checks. Physics shapes are enum variants, not standalone shape assets.
@@ -1793,6 +2189,16 @@ Depends on: Milestones 5, 8, and 10.
 ### Fluids and granular media
 
 - [ ] Particle-based fluid (PBF or SPH) with two-way rigid-body coupling and buoyancy.
+  - [x] Step 1, the solver core: `runtime::fluid` (`Fluid`, `FluidSettings`) is a CPU position based fluid with a hash-grid neighbor search, sorted neighbor lists, Jacobi passes into separate buffers, XSPH viscosity, a box container and `state_hash`. No atomics, no randomness. Tests: `the_same_start_gives_the_same_bits` (30 steps, equal hashes), `a_column_falls_settles_and_stays_inside_the_container` (768 particles, 240 steps, all finite and inside the box, top below 1 m, speed below 3 m/s), `a_settled_pool_keeps_its_density_near_rest` (mean density ratio in 0.5 to 1.6). Full check passed. Limits: the pool settles about 1.6 times denser than rest (walls have no ghost particles and only over-density is pushed apart); artificial pressure is off (`SCORR`, its scale was wrong for these units); results are deterministic for one particle order but not invariant under reordering the array (float sum order). Open: scene format, rigid-body coupling, buoyancy, rendering, GPU port.
+  - [x] Step 2, the ECS component: `FluidVolume { settings, fluid }` steps in the `FixedUpdate` chain after CPU physics (`step_fluids`). Test `runtime::tests::fluid_volumes_step_with_the_fixed_tick` (64 particles fall 0.3 m or more in 30 ticks). Full check passed. Limits: runtime only, made by game code; not reflected, not saved in scenes, not in snapshots.
+  - [x] Step 3, drawing: `FluidVolume::visual` (a `MeshRenderer`) makes `sync_fluid_visuals` keep one entity per particle, moved each fixed tick, and despawn them when the visual is removed. Test `runtime::tests::fluid_volumes_with_a_visual_own_one_entity_per_particle` (8 particles give 8 renderers; removing the visual gives 0). Full check passed. Limits: one entity per particle, so a few thousand particles is the practical ceiling until fluids get an instanced draw path or a surface mesh; the particle entities carry a `FluidParticle` marker, and the editor Hierarchy and Scene View picking skip them (tests `editor::tests::fluid_particles_are_not_listed_in_the_hierarchy`, and the marker count in the visual test; full check passed with all three feature sets).
+  - [x] Step 4, rigid-body coupling and buoyancy: `couple_fluids` runs before `step_fluids`. A dynamic body with a sphere collider gets an upward force of rest density times the sphere volume its overlapping particles fill times gravity, plus drag, and particles inside the sphere are pushed out to its surface. Bodies and volumes go in entity order. Test `runtime::tests::a_light_ball_floats_in_a_fluid_and_a_heavy_one_sinks` (a 7 kg ball of 0.15 m radius floats at y 0.25 in a pool about 0.3 m deep; a 50 kg ball rests on the floor at y 0.145). Full check passed. Box colliders work the same way (rotation and scale respected; particles leave through the nearest face). Test `runtime::tests::a_light_box_floats_in_a_fluid_and_a_heavy_one_sinks` (5 kg floats above a 100 kg box resting on the floor); full check passed. Capsules too (test `a_light_capsule_floats_in_a_fluid_and_a_heavy_one_sinks`; the capsule is a core segment along its local Y with a radius). Limits: sphere, box and capsule colliders only (meshes are skipped); every body checks every particle (O(bodies x particles)); the force is analytic, so the fluid does not push the body sideways and the body's momentum reaches the fluid only through displacement; a body far lighter than the water it displaces is launched hard (that is the physics, but the explicit step is stiff).
+  - [x] Step 5, the scene component: `rusting.fluid_block` (`FluidBlock`: spacing, `count_x/y/z`, `container_half_extents`, iterations, viscosity, `visible`) is reflected, listed in `rusting schema`, saved in scenes and registered for snapshots. `spawn_fluid_volumes` turns each block into a `FluidVolume` (box centered on the entity, particles on its floor, spheres with the fallback material when visible). Test `runtime::tests::fluid_blocks_round_trip_through_scenes_and_become_volumes` (a 3x2x4 block round-trips through a scene document and becomes 24 particles in a box whose floor is at y 1.5). Full check passed. Limits: the particles themselves are not in scenes or snapshots, the editor shows no fluid preview until play. (Snapshots now do keep the fluid: see Step 6.)
+  - [x] Step 6, review fixes. `couple_fluids` visits bodies and volumes in `SpawnOrder` (entity order only for objects without one), and returns at once with no volume. `FluidParticle(owner)` names the volume that made a particle: removing a volume despawns its particles, and a copied volume makes its own. `FluidVolume` and `FluidParticle` are registered for snapshots, so a restore resumes the same fluid. Cooked scenes are format 8 (`SCENE_FORMAT_VERSION`); v7, v6 and v5 files load through legacy material structs. Tests: `despawning_a_fluid_volume_removes_its_particle_entities`, `a_copied_fluid_volume_gets_its_own_particle_entities`, `fluids_snapshot_and_restore_to_the_same_future`, `version_seven_cooked_scenes_read_materials_without_the_new_fields`. Also fixed from the same review: swapchain image count clamps to the surface maximum (`probe_swapchain_images`); the CCD sweep adds its pad only for grown shapes; `slide` measures step height at the contact position; a `push_bodies: false` player keeps its contacts (crates rest on it, `a_crate_dropped_on_a_player_that_pushes_nothing_rests_on_it`) but shoves nothing; the slow-motion clamp scales with `time_scale` and replay skips it (`update_exact`); `set_scene` refuses the root path; `schema::defaults` is cached and its `mesh_renderer` default comes from `MaterialAsset::default()`; whole numbers compare exactly in scenario `equals` (`whole_numbers_above_the_f32_range_match_exactly`); headless ms per tick excludes scene load; reflection probes and lights sort by entity index; `pointer` listed under scenario steps. Full check: fmt, clippy in all three configurations, `cargo test --workspace` (lib 445, cli 13), gpu-tests (lib 520, cli 13).
+  - [x] Material names. `MaterialAsset::name` (reflected, scene-saved; cooked format 9, format 8 loads through `LegacySceneDocumentV8`; glTF import keeps the glTF name). Mesh Renderer combos show names or "Material N"/"Mesh N". Tests: `version_eight_cooked_scenes_read_materials_without_a_name`, `material_names_survive_the_scene_form`. Full check in the same run as the Project Settings item.
+  - [x] Fluid surface. `fluid_surface::surface_mesh` splats particles on a grid in index order and extracts the surface by marching tetrahedra (outward faces from the density gradient); `sync_fluid_surfaces` keeps one entity and one mesh per volume and rewrites the mesh each fixed tick (the renderer re-uploads on the asset revision). Tests: `a_block_of_particles_gets_one_closed_outward_surface`, `the_surface_is_reproducible_and_empty_fluid_still_draws`, `a_fluid_surface_is_one_entity_whose_mesh_follows_the_particles`. How it looks on screen is not judged here. Deferred: GPU surface pass, screen-space fluid, shared vertices.
+  - [x] Water body and opacity 0. `rusting.water` (`runtime::water`): `sync_water` rewrites a wave grid mesh each fixed tick, `float_in_water` gives buoyancy, drag and a current to dynamic bodies. Tests: `waves_are_reproducible_and_bounded`, `the_mesh_grid_matches_the_rectangle`, `a_water_body_draws_one_surface_floats_a_light_ball_and_carries_it`. The scene shader discards Blend fragments with alpha 0 and no transmission; gpu test `a_blend_material_at_opacity_zero_draws_nothing` (the clear-glass test now uses alpha 0.02). Deferred: rotated water, wave torque on boxes, shore foam, river splines, water material look (no screenshot taken).
+  - [x] Editor redesign, part 1. The Project panel is a Project Settings page (`src/editor/project_settings.rs`) built from new `gui_elements::kit` widgets: category rail (Overview, Rendering, Display, Export, Diagnostics), cards, setting rows, switch, segmented control, stat tiles, CPU frame bar. The Console has a framed toolbar, striped rows and level stripes. Opacity below 1 turns an Opaque material into Blend. Add Component is a searchable grouped picker (`inspector/add_component.rs`); Inspector sections are bordered cards. Test `project_settings::tests::every_category_draws_its_cards`; the two editor text tests were updated for the new layout. Full check passed: fmt, clippy in all three configurations, `cargo test --workspace` and with gpu-tests. Not judged by eye: no screenshot was taken, so spacing and colors need a look in the editor.
 - [ ] Grid-based or hybrid (FLIP/APIC) option for large water volumes, chosen by the simulation class.
 - [ ] Granular material (sand, gravel, rubble) with piling and angle-of-repose behaviour.
 - [ ] Fluid surface extraction for rendering through extraction, never by rendering reading solver buffers directly.
@@ -1871,17 +2277,129 @@ Depends on: Milestones 3 and 4.
 
 ### Global illumination and reflections
 
-- [ ] Reflection probes with box projection and blending.
+- [x] Reflection probes with box projection and blending.
+  `rusting.reflection_probe` holds the half size of a world-aligned box
+  around its object. When a probe is added or changes, a temporary renderer
+  draws six 90-degree faces from its center, so the main renderer's caches,
+  GPU physics and occlusion history stay untouched. The faces are copied into
+  one mipmapped array image with six layers per probe. Up to four probes are
+  used (`MAX_REFLECTION_PROBES`). The fragment shader's `surroundings` casts
+  the reflection direction to the box wall, looks up the face toward that
+  point, fades each probe in over the outer tenth of its box, and blends the
+  result over the environment. Rough surfaces use lower mips. Limits
+  (`ponytail:` in code): probes are static captures, faces are tone mapped
+  with Linear so captured light clamps at 1, and moving a probe rebuilds the
+  capture pipelines.
+  Evidence: `reflection_probe_shows_the_scene_behind_the_camera` renders a
+  mirror floor under an unlit red ceiling that covers the -X half and is
+  behind the camera. With no probe, both sides are dark. With a probe, the
+  -X side is red and the +X side is not. Flipping the face lookup's x axis
+  fails the test. Full check: fmt, clippy three ways, `cargo test
+  --workspace` (474 passed, 76 ignored), and GPU tests (546 passed).
+  Editor: a selected probe shows a handle at each box face; dragging one
+  sets that axis of `extents` (the box stays centered), as one Undo step.
+  Evidence: unit test
+  `dragging_scene_handles_resizes_a_probe_and_thins_fog`.
+- [x] Refractive glass: `transmission`, `ior` and `thickness` on materials, sampling a copy of the opaque scene color so glass bends and tints what is behind it. The scene render pass must split after the opaque draws in every variant (MSAA, occlusion culling).
+  Materials carry `transmission`, `ior` and `thickness`. A frame with a
+  transmissive draw ends the scene pass after the opaque draws, copies HDR
+  into a mipmapped `scene_color` image (`FramePass::SceneColor`), and draws
+  the blended list in the late pass (`FramePass::Transparent`). The shader
+  refracts the view ray once at the entry face, offsets it by `thickness`,
+  and samples the copy at mip `roughness * last_mip`, tinted by base color.
+  Limits: no exit-face refraction, and blended objects behind glass are not
+  in the copy. glTF `KHR_materials_transmission` import needs a new `gltf`
+  crate feature and is not done. Evidence: GPU test
+  `transmissive_glass_tints_the_refracted_backdrop` under frustum and
+  occlusion culling (fails with the refraction path turned off: 255 255
+  255); `transitions_list_every_layout_change_between_passes`.
 - [ ] Baked lightmaps with a GPU lightmapper and light probes for dynamic objects.
 - [ ] One real-time GI technique (probe-based DDGI or voxel/SDF GI) with a quality-profile fallback to ambient probes.
 - [ ] Sky system: procedural physical sky, HDRI skies, and sky-derived ambient/specular.
+  Partial: `EnvironmentMap { texture, intensity }` (`rusting.environment_map`)
+  loads an equirectangular image and replaces the `SkyLight` hemisphere as the
+  ambient source. Diffuse samples the second-smallest mip along the normal;
+  specular samples mip `roughness * last_mip` along the reflection. Textures
+  now get a linear-blit mip chain, and samplers now allow every mip (the old
+  default clamped the LOD to 0). Known ceilings: 8-bit images only, so no
+  `.hdr`/EXR and no light brighter than `intensity`; box-filtered mips instead
+  of GGX prefiltering; the map is not drawn as the background. Evidence: GPU
+  test `smooth_metal_reflects_the_environment_map` (a smooth metal slab
+  reflects the red upper half from above and the blue lower half from below;
+  fully rough, it shows a blend of both). It failed before the pole clamp
+  (a repeating sampler blended the top row with the bottom one) and before
+  the mip chain (rough metal stayed pure red). Unit test
+  `environment_maps_resolve_their_texture_and_reach_the_render_world`.
 
 ### Screen-space and post effects
 
 - [ ] SSAO, SSR, and screen-space indirect lighting, each independently toggled by quality profile.
+  Partial (SSR): frames with a PBR batch under roughness 0.5
+  (`SSR_MAX_ROUGHNESS`) split like refraction frames. The `SceneColor` pass
+  also copies opaque depth into depth pyramid mip 0; the `Transparent` pass
+  redraws the glossy batches with a reflection overlay pipeline (fragment
+  specialization `PASS = 2`, `LessOrEqual` depth, additive blend) that
+  marches the reflected ray through that depth and adds the difference
+  between the traced color and the environment reflection. Blended and
+  transmissive surfaces trace inline. The weight fades at the screen edge,
+  at the end of the march, and toward the roughness limit. `Eco` skips it.
+  Limits: linear march, no Hi-Z; glossy surfaces do not reflect each other
+  or blended objects. Evidence: GPU test
+  `mirror_floor_reflects_the_scene_in_screen_space` (red wall in the floor
+  on High, plain gray hemisphere on Eco); pass table
+  `transitions_list_every_layout_change_between_passes`.
+  Partial (SSAO): `rusting.ambient_occlusion` (radius, intensity) turns it
+  on. A `DepthPrepass` pass draws the early-culled (else GPU-culled)
+  batches into scene depth with alpha-mask discard; the `AmbientOcclusion`
+  compute pass traces 16 rotated hemisphere samples per pixel against that
+  depth, then a 4x4 depth-aware blur writes an R32F factor that set 2
+  binding 6 multiplies into ambient, sky and environment light. The main
+  pass then loads the prepassed depth. Off on `Eco`, in probe captures and
+  in non-Lit views. Limits: objects that come into view on an
+  occlusion-culling frame miss the prepass for one frame; no temporal
+  accumulation. Evidence: GPU tests
+  `ambient_occlusion_darkens_surfaces_next_to_occluders` (floor next to a
+  box darker than open floor, unchanged with the component removed) and
+  `atmosphere_effects_combine_with_every_scene_path` (frustum and
+  occlusion culling, MSAA off and 4x, opaque and glossy); pass table
+  `transitions_list_every_layout_change_between_passes`. Screen-space
+  indirect lighting is not started.
 - [ ] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
+  Partial (bloom): `rusting.bloom` (intensity, threshold, spread). After the
+  transparent pass, the `Bloom` compute pass prefilters the HDR target to
+  half resolution (13-tap with Karis weights against fireflies, soft knee
+  at the threshold), downsamples it through up to 7 mips, and upsamples
+  back with a 3x3 tent mixed by spread. Tone mapping adds mip 0 times the
+  intensity before the curve. Frames with bloom split the main pass like
+  refraction frames. Off in probe captures and non-Lit views. Evidence: GPU
+  tests `bloom_spreads_bright_light_into_its_surroundings` (dark pixels
+  beside an emissive quad brighten only with bloom on) and
+  `atmosphere_effects_combine_with_every_scene_path`. The other effects
+  are not started.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
 - [ ] Volumetric fog with light scattering and fog volumes.
+  Partial (height fog): `rusting.fog` (color, density, height,
+  height_falloff, sun_scatter, sky_affect). `src/shaders/fog.glsl`
+  integrates exponential height fog along the camera ray in closed form,
+  with in-scattering toward the shadow-casting (or first) directional
+  light. Opaque, blended and transmissive surfaces apply it in the
+  fragment shader; a full-screen sky pass at the far plane fades the
+  background. Evidence: GPU test `fog_hides_distant_surfaces_and_the_sky`
+  (distant red wall and the sky turn fog-colored, near surfaces keep their
+  color) and `atmosphere_effects_combine_with_every_scene_path`; unit tests
+  `atmosphere_settings_come_from_the_lowest_entity` and
+  `atmosphere_settings_go_on_one_environment_object`. Not started: froxel
+  volumetrics, light shafts through shadows, local fog volumes.
+  Editor: the Scene view's viewport menu has Scene Effects toggles that
+  leave fog, bloom or ambient occlusion out of the Scene view only (Play
+  and games draw them all), and a selected Fog draws squares at its
+  full-density height and its 1/e height. Dragging the first square sets
+  `height`; dragging the second sets `height_falloff`; each drag is one
+  Undo step. Evidence: unit tests
+  `scene_view_shading_and_effects_apply_only_in_the_scene_workspace`,
+  `fog_height_squares_mark_full_density_and_the_thinned_height` and
+  `fog_squares_are_grabbed_and_dragged_to_a_height`; the fog,
+  bloom and ambient occlusion GPU tests render each effect switched off.
 
 ### Lighting and shadows
 

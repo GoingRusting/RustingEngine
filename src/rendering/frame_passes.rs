@@ -22,6 +22,12 @@ pub enum FramePass {
     Culling,
     /// Depth-only directional shadow map.
     Shadow,
+    /// Depth-only draw of the opaque scene that ambient occlusion traces.
+    /// Only frames with ambient occlusion.
+    DepthPrepass,
+    /// Screen-space ambient occlusion traced from the prepass depth and
+    /// blurred. Only frames with ambient occlusion.
+    AmbientOcclusion,
     /// Lit scene into the HDR target (main render pass, subpass 0). On
     /// occlusion frames, only the opaque instances visible last frame, in
     /// an early render pass that keeps HDR and depth.
@@ -35,6 +41,17 @@ pub enum FramePass {
     /// The rest of the scene over the early pass (late render pass,
     /// subpass 0). Occlusion frames only.
     LateScene,
+    /// Copy of the opaque HDR with its mip chain, and of the opaque depth
+    /// into depth pyramid mip 0 for screen-space reflections. Frames with
+    /// refracting or glossy materials only.
+    SceneColor,
+    /// Reflection overlay and blended draws after the copy (late render
+    /// pass, subpass 0). Frames with refracting or glossy materials only;
+    /// other frames draw blended objects in the scene pass.
+    Transparent,
+    /// Bright parts of the finished HDR blurred through a mip chain. Only
+    /// frames with bloom.
+    Bloom,
     /// HDR target mapped into the output (main render pass, subpass 1).
     ToneMap,
     /// Editor debug lines over the output (main render pass, subpass 1).
@@ -51,7 +68,13 @@ pub enum FrameResource {
     ShadowMap,
     DepthPyramid,
     HdrColor,
+    /// Mipmapped copy of the opaque `HdrColor` that refraction samples.
+    SceneColor,
     SceneDepth,
+    /// Blurred ambient occlusion per target pixel.
+    AmbientOcclusion,
+    /// Glow that tone mapping adds to the HDR color.
+    Bloom,
     /// The caller's output image (swapchain image or offscreen target).
     Target,
 }
@@ -74,15 +97,20 @@ pub struct LayoutTransition {
 }
 
 impl FramePass {
-    pub const ALL: [FramePass; 10] = [
+    pub const ALL: [FramePass; 15] = [
         FramePass::Uploads,
         FramePass::Physics,
         FramePass::Culling,
         FramePass::Shadow,
+        FramePass::DepthPrepass,
+        FramePass::AmbientOcclusion,
         FramePass::Scene,
         FramePass::DepthPyramid,
         FramePass::OcclusionCulling,
         FramePass::LateScene,
+        FramePass::SceneColor,
+        FramePass::Transparent,
+        FramePass::Bloom,
         FramePass::ToneMap,
         FramePass::DebugOverlay,
     ];
@@ -94,10 +122,15 @@ impl FramePass {
             FramePass::Physics => "Physics",
             FramePass::Culling => "Culling",
             FramePass::Shadow => "Shadow",
+            FramePass::DepthPrepass => "DepthPrepass",
+            FramePass::AmbientOcclusion => "AmbientOcclusion",
             FramePass::Scene => "Scene",
             FramePass::DepthPyramid => "DepthPyramid",
             FramePass::OcclusionCulling => "OcclusionCulling",
             FramePass::LateScene => "LateScene",
+            FramePass::SceneColor => "SceneColor",
+            FramePass::Transparent => "Transparent",
+            FramePass::Bloom => "Bloom",
             FramePass::ToneMap => "ToneMap",
             FramePass::DebugOverlay => "DebugOverlay",
         }
@@ -144,6 +177,24 @@ impl FramePass {
             FramePass::Shadow => {
                 const { &[write(ShadowMap, Some(DepthStencilAttachmentOptimal))] }
             }
+            FramePass::DepthPrepass => {
+                const {
+                    &[
+                        read(MaterialTextures, Some(ShaderReadOnlyOptimal)),
+                        read(PhysicsStates, None),
+                        read(DrawCommands, None),
+                        write(SceneDepth, Some(DepthStencilAttachmentOptimal)),
+                    ]
+                }
+            }
+            FramePass::AmbientOcclusion => {
+                const {
+                    &[
+                        read(SceneDepth, Some(ShaderReadOnlyOptimal)),
+                        write(AmbientOcclusion, Some(General)),
+                    ]
+                }
+            }
             FramePass::Scene | FramePass::LateScene => {
                 const {
                     &[
@@ -151,6 +202,32 @@ impl FramePass {
                         read(PhysicsStates, None),
                         read(DrawCommands, None),
                         read(ShadowMap, Some(ShaderReadOnlyOptimal)),
+                        read(AmbientOcclusion, Some(ShaderReadOnlyOptimal)),
+                        write(HdrColor, Some(ColorAttachmentOptimal)),
+                        write(SceneDepth, Some(DepthStencilAttachmentOptimal)),
+                    ]
+                }
+            }
+            FramePass::SceneColor => {
+                const {
+                    &[
+                        read(HdrColor, Some(TransferSrcOptimal)),
+                        read(SceneDepth, Some(ShaderReadOnlyOptimal)),
+                        write(SceneColor, Some(TransferDstOptimal)),
+                        write(DepthPyramid, Some(General)),
+                    ]
+                }
+            }
+            FramePass::Transparent => {
+                const {
+                    &[
+                        read(MaterialTextures, Some(ShaderReadOnlyOptimal)),
+                        read(PhysicsStates, None),
+                        read(DrawCommands, None),
+                        read(ShadowMap, Some(ShaderReadOnlyOptimal)),
+                        read(AmbientOcclusion, Some(ShaderReadOnlyOptimal)),
+                        read(SceneColor, Some(ShaderReadOnlyOptimal)),
+                        read(DepthPyramid, Some(ShaderReadOnlyOptimal)),
                         write(HdrColor, Some(ColorAttachmentOptimal)),
                         write(SceneDepth, Some(DepthStencilAttachmentOptimal)),
                     ]
@@ -173,10 +250,19 @@ impl FramePass {
                     ]
                 }
             }
+            FramePass::Bloom => {
+                const {
+                    &[
+                        read(HdrColor, Some(ShaderReadOnlyOptimal)),
+                        write(Bloom, Some(General)),
+                    ]
+                }
+            }
             FramePass::ToneMap => {
                 const {
                     &[
                         read(HdrColor, Some(ShaderReadOnlyOptimal)),
+                        read(Bloom, Some(ShaderReadOnlyOptimal)),
                         write(Target, Some(ColorAttachmentOptimal)),
                     ]
                 }
@@ -268,12 +354,30 @@ mod tests {
                 MaterialTextures,
                 TransferDstOptimal,
                 ShaderReadOnlyOptimal,
-                FramePass::Scene,
+                FramePass::DepthPrepass,
+            ),
+            (
+                SceneDepth,
+                DepthStencilAttachmentOptimal,
+                ShaderReadOnlyOptimal,
+                FramePass::AmbientOcclusion,
             ),
             (
                 ShadowMap,
                 DepthStencilAttachmentOptimal,
                 ShaderReadOnlyOptimal,
+                FramePass::Scene,
+            ),
+            (
+                AmbientOcclusion,
+                General,
+                ShaderReadOnlyOptimal,
+                FramePass::Scene,
+            ),
+            (
+                SceneDepth,
+                ShaderReadOnlyOptimal,
+                DepthStencilAttachmentOptimal,
                 FramePass::Scene,
             ),
             (
@@ -297,9 +401,52 @@ mod tests {
             (
                 HdrColor,
                 ColorAttachmentOptimal,
-                ShaderReadOnlyOptimal,
-                FramePass::ToneMap,
+                TransferSrcOptimal,
+                FramePass::SceneColor,
             ),
+            (
+                SceneDepth,
+                DepthStencilAttachmentOptimal,
+                ShaderReadOnlyOptimal,
+                FramePass::SceneColor,
+            ),
+            (
+                DepthPyramid,
+                ShaderReadOnlyOptimal,
+                General,
+                FramePass::SceneColor,
+            ),
+            (
+                SceneColor,
+                TransferDstOptimal,
+                ShaderReadOnlyOptimal,
+                FramePass::Transparent,
+            ),
+            (
+                DepthPyramid,
+                General,
+                ShaderReadOnlyOptimal,
+                FramePass::Transparent,
+            ),
+            (
+                HdrColor,
+                TransferSrcOptimal,
+                ColorAttachmentOptimal,
+                FramePass::Transparent,
+            ),
+            (
+                SceneDepth,
+                ShaderReadOnlyOptimal,
+                DepthStencilAttachmentOptimal,
+                FramePass::Transparent,
+            ),
+            (
+                HdrColor,
+                ColorAttachmentOptimal,
+                ShaderReadOnlyOptimal,
+                FramePass::Bloom,
+            ),
+            (Bloom, General, ShaderReadOnlyOptimal, FramePass::ToneMap),
         ]
         .map(|(resource, from, to, before)| LayoutTransition {
             resource,

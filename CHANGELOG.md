@@ -4,6 +4,87 @@
 
 ### Added
 
+- `rusting.water` (`WaterBody`): water for seas, lakes and rivers. A rectangle of animated waves (three sine waves, deterministic) that dynamic bodies with sphere, box or capsule colliders float in, with a `flow_speed` current along `flow_direction` for rivers. Add it from Add Object > Environment and UI > Water. Use Fluid Block only for small splashing volumes.
+- `runtime::fluid_surface`: fluid is drawn as one smooth surface mesh (density grid plus marching tetrahedra, deterministic) in place of a sphere per particle. `rusting.fluid_block` `visible` now draws a translucent "Water" surface; the new `show_particles` adds the debug spheres. Code sets `FluidVolume::surface` to `FluidSurface::new(material)`. The mesh is rebuilt and uploaded every fixed tick (CPU), so keep fluids to a few thousand particles.
+- Materials have a name (Inspector Material section, Name field; imported glTF materials keep their glTF name). The Mesh Renderer combos show names, or "Material 1" and "Mesh 1" for unnamed ones, in place of hex ids. Cooked scenes are format 9; format 8 files still load.
+- Editor: the Project panel is now a Project Settings page. A category rail (Overview, Rendering, Display, Export, Diagnostics). Settings are cards with icon headers and switch and segmented controls. Anti-aliasing, shadow size and reflections are editable there, and Diagnostics shows stat tiles, a CPU frame bar and renderer counters. The shared pieces are in `gui_elements::kit`.
+- Editor: Add Component is a full-width button that opens a searchable picker, grouped into Physics, Environment, Engine, Game and User Interface. Inspector sections are bordered cards with an accent bar on the header.
+- Editor: the Console has a framed toolbar, striped rows, a level stripe, a source badge, monospace text and a repeat count badge.
+- Editor: lowering a material's Opacity below 1 switches an Opaque material to Blend, because Opaque ignores alpha.
+- Editor: Save Layout and Load Layout now also store the gizmo snap toggle and its move, rotate and scale increments. Older layout files load without changing snap.
+- `runtime::fluid`: a deterministic CPU particle fluid (position based fluids) with a box container, viscosity and a state hash. `FluidVolume` steps it every fixed tick. Set `FluidVolume::visual` to draw each particle as a mesh. Dynamic bodies with sphere, box or capsule colliders float and sink in it and displace it. The `rusting.fluid_block` scene component (a block of particles in a box) creates one. The particles are not saved in scenes (a block makes them again on load) but are in snapshots. Particle entities carry a `FluidParticle` marker, so the editor Hierarchy and Scene View picking skip them.
+
+- Scenario field `keep_going`: the run continues after a failed step and reports every failure.
+
+- `RenderSettings::reflections` (default on; a checkbox in the editor's Render Settings). Off skips screen-space reflections, and with no refractive material also the scene copy, mip chain and depth pyramid. Games call `GameScene::set_reflections(false)`.
+
+- `RUSTING_PERF=1` makes a windowed `rusting` game print one line per second to stderr: fps, CPU phase times, GPU pass times, draw/dispatch/triangle counts. It also prints the present mode and shows fps and frame time in the window title.
+
+- Editor: the Scene view's Snap button has a menu that sets the move, rotation and scale snap increments.
+- Editor: the Inspector shows game components this editor has no registration for as read-only JSON, and can remove them.
+- Editor: Home frames every rendered object; Numpad 1, 3 and 7 turn the Scene view to the front, right and top views around the orbit pivot, and with Ctrl to the back, left and bottom. Numpad 5 or the viewport menu's Orthographic switches the Scene view to an orthographic view that zooms with the wheel and Frame.
+- `rusting.fog` scene component: exponential height fog that fades distant surfaces and the sky into its color, thins out above a height, and brightens toward the sun.
+- `rusting.bloom` scene component: bright light glows into its surroundings before tone mapping, with a threshold, intensity and spread.
+- `rusting.ambient_occlusion` scene component: screen-space ambient occlusion darkens ambient and sky light in creases and corners. Off on the Eco quality profile.
+- Editor: the Scene view's viewport menu switches fog, bloom and ambient occlusion off for editing; Play still draws them. A selected Fog shows its height as squares over the grid; drag them to set the fog's height and falloff.
+- Editor: a selected Render Bounds override shows face handles in the Scene view; drag them to resize the box or sphere. "Fit to Mesh" wraps it around the mesh again.
+- Editor: Add Component places Fog, Bloom and Ambient Occlusion on the scene's environment object, next to the other atmosphere settings.
+- Editor: the material inspector edits Transmission, IOR and Thickness; Add Object offers a Reflection Probe, whose box shows in the Scene view, picks it on click, and resizes by dragging its face handles; the environment map's texture field lists loaded textures.
+- `rusting.reflection_probe` scene component: surfaces inside its box reflect the scene as seen from the probe, projected onto the box walls, in place of the environment map. Overlapping probes blend; up to four are used. Probes are captured when added or changed.
+- Screen-space reflections: smooth surfaces (roughness under 0.5) and glass reflect the scene on screen, falling back to the sky or environment map where the ray leaves the screen. Off on the Eco quality profile.
+- Refractive glass: materials take `transmission`, `ior` and `thickness`. Transmissive surfaces bend, blur (by roughness) and tint what is behind them.
+- `rusting.environment_map` scene component: an equirectangular sky image lights the scene and shows in reflections. Smooth metals mirror it; rough ones see a blurred version.
+- Player and platformer controllers ride moving platforms and stop rising when they hit a ceiling.
+- `samples/core_defense`: a top-down turret shooter aimed with the mouse, built with the `rusting` CLI alone, with four scenarios.
+- `GameScene::pointer_ray` returns the ray through the mouse cursor; `GameObject::rotation` and `GameObject::scale` read an object's rotation and scale.
+- `samples/putt_course`: a mini golf hole with a rolling physics ball, a charged putt aimed with the mouse and a sensor cup, built with the `rusting` CLI alone, with four scenarios.
+- `GameScene::counter_value`, `add_to_counter` and `counter_complete` read, change and test a counter by name in one call.
+- `samples/lantern_grid`: a lights-out puzzle played with mouse clicks, built with the `rusting` CLI alone, with two scenarios.
+- `GameScene::color`, `set_color` and `set_emissive` read and change one object's material color without recoloring objects that share it.
+- `samples/snake_trail`: a snake game on a tile-map arena, built with the `rusting` CLI alone, with three scenarios.
+- `GameScene::set_counter` sets a counter to a value.
+- `samples/night_vault`: a third-person stealth game with patrolling guards, view cones and an alert meter, built with the `rusting` CLI alone, with three scenarios.
+- The third-person camera stops in front of walls behind the player instead of going through them.
+- `GameScene::load_scene` switches to another scene file of the project, for levels and menus.
+- `skills/rusting-game/SKILL.md`: a skill file that teaches LLM agents to build and test games on the engine.
+- `GameScene::random` draws a value from the run's seed and the fixed tick, so scenarios repeat.
+- Editor: the Tile Painter has Rectangle, Line and Fill tools, and outlines the cell under the pointer or the dragged rectangle or line in the Scene View. Fill stays inside the grid's used area. `TileMap::fill_rect`, `TileMap::fill_line` and `TileMap::fill` do the same from code.
+- Editor: the Tile Painter picks its brush from a palette of swatches in each tile's color instead of a drop-down.
+- Editor: D, R, L and B pick the Tile Painter's Paint, Rectangle, Line and Fill tools while a brush is active, as in Godot. They are rebindable.
+- Editor: hovering a reflected Inspector field's label shows the field's description from its `doc` hint; a nested struct, list or map shows it on its group header.
+- Editor: the reflected Inspector adds and removes entries of string-keyed map fields, such as a tile map's tiles.
+- Editor: the Project area shows the resolved quality profile, marked "(Auto)" when Auto picked it, and the number of loaded LOD groups.
+- Editor: Numpad 9 turns the Scene view to look at the orbit pivot from the opposite side, as in Blender.
+- Editor: a point light's Scene view shape is a circle facing the view, as in Blender, in place of three crossed circles.
+- Editor: every shortcut can have a second key, set in the Keyboard Shortcuts area and removed with a right-click, as Blender deletes with both X and Delete. Redo also answers Ctrl+Y by default.
+- Scenario `pointer` step: places the mouse cursor at a point of the view, given as fractions of its size.
+- `samples/brick_bounce`: a 2D brick breaker built with the `rusting` CLI alone, with a bouncing dynamic ball, a steered paddle and four scenarios.
+- `GameScene::linear_velocity` reads a body's velocity.
+- `samples/crate_keeper`: a top-down crate-pushing puzzle built with the `rusting` CLI alone, on a tile map grid, with three scenarios.
+- `GameScene::tile` and `GameScene::set_tile` read and write the `rusting.tile_map` cell under a world position.
+- Scenario `tolerance` applies to every number in an array or object, so a position can be checked with `equals` and a tolerance.
+- `samples/tower_topple`: a first-person block-toppling game built with the `rusting` CLI alone, where thrown balls knock towers and a pyramid off their stands, with three scenarios.
+- `GameScene::camera_ray` returns the active camera's position and forward direction; `GameScene::set_body_kind` switches a body between fixed, dynamic and kinematic; `GameScene::restart` reloads the starting scene and reruns `once` setup.
+- `samples/ember_arena`: a third-person arena survival game built with the `rusting` CLI alone, lit by fog, bloom, ambient occlusion and point lights, with three scenarios.
+- `GameScene::spawn_copy` copies a template object and its children; `GameScene::in_class` lists the objects in a class.
+- `rusting scene patch`: registered components may also be partial; missing fields take their defaults.
+- `samples/sky_hop`: a 2D platformer built with the `rusting` CLI alone, with four scenarios including an input-only full clear.
+- `samples/target_range`: a first-person shooting gallery built with the `rusting` CLI alone, with three scenarios.
+- `rusting.input_action` scene component: binds a named action to keys and mouse buttons (`{"action": "fire", "inputs": ["MouseLeft", "KeyF"]}`).
+- `GameScene::pressed`, `held`, `raycast`, `aim`, `despawn`, `set_visible` and `trigger`, and the `RayHit` type.
+- Scenario expectations take `"exists": false` to check that an object is gone.
+- `rusting test` runs every scenario in a folder, or in `tests/` when given no scenario.
+- `rusting new` writes a `.gitignore`.
+- `samples/hammer_run`: a third-person obstacle course built with the `rusting` CLI alone, with three scenarios. It is the first dogfooding game for the agent workflow.
+- `rusting new` writes an `AGENTS.md` into the project: the files, the CLI workflow, scene basics and the game code API, so an agent can build the game without reading the engine source.
+- `rusting scene patch`: built-in sections and their fields may be partial; missing fields take their defaults. Operations and a created entity's `parent` may name an entity by its unique name instead of its ID.
+- Scenario `within`: an `expect` step passes on the first tick through `within` where it holds, for things whose exact tick a test cannot know.
+- `rusting check`, `validate`, `cook`, `run`, `determinism`, `test`, `project inspect` and `asset list` default the project root to the current folder.
+- `rusting scene patch` has a `set_scene` operation that changes scene-level fields such as the name, render settings and simulation settings.
+- Scenario `set` steps write a transform or component value before a tick runs, so a test can place the player or fill a counter instead of replaying inputs to get there.
+- `GameScene::counter(name)` reads and changes a `rusting.counter` by name.
+- `rusting run --ticks N` saves the scene as it stands after the last tick to `build/final.rscene`, so `rusting scene query` can inspect the end state.
+- `GameScene::touching(name)` lists the objects touching a named object in the last physics step, and `GameScene::world()` gives game code the ECS world.
 - Reduced-coordinate articulations (`rusting.articulation`): on a root body, it solves the `Fixed`, `Hinge`, `Slider`, and `BallSocket` joints of its tree in joint space. Links never drift apart, hinge and slider limits hold exactly, and contacts on any link move the whole tree. The root floats when it is dynamic.
 - Breakable joints: `break_force` and `break_torque` on `rusting.joint`. When a step's load passes either one, the joint is removed and a `JointBroken` event reports the joint, its target, and the force and torque.
 - CPU physics joints (`rusting.joint`): fixed, hinge, slider, ball socket, cone twist, distance, spring, and a generic six-axis joint whose axes are locked, free, or limited, each with an optional spring and motor. A joint links a body to another body or to the world, and jointed bodies do not collide unless `collide_connected` is set. See "Physics: CPU and GPU" in `docs/concepts.md`.
@@ -26,15 +107,59 @@
 - Unique data assets: a data asset reference can keep its own copy, saved inside the object as `{"$data": value}` instead of a file path. Each copy loads separately, so objects and prefab instances never share it. The Inspector's `Unique` choice copies a file's values into the object, and `AssetServer::duplicate_data` does the same in game code.
 - Data assets hot reload: a running game reads a changed `.rdata` file again within half a second, into the handles it already has. A broken file keeps its last values and reports the error.
 - Add Object has an **Environment and UI** category that creates a World Environment (sky, ambient light and tone mapping) or a HUD Element as its own object.
+- The editor shows `rusting.tile_map` tiles and the `rusting.background` color while editing, not only in Play. Clicking a tile selects its tile map; tiles never appear in the Hierarchy or the saved scene.
+- Tile Painter: select a tile map and pick a brush in the Inspector, then click or drag in the Scene View to paint or erase cells. Each stroke is one Undo step, and the map grows to fit cells painted past its edge. `TileMap::cell`, `cell_at` and `set_cell` do the same from code.
+- The File and Edit menus show the key bound to Save Scene, Undo and Redo next to each entry.
+- `GameScene::snapshot` and `restore` save and bring back the scene mid-game, with velocities, sleep and solver state.
+- `GameScene::reset_body`, `set_angular_velocity`, `angular_velocity`, `set_look`, `initial` (the starting transform, color and body kind) and `state_hash(class)`.
+- The prelude exports `Entity`, `World`, `Name`, `RigidBody`, `PlayerController`, `PhysicsWorld`, `GameSnapshot` and `InitialState`.
+- Scenario `log` steps record a value, every tick with `until`, and `rusting test --json` lists them. `rusting run --ticks N --json` reports `timings.headless_ms_per_tick`.
+- Materials have `uv_scale` and `uv_offset`, so a texture can repeat across a long floor instead of stretching.
+- `PlayerController` has `max_slope`, `max_step_height` and `push_bodies`; `PhysicsWorld::move_character_on_foot` walks with the first two.
 
 ### Changed
 
+- Objects with the same mesh and the same textures now share one instanced draw even when their materials differ in color, roughness, emissive and the like; those already travel per instance. Reflective (roughness below 0.5) materials and blended ones still batch apart. Same Shift went from 97 to 18 draws and from 0.56 to 0.22 ms of command recording.
+
+- `rusting scene patch` rejects a field a built-in section does not have (for example `intensity` on `directional_light`) and lists the known fields. It used to drop the field and fill the default silently. The schema default for `mesh_renderer.material` now lists `transmission`, `ior`, `thickness`, `uv_scale` and `uv_offset`.
+
+- Windowed games request at least 4 swapchain images (was 2). With 2 images the Wayland compositor throttled Immediate presentation. Same Shift went from 355 to 525 fps; render scale, antialiasing, shadows and quality made no difference before the change.
+
+- Blended materials use premultiplied alpha: reflections and highlights keep their full strength, so a transparent material works as clear glass.
 - The Inspector shows components by short name, such as "Sky Light" instead of `rusting.sky_light`, and sorts Add Component by that name.
 - Add Component no longer offers environment settings, HUD elements or tile maps on meshes, cameras, lights or each other. A second sky, ambient light, tone mapping or background is greyed out, because the renderer reads only the first.
 - Render Settings calls the device limit "Max MSAA".
+- New projects and the samples build dependencies optimized in debug builds, so CPU physics runs at full speed during development.
+- When fixed steps take longer than the time they simulate, the game runs in slow motion with one warning instead of freezing.
+- `set_body_kind` to `Kinematic` or `Fixed` stops the body.
 
 ### Fixed
 
+- Fluid coupling visits bodies in spawn order. Removing a fluid volume removes its particle entities, a copied volume makes its own, and snapshots restore fluids.
+- Cooked scenes are format 8; format 7 files still load.
+- The game window no longer fails on a display that allows fewer than four swapchain images.
+- Fast bodies stop at the right distance from hull and mesh colliders. A player stepping onto a ledge measures the step at the contact point. A player with `push_bodies` off no longer lets crates fall through it.
+- The slow-motion clamp follows `time_scale` and never changes a replay.
+- `set_scene` refuses the scene root path. Whole numbers in scenario `equals` compare exactly. The headless ms-per-tick figure no longer includes scene load. `rusting schema` lists `pointer` under scenario steps and takes its `mesh_renderer` default from the material defaults.
+
+- `rusting export` copies the project's `scenes/` folder, so a game that loads a second scene works from the export.
+
+- `rusting test <project>` runs that project's `tests/` folder instead of reading the folder as a scenario, and scenario paths are looked up in the project folder first.
+- Editor: hidden objects no longer draw a camera or light shape, cannot be clicked in the Scene view, and are left out of Home framing.
+- Editor: a Tile Painter stroke that changes no cell no longer adds an Undo step.
+- A fast CPU body that hit a dynamic body stopped dead instead of pushing it, and a ball could slip between two boxes through the seam its center passed. The sweep now casts against colliders grown by the ball's radius and hands a dynamic target the momentum.
+- Hidden HUD elements, or elements under a hidden parent, are no longer drawn.
+- HUD text no longer wraps when it grows longer (a score going from "9" to "14"); lines break only at `\n`.
+- `GameScene::set_linear_velocity` wakes a sleeping body.
+- CPU physics repeats exactly after `restart` or `load_scene`. Bodies were solved in entity order, which changed on every reload.
+- Sleeping CPU bodies fall when the body under them is removed or moved.
+- Textures on the side faces of built-in cubes were upside down. Cube UVs now follow glTF, with the image's first row at the top. Projects that flipped their images to compensate must flip them back.
+- A scenario `expect` with tolerance 0 now passes for the value its failure message printed.
+- The player controller no longer climbs boxes taller than `max_step_height` on the round bottom of its capsule.
+- `rusting schema` describes scene texture slots as plain paths relative to the scene file.
+- Lights on hidden objects, or under a hidden parent, no longer light the scene.
+- Ambient light, sky light, tone mapping and the environment map now come from the entity with the lowest ID, as documented. The newest entity was used before.
+- Textures now have mipmaps, and samplers read them. Before, every texture was sampled at full resolution only, so distant textures shimmered.
 - Fixed a game crashing as it closed on Wayland when its runtime UI was on. The clipboard shut down after the window system connection had already closed.
 
 ## [1.4.0] - 2026-09-27

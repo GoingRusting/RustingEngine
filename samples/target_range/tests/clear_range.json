@@ -1,0 +1,166 @@
+{
+ "name": "six shots clear the range",
+ "ticks": 200,
+ "steps": [
+  {
+   "tick": 10,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": 0.2915
+   }
+  },
+  {
+   "tick": 10,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": -0.0096
+   }
+  },
+  {
+   "tick": 12,
+   "press": "fire"
+  },
+  {
+   "tick": 13,
+   "release": "fire"
+  },
+  {
+   "tick": 20,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": -0.0
+   }
+  },
+  {
+   "tick": 20,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": 0.0333
+   }
+  },
+  {
+   "tick": 22,
+   "press": "fire"
+  },
+  {
+   "tick": 23,
+   "release": "fire"
+  },
+  {
+   "tick": 30,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": -0.2663
+   }
+  },
+  {
+   "tick": 30,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": -0.0351
+   }
+  },
+  {
+   "tick": 32,
+   "press": "fire"
+  },
+  {
+   "tick": 33,
+   "release": "fire"
+  },
+  {
+   "tick": 40,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": -0.0
+   }
+  },
+  {
+   "tick": 40,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": 0.1052
+   }
+  },
+  {
+   "tick": 42,
+   "press": "fire"
+  },
+  {
+   "tick": 43,
+   "release": "fire"
+  },
+  {
+   "tick": 120,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": 0.0001
+   }
+  },
+  {
+   "tick": 120,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": 0.0599
+   }
+  },
+  {
+   "tick": 122,
+   "press": "fire"
+  },
+  {
+   "tick": 123,
+   "release": "fire"
+  },
+  {
+   "tick": 150,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": -0.0335
+   }
+  },
+  {
+   "tick": 150,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": -0.0059
+   }
+  },
+  {
+   "tick": 152,
+   "press": "fire"
+  },
+  {
+   "tick": 153,
+   "release": "fire"
+  },
+  {
+   "tick": 200,
+   "expect": {
+    "entity": "Hits",
+    "path": "/components/rusting.counter/value",
+    "equals": 6
+   }
+  },
+  {
+   "tick": 200,
+   "expect": {
+    "entity": "Shots",
+    "path": "/components/rusting.counter/value",
+    "equals": 6
+   }
+  }
+ ]
+}

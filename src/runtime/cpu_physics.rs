@@ -24,7 +24,7 @@
 //! Joint rows are solved with the contacts, and a moving or motor-driven
 //! body wakes the other side of its joints.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy_ecs::entity::Entity;
@@ -86,6 +86,43 @@ pub struct CharacterMove {
     pub position: [f32; 3],
     /// True when the move touched a surface facing up (a floor).
     pub grounded: bool,
+    /// The body of the last floor touched, for riding moving platforms.
+    pub floor: Option<Entity>,
+    /// True when the move touched a surface facing down (a ceiling).
+    pub ceiling: bool,
+}
+
+impl CharacterMove {
+    /// Moves a character standing on `floor` (that body and where it was
+    /// after the previous step) as far as the floor has moved since, so it
+    /// rides moving platforms. Returns the new position. A separate move
+    /// keeps the character's own downward probe short enough to stay
+    /// grounded.
+    // ponytail: translation only; a rotating platform does not turn or
+    // swing its rider.
+    pub(crate) fn ride(
+        physics: &PhysicsWorld,
+        shape: ColliderShape,
+        position: [f32; 3],
+        floor: Option<(Entity, [f32; 3])>,
+        layer_mask: u32,
+        rider: Entity,
+        position_of: impl Fn(Entity) -> Option<[f32; 3]>,
+    ) -> [f32; 3] {
+        let Some((floor, was)) = floor else {
+            return position;
+        };
+        let Some(now) = position_of(floor) else {
+            return position;
+        };
+        let carried = [now[0] - was[0], now[1] - was[1], now[2] - was[2]];
+        if carried == [0.0; 3] {
+            return position;
+        }
+        physics
+            .move_character(shape, position, carried, layer_mask, Some(rider))
+            .position
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -448,6 +485,24 @@ impl Body {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sleeping;
 
+/// Order in which the CPU solver visits a body. Scene loading numbers the
+/// scene's objects by `SceneId`, and game spawns continue the count, so a
+/// reloaded scene solves in the same order as the first load did. Bodies
+/// without one follow, in entity order.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpawnOrder(pub u64);
+
+/// The next [`SpawnOrder`] to hand out. Replacing the scene resets it.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct NextSpawnOrder(pub u64);
+
+/// Takes the next [`SpawnOrder`] for an object spawned during play.
+pub(crate) fn next_spawn_order(world: &mut World) -> SpawnOrder {
+    let mut next = world.get_resource_or_insert_with(NextSpawnOrder::default);
+    next.0 += 1;
+    SpawnOrder(next.0 - 1)
+}
+
 /// CPU physics state after the last fixed step, with immediate queries.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct PhysicsWorld {
@@ -692,14 +747,68 @@ impl PhysicsWorld {
         layer_mask: u32,
         exclude: Option<Entity>,
     ) -> CharacterMove {
+        self.slide(shape, position, motion, layer_mask, exclude, 0.7, None)
+    }
+
+    /// Like [`Self::move_character`], for a walking character: ground
+    /// steeper than `max_slope` radians does not count as ground, and a
+    /// steep surface or edge lifts the body only where it touches no higher
+    /// than `max_step_height` above the body's bottom, so it walks over low
+    /// ledges and cannot climb anything taller.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_character_on_foot(
+        &self,
+        shape: ColliderShape,
+        position: [f32; 3],
+        motion: [f32; 3],
+        layer_mask: u32,
+        exclude: Option<Entity>,
+        max_slope: f32,
+        max_step_height: f32,
+    ) -> CharacterMove {
+        self.slide(
+            shape,
+            position,
+            motion,
+            layer_mask,
+            exclude,
+            max_slope.cos(),
+            Some(max_step_height),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn slide(
+        &self,
+        shape: ColliderShape,
+        position: [f32; 3],
+        motion: [f32; 3],
+        layer_mask: u32,
+        exclude: Option<Entity>,
+        floor_y: f32,
+        max_step_height: Option<f32>,
+    ) -> CharacterMove {
         /// Gap kept to surfaces so the next move does not start inside them.
         const SKIN: f32 = 0.01;
         let mut position = Vector3::from(position);
         let mut remaining = Vector3::from(motion);
         let mut grounded = false;
-        if Shape::scaled(shape, [1.0; 3]).is_none() {
-            remaining = Vector3::zeros();
-        }
+        let mut floor = None;
+        let mut ceiling = false;
+        // Distance from the center down to the bottom of the shape.
+        let bottom = match Shape::scaled(shape, [1.0; 3]) {
+            Some(Shape::Sphere(radius)) => radius,
+            Some(Shape::Box(half)) => half.y,
+            Some(Shape::Capsule {
+                half_height,
+                radius,
+            }) => half_height + radius,
+            _ => {
+                remaining = Vector3::zeros();
+                0.0
+            }
+        };
         // Each slide removes motion into one surface; three covers a corner.
         for _ in 0..4 {
             let length = remaining.norm();
@@ -719,15 +828,31 @@ impl PhysicsWorld {
                 break;
             };
             let normal = Vector3::from(hit.normal);
-            grounded |= normal.y > 0.7;
+            let above_bottom = hit.point[1]
+                - (position.y + direction.y * hit.distance - bottom);
+            // On foot, an edge low enough to step onto holds the body up
+            // like ground while it climbs; a steeper surface above that
+            // height must not lift it.
+            let step = max_step_height.map(|step| above_bottom <= step);
+            if normal.y > floor_y || (step == Some(true) && normal.y > 0.0) {
+                grounded = true;
+                floor = Some(hit.entity);
+            }
+            ceiling |= normal.y < -0.7;
             let travel = (hit.distance - SKIN).max(0.0);
             position += direction * travel;
             remaining = direction * (length - travel);
+            let rise = remaining.y;
             remaining -= normal * remaining.dot(&normal).min(0.0);
+            if normal.y <= floor_y && step == Some(false) {
+                remaining.y = remaining.y.min(rise.max(0.0));
+            }
         }
         CharacterMove {
             position: position.into(),
             grounded,
+            floor,
+            ceiling,
         }
     }
 }
@@ -742,11 +867,9 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         std::mem::take(&mut world.resource_mut::<PhysicsWorld>().meshes);
     let mut bodies = gather_bodies(world, &mut meshes);
     world.resource_mut::<PhysicsWorld>().meshes = meshes;
-    rest.retain(|entity, _| {
-        bodies
-            .binary_search_by_key(entity, |body| body.entity)
-            .is_ok()
-    });
+    let alive: HashSet<Entity> =
+        bodies.iter().map(|body| body.entity).collect();
+    rest.retain(|entity, _| alive.contains(entity));
     // Gameplay woke it: moved it, gave it velocity, or removed the marker.
     for body in bodies.iter_mut().filter(|body| body.asleep) {
         let position: [f32; 3] = body.position.into();
@@ -756,11 +879,21 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             body.asleep = false;
         }
     }
+    wake_on_lost_support(world, &mut bodies);
     let links = joints::gather_joints(world, &bodies);
     let (mut articulations, taken) =
         articulation::build(world, &mut bodies, &links);
     let mut contacts = find_contacts(&bodies);
     contacts.retain(|(a, b, _)| !joints::excluded(&links, *a, *b));
+    // Players with `push_bodies` off stay in the contacts, so dynamic bodies
+    // still rest on them, but the solver sees them at rest and they shove
+    // nothing. Their own velocity is put back after the solve.
+    let no_push: HashSet<Entity> = world
+        .query::<(Entity, &super::PlayerController)>()
+        .iter(world)
+        .filter(|(_, player)| !player.push_bodies)
+        .map(|(entity, _)| entity)
+        .collect();
     let links: Vec<_> = links
         .into_iter()
         .zip(taken)
@@ -831,6 +964,12 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         let mut warm = std::mem::take(&mut physics.warm);
         let mut joint_warm = std::mem::take(&mut physics.joint_warm);
         articulations.free_motion(&mut bodies, gravity, dt);
+        let held: Vec<_> = bodies
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, body)| no_push.contains(&body.entity))
+            .map(|(index, body)| (index, std::mem::take(&mut body.velocity)))
+            .collect();
         let broken = solve_velocities(
             &mut bodies,
             &mut articulations,
@@ -840,6 +979,9 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             &mut joint_warm,
             dt,
         );
+        for (index, velocity) in held {
+            bodies[index].velocity = velocity;
+        }
         let mut physics = world.resource_mut::<PhysicsWorld>();
         physics.warm = warm;
         physics.joint_warm = joint_warm;
@@ -870,7 +1012,16 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             }
         }
         articulations.integrate(&mut bodies, dt);
-        correct_positions(&mut bodies, &contacts, dt);
+        // A player that pushes nothing does not push bodies out of overlap.
+        let pushed_out: Vec<_> = contacts
+            .iter()
+            .filter(|(a, b, _)| {
+                !no_push.contains(&bodies[*a].entity)
+                    && !no_push.contains(&bodies[*b].entity)
+            })
+            .cloned()
+            .collect();
+        correct_positions(&mut bodies, &pushed_out, dt);
         write_back(world, &bodies);
         fall_asleep(world, &bodies, &mut rest);
     }
@@ -888,6 +1039,99 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         contacts.into_iter().map(|(.., contact)| contact).collect();
     physics.bodies = bodies;
     physics.rest = rest;
+}
+
+impl PhysicsWorld {
+    /// Forgets the contact impulses and sleep count kept for `entity`, so
+    /// its next step starts as if it had just been created.
+    pub(crate) fn forget_body(&mut self, entity: Entity) {
+        self.rest.remove(&entity);
+        self.warm.retain(|(a, b), _| *a != entity && *b != entity);
+        self.joint_warm.remove(&entity);
+    }
+
+    /// Moves the kept solver state from old entities to new ones, after a
+    /// snapshot was loaded into new entities. State of unlisted entities is
+    /// dropped.
+    pub(crate) fn rename_bodies(&mut self, renamed: &HashMap<Entity, Entity>) {
+        let new = |entity: &Entity| renamed.get(entity).copied();
+        self.bodies.retain_mut(|body| {
+            new(&body.entity)
+                .map(|entity| body.entity = entity)
+                .is_some()
+        });
+        self.contacts.retain_mut(|contact| {
+            match (new(&contact.a), new(&contact.b)) {
+                (Some(a), Some(b)) => {
+                    (contact.a, contact.b) = (a, b);
+                    true
+                }
+                _ => false,
+            }
+        });
+        self.rest = self
+            .rest
+            .drain()
+            .filter_map(|(entity, rest)| Some((new(&entity)?, rest)))
+            .collect();
+        self.warm = self
+            .warm
+            .drain()
+            .filter_map(|((a, b), points)| Some(((new(&a)?, new(&b)?), points)))
+            .collect();
+        self.joint_warm = self
+            .joint_warm
+            .drain()
+            .filter_map(|(entity, rows)| Some((new(&entity)?, rows)))
+            .collect();
+    }
+}
+
+/// Wakes each sleeping body near where a body was removed, or was moved,
+/// turned or changed in kind by gameplay since the last step, so a pile
+/// falls when its floor goes away. Contacts between a sleeper and a fixed
+/// body are never recorded, so this checks bounding spheres instead.
+// ponytail: every changed body against every sleeper; a moving kinematic
+// platform pays this each step. Use the broad phase if that shows.
+fn wake_on_lost_support(world: &World, bodies: &mut [Body]) {
+    const MARGIN: f32 = 0.05;
+    let index: HashMap<Entity, usize> = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| (body.entity, index))
+        .collect();
+    let physics = world.resource::<PhysicsWorld>();
+    let changed = physics.bodies.iter().filter(|old| {
+        let Some(&now) = index.get(&old.entity) else {
+            return true;
+        };
+        let now = &bodies[now];
+        // The solver moves awake dynamic bodies, and the speed rule wakes
+        // what they push. Anything else moved because gameplay moved it.
+        let solver_moved = old.kind == RigidBodyKind::Dynamic
+            && now.kind == RigidBodyKind::Dynamic
+            && !old.asleep;
+        !solver_moved
+            && (old.position != now.position
+                || old.rotation != now.rotation
+                || old.kind != now.kind)
+    });
+    let mut wake = Vec::new();
+    for old in changed.filter(|old| !old.sensor) {
+        for (index, body) in bodies.iter().enumerate() {
+            let reach = old.bounding_radius() + body.bounding_radius() + MARGIN;
+            if body.asleep
+                && body.entity != old.entity
+                && (body.position - old.position).norm_squared()
+                    <= reach * reach
+            {
+                wake.push(index);
+            }
+        }
+    }
+    for index in wake {
+        bodies[index].asleep = false;
+    }
 }
 
 /// Counts still steps for awake dynamic bodies and puts the ones that stayed
@@ -920,7 +1164,7 @@ fn fall_asleep(
     }
 }
 
-/// Collision bodies of every CPU and static collider, in entity order. A
+/// Collision bodies of every CPU and static collider, in [`SpawnOrder`]. A
 /// mesh collider whose entity has no loaded mesh is left out.
 fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
     let mut query = world.query::<(
@@ -935,6 +1179,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
         Option<&Sleeping>,
         Option<&MeshRenderer>,
         Option<&GpuProxyOf>,
+        Option<&SpawnOrder>,
     )>();
     let assets = world.get_resource::<AssetServer>();
     let mut used = MeshCache::new();
@@ -959,6 +1204,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 sleeping,
                 renderer,
                 proxy,
+                order,
             )| {
                 let movable = parent.is_none();
                 // ponytail: children read the pose propagated last frame, and
@@ -1017,48 +1263,53 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                     0.0
                 };
                 let moving = kind != RigidBodyKind::Fixed;
-                Some(Body {
-                    entity,
-                    kind,
-                    movable,
-                    position: pose.position.into(),
-                    rotation: sim_math::rotation_from_euler(
-                        pose.rotation[0],
-                        pose.rotation[1],
-                        pose.rotation[2],
-                    ),
-                    sensor: collider.sensor,
-                    proxy: proxy.is_some(),
-                    layers: layers.copied().unwrap_or_default(),
-                    friction: collider.friction.max(0.0),
-                    restitution: collider.restitution.clamp(0.0, 1.0),
-                    inverse_mass,
-                    inverse_inertia: if inverse_mass > 0.0 {
-                        shape.inverse_inertia(rigid.mass)
-                    } else {
-                        Vector3::zeros()
+                let key = (order.map_or(u64::MAX, |order| order.0), entity);
+                Some((
+                    key,
+                    Body {
+                        entity,
+                        kind,
+                        movable,
+                        position: pose.position.into(),
+                        rotation: sim_math::rotation_from_euler(
+                            pose.rotation[0],
+                            pose.rotation[1],
+                            pose.rotation[2],
+                        ),
+                        sensor: collider.sensor,
+                        proxy: proxy.is_some(),
+                        layers: layers.copied().unwrap_or_default(),
+                        friction: collider.friction.max(0.0),
+                        restitution: collider.restitution.clamp(0.0, 1.0),
+                        inverse_mass,
+                        inverse_inertia: if inverse_mass > 0.0 {
+                            shape.inverse_inertia(rigid.mass)
+                        } else {
+                            Vector3::zeros()
+                        },
+                        shape,
+                        asleep: sleeping.is_some() && inverse_mass > 0.0,
+                        articulated: false,
+                        velocity: if moving {
+                            rigid.linear_velocity.into()
+                        } else {
+                            Vector3::zeros()
+                        },
+                        angular_velocity: if moving {
+                            rigid.angular_velocity.into()
+                        } else {
+                            Vector3::zeros()
+                        },
                     },
-                    shape,
-                    asleep: sleeping.is_some() && inverse_mass > 0.0,
-                    articulated: false,
-                    velocity: if moving {
-                        rigid.linear_velocity.into()
-                    } else {
-                        Vector3::zeros()
-                    },
-                    angular_velocity: if moving {
-                        rigid.angular_velocity.into()
-                    } else {
-                        Vector3::zeros()
-                    },
-                })
+                ))
             },
         )
         .collect::<Vec<_>>();
     *meshes = used;
-    // Query order follows archetypes; sort so results never depend on it.
-    bodies.sort_by_key(|body| body.entity);
-    bodies
+    // Query order follows archetypes and entity ids change on a reload;
+    // sort so results depend on neither.
+    bodies.sort_by_key(|(key, _)| *key);
+    bodies.into_iter().map(|(_, body)| body).collect()
 }
 
 /// Candidates from a three-dimensional bounding-sphere broad phase. Sweep
@@ -1505,11 +1756,14 @@ fn clip(
 }
 
 /// Continuous collision for bodies that would move farther than their inner
-/// radius this step: a ray from the center along the motion stops the body
-/// at the first solid collider and removes its velocity into that surface.
-// ponytail: a center ray, not a full shape cast, so a fast body can still
-// clip a thin edge it only grazes; the hit is inelastic. Add a swept-shape
-// test if gameplay needs bouncing bullets.
+/// radius this step. A ray from the center along the motion, against targets
+/// grown by the body's rounding radius, finds the first solid collider. A
+/// fixed or kinematic target stops the body at its surface and removes the
+/// velocity into it. A dynamic target stops the body just inside contact with
+/// its velocity kept, so next step's contact solve hands over the momentum.
+// ponytail: grown boxes keep sharp corners and hulls are not grown, so a
+// fast body stops a little early at box corners and can still clip a hull
+// edge it only grazes. Add a swept-shape test if gameplay needs it.
 fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
     for index in 0..bodies.len() {
         let body = &bodies[index];
@@ -1523,6 +1777,7 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
             continue;
         }
         let direction = body.velocity / body.velocity.norm();
+        let pad = body.core_radius();
         let hit = bodies
             .iter()
             .enumerate()
@@ -1530,20 +1785,60 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
                 *other != index && !target.sensor && body.interacts_with(target)
             })
             .filter_map(|(_, target)| {
-                ray_body(body.position, direction, target)
+                let target_grown = grown(target, pad);
+                let (distance, normal) =
+                    ray_body(body.position, direction, &target_grown)?;
+                // Hulls and meshes come back ungrown, so `pad` is not in
+                // their distance.
+                let added =
+                    if matches!(target_grown, std::borrow::Cow::Owned(_)) {
+                        pad
+                    } else {
+                        0.0
+                    };
+                Some((distance + added - reach, normal, target.kind))
             })
-            .filter(|(distance, _)| *distance < travel + reach)
+            .filter(|(distance, ..)| *distance < travel)
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((distance, normal)) = hit else {
+        let Some((stop, normal, kind)) = hit else {
             continue;
         };
         let body = &mut bodies[index];
-        body.position += direction * (distance - reach).max(0.0);
+        if kind == RigidBodyKind::Dynamic {
+            // Integration adds `travel` next, landing just inside contact.
+            body.position += direction * (stop + PENETRATION_SLOP - travel);
+            continue;
+        }
+        body.position += direction * stop.max(0.0);
         let into = body.velocity.dot(&normal);
         if into < 0.0 {
             body.velocity -= normal * into;
         }
     }
+}
+
+/// `body` with its sphere, box or capsule grown by `pad`, for casting a
+/// rounded body's center against it.
+fn grown(body: &Body, pad: f32) -> std::borrow::Cow<'_, Body> {
+    let shape = match body.shape {
+        _ if pad == 0.0 => return std::borrow::Cow::Borrowed(body),
+        Shape::Sphere(radius) => Shape::Sphere(radius + pad),
+        Shape::Box(half) => Shape::Box(half.add_scalar(pad)),
+        Shape::Capsule {
+            half_height,
+            radius,
+        } => Shape::Capsule {
+            half_height,
+            radius: radius + pad,
+        },
+        Shape::Hull(_) | Shape::Triangles(_) => {
+            return std::borrow::Cow::Borrowed(body);
+        }
+    };
+    std::borrow::Cow::Owned(Body {
+        shape,
+        ..body.clone()
+    })
 }
 
 /// Pushes overlapping bodies apart after integration. The contact depth is

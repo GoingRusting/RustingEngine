@@ -60,6 +60,7 @@ pub(super) fn draw_render_settings_area(
                         (ShadowQuality::High, "High (4096)"),
                     ],
                 );
+                checkbox(ui, "Reflections", &mut settings.reflections);
                 if let Some(caps) = capabilities {
                     value(
                         ui,

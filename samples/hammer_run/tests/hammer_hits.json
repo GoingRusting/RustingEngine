@@ -1,0 +1,10 @@
+{"name": "sweeper knocks the player back to the start", "ticks": 700, "steps": [
+  {"tick": 5, "press": "player.forward"},
+  {"tick": 58, "press": "player.jump"},
+  {"tick": 62, "release": "player.jump"},
+  {"tick": 178, "press": "player.jump"},
+  {"tick": 182, "release": "player.jump"},
+  {"tick": 150, "within": 300, "expect": {"entity": "Player", "path": "/transform/position/2", "less_than": -11.5}},
+  {"tick": 250, "release": "player.forward"},
+  {"tick": 250, "within": 700, "expect": {"entity": "Player", "path": "/transform/position/2", "greater_than": 2.5}}
+]}

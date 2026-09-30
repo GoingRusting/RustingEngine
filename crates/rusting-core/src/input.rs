@@ -187,6 +187,15 @@ impl ActionMap {
             .push(binding);
         self
     }
+    /// Removes one binding of `action`; other bindings stay.
+    pub fn unbind(&mut self, action: &str, binding: InputBinding) {
+        if let Some(list) = self.bindings.get_mut(action) {
+            list.retain(|bound| *bound != binding);
+            if list.is_empty() {
+                self.bindings.remove(action);
+            }
+        }
+    }
     #[must_use]
     pub fn held(&self, input: &RuntimeInput, action: &str) -> bool {
         self.bindings_for(action).any(|binding| match binding {

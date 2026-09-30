@@ -1,0 +1,7 @@
+{"name": "first gem", "ticks": 200, "steps": [
+  {"tick": 5, "press": "player.forward"},
+  {"tick": 58, "press": "player.jump"},
+  {"tick": 62, "release": "player.jump"},
+  {"tick": 60, "within": 200, "expect": {"entity": "Gems", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 200, "capture": "shots/first_gem.png"}
+]}

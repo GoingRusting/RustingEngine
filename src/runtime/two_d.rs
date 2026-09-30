@@ -13,14 +13,14 @@ use std::path::PathBuf;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{
     Commands, Component, DetectChanges, Query, Ref, RemovedComponents, Res,
-    ResMut,
+    ResMut, Without,
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActionMap, Collider, ColliderShape, FrameTime, MeshRenderer, PhysicsBody,
-    PhysicsWorld, RigidBody, RigidBodyKind, RuntimeInput, PLAYER_JUMP,
-    PLAYER_LEFT, PLAYER_RIGHT,
+    ActionMap, CharacterMove, Collider, ColliderShape, FrameTime, MeshRenderer,
+    PhysicsBody, PhysicsWorld, RigidBody, RigidBodyKind, RuntimeInput,
+    PLAYER_JUMP, PLAYER_LEFT, PLAYER_RIGHT,
 };
 use crate::assets::{
     AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel,
@@ -89,6 +89,141 @@ impl TileMap {
         ]
     }
 
+    /// The cell under a point relative to the map origin, if the point is
+    /// right of and below the origin. The cell may lie past the last row or
+    /// column.
+    #[must_use]
+    pub fn cell_at(&self, local: [f32; 2]) -> Option<(usize, usize)> {
+        let column = (local[0] / self.tile_size).floor();
+        let row = (-local[1] / self.tile_size).floor();
+        (column >= 0.0 && row >= 0.0).then_some((column as usize, row as usize))
+    }
+
+    /// The character in a cell; `.` past the end of the grid.
+    #[must_use]
+    pub fn cell(&self, column: usize, row: usize) -> char {
+        self.rows
+            .get(row)
+            .and_then(|text| text.chars().nth(column))
+            .unwrap_or('.')
+    }
+
+    /// Writes `character` into a cell, padding with `.` to reach it.
+    /// Returns false when the cell already held it.
+    pub fn set_cell(
+        &mut self,
+        column: usize,
+        row: usize,
+        character: char,
+    ) -> bool {
+        if self.cell(column, row) == character {
+            return false;
+        }
+        if self.rows.len() <= row {
+            self.rows.resize(row + 1, String::new());
+        }
+        let mut cells: Vec<char> = self.rows[row].chars().collect();
+        if cells.len() <= column {
+            cells.resize(column + 1, '.');
+        }
+        cells[column] = character;
+        self.rows[row] = cells.into_iter().collect();
+        true
+    }
+
+    /// Writes `character` into every cell of the rectangle between two
+    /// corner cells. Returns true when a cell changed.
+    pub fn fill_rect(
+        &mut self,
+        from: (usize, usize),
+        to: (usize, usize),
+        character: char,
+    ) -> bool {
+        let mut changed = false;
+        for row in from.1.min(to.1)..=from.1.max(to.1) {
+            for column in from.0.min(to.0)..=from.0.max(to.0) {
+                changed |= self.set_cell(column, row, character);
+            }
+        }
+        changed
+    }
+
+    /// Writes `character` into the cells of a straight line between two
+    /// cells. Returns true when a cell changed.
+    pub fn fill_line(
+        &mut self,
+        from: (usize, usize),
+        to: (usize, usize),
+        character: char,
+    ) -> bool {
+        let mut changed = false;
+        for (column, row) in Self::line_cells(from, to) {
+            changed |= self.set_cell(column, row, character);
+        }
+        changed
+    }
+
+    /// The cells of a straight line from `from` to `to`, both included,
+    /// joined edge or corner to corner (Bresenham's line).
+    #[must_use]
+    pub fn line_cells(
+        from: (usize, usize),
+        to: (usize, usize),
+    ) -> Vec<(usize, usize)> {
+        let (mut x, mut y) = (from.0 as i64, from.1 as i64);
+        let (end_x, end_y) = (to.0 as i64, to.1 as i64);
+        let (dx, dy) = ((end_x - x).abs(), -(end_y - y).abs());
+        let (step_x, step_y) = ((end_x - x).signum(), (end_y - y).signum());
+        let mut error = dx + dy;
+        let mut cells = vec![(from.0, from.1)];
+        while (x, y) != (end_x, end_y) {
+            let doubled = 2 * error;
+            if doubled >= dy {
+                error += dy;
+                x += step_x;
+            }
+            if doubled <= dx {
+                error += dx;
+                y += step_y;
+            }
+            cells.push((x as usize, y as usize));
+        }
+        cells
+    }
+
+    /// Flood fills the cells joined edge to edge with the cell at `column`,
+    /// `row` that hold the same character, inside the grid's used area. A
+    /// cell outside that area fills nothing. Returns true when a cell
+    /// changed.
+    pub fn fill(&mut self, column: usize, row: usize, character: char) -> bool {
+        let target = self.cell(column, row);
+        let width = self
+            .rows
+            .iter()
+            .map(|text| text.chars().count())
+            .max()
+            .unwrap_or(0);
+        let height = self.rows.len();
+        if target == character || column >= width || row >= height {
+            return false;
+        }
+        let mut open = vec![(column, row)];
+        let mut changed = false;
+        while let Some((column, row)) = open.pop() {
+            if column >= width
+                || row >= height
+                || self.cell(column, row) != target
+            {
+                continue;
+            }
+            changed |= self.set_cell(column, row, character);
+            open.extend([(column + 1, row), (column, row + 1)]);
+            open.extend(column.checked_sub(1).map(|left| (left, row)));
+            open.extend(row.checked_sub(1).map(|up| (column, up)));
+        }
+        changed
+    }
+
     /// The kind at `column`, `row`, if the cell is not empty.
     #[must_use]
     pub fn kind_at(&self, column: usize, row: usize) -> Option<&TileKind> {
@@ -118,6 +253,13 @@ pub(super) fn build_tile_maps(
         })
         .collect();
     stale.extend(changed.iter().map(|(entity, ..)| *entity));
+    // Owners gone without a removal event (a scene reload in the editor).
+    stale.extend(
+        tiles
+            .iter()
+            .map(|(_, owner)| owner.0)
+            .filter(|owner| !maps.contains(*owner)),
+    );
     if stale.is_empty() {
         return;
     }
@@ -257,6 +399,10 @@ pub struct PlatformerController {
     /// Seconds since the body was last grounded.
     #[serde(skip)]
     pub air_time: f32,
+    /// The floor body under the controller after the last step and where
+    /// it was, so a moving platform carries the controller.
+    #[serde(skip)]
+    pub floor: Option<(Entity, [f32; 3])>,
 }
 
 /// A jump pressed up to this long before landing, or this long after
@@ -274,6 +420,7 @@ impl Default for PlatformerController {
             grounded: false,
             jump_buffer: 0.0,
             air_time: 0.0,
+            floor: None,
         }
     }
 }
@@ -303,6 +450,7 @@ pub(super) fn platformer_move(
         &mut Transform,
         Option<&Collider>,
     )>,
+    floors: Query<&Transform, Without<PlatformerController>>,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
     let run = f32::from(u8::from(actions.held(&input, PLAYER_RIGHT)))
@@ -316,10 +464,20 @@ pub(super) fn platformer_move(
         }
         player.jump_buffer = (player.jump_buffer - dt).max(0.0);
         player.vertical_speed -= player.gravity * dt;
-        let moved = physics.move_character(
-            collider
-                .map_or(DEFAULT_PLATFORMER_SHAPE, |collider| collider.shape),
+        let shape = collider
+            .map_or(DEFAULT_PLATFORMER_SHAPE, |collider| collider.shape);
+        let start = CharacterMove::ride(
+            &physics,
+            shape,
             transform.position,
+            player.floor,
+            player.collision_mask,
+            entity,
+            |floor| floors.get(floor).ok().map(|floor| floor.position),
+        );
+        let moved = physics.move_character(
+            shape,
+            start,
             [run * player.run_speed * dt, player.vertical_speed * dt, 0.0],
             player.collision_mask,
             Some(entity),
@@ -331,6 +489,12 @@ pub(super) fn platformer_move(
         } else {
             player.air_time += dt;
         }
+        if moved.ceiling && player.vertical_speed > 0.0 {
+            player.vertical_speed = 0.0;
+        }
+        player.floor = moved
+            .floor
+            .and_then(|floor| Some((floor, floors.get(floor).ok()?.position)));
         transform.position = moved.position;
     }
 }

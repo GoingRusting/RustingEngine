@@ -1,0 +1,12 @@
+{
+ "name": "run and jump to the first coin",
+ "ticks": 90,
+ "steps": [
+  {"tick": 1, "press": "player.right"},
+  {"tick": 12, "press": "player.jump"},
+  {"tick": 14, "release": "player.jump"},
+  {"tick": 14, "within": 60, "expect": {"entity": "Coins", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 80, "expect": {"entity": "Coin 1", "path": "/components/rusting.pickup/collected", "equals": true}},
+  {"tick": 80, "expect": {"entity": "Falls", "path": "/components/rusting.counter/value", "equals": 0}}
+ ]
+}

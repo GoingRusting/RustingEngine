@@ -124,17 +124,21 @@ item are named in parentheses.
 
 ### Scene editing UX
 
-- Frame all (Home) and Blender numpad views (front, side, top) (M6).
-- Selection outline readable behind other geometry (M6).
-- Camera and light shapes: the camera frame is fixed at 16:9, the point
-  light has three circles instead of a view-facing one, and there are no
-  per-type icons. Hidden objects still draw their shape.
-- Gizmo polish: local/global modes, snapping, visual restyle (M6).
+- Numpad views: no auto-orthographic on a numpad view (Blender's
+  auto-perspective), and the orthographic state is not saved with the editor layout. An orthographic
+  view clips objects behind the camera; pull the camera back when zoomed in
+  close. Home frames only objects with a mesh.
+- Selection outline is a wire box of the bounds, not a pixel silhouette
+  of the mesh (M6).
+- Camera and light shapes: the camera frame is fixed at 16:9, and there
+  are no per-type icons.
+- Gizmo polish: visual restyle; snap increments are saved only with
+  Save Layout (`editor_layout.json`, `snap` field), not automatically (M6).
 - Multiple viewports and orthographic views (M20).
 - Game components the editor has no registration for (for example a
-  game's `coin_run.spin`) load as `UnregisteredComponents` and save back
-  unchanged, but the Inspector does not show them. Show them as read-only
-  JSON first, then editable JSON validated on the next game load.
+  game's `coin_run.spin`) load as `UnregisteredComponents`, save back
+  unchanged, and show in the Inspector as read-only JSON that can be
+  removed. Editing them needs JSON validated on the next game load.
 - Scene instances (prefabs): changes to placed objects save as overrides,
   but nothing shows which fields are overridden. The Inspector should mark
   overridden fields with a per-field revert arrow, as Godot does (only
@@ -144,11 +148,11 @@ item are named in parentheses.
   Hierarchy should mark instance roots and tint their children,
   editing `source` in the Inspector should re-read the scene at once, and
   scenes should also be draggable into the Scene View like models.
-- Reflected Inspector gaps: string-keyed maps (such as `TileMap.tiles`)
-  edit existing entries but cannot add or rename keys; field `doc` hints
-  are not shown as tooltips; the asset drop-down for handle fields lists
-  only assets that are already loaded, with no file browser or drag from
-  the Assets panel.
+- Reflected Inspector gaps: a string-keyed map (such as `TileMap.tiles`)
+  adds entries by key and removes them, but renaming a key is a remove and
+  an add; the asset drop-down
+  for handle fields lists only assets that are already loaded, with no file
+  browser or drag from the Assets panel.
 
 ### Asset workflow
 
@@ -172,8 +176,6 @@ item are named in parentheses.
 - Art-direction presets: `rusting preset apply` has no editor picker yet.
   Presets should skip ACES tone mapping and keep HUD size hierarchy on 2D
   unlit scenes; the starter exercise corrects both by patch today.
-  Edit mode does not run App schedules, so `rusting.background` only shows
-  in Play; the viewport should read it directly.
 - Image textures always load as sRGB, both from the Inspector and from
   scene files. Normal, metal/rough, and occlusion maps need a linear load
   path, and the scene file needs to store the color space per slot.
@@ -202,19 +204,24 @@ item are named in parentheses.
 - Render settings and physics diagnostics follow-up: expose more optional
   device capabilities and explain capacity warnings inline. The M6 panels
   already show `RenderCapacityDiagnostics`, including missing asset counts.
-- Environment panel for the scene-wide `AmbientLight`, `SkyLight`, and
-  `ToneMapping` components, like Godot's `WorldEnvironment` (M6).
-- Shortcut follow-ups: show each binding next to its Edit menu entry, allow
-  more than one key per action (Blender deletes with both X and Delete), and
-  make modal keys (Escape cancels a gizmo drag) rebindable.
+- Shortcut follow-ups: each action has at most two keys; make modal keys
+  (Escape cancels a gizmo drag) rebindable.
 - Global scaling at arbitrary object angles is axis weighted because scene
   transforms store rotation and scale without shear; support exact global
   scaling if the scene transform format gains a shear component.
-- Project settings and input map editors (M20).
+- Project settings: the Project panel is a card page built from
+  `gui_elements::kit` (banner, category rail, setting rows, switches,
+  segmented controls, stat tiles). Follow-ups: move the Inspector, Render
+  Settings and Physics Diagnostics panels onto the same kit, add physics and
+  input map categories (M20), and wire `render_scale` and `background_color`
+  into the page once the renderer reads them.
 - Project-wide search (M20).
-- 2D path: Edit mode does not run App schedules, so a `rusting.tile_map`
-  shows no tiles until Play. Run `build_tile_maps` in Edit mode (or draw a
-  preview), and add a tile painter.
+- 2D path: the Inspector's Tile Painter paints, draws lines, fills
+  rectangles and flood fills the selected tile map in the Scene View, and
+  outlines the target cells. Flood fill stays inside the grid's used area.
+  The brush palette shows each tile's color, and D, R, L and B pick the
+  tools while a brush is active. Follow-up: texture thumbnails in the
+  palette.
 
 ### Play workflow
 
@@ -240,16 +247,23 @@ item are named in parentheses.
   uploads wait on their own submission; replace with a staging ring if the
   stall shows up in profiles.
 - Golden-image test for editor compositing (M6 exit gate).
-- Show the resolved quality profile when Quality is Auto, and the LOD
-  groups loaded next to meshes, in the stats area.
 - Profiler area with per-pass GPU timestamps and CPU/GPU history is done.
   Add per-pass history selection and frame capture/export (M20).
 - Anti-aliasing and shadow quality in Render Settings are session
   options. Save them in project settings (or `SceneRenderSettings`, which
-  needs cooked scene format 8 with a legacy struct for format 7).
-- Render Bounds are edited as numbers in the Inspector only. Add viewport
-  handles to drag box faces and the sphere radius, plus a "Fit to Mesh"
-  action. Multi-selection edits only the active object.
+  needs cooked scene format 9 with a legacy struct for format 8).
+- Atmosphere (fog, bloom, ambient occlusion): the Scene view's viewport
+  menu switches each effect off for editing, and a selected Fog draws its
+  full-density and 1/e heights as squares over the grid. Dragging a square
+  sets `height` or `height_falloff`, with one Undo step. Fog is
+  applied twice where refraction or SSR samples an already fogged scene
+  color; subtract it when that shows.
+- The depth prepass for ambient occlusion misses objects that come into
+  view on an occlusion-culling frame, for one frame. Redraw the late
+  batches into the prepass if the flicker shows.
+- Render Bounds and reflection probe handles edit only the active object
+  in a multi-selection. A dragged handle jumps by up to the pick radius
+  (it snaps to the pointer, not the grab offset).
 
 ### Deferred from the `issues.md` audit
 
@@ -274,6 +288,8 @@ Items the audit found but left open, with the reason for each.
 - Enable device features at device creation instead of assuming them.
 - Cache the Hierarchy tree and rebuild it only on change detection.
 - Check the resource-state hazard with validation layers on real hardware.
+- A reflection probe's face handles resize its box symmetrically. Add
+  Ctrl-drag to move one face only (it shifts the probe's position too).
 - Use the GPU pose in the editor during Play. Bodies with
   `PhysicsSyncMode::SelectedState` or `FullState` get a `GpuStateMirror`,
   but picking, focus, the gizmo, and Save still read the authored

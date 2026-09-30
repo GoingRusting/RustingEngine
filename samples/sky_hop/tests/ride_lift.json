@@ -1,0 +1,13 @@
+{
+ "name": "the lift carries the player over the first pit",
+ "ticks": 160,
+ "steps": [
+  {"tick": 1, "set": {"entity": "Player", "path": "/transform/position", "value": [13.0, 0.51, 0.0]}},
+  {"tick": 60, "expect": {"entity": "Player", "path": "/transform/position/0", "greater_than": 14.5}},
+  {"tick": 121, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 17.0, "tolerance": 0.2}},
+  {"tick": 121, "expect": {"entity": "Player", "path": "/transform/position/1", "equals": 0.5, "tolerance": 0.05}},
+  {"tick": 122, "press": "player.right"},
+  {"tick": 122, "within": 152, "expect": {"entity": "Player", "path": "/transform/position/0", "greater_than": 19.0}},
+  {"tick": 159, "expect": {"entity": "Falls", "path": "/components/rusting.counter/value", "equals": 0}}
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "name": "The paddle follows input and stops at the wall",
+ "ticks": 80,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "player.right"
+  },
+  {
+   "tick": 20,
+   "expect": {
+    "entity": "Paddle",
+    "path": "/transform/position/0",
+    "greater_than": 1.5
+   }
+  },
+  {
+   "tick": 20,
+   "expect": {
+    "entity": "Ball",
+    "path": "/transform/position/0",
+    "greater_than": 1.5
+   }
+  },
+  {
+   "tick": 70,
+   "expect": {
+    "entity": "Paddle",
+    "path": "/transform/position/0",
+    "equals": 5.0,
+    "tolerance": 0.001
+   }
+  }
+ ]
+}

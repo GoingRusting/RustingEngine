@@ -1,0 +1,12 @@
+{
+  "name": "An ember that reaches a still player burns them once",
+  "ticks": 700,
+  "steps": [
+    {"tick": 30, "expect": {"entity": "Ember 1", "path": "", "exists": false}},
+    {"tick": 61, "expect": {"entity": "Ember 1", "path": "/transform/position/2", "less_than": -12.0}},
+    {"tick": 300, "capture": "shots/ember_closing_in.png"},
+    {"tick": 61, "until": 480, "expect": {"entity": "Burns", "path": "/components/rusting.counter/value", "equals": 0}},
+    {"tick": 480, "within": 700, "expect": {"entity": "Burns", "path": "/components/rusting.counter/value", "equals": 1}},
+    {"tick": 700, "expect": {"entity": "Ember 1", "path": "", "exists": false}}
+  ]
+}

@@ -1,0 +1,46 @@
+{
+ "name": "first shot hits the center target",
+ "ticks": 20,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "fire"
+  },
+  {
+   "tick": 6,
+   "release": "fire"
+  },
+  {
+   "tick": 6,
+   "expect": {
+    "entity": "Hits",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 6,
+   "expect": {
+    "entity": "Shots",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 8,
+   "expect": {
+    "entity": "Target 2",
+    "path": "",
+    "exists": false
+   }
+  },
+  {
+   "tick": 8,
+   "expect": {
+    "entity": "Target 1",
+    "path": "",
+    "exists": true
+   }
+  }
+ ]
+}

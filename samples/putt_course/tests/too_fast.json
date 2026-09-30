@@ -1,0 +1,13 @@
+{
+ "name": "A full-power putt rolls over the cup and comes back off the rail",
+ "ticks": 160,
+ "steps": [
+  {"tick": 0, "set": {"entity": "Ball", "path": "/transform/position", "value": [0, 0.15, -4]}},
+  {"tick": 1, "pointer": [0.5, 0.25]},
+  {"tick": 20, "press": "putt"},
+  {"tick": 80, "release": "putt"},
+  {"tick": 81, "until": 110, "expect": {"entity": "Sunk Counter", "path": "/components/rusting.counter/value", "equals": 0}},
+  {"tick": 81, "within": 110, "expect": {"entity": "Ball", "path": "/transform/position/2", "less_than": -9.0}},
+  {"tick": 110, "within": 159, "expect": {"entity": "Ball", "path": "/transform/position/2", "greater_than": -9.0}}
+ ]
+}

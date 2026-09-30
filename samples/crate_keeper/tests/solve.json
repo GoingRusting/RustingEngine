@@ -1,0 +1,183 @@
+{
+ "name": "Sixteen moves put every crate on a gold square",
+ "ticks": 63,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "player.left"
+  },
+  {
+   "tick": 6,
+   "release": "player.left"
+  },
+  {
+   "tick": 8,
+   "press": "player.forward"
+  },
+  {
+   "tick": 9,
+   "release": "player.forward"
+  },
+  {
+   "tick": 11,
+   "press": "player.forward"
+  },
+  {
+   "tick": 12,
+   "release": "player.forward"
+  },
+  {
+   "tick": 14,
+   "press": "player.forward"
+  },
+  {
+   "tick": 15,
+   "release": "player.forward"
+  },
+  {
+   "tick": 17,
+   "press": "player.right"
+  },
+  {
+   "tick": 18,
+   "release": "player.right"
+  },
+  {
+   "tick": 20,
+   "press": "player.right"
+  },
+  {
+   "tick": 21,
+   "release": "player.right"
+  },
+  {
+   "tick": 23,
+   "press": "player.left"
+  },
+  {
+   "tick": 24,
+   "release": "player.left"
+  },
+  {
+   "tick": 26,
+   "press": "player.back"
+  },
+  {
+   "tick": 27,
+   "release": "player.back"
+  },
+  {
+   "tick": 29,
+   "press": "player.right"
+  },
+  {
+   "tick": 30,
+   "release": "player.right"
+  },
+  {
+   "tick": 32,
+   "press": "player.right"
+  },
+  {
+   "tick": 33,
+   "release": "player.right"
+  },
+  {
+   "tick": 35,
+   "press": "player.left"
+  },
+  {
+   "tick": 36,
+   "release": "player.left"
+  },
+  {
+   "tick": 38,
+   "press": "player.back"
+  },
+  {
+   "tick": 39,
+   "release": "player.back"
+  },
+  {
+   "tick": 41,
+   "press": "player.left"
+  },
+  {
+   "tick": 42,
+   "release": "player.left"
+  },
+  {
+   "tick": 44,
+   "press": "player.back"
+  },
+  {
+   "tick": 45,
+   "release": "player.back"
+  },
+  {
+   "tick": 47,
+   "press": "player.right"
+  },
+  {
+   "tick": 48,
+   "release": "player.right"
+  },
+  {
+   "tick": 50,
+   "press": "player.right"
+  },
+  {
+   "tick": 51,
+   "release": "player.right"
+  },
+  {
+   "tick": 53,
+   "expect": {
+    "entity": "Placed",
+    "path": "/components/rusting.counter/value",
+    "equals": 3
+   }
+  },
+  {
+   "tick": 53,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 16
+   }
+  },
+  {
+   "tick": 53,
+   "expect": {
+    "entity": "Crate 3",
+    "path": "/transform/position",
+    "equals": [
+     1.5,
+     -2.0,
+     0.1
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 55,
+   "capture": "shots/solved.png"
+  },
+  {
+   "tick": 58,
+   "press": "player.right"
+  },
+  {
+   "tick": 59,
+   "release": "player.right"
+  },
+  {
+   "tick": 61,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 16
+   }
+  }
+ ]
+}

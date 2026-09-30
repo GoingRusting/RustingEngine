@@ -1,0 +1,771 @@
+{
+  "format_version": 7,
+  "name": "snake_trail Main Scene",
+  "entities": [
+    {
+      "id": "dd177ea5-5ef7-4cae-8106-77d6087ab273",
+      "parent": null,
+      "name": "Arena",
+      "classes": [],
+      "transform": {
+        "position": [
+          -10.0,
+          6.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.tile_map": "{\"rows\":[\"####################\",\"#..................#\",\"#..................#\",\"#.......###........#\",\"#..................#\",\"#..................#\",\"#..................#\",\"#..................#\",\"#..................#\",\"#..........###.....#\",\"#..................#\",\"####################\"],\"tile_size\":1.0,\"tiles\":{\"#\":{\"color\":[0.22,0.25,0.35,1.0],\"solid\":false,\"texture\":null}}}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "ca0d7d07-2352-4906-9dd8-11ce7bac4598",
+      "parent": null,
+      "name": "Head",
+      "classes": [],
+      "transform": {
+        "position": [
+          -4.5,
+          -0.5,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.9,
+          0.9,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.45,
+              1.0,
+              0.4,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "352132f0-951b-4ff4-bd6a-5399ba819cf1",
+      "parent": null,
+      "name": "Segment 1",
+      "classes": [],
+      "transform": {
+        "position": [
+          -5.5,
+          -0.5,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.2,
+              0.7,
+              0.25,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "bec95465-322f-41e0-9a0c-dafc3224032a",
+      "parent": null,
+      "name": "Segment 2",
+      "classes": [],
+      "transform": {
+        "position": [
+          -6.5,
+          -0.5,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.2,
+              0.7,
+              0.25,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "b0c8a2c6-dfc9-44f2-946a-6cb6065fee12",
+      "parent": null,
+      "name": "Segment",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          -30.0,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.2,
+              0.7,
+              0.25,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": false,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "74d91595-6f4d-4190-9366-5c6de74e8ac8",
+      "parent": null,
+      "name": "Apple",
+      "classes": [],
+      "transform": {
+        "position": [
+          2.5,
+          -0.5,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.7,
+          0.7,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              1.0,
+              0.25,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "041b2da9-ec1a-4efd-8c77-44c47d363428",
+      "parent": null,
+      "name": "Game Camera",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": {
+        "projection": {
+          "Orthographic": {
+            "vertical_size": 13.0,
+            "near": 0.1,
+            "far": 100.0
+          }
+        },
+        "active": true,
+        "priority": 10
+      },
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "51df480c-9e07-4e75-af80-16044d01ad97",
+      "parent": null,
+      "name": "Environment",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.background": "{\"color\":[0.05,0.06,0.09,1.0]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "ca8f99f4-66f8-4e26-a985-2203a2bfab5b",
+      "parent": null,
+      "name": "Apples Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"apples\",\"target\":10,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "56a5e865-98a2-4ba6-8acf-1d979cdfb7cb",
+      "parent": null,
+      "name": "Crashed Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"crashed\",\"target\":1,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "4a8b0599-e2e3-444b-8ba3-417e1d5ecf44",
+      "parent": null,
+      "name": "Length Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"length\",\"target\":null,\"value\":2}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "d5e810bd-e496-4704-b9e0-f983d0937a1b",
+      "parent": null,
+      "name": "Heading Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"heading\",\"target\":null,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "438d3ca5-84ab-42b4-abe8-0063f797857e",
+      "parent": null,
+      "name": "Turn Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"turn\",\"target\":null,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "01d1e80e-90c0-498b-9026-a23d153d48da",
+      "parent": null,
+      "name": "Next_Step Counter",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"next_step\",\"target\":null,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "7d88ae2f-b79f-41b2-ad02-357a1c796cb0",
+      "parent": null,
+      "name": "Score Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopLeft\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":20,\"offset\":[16,16],\"requires\":null,\"text\":\"Apples: {apples} / 10\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "20fde36a-d6a6-4dd8-92b3-369be445a344",
+      "parent": null,
+      "name": "Help Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"BottomLeft\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":16,\"offset\":[16,16],\"requires\":null,\"text\":\"Arrows or WASD steer\\nR restarts\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "290fe521-3f11-4d74-bc66-75536d6848ad",
+      "parent": null,
+      "name": "Win Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Center\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":36,\"offset\":[16,16],\"requires\":\"apples\",\"text\":\"The snake is full!\\nPress R to play again\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "e752d830-0600-4f16-976b-03c398d860ae",
+      "parent": null,
+      "name": "Lose Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Center\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":36,\"offset\":[16,16],\"requires\":\"crashed\",\"text\":\"Crashed!\\nPress R to try again\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "98c66ec7-9953-40f5-bdf0-69e2b9f85e2d",
+      "parent": null,
+      "name": "Up Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"up\",\"inputs\":[\"ArrowUp\",\"KeyW\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "599403c6-93ed-4c29-982e-1babe17b2376",
+      "parent": null,
+      "name": "Down Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"down\",\"inputs\":[\"ArrowDown\",\"KeyS\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "20367dfb-9744-4da9-a119-0278dac40a36",
+      "parent": null,
+      "name": "Left Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"left\",\"inputs\":[\"ArrowLeft\",\"KeyA\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "c4f88e8e-ced9-4abd-a96b-95f492179648",
+      "parent": null,
+      "name": "Right Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"right\",\"inputs\":[\"ArrowRight\",\"KeyD\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "b1f25b3e-01cf-49d0-9229-ce156f993e26",
+      "parent": null,
+      "name": "Restart Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"restart\",\"inputs\":[\"KeyR\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    }
+  ],
+  "render": {
+    "quality": "Balanced",
+    "culling": "Auto"
+  },
+  "simulation": {
+    "determinism": "Off"
+  }
+}

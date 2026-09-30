@@ -32,7 +32,7 @@ use super::{
 use crate::runtime::DeterminismMode;
 use crate::runtime::{CullingMode, QualityProfile};
 
-pub const SCENE_FORMAT_VERSION: u32 = 7;
+pub const SCENE_FORMAT_VERSION: u32 = 9;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -240,7 +240,7 @@ pub struct SceneSimulationSettings {
 struct LegacySceneDocumentV6 {
     format_version: u32,
     name: String,
-    entities: Vec<SceneEntity>,
+    entities: Vec<SceneEntityV7>,
     render: SceneRenderSettings,
 }
 
@@ -249,7 +249,7 @@ impl From<LegacySceneDocumentV6> for SceneDocument {
         Self {
             format_version: document.format_version,
             name: document.name,
-            entities: document.entities,
+            entities: document.entities.into_iter().map(Into::into).collect(),
             render: document.render,
             simulation: SceneSimulationSettings::default(),
         }
@@ -271,7 +271,7 @@ pub struct SceneRenderSettings {
 struct LegacySceneDocumentV5 {
     format_version: u32,
     name: String,
-    entities: Vec<SceneEntity>,
+    entities: Vec<SceneEntityV7>,
 }
 
 impl From<LegacySceneDocumentV5> for SceneDocument {
@@ -279,9 +279,286 @@ impl From<LegacySceneDocumentV5> for SceneDocument {
         Self {
             format_version: document.format_version,
             name: document.name,
-            entities: document.entities,
+            entities: document.entities.into_iter().map(Into::into).collect(),
             render: SceneRenderSettings::default(),
             simulation: SceneSimulationSettings::default(),
+        }
+    }
+}
+
+/// Cooked shape of version 8, before material names.
+#[derive(Serialize, Deserialize)]
+struct LegacySceneDocumentV8 {
+    format_version: u32,
+    name: String,
+    entities: Vec<SceneEntityV8>,
+    render: SceneRenderSettings,
+    simulation: SceneSimulationSettings,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneEntityV8 {
+    id: Uuid,
+    parent: Option<Uuid>,
+    name: Option<String>,
+    classes: Vec<String>,
+    transform: Option<SceneTransform>,
+    mesh_renderer: Option<SceneMeshRendererV8>,
+    camera: Option<SceneCamera>,
+    visible: Option<bool>,
+    physics_body: Option<PhysicsBody>,
+    rigid_body: Option<RigidBody>,
+    collider: Option<Collider>,
+    collision_layers: Option<CollisionLayers>,
+    gpu_physics_watch: Option<GpuPhysicsWatch>,
+    components: BTreeMap<String, String>,
+    directional_light: Option<DirectionalLight>,
+    point_light: Option<PointLight>,
+    spot_light: Option<SpotLight>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneMeshRendererV8 {
+    mesh: SceneMesh,
+    material: SceneMaterialV8,
+    cast_shadows: bool,
+    receive_shadows: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+enum SceneMaterialV8 {
+    BuiltinError,
+    Inline(SceneMaterialDataV8),
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneMaterialDataV8 {
+    model: SceneMaterialModel,
+    alpha_mode: SceneAlphaMode,
+    base_color: [f32; 4],
+    emissive: [f32; 3],
+    metallic: f32,
+    roughness: f32,
+    transmission: f32,
+    ior: f32,
+    thickness: f32,
+    uv_scale: [f32; 2],
+    uv_offset: [f32; 2],
+    base_color_texture: Option<PathBuf>,
+    normal_texture: Option<PathBuf>,
+    metallic_roughness_texture: Option<PathBuf>,
+    occlusion_texture: Option<PathBuf>,
+    emissive_texture: Option<PathBuf>,
+}
+
+impl From<LegacySceneDocumentV8> for SceneDocument {
+    fn from(document: LegacySceneDocumentV8) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document.entities.into_iter().map(Into::into).collect(),
+            render: document.render,
+            simulation: document.simulation,
+        }
+    }
+}
+
+impl From<SceneEntityV8> for SceneEntity {
+    fn from(entity: SceneEntityV8) -> Self {
+        Self {
+            id: entity.id,
+            parent: entity.parent,
+            name: entity.name,
+            classes: entity.classes,
+            transform: entity.transform,
+            mesh_renderer: entity.mesh_renderer.map(|renderer| {
+                SceneMeshRenderer {
+                    mesh: renderer.mesh,
+                    material: match renderer.material {
+                        SceneMaterialV8::BuiltinError => {
+                            SceneMaterial::BuiltinError
+                        }
+                        SceneMaterialV8::Inline(material) => {
+                            SceneMaterial::Inline(SceneMaterialData {
+                                name: String::new(),
+                                model: material.model,
+                                alpha_mode: material.alpha_mode,
+                                base_color: material.base_color,
+                                emissive: material.emissive,
+                                metallic: material.metallic,
+                                roughness: material.roughness,
+                                transmission: material.transmission,
+                                ior: material.ior,
+                                thickness: material.thickness,
+                                uv_scale: material.uv_scale,
+                                uv_offset: material.uv_offset,
+                                base_color_texture: material.base_color_texture,
+                                normal_texture: material.normal_texture,
+                                metallic_roughness_texture: material
+                                    .metallic_roughness_texture,
+                                occlusion_texture: material.occlusion_texture,
+                                emissive_texture: material.emissive_texture,
+                            })
+                        }
+                    },
+                    cast_shadows: renderer.cast_shadows,
+                    receive_shadows: renderer.receive_shadows,
+                }
+            }),
+            camera: entity.camera,
+            visible: entity.visible,
+            physics_body: entity.physics_body,
+            rigid_body: entity.rigid_body,
+            collider: entity.collider,
+            collision_layers: entity.collision_layers,
+            gpu_physics_watch: entity.gpu_physics_watch,
+            components: entity.components,
+            directional_light: entity.directional_light,
+            point_light: entity.point_light,
+            spot_light: entity.spot_light,
+        }
+    }
+}
+
+/// Cooked shape of version 7, before transmission and UV scale on inline
+/// materials.
+#[derive(Serialize, Deserialize)]
+struct LegacySceneDocumentV7 {
+    format_version: u32,
+    name: String,
+    entities: Vec<SceneEntityV7>,
+    render: SceneRenderSettings,
+    simulation: SceneSimulationSettings,
+}
+
+impl From<LegacySceneDocumentV7> for SceneDocument {
+    fn from(document: LegacySceneDocumentV7) -> Self {
+        Self {
+            format_version: document.format_version,
+            name: document.name,
+            entities: document.entities.into_iter().map(Into::into).collect(),
+            render: document.render,
+            simulation: document.simulation,
+        }
+    }
+}
+
+/// [`SceneEntity`] as versions 5 to 7 wrote it. Bincode reads fields by
+/// position, so the old material layout needs its own types.
+#[derive(Serialize, Deserialize)]
+struct SceneEntityV7 {
+    id: Uuid,
+    parent: Option<Uuid>,
+    name: Option<String>,
+    #[serde(default)]
+    classes: Vec<String>,
+    transform: Option<SceneTransform>,
+    mesh_renderer: Option<SceneMeshRendererV7>,
+    camera: Option<SceneCamera>,
+    visible: Option<bool>,
+    #[serde(default)]
+    physics_body: Option<PhysicsBody>,
+    #[serde(default)]
+    rigid_body: Option<RigidBody>,
+    #[serde(default)]
+    collider: Option<Collider>,
+    #[serde(default)]
+    collision_layers: Option<CollisionLayers>,
+    #[serde(default)]
+    gpu_physics_watch: Option<GpuPhysicsWatch>,
+    #[serde(default)]
+    components: BTreeMap<String, String>,
+    #[serde(default)]
+    directional_light: Option<DirectionalLight>,
+    #[serde(default)]
+    point_light: Option<PointLight>,
+    #[serde(default)]
+    spot_light: Option<SpotLight>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneMeshRendererV7 {
+    mesh: SceneMesh,
+    material: SceneMaterialV7,
+    cast_shadows: bool,
+    receive_shadows: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+enum SceneMaterialV7 {
+    BuiltinError,
+    Inline(SceneMaterialDataV7),
+}
+
+#[derive(Serialize, Deserialize)]
+struct SceneMaterialDataV7 {
+    model: SceneMaterialModel,
+    #[serde(default)]
+    alpha_mode: SceneAlphaMode,
+    base_color: [f32; 4],
+    emissive: [f32; 3],
+    metallic: f32,
+    roughness: f32,
+    base_color_texture: Option<PathBuf>,
+    normal_texture: Option<PathBuf>,
+    metallic_roughness_texture: Option<PathBuf>,
+    occlusion_texture: Option<PathBuf>,
+    emissive_texture: Option<PathBuf>,
+}
+
+impl From<SceneEntityV7> for SceneEntity {
+    fn from(entity: SceneEntityV7) -> Self {
+        Self {
+            id: entity.id,
+            parent: entity.parent,
+            name: entity.name,
+            classes: entity.classes,
+            transform: entity.transform,
+            mesh_renderer: entity.mesh_renderer.map(|renderer| {
+                SceneMeshRenderer {
+                    mesh: renderer.mesh,
+                    material: match renderer.material {
+                        SceneMaterialV7::BuiltinError => {
+                            SceneMaterial::BuiltinError
+                        }
+                        SceneMaterialV7::Inline(material) => {
+                            SceneMaterial::Inline(SceneMaterialData {
+                                name: String::new(),
+                                model: material.model,
+                                alpha_mode: material.alpha_mode,
+                                base_color: material.base_color,
+                                emissive: material.emissive,
+                                metallic: material.metallic,
+                                roughness: material.roughness,
+                                transmission: 0.0,
+                                ior: default_ior(),
+                                thickness: 0.0,
+                                uv_scale: default_uv_scale(),
+                                uv_offset: [0.0; 2],
+                                base_color_texture: material.base_color_texture,
+                                normal_texture: material.normal_texture,
+                                metallic_roughness_texture: material
+                                    .metallic_roughness_texture,
+                                occlusion_texture: material.occlusion_texture,
+                                emissive_texture: material.emissive_texture,
+                            })
+                        }
+                    },
+                    cast_shadows: renderer.cast_shadows,
+                    receive_shadows: renderer.receive_shadows,
+                }
+            }),
+            camera: entity.camera,
+            visible: entity.visible,
+            physics_body: entity.physics_body,
+            rigid_body: entity.rigid_body,
+            collider: entity.collider,
+            collision_layers: entity.collision_layers,
+            gpu_physics_watch: entity.gpu_physics_watch,
+            components: entity.components,
+            directional_light: entity.directional_light,
+            point_light: entity.point_light,
+            spot_light: entity.spot_light,
         }
     }
 }
@@ -419,12 +696,18 @@ impl From<LegacySceneMeshRendererV4> for SceneMeshRenderer {
                 }
                 LegacySceneMaterialV4::Inline(material) => {
                     SceneMaterial::Inline(SceneMaterialData {
+                        name: String::new(),
                         model: material.model,
                         alpha_mode: SceneAlphaMode::Opaque,
                         base_color: material.base_color,
                         emissive: material.emissive,
                         metallic: material.metallic,
                         roughness: material.roughness,
+                        transmission: 0.0,
+                        ior: default_ior(),
+                        thickness: 0.0,
+                        uv_scale: default_uv_scale(),
+                        uv_offset: [0.0; 2],
                         base_color_texture: material.base_color_texture,
                         normal_texture: material.normal_texture,
                         metallic_roughness_texture: material
@@ -655,6 +938,7 @@ pub enum SceneMesh {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[allow(clippy::large_enum_variant)] // one value per renderer while saving; boxing buys nothing
 pub enum SceneMaterial {
     BuiltinError,
     Inline(SceneMaterialData),
@@ -662,6 +946,10 @@ pub enum SceneMaterial {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SceneMaterialData {
+    /// Editor name, such as "glass"; empty when the material has none.
+    /// Cooked version 8 scenes have no name.
+    #[serde(default)]
+    pub name: String,
     pub model: SceneMaterialModel,
     #[serde(default)]
     pub alpha_mode: SceneAlphaMode,
@@ -669,11 +957,30 @@ pub struct SceneMaterialData {
     pub emissive: [f32; 3],
     pub metallic: f32,
     pub roughness: f32,
+    // The cooked form is bincode, so these fields are always written.
+    #[serde(default)]
+    pub transmission: f32,
+    #[serde(default = "default_ior")]
+    pub ior: f32,
+    #[serde(default)]
+    pub thickness: f32,
+    #[serde(default = "default_uv_scale")]
+    pub uv_scale: [f32; 2],
+    #[serde(default)]
+    pub uv_offset: [f32; 2],
     pub base_color_texture: Option<PathBuf>,
     pub normal_texture: Option<PathBuf>,
     pub metallic_roughness_texture: Option<PathBuf>,
     pub occlusion_texture: Option<PathBuf>,
     pub emissive_texture: Option<PathBuf>,
+}
+
+fn default_uv_scale() -> [f32; 2] {
+    [1.0; 2]
+}
+
+fn default_ior() -> f32 {
+    MaterialAsset::default().ior
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -781,8 +1088,21 @@ pub const TWEEN_COMPONENT: &str = "rusting.tween";
 pub const SOUND_CUE_COMPONENT: &str = "rusting.sound_cue";
 /// Registry name of the built-in particle burst emitter.
 pub const BURST_EMITTER_COMPONENT: &str = "rusting.burst_emitter";
+/// Registry name of the built-in fluid block.
+pub const FLUID_BLOCK_COMPONENT: &str = "rusting.fluid_block";
+pub const WATER_COMPONENT: &str = "rusting.water";
 /// Registry name of the built-in HUD text or button.
 pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
+/// Registry name of the built-in reflected sky image.
+pub const ENVIRONMENT_MAP_COMPONENT: &str = "rusting.environment_map";
+/// Registry name of the built-in reflection probe.
+pub const REFLECTION_PROBE_COMPONENT: &str = "rusting.reflection_probe";
+/// Registry name of the built-in height fog.
+pub const FOG_COMPONENT: &str = "rusting.fog";
+/// Registry name of the built-in bloom.
+pub const BLOOM_COMPONENT: &str = "rusting.bloom";
+/// Registry name of the built-in screen-space ambient occlusion.
+pub const AMBIENT_OCCLUSION_COMPONENT: &str = "rusting.ambient_occlusion";
 /// Registry name of the built-in scene clear color.
 pub const BACKGROUND_COMPONENT: &str = "rusting.background";
 /// Registry name of the built-in named counter.
@@ -796,6 +1116,8 @@ pub const JOINT_COMPONENT: &str = "rusting.joint";
 pub const ARTICULATION_COMPONENT: &str = "rusting.articulation";
 /// Registry name of the built-in text tile map.
 pub const TILE_MAP_COMPONENT: &str = "rusting.tile_map";
+/// Registry name of the built-in scene-data input binding.
+pub const INPUT_ACTION_COMPONENT: &str = "rusting.input_action";
 /// Registry name of the built-in side-view platformer controller.
 pub const PLATFORMER_CONTROLLER_COMPONENT: &str =
     "rusting.platformer_controller";
@@ -837,10 +1159,34 @@ impl Default for SceneComponentRegistry {
             .register::<super::BurstEmitter>(BURST_EMITTER_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
+            .register::<super::FluidBlock>(FLUID_BLOCK_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::WaterBody>(WATER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
             .register::<super::HudElement>(HUD_ELEMENT_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::SceneBackground>(BACKGROUND_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::EnvironmentMap>(ENVIRONMENT_MAP_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::ReflectionProbe>(REFLECTION_PROBE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Fog>(FOG_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Bloom>(BLOOM_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::AmbientOcclusion>(AMBIENT_OCCLUSION_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::InputAction>(INPUT_ACTION_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Counter>(COUNTER_COMPONENT)
@@ -1026,6 +1372,11 @@ pub fn remove_registered_component(
     entity: Entity,
     name: &str,
 ) -> Result<(), SceneIoError> {
+    if let Some(mut kept) = world.get_mut::<UnregisteredComponents>(entity) {
+        if kept.0.remove(name).is_some() {
+            return Ok(());
+        }
+    }
     (registration(world, name)?.remove)(world, entity);
     Ok(())
 }
@@ -1759,9 +2110,26 @@ pub fn load_scene_document(
         Vec::new()
     };
 
+    // Number the objects by id, not by file order: a captured scene lists
+    // them by id, so a reload solves physics in the order the first load did.
+    let base = if mode == SceneLoadMode::Replace {
+        0
+    } else {
+        world
+            .get_resource::<super::NextSpawnOrder>()
+            .map_or(0, |next| next.0)
+    };
+    let mut ids: Vec<_> =
+        document.entities.iter().map(|entity| entity.id).collect();
+    ids.sort_unstable();
+    world.insert_resource(super::NextSpawnOrder(base + ids.len() as u64));
     let mut spawned = HashMap::new();
     for (scene_entity, renderer) in document.entities.iter().zip(prepared) {
-        let mut entity = world.spawn(SceneId(scene_entity.id));
+        let rank = ids.binary_search(&scene_entity.id).unwrap_or_default();
+        let mut entity = world.spawn((
+            SceneId(scene_entity.id),
+            super::SpawnOrder(base + rank as u64),
+        ));
         if let Some(name) = &scene_entity.name {
             entity.insert(Name(name.clone()));
         }
@@ -1933,6 +2301,16 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
                 compiled,
             )?
             .into()
+        } else if version == 8 {
+            crate::assets::deserialize_bounded::<LegacySceneDocumentV8>(
+                compiled,
+            )?
+            .into()
+        } else if version == 7 {
+            crate::assets::deserialize_bounded::<LegacySceneDocumentV7>(
+                compiled,
+            )?
+            .into()
         } else if version == 6 {
             // A v6 scene would also parse as v5 and drop its render settings.
             crate::assets::deserialize_bounded::<LegacySceneDocumentV6>(
@@ -2011,7 +2389,7 @@ fn migrate_scene_document(
     document: &mut SceneDocument,
 ) -> Result<(), SceneIoError> {
     match document.format_version {
-        0..=6 => {
+        0..=8 => {
             // Versions before programmable GPU watches, render settings, and
             // simulation settings
             // use safe defaults for the fields that were added later.
@@ -2082,6 +2460,7 @@ fn scene_material(
             .transpose()
     };
     Ok(SceneMaterialData {
+        name: material.name.clone(),
         model: match material.model {
             MaterialModel::Pbr => SceneMaterialModel::Pbr,
             MaterialModel::Unlit => SceneMaterialModel::Unlit,
@@ -2095,6 +2474,11 @@ fn scene_material(
         emissive: material.emissive,
         metallic: material.metallic,
         roughness: material.roughness,
+        transmission: material.transmission,
+        ior: material.ior,
+        thickness: material.thickness,
+        uv_scale: material.uv_scale,
+        uv_offset: material.uv_offset,
         base_color_texture: texture_path(material.base_color_texture)?,
         normal_texture: texture_path(material.normal_texture)?,
         metallic_roughness_texture: texture_path(
@@ -2232,6 +2616,7 @@ fn runtime_material(
             .transpose()
     }
     Ok(MaterialAsset {
+        name: material.name.clone(),
         model: match material.model {
             SceneMaterialModel::Pbr => MaterialModel::Pbr,
             SceneMaterialModel::Unlit => MaterialModel::Unlit,
@@ -2245,6 +2630,11 @@ fn runtime_material(
         emissive: material.emissive,
         metallic: material.metallic,
         roughness: material.roughness,
+        transmission: material.transmission,
+        ior: material.ior,
+        thickness: material.thickness,
+        uv_scale: material.uv_scale,
+        uv_offset: material.uv_offset,
         base_color_texture: texture(assets, &material.base_color_texture)?,
         normal_texture: texture(assets, &material.normal_texture)?,
         metallic_roughness_texture: texture(
@@ -2824,6 +3214,139 @@ mod tests {
             assert_eq!(migrated.name, "Scene Before Render Settings");
             assert_eq!(migrated.render, SceneRenderSettings::default());
         }
+    }
+
+    #[test]
+    fn version_seven_cooked_scenes_read_materials_without_the_new_fields() {
+        let legacy = LegacySceneDocumentV7 {
+            format_version: 7,
+            name: "Scene Before Material Transmission".into(),
+            entities: vec![SceneEntityV7 {
+                id: Uuid::new_v4(),
+                parent: None,
+                name: Some("Box".into()),
+                classes: Vec::new(),
+                transform: None,
+                mesh_renderer: Some(SceneMeshRendererV7 {
+                    mesh: SceneMesh::BuiltinCube,
+                    material: SceneMaterialV7::Inline(SceneMaterialDataV7 {
+                        model: SceneMaterialModel::Pbr,
+                        alpha_mode: SceneAlphaMode::Blend,
+                        base_color: [0.1, 0.2, 0.3, 0.4],
+                        emissive: [0.0; 3],
+                        metallic: 0.5,
+                        roughness: 0.6,
+                        base_color_texture: Some("a.png".into()),
+                        normal_texture: None,
+                        metallic_roughness_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                    }),
+                    cast_shadows: true,
+                    receive_shadows: false,
+                }),
+                camera: None,
+                visible: None,
+                physics_body: None,
+                rigid_body: None,
+                collider: None,
+                collision_layers: None,
+                gpu_physics_watch: None,
+                components: BTreeMap::new(),
+                directional_light: None,
+                point_light: None,
+                spot_light: None,
+            }],
+            render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+        let migrated = decode_scene(&bytes).unwrap();
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        let renderer = migrated.entities[0].mesh_renderer.as_ref().unwrap();
+        let SceneMaterial::Inline(material) = &renderer.material else {
+            panic!("inline material expected");
+        };
+        assert_eq!(material.roughness, 0.6);
+        assert_eq!(material.base_color_texture, Some("a.png".into()));
+        assert_eq!(material.uv_scale, [1.0; 2]);
+        assert_eq!(material.transmission, 0.0);
+        assert!(renderer.cast_shadows && !renderer.receive_shadows);
+    }
+
+    #[test]
+    fn version_eight_cooked_scenes_read_materials_without_a_name() {
+        let legacy = LegacySceneDocumentV8 {
+            format_version: 8,
+            name: "Scene Before Material Names".into(),
+            entities: vec![SceneEntityV8 {
+                id: Uuid::new_v4(),
+                parent: None,
+                name: Some("Box".into()),
+                classes: Vec::new(),
+                transform: None,
+                mesh_renderer: Some(SceneMeshRendererV8 {
+                    mesh: SceneMesh::BuiltinCube,
+                    material: SceneMaterialV8::Inline(SceneMaterialDataV8 {
+                        model: SceneMaterialModel::Pbr,
+                        alpha_mode: SceneAlphaMode::Opaque,
+                        base_color: [0.1, 0.2, 0.3, 1.0],
+                        emissive: [0.0; 3],
+                        metallic: 0.5,
+                        roughness: 0.6,
+                        transmission: 0.7,
+                        ior: 1.4,
+                        thickness: 0.2,
+                        uv_scale: [2.0, 3.0],
+                        uv_offset: [0.1, 0.2],
+                        base_color_texture: None,
+                        normal_texture: None,
+                        metallic_roughness_texture: None,
+                        occlusion_texture: None,
+                        emissive_texture: None,
+                    }),
+                    cast_shadows: true,
+                    receive_shadows: true,
+                }),
+                camera: None,
+                visible: None,
+                physics_body: None,
+                rigid_body: None,
+                collider: None,
+                collision_layers: None,
+                gpu_physics_watch: None,
+                components: BTreeMap::new(),
+                directional_light: None,
+                point_light: None,
+                spot_light: None,
+            }],
+            render: SceneRenderSettings::default(),
+            simulation: SceneSimulationSettings::default(),
+        };
+        let mut bytes = COMPILED_MAGIC.to_vec();
+        bytes.extend(bincode::serialize(&legacy).unwrap());
+        let migrated = decode_scene(&bytes).unwrap();
+        assert_eq!(migrated.format_version, SCENE_FORMAT_VERSION);
+        let renderer = migrated.entities[0].mesh_renderer.as_ref().unwrap();
+        let SceneMaterial::Inline(material) = &renderer.material else {
+            panic!("inline material expected");
+        };
+        assert_eq!(material.name, "");
+        assert_eq!(material.transmission, 0.7);
+        assert_eq!(material.uv_scale, [2.0, 3.0]);
+    }
+
+    #[test]
+    fn material_names_survive_the_scene_form() {
+        let mut assets = AssetServer::default();
+        let material = MaterialAsset {
+            name: "glass".into(),
+            ..MaterialAsset::default()
+        };
+        let data = scene_material(&material, &assets).unwrap();
+        assert_eq!(data.name, "glass");
+        assert_eq!(runtime_material(&data, &mut assets).unwrap(), material);
     }
 
     #[test]

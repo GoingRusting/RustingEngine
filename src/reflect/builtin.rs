@@ -8,14 +8,15 @@ use bevy_ecs::entity::Entity;
 use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
-    AmbientLight, Antialiasing, Articulation, AutoSimulation, AxisMotion,
-    BurstEmitter, Connection, Connections, Counter, CullingMode,
-    DeterminismMode, Easing, HudAnchor, HudElement, Joint, JointAxis,
-    JointKind, JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode,
-    Pickup, PlatformerController, PlayerController, QualityProfile, RandomSeed,
-    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
-    ShadowQuality, SkyLight, SoundCue, TileKind, TileMap, ToneMapper,
-    ToneMapping, Tween, TweenProperty, TweenRepeat,
+    AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
+    AxisMotion, Bloom, BurstEmitter, Connection, Connections, Counter,
+    CullingMode, DeterminismMode, Easing, EnvironmentMap, FluidBlock, Fog,
+    HudAnchor, HudElement, InputAction, Joint, JointAxis, JointKind,
+    JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode, Pickup,
+    PlatformerController, PlayerController, QualityProfile, RandomSeed,
+    ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
+    SceneInstance, ShadowQuality, SkyLight, SoundCue, TileKind, TileMap,
+    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, WaterBody,
 };
 
 crate::reflect! {
@@ -92,9 +93,18 @@ crate::reflect! {
         camera_height: f32 {
             unit: "m", doc: "third-person orbit center above the body",
         },
+        max_slope: f32 {
+            unit: "rad", min: 0.0, max: 1.57,
+            doc: "steepest ground it walks up; steeper is a wall",
+        },
+        max_step_height: f32 {
+            unit: "m", min: 0.0, doc: "highest ledge it steps onto",
+        },
+        push_bodies: bool { doc: "false: dynamic bodies block it but never move" },
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_requested: bool,
+        #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
     }
 }
 
@@ -242,6 +252,35 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    struct FluidBlock {
+        spacing: f32 { unit: "m", min: 0.02, doc: "rest spacing of particles" },
+        count_x: u32 { unit: "particles" },
+        count_y: u32 { unit: "particles" },
+        count_z: u32 { unit: "particles" },
+        container_half_extents: [f32; 3] {
+            unit: "m", min: 0.1, doc: "the box is centered on the entity",
+        },
+        iterations: u32 { unit: "passes", min: 1.0, max: 16.0 },
+        viscosity: f32 { unit: "factor", min: 0.0, max: 1.0 },
+        visible: bool { doc: "draw the fluid as a water surface" },
+        show_particles: bool { doc: "also draw one sphere per particle" },
+    }
+}
+
+crate::reflect! {
+    struct WaterBody {
+        size: [f32; 2] { unit: "m", min: 0.5, doc: "x and z size, centered on the entity" },
+        resolution: u32 { unit: "cells", min: 2.0, max: 256.0, doc: "grid cells along the longer side" },
+        wave_height: f32 { unit: "m", min: 0.0, doc: "crest height above the rest level" },
+        wave_length: f32 { unit: "m", min: 0.1, doc: "distance between crests" },
+        wave_speed: f32 { unit: "m/s", min: 0.0 },
+        flow_direction: f32 { unit: "deg", doc: "direction of waves and current around +Y; 0 is +X" },
+        flow_speed: f32 { unit: "m/s", min: 0.0, doc: "current that carries floating bodies; 0 is a lake" },
+        color: [f32; 4] { doc: "RGBA of the surface" },
+    }
+}
+
+crate::reflect! {
     enum HudAnchor {
         TopLeft, Top, TopRight, Center, BottomLeft, Bottom, BottomRight,
     }
@@ -261,6 +300,15 @@ crate::reflect! {
         requires: Option<String> {
             unit: "counter name",
             doc: "null, or shown only once that counter is complete",
+        },
+    }
+}
+
+crate::reflect! {
+    struct InputAction {
+        action: String { doc: "name game code and scenarios use" },
+        inputs: Vec<String> {
+            doc: "winit key names (KeyF, Space, ArrowUp) or MouseLeft, MouseRight, MouseMiddle",
         },
     }
 }
@@ -323,6 +371,87 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    struct EnvironmentMap {
+        texture: PathBuf {
+            unit: "asset path",
+            doc: "equirectangular (2:1) image that surfaces reflect",
+        },
+        intensity: f32 { unit: "factor", min: 0.0 },
+        #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+    }
+}
+
+crate::reflect! {
+    struct ReflectionProbe {
+        extents: [f32; 3] {
+            unit: "m", min: 0.0,
+            doc: "half size of the box along each world axis",
+        },
+        intensity: f32 { unit: "factor", min: 0.0 },
+    }
+}
+
+crate::reflect! {
+    struct Fog {
+        color: [f32; 3] {
+            unit: "linear RGB", min: 0.0, max: 1.0, color: true,
+            doc: "color that distant objects fade into",
+        },
+        density: f32 {
+            unit: "1/m", min: 0.0, max: 1.0,
+            doc: "extinction per metre at `height`; 0.01 hides things \
+                  about 300 m away",
+        },
+        height: f32 {
+            unit: "m",
+            doc: "world height where the fog has its full density",
+        },
+        height_falloff: f32 {
+            unit: "1/m", min: 0.0, max: 2.0,
+            doc: "how fast the fog thins above `height`; 0 is uniform",
+        },
+        sun_scatter: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "brightens fog toward the sun",
+        },
+        sky_affect: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "how much the background fades into the fog",
+        },
+    }
+}
+
+crate::reflect! {
+    struct Bloom {
+        intensity: f32 {
+            unit: "factor", min: 0.0, max: 4.0,
+            doc: "share of the light above `threshold` added back as glow",
+        },
+        threshold: f32 {
+            unit: "linear", min: 0.0, max: 16.0,
+            doc: "brightness where the glow starts, with a soft knee",
+        },
+        spread: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "0 keeps the glow tight; 1 spreads it widely",
+        },
+    }
+}
+
+crate::reflect! {
+    struct AmbientOcclusion {
+        radius: f32 {
+            unit: "m", min: 0.05, max: 10.0,
+            doc: "world distance searched for occluders",
+        },
+        intensity: f32 {
+            unit: "exponent", min: 0.0, max: 8.0,
+            doc: "above 1 darkens creases more",
+        },
+    }
+}
+
+crate::reflect! {
     struct TileKind {
         color: [f32; 4] {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
@@ -360,6 +489,7 @@ crate::reflect! {
         #[skip] grounded: bool,
         #[skip] jump_buffer: f32,
         #[skip] air_time: f32,
+        #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
     }
 }
 
@@ -392,6 +522,7 @@ crate::reflect! {
         culling: CullingMode,
         antialiasing: Antialiasing,
         shadows: ShadowQuality,
+        reflections: bool,
     }
 }
 
@@ -424,6 +555,7 @@ crate::reflect! {
 
 crate::reflect! {
     struct MaterialAsset {
+        name: String,
         model: MaterialModel,
         alpha_mode: AlphaMode,
         base_color: [f32; 4] {
@@ -432,6 +564,11 @@ crate::reflect! {
         emissive: [f32; 3] { unit: "linear RGB", min: 0.0, color: true },
         metallic: f32 { min: 0.0, max: 1.0 },
         roughness: f32 { min: 0.0, max: 1.0 },
+        transmission: f32 { min: 0.0, max: 1.0 },
+        ior: f32 { min: 1.0, max: 3.0 },
+        thickness: f32 { unit: "m", min: 0.0 },
+        uv_scale: [f32; 2],
+        uv_offset: [f32; 2],
         base_color_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
         normal_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
         metallic_roughness_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,

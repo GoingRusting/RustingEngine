@@ -75,7 +75,7 @@ pub struct ExtractionReport {
 }
 
 /// Data consumed by the renderer, separate from the gameplay world.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone)]
 pub struct RenderWorld {
     pub renderables: Vec<ExtractedRenderable>,
     /// Changes only when the extracted object list or one of its transforms
@@ -87,7 +87,17 @@ pub struct RenderWorld {
     pub spot_lights: Vec<ExtractedSpotLight>,
     pub ambient_light: Option<AmbientLight>,
     pub sky_light: Option<SkyLight>,
+    /// Loaded texture and intensity of the scene's first loaded
+    /// [`EnvironmentMap`](super::EnvironmentMap).
+    pub environment:
+        Option<(crate::assets::Handle<crate::assets::TextureAsset>, f32)>,
+    /// World position and settings of each
+    /// [`ReflectionProbe`](super::ReflectionProbe), in entity order.
+    pub reflection_probes: Vec<([f32; 3], super::ReflectionProbe)>,
     pub tone_mapping: Option<ToneMapping>,
+    pub fog: Option<super::Fog>,
+    pub bloom: Option<super::Bloom>,
+    pub ambient_occlusion: Option<super::AmbientOcclusion>,
     pub lights_revision: u64,
     pub report: ExtractionReport,
     /// Bodies whose newest runtime transforms will be owned by GPU compute.
@@ -131,6 +141,9 @@ pub struct RenderWorld {
     pub culling: super::CullingMode,
     pub antialiasing: super::Antialiasing,
     pub shadows: super::ShadowQuality,
+    /// Set from `RenderSettings::reflections` being off; the default keeps
+    /// reflections on.
+    pub reflections_disabled: bool,
     cached: HashMap<Entity, ExtractedRenderable>,
     renderables_signature: Option<u64>,
     /// Tick and component counts seen by the last signature hash.
@@ -168,7 +181,37 @@ pub fn extract_render_world(world: &mut World) {
     let spot_lights = collect_spot_lights(world);
     let ambient_light = collect_first::<AmbientLight>(world);
     let sky_light = collect_first::<SkyLight>(world);
+    let environment = {
+        let mut query = world.query::<(Entity, &super::EnvironmentMap)>();
+        query
+            .iter(world)
+            .filter_map(|(entity, map)| {
+                Some((entity.index(), map.handle?, map.intensity))
+            })
+            .min_by_key(|(entity, ..)| *entity)
+            .map(|(_, handle, intensity)| (handle, intensity))
+    };
+    let reflection_probes = {
+        let mut query =
+            world
+                .query::<(Entity, &GlobalTransform, &super::ReflectionProbe)>();
+        let mut probes = query
+            .iter(world)
+            .map(|(entity, transform, probe)| {
+                let [x, y, z, _] = transform.matrix[3];
+                (entity.index(), [x, y, z], *probe)
+            })
+            .collect::<Vec<_>>();
+        probes.sort_by_key(|(entity, ..)| *entity);
+        probes
+            .into_iter()
+            .map(|(_, center, probe)| (center, probe))
+            .collect()
+    };
     let tone_mapping = collect_first::<ToneMapping>(world);
+    let fog = collect_first::<super::Fog>(world);
+    let bloom = collect_first::<super::Bloom>(world);
+    let ambient_occlusion = collect_first::<super::AmbientOcclusion>(world);
     let has_gpu_physics_resources = world
         .contains_resource::<super::PhysicsIdRegistry>()
         && world.contains_resource::<super::GpuEventRegistry>()
@@ -218,12 +261,20 @@ pub fn extract_render_world(world: &mut World) {
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
     let render_settings = world.resource::<super::RenderSettings>();
-    let (background_color, quality, culling, antialiasing, shadows) = (
+    let (
+        background_color,
+        quality,
+        culling,
+        antialiasing,
+        shadows,
+        reflections,
+    ) = (
         render_settings.background_color,
         render_settings.quality,
         render_settings.culling,
         render_settings.antialiasing,
         render_settings.shadows,
+        render_settings.reflections,
     );
 
     let mut render_world = world.resource_mut::<RenderWorld>();
@@ -281,6 +332,11 @@ pub fn extract_render_world(world: &mut World) {
     render_world.renderables_signature = renderables_signature;
     render_world.active_camera = active_camera;
     render_world.tone_mapping = tone_mapping;
+    render_world.fog = fog;
+    render_world.bloom = bloom;
+    render_world.ambient_occlusion = ambient_occlusion;
+    render_world.environment = environment;
+    render_world.reflection_probes = reflection_probes;
     if render_world.directional_lights != directional_lights
         || render_world.point_lights != point_lights
         || render_world.spot_lights != spot_lights
@@ -329,6 +385,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.culling = culling;
     render_world.antialiasing = antialiasing;
     render_world.shadows = shadows;
+    render_world.reflections_disabled = !reflections;
 }
 
 /// True unless no `GlobalTransform`, `MeshRenderer`, `Visibility`, or
@@ -500,43 +557,49 @@ fn collect_directional_lights(
 ) -> Vec<ExtractedDirectionalLight> {
     let mut query =
         world.query::<(Entity, &GlobalTransform, &DirectionalLight)>();
+    let world = &*world;
     let mut lights = query
         .iter(world)
+        .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
         .map(|(entity, transform, light)| ExtractedDirectionalLight {
             entity,
             transform: *transform,
             light: *light,
         })
         .collect::<Vec<_>>();
-    lights.sort_by_key(|light| light.entity.to_bits());
+    lights.sort_by_key(|light| light.entity.index());
     lights
 }
 
 fn collect_point_lights(world: &mut World) -> Vec<ExtractedPointLight> {
     let mut query = world.query::<(Entity, &GlobalTransform, &PointLight)>();
+    let world = &*world;
     let mut lights = query
         .iter(world)
+        .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
         .map(|(entity, transform, light)| ExtractedPointLight {
             entity,
             transform: *transform,
             light: *light,
         })
         .collect::<Vec<_>>();
-    lights.sort_by_key(|light| light.entity.to_bits());
+    lights.sort_by_key(|light| light.entity.index());
     lights
 }
 
 fn collect_spot_lights(world: &mut World) -> Vec<ExtractedSpotLight> {
     let mut query = world.query::<(Entity, &GlobalTransform, &SpotLight)>();
+    let world = &*world;
     let mut lights = query
         .iter(world)
+        .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
         .map(|(entity, transform, light)| ExtractedSpotLight {
             entity,
             transform: *transform,
             light: *light,
         })
         .collect::<Vec<_>>();
-    lights.sort_by_key(|light| light.entity.to_bits());
+    lights.sort_by_key(|light| light.entity.index());
     lights
 }
 
@@ -545,7 +608,8 @@ fn collect_first<T: Component + Copy>(world: &mut World) -> Option<T> {
     let mut query = world.query::<(Entity, &T)>();
     query
         .iter(world)
-        .min_by_key(|(entity, _)| entity.to_bits())
+        // `Entity::to_bits` stores the index inverted, so compare indices.
+        .min_by_key(|(entity, _)| entity.index())
         .map(|(_, light)| *light)
 }
 
@@ -724,6 +788,29 @@ mod tests {
         app.world_mut().entity_mut(entity).remove::<Visibility>();
         app.update(Duration::ZERO).unwrap();
         assert_eq!(app.world().resource::<RenderWorld>().report.total, 1);
+    }
+
+    #[test]
+    fn lights_under_hidden_objects_are_not_extracted() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let parent =
+            app.spawn((Transform::default(), Visibility { visible: false }));
+        let light = app.spawn((Transform::default(), PointLight::default()));
+        app.set_parent(light, parent).unwrap();
+        app.update(Duration::ZERO).unwrap();
+        assert!(app
+            .world()
+            .resource::<RenderWorld>()
+            .point_lights
+            .is_empty());
+
+        app.world_mut()
+            .get_mut::<Visibility>(parent)
+            .unwrap()
+            .visible = true;
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(app.world().resource::<RenderWorld>().point_lights.len(), 1);
     }
 
     #[test]

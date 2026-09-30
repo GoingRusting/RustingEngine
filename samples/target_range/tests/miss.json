@@ -1,0 +1,46 @@
+{
+ "name": "a miss counts the shot only",
+ "ticks": 20,
+ "steps": [
+  {
+   "tick": 2,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/yaw",
+    "value": 1.3734
+   }
+  },
+  {
+   "tick": 2,
+   "set": {
+    "entity": "Player",
+    "path": "/components/rusting.player_controller/pitch",
+    "value": 0.0
+   }
+  },
+  {
+   "tick": 4,
+   "press": "fire"
+  },
+  {
+   "tick": 5,
+   "release": "fire"
+  },
+  {
+   "tick": 8,
+   "expect": {
+    "entity": "Shots",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 8,
+   "expect": {
+    "entity": "Hits",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  }
+ ]
+}

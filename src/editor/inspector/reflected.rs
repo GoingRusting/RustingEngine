@@ -9,10 +9,11 @@ use egui::{ecolor, DragValue, Ui};
 use serde_json::{json, Value};
 
 use super::widgets;
-use crate::assets::{read_data_file, AssetServer};
+use crate::assets::{read_data_file, AssetServer, TextureAsset};
+use crate::editor::gui_elements::{self, TextActionProps};
 use crate::reflect::{
-    variant_zero, AssetKind, FieldInfo, Hints, TypeInfo, VariantFields,
-    ASSET_KEY, DATA_KEY,
+    variant_zero, AssetKind, FieldInfo, Hints, ReflectAsset, TypeInfo,
+    VariantFields, ASSET_KEY, DATA_KEY,
 };
 use crate::runtime::{Name, SceneId};
 
@@ -47,6 +48,9 @@ fn edit_fields(
             continue;
         };
         ui.push_id(field.name, |ui| {
+            if !field.hints.doc.is_empty() {
+                widgets::describe_next_row(ui, field.hints.doc);
+            }
             changed |= edit_value(
                 ui,
                 world,
@@ -114,6 +118,11 @@ fn edit_value(
             }
             changed
         }
+        (TypeInfo::Path, value @ Value::String(_))
+            if hints.unit == "asset path" =>
+        {
+            edit_asset_path(ui, world, label, value)
+        }
         (TypeInfo::String | TypeInfo::Path, Value::String(text)) => {
             widgets::text(ui, label, text)
         }
@@ -159,11 +168,7 @@ fn edit_value(
                     changed = true;
                 }
                 let initial = initial_value(world, item);
-                let addable = !(initial.is_null()
-                    && matches!(
-                        **item,
-                        TypeInfo::Entity | TypeInfo::Handle(_)
-                    ));
+                let addable = !(initial.is_null() && is_reference(item));
                 if ui
                     .add_enabled(addable, egui::Button::new("+").small())
                     .on_hover_text("Add item")
@@ -176,24 +181,9 @@ fn edit_value(
                 changed
             })
         }
-        // ponytail: map keys cannot be added or renamed here yet; see the
-        // backlog in docs/editor-overhaul.md.
-        (TypeInfo::Map(item), Value::Object(map)) => nested(ui, label, |ui| {
-            let mut changed = false;
-            for (key, value) in map.iter_mut() {
-                ui.push_id(key.as_str(), |ui| {
-                    changed |= edit_value(
-                        ui,
-                        world,
-                        key,
-                        item,
-                        &Hints::default(),
-                        value,
-                    );
-                });
-            }
-            changed
-        }),
+        (TypeInfo::Map(item), Value::Object(map)) => {
+            nested(ui, label, |ui| edit_map(ui, world, item, map))
+        }
         (TypeInfo::Option(inner), value) => {
             let mut present = !value.is_null();
             let mut changed = widgets::checkbox(ui, label, &mut present);
@@ -327,6 +317,32 @@ fn loaded_assets(world: &World, kind: AssetKind) -> Vec<(Value, String)> {
             (json!({ ASSET_KEY: path }), caption)
         })
         .collect()
+}
+
+/// A typed path plus a drop-down of loaded textures that fills it in.
+// ponytail: every "asset path" `PathBuf` field is an image today (the
+// environment map); key the list off a hint when a mesh path appears.
+fn edit_asset_path(
+    ui: &mut Ui,
+    world: &World,
+    label: &str,
+    value: &mut Value,
+) -> bool {
+    let mut changed =
+        value.as_str().map(str::to_owned).is_some_and(|mut text| {
+            let edited = widgets::text(ui, label, &mut text);
+            *value = Value::String(text);
+            edited
+        });
+    let choices: Vec<(Value, String)> =
+        loaded_assets(world, TextureAsset::KIND)
+            .into_iter()
+            .map(|(_, caption)| (Value::String(caption.clone()), caption))
+            .collect();
+    if !choices.is_empty() {
+        changed |= pick(ui, "Loaded", value, &choices);
+    }
+    changed
 }
 
 /// Caption of the choice that keeps a data asset's values in the object.
@@ -524,6 +540,71 @@ fn edit_array(
     }
 }
 
+/// String-keyed map entries with remove buttons, and a key field that adds
+/// an entry.
+// ponytail: renaming a key is remove and add; add an inline key editor if
+// maps with large values need it.
+fn edit_map(
+    ui: &mut Ui,
+    world: &World,
+    item: &TypeInfo,
+    map: &mut serde_json::Map<String, Value>,
+) -> bool {
+    let mut changed = false;
+    let mut removed = None;
+    for (key, value) in map.iter_mut() {
+        ui.push_id(key.as_str(), |ui| {
+            ui.horizontal(|ui| {
+                if ui.small_button("−").on_hover_text("Remove").clicked() {
+                    removed = Some(key.clone());
+                }
+                ui.vertical(|ui| {
+                    changed |= edit_value(
+                        ui,
+                        world,
+                        key,
+                        item,
+                        &Hints::default(),
+                        value,
+                    );
+                });
+            });
+        });
+    }
+    if let Some(key) = removed {
+        map.remove(&key);
+        changed = true;
+    }
+    let draft_id = ui.id().with("new_map_key");
+    let mut draft: String =
+        ui.data_mut(|data| data.get_temp(draft_id).unwrap_or_default());
+    let add = gui_elements::text_action(
+        ui,
+        &mut draft,
+        TextActionProps {
+            tooltip: Some("Add an entry with this key"),
+            ..TextActionProps::new("Add")
+        },
+    );
+    let key = draft.trim().to_owned();
+    if add.clicked() && !key.is_empty() && !map.contains_key(&key) {
+        let initial = initial_value(world, item);
+        if !(initial.is_null() && is_reference(item)) {
+            map.insert(key, initial);
+            draft.clear();
+            changed = true;
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(draft_id, draft));
+    changed
+}
+
+/// References start empty, so a list or map cannot add one when there is
+/// nothing to point at yet.
+fn is_reference(item: &TypeInfo) -> bool {
+    matches!(item, TypeInfo::Entity | TypeInfo::Handle(_))
+}
+
 fn with_unit<'a>(drag: DragValue<'a>, hints: &Hints) -> DragValue<'a> {
     // Long units ("logical pixels") do not fit the field; the schema has them.
     if hints.unit.is_empty() || hints.unit.chars().count() > 5 {
@@ -544,12 +625,15 @@ fn nested(
     label: &str,
     body: impl FnOnce(&mut Ui) -> bool,
 ) -> bool {
-    egui::CollapsingHeader::new(label)
+    let doc = widgets::take_row_doc(ui);
+    let section = egui::CollapsingHeader::new(label)
         .id_salt(ui.id().with(label))
         .default_open(true)
-        .show(ui, body)
-        .body_returned
-        .unwrap_or(false)
+        .show(ui, body);
+    if let Some(doc) = doc {
+        section.header_response.on_hover_text(doc);
+    }
+    section.body_returned.unwrap_or(false)
 }
 
 /// `move_speed` -> `Move Speed`, matching Godot's property captions.
@@ -646,6 +730,43 @@ mod tests {
     }
 
     #[test]
+    fn a_described_section_shows_its_doc_on_the_header() {
+        let context = egui::Context::default();
+        context.style_mut(|style| style.interaction.tooltip_delay = 0.0);
+        let mut texts = Vec::new();
+        for frame in 0..4 {
+            let input = egui::RawInput {
+                events: vec![egui::Event::PointerMoved(egui::pos2(40.0, 16.0))],
+                time: Some(f64::from(frame)),
+                ..Default::default()
+            };
+            let output = context.run(input, |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    widgets::describe_next_row(ui, "Where the wave starts");
+                    nested(ui, "Spawn", |ui| {
+                        ui.label("Radius");
+                        false
+                    });
+                });
+            });
+            texts = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => {
+                        Some(text.galley.text().to_owned())
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(
+            texts.iter().any(|text| text == "Where the wave starts"),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
     fn field_names_become_captions() {
         assert_eq!(field_label("move_speed"), "Move Speed");
         assert_eq!(field_label("hp"), "Hp");
@@ -686,5 +807,84 @@ mod tests {
         });
         assert!(!changed);
         assert_eq!(value, original);
+    }
+
+    /// Draws `map` as an `i32` map with `draft` typed in the new-key field,
+    /// clicking at `click`; returns whether it changed and each text's
+    /// center.
+    fn draw_map(
+        context: &egui::Context,
+        map: &mut serde_json::Map<String, Value>,
+        draft: &str,
+        click: Option<egui::Pos2>,
+    ) -> (bool, Vec<(String, egui::Pos2)>) {
+        let mut changed = false;
+        let mut events = Vec::new();
+        if let Some(pos) = click {
+            events.push(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+        }
+        let output = context.run(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let id = ui.id().with("new_map_key");
+                    ui.data_mut(|data| {
+                        data.insert_temp(id, draft.to_owned());
+                    });
+                    let item = i32::type_info();
+                    changed = edit_map(ui, &World::new(), &item, map);
+                });
+            },
+        );
+        let texts = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.pos + text.galley.rect.center().to_vec2(),
+                )),
+                _ => None,
+            })
+            .collect();
+        (changed, texts)
+    }
+
+    #[test]
+    fn map_entries_can_be_added_by_key_and_removed() {
+        let context = egui::Context::default();
+        let mut map = json!({"#": 1}).as_object().unwrap().clone();
+        let (_, texts) = draw_map(&context, &mut map, "*", None);
+        let at = |label: &str| {
+            texts
+                .iter()
+                .find(|(text, _)| text == label)
+                .map(|(_, pos)| *pos)
+                .unwrap_or_else(|| panic!("no {label:?} in {texts:?}"))
+        };
+        let (add, remove) = (at("Add"), at("−"));
+
+        // An empty or existing key adds nothing.
+        assert!(!draw_map(&context, &mut map, " ", Some(add)).0);
+        assert!(!draw_map(&context, &mut map, "#", Some(add)).0);
+        assert_eq!(map.len(), 1);
+
+        assert!(draw_map(&context, &mut map, " * ", Some(add)).0);
+        assert_eq!(map.get("*"), Some(&json!(0)));
+
+        // "#" sorts before "*", so the first remove button is its row.
+        assert!(draw_map(&context, &mut map, "", Some(remove)).0);
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["*"]);
     }
 }

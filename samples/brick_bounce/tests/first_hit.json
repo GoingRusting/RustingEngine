@@ -1,0 +1,61 @@
+{
+ "name": "A launched ball breaks a brick and the paddle sends it back up",
+ "ticks": 160,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "launch"
+  },
+  {
+   "tick": 6,
+   "release": "launch"
+  },
+  {
+   "tick": 7,
+   "within": 70,
+   "expect": {
+    "entity": "Score",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 40,
+   "press": "player.right"
+  },
+  {
+   "tick": 70,
+   "capture": "shots/playing.png"
+  },
+  {
+   "tick": 100,
+   "release": "player.right"
+  },
+  {
+   "tick": 101,
+   "within": 140,
+   "expect": {
+    "entity": "Ball",
+    "path": "/rigid_body/linear_velocity/1",
+    "greater_than": 7.0
+   }
+  },
+  {
+   "tick": 150,
+   "expect": {
+    "entity": "Ball",
+    "path": "/transform/position/2",
+    "equals": 0.0,
+    "tolerance": 0.01
+   }
+  },
+  {
+   "tick": 150,
+   "expect": {
+    "entity": "Lives",
+    "path": "/components/rusting.counter/value",
+    "equals": 3
+   }
+  }
+ ]
+}

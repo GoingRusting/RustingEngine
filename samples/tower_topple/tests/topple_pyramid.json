@@ -1,0 +1,13 @@
+{
+  "name": "A ball thrown at the crosshair knocks blocks off the middle stand",
+  "ticks": 200,
+  "steps": [
+    {"tick": 10, "press": "throw"},
+    {"tick": 11, "release": "throw"},
+    {"tick": 12, "expect": {"entity": "Balls", "path": "/components/rusting.counter/value", "equals": 9}},
+    {"tick": 12, "expect": {"entity": "Ball 1", "path": "/visible", "equals": true}},
+    {"tick": 30, "capture": "shots/impact.png"},
+    {"tick": 12, "within": 200, "expect": {"entity": "Toppled", "path": "/components/rusting.counter/value", "greater_than": 1}},
+    {"tick": 199, "expect": {"entity": "Block 1", "path": "/transform/position/1", "tolerance": 0.05, "equals": 1.3}}
+  ]
+}

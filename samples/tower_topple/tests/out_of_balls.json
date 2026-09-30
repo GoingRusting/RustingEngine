@@ -1,0 +1,69 @@
+{
+ "name": "Running out of balls ends the round, and a throw starts a new one",
+ "ticks": 220,
+ "steps": [
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Balls",
+    "path": "/components/rusting.counter/value",
+    "value": 0
+   }
+  },
+  {
+   "tick": 1,
+   "until": 170,
+   "expect": {
+    "entity": "Out",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 170,
+   "within": 200,
+   "expect": {
+    "entity": "Out",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 200,
+   "capture": "shots/out_of_balls.png"
+  },
+  {
+   "tick": 210,
+   "press": "throw"
+  },
+  {
+   "tick": 211,
+   "release": "throw"
+  },
+  {
+   "tick": 212,
+   "within": 215,
+   "expect": {
+    "entity": "Balls",
+    "path": "/components/rusting.counter/value",
+    "equals": 10
+   }
+  },
+  {
+   "tick": 215,
+   "expect": {
+    "entity": "Out",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 215,
+   "expect": {
+    "entity": "Ball 1",
+    "path": "",
+    "exists": false
+   }
+  }
+ ]
+}

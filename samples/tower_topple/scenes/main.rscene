@@ -1,0 +1,2309 @@
+{
+  "format_version": 7,
+  "name": "tower_topple Main Scene",
+  "entities": [
+    {
+      "id": "2ccc90bf-fbbe-41e3-9259-9bffe986cb3b",
+      "parent": null,
+      "name": "Floor",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          -0.5,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          30.0,
+          1.0,
+          30.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.42,
+              0.5,
+              0.34,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.7,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": true,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Simplified",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Fixed",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.5,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "8f284353-a16f-4a18-befc-9546798f5bf8",
+      "parent": null,
+      "name": "Sun",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          10.0,
+          0.0
+        ],
+        "rotation": [
+          -0.3,
+          0.9,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.ambient_light": "{\"color\":[1.0,0.800000011920929,0.699999988079071],\"intensity\":0.07999999821186066}",
+        "rusting.background": "{\"color\":[0.7900000214576721,0.3499999940395355,0.1599999964237213,1.0]}",
+        "rusting.sky_light": "{\"ground_color\":[0.30000001192092896,0.20000000298023224,0.15000000596046448],\"intensity\":0.30000001192092896,\"sky_color\":[0.949999988079071,0.699999988079071,0.5]}",
+        "rusting.tone_mapping": "{\"exposure\":1.2000000476837158,\"mapper\":\"Aces\"}"
+      },
+      "directional_light": {
+        "color": [
+          1.0,
+          0.68,
+          0.42
+        ],
+        "illuminance": 70000.0,
+        "shadows": true
+      },
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "339b12ac-1f27-403c-a5e5-c2e08a887808",
+      "parent": null,
+      "name": "Player",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          1.0,
+          6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Simplified",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Kinematic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Capsule": {
+            "half_height": 0.6,
+            "radius": 0.3
+          }
+        },
+        "friction": 0.5,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.player_controller": "{\"camera_distance\":0.0,\"camera_height\":0.6,\"collision_mask\":4294967295,\"gravity\":9.81,\"jump_speed\":0.0,\"look_sensitivity\":0.002,\"pitch\":0.0,\"sprint_multiplier\":1.8,\"walk_speed\":4.0,\"yaw\":0.0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "90d7af69-172d-4e02-b9b0-c16b478aa2b5",
+      "parent": "339b12ac-1f27-403c-a5e5-c2e08a887808",
+      "name": "Game Camera",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          0.7,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": {
+        "projection": {
+          "Perspective": {
+            "vertical_fov_radians": 0.87266463,
+            "near": 0.05,
+            "far": 1000.0
+          }
+        },
+        "active": true,
+        "priority": 10
+      },
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "b7d16348-e3fc-45da-b154-78506f2d54a7",
+      "parent": null,
+      "name": "Help",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopLeft\",\"button\":false,\"color\":[1.0,0.9300000071525574,0.800000011920929,1.0],\"font_size\":22.0,\"offset\":[16.0,16.0],\"requires\":null,\"text\":\"Click to look, WASD moves. Left click or F throws a ball.\\nKnock every block off its stand.\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "c2240882-79aa-44bf-9238-3358f2130983",
+      "parent": null,
+      "name": "Stand West",
+      "classes": [],
+      "transform": {
+        "position": [
+          -5.0,
+          0.5,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          2.4,
+          1.0,
+          2.4
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.55,
+              0.5,
+              0.46,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.8,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Static",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Fixed",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "272fc156-b39a-4191-a251-f5ed9afa9cc8",
+      "parent": null,
+      "name": "Stand Middle",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          0.5,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          2.4,
+          1.0,
+          2.4
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.55,
+              0.5,
+              0.46,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.8,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Static",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Fixed",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "bffe6651-6389-4f71-a9ad-85551232ba78",
+      "parent": null,
+      "name": "Stand East",
+      "classes": [],
+      "transform": {
+        "position": [
+          5.0,
+          0.5,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          2.4,
+          1.0,
+          2.4
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.55,
+              0.5,
+              0.46,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.8,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Static",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Fixed",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "e28901f3-d6f0-47d8-a624-347a54d8b4ae",
+      "parent": null,
+      "name": "Block 1",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -5.0,
+          1.3,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.85,
+              0.25,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "bbfa4fd7-13da-484b-87fa-4af1069fbd8e",
+      "parent": null,
+      "name": "Block 2",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -5.0,
+          1.9,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.95,
+              0.75,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "da55d918-4761-40c0-adea-90cedd4b03d9",
+      "parent": null,
+      "name": "Block 3",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -5.0,
+          2.5,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.25,
+              0.5,
+              0.85,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "054e45c5-19e3-4c58-9ba8-ccd2638be634",
+      "parent": null,
+      "name": "Block 4",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -5.0,
+          3.1,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.3,
+              0.7,
+              0.4,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "1cbe1eef-648a-41b2-800a-058a80e818d7",
+      "parent": null,
+      "name": "Block 5",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          5.0,
+          1.3,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.85,
+              0.25,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "a65bbaed-fbb1-4b94-8f61-d052b7cd503c",
+      "parent": null,
+      "name": "Block 6",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          5.0,
+          1.9,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.95,
+              0.75,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "06126307-9cd8-49b9-a195-cdb0bc09a3c2",
+      "parent": null,
+      "name": "Block 7",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          5.0,
+          2.5,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.25,
+              0.5,
+              0.85,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "efc11e73-b124-41e8-ba50-4f8aef4faeb0",
+      "parent": null,
+      "name": "Block 8",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          5.0,
+          3.1,
+          -6.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.3,
+              0.7,
+              0.4,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "fa2375dc-5385-4a2e-a33f-9bf040141e58",
+      "parent": null,
+      "name": "Block 9",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -0.62,
+          1.3,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.85,
+              0.25,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "91eea78a-ecf7-4331-9214-e28c97341c14",
+      "parent": null,
+      "name": "Block 10",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          0.0,
+          1.3,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.95,
+              0.75,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "e5e2c684-67f1-4157-a65b-c06ef70b9ba0",
+      "parent": null,
+      "name": "Block 11",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          0.62,
+          1.3,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.25,
+              0.5,
+              0.85,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "d215a39b-1a46-49e5-bb81-c815fc675cc6",
+      "parent": null,
+      "name": "Block 12",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          -0.31,
+          1.9,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.3,
+              0.7,
+              0.4,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "ff5c4565-d709-45d9-867a-d5ee103d9d0b",
+      "parent": null,
+      "name": "Block 13",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          0.31,
+          1.9,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.85,
+              0.25,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "fefe06be-ba5e-423a-aac4-6cf9b1d3fcfb",
+      "parent": null,
+      "name": "Block 14",
+      "classes": [
+        "block"
+      ],
+      "transform": {
+        "position": [
+          0.0,
+          2.5,
+          -9.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.6,
+          0.6,
+          0.6
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Cube"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.95,
+              0.75,
+              0.2,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.6,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Dynamic",
+        "mass": 1.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Box": {
+            "half_extents": [
+              0.5,
+              0.5,
+              0.5
+            ]
+          }
+        },
+        "friction": 0.6,
+        "restitution": 0.0,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "c0bfdeb0-cf19-47cc-bdb4-a714fe0f20e5",
+      "parent": null,
+      "name": "Ball",
+      "classes": [
+        "ball"
+      ],
+      "transform": {
+        "position": [
+          0.0,
+          -30.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.4
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Sphere"
+        },
+        "material": {
+          "Inline": {
+            "model": "Pbr",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.9,
+              0.9,
+              0.95,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.6,
+            "roughness": 0.25,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": true,
+        "receive_shadows": true
+      },
+      "camera": null,
+      "visible": false,
+      "physics_body": {
+        "simulation": "Cpu",
+        "solver": "Full",
+        "custom_shader": null
+      },
+      "rigid_body": {
+        "kind": "Kinematic",
+        "mass": 4.0,
+        "linear_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "angular_velocity": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "gravity_scale": 1.0
+      },
+      "collider": {
+        "shape": {
+          "Sphere": {
+            "radius": 0.5
+          }
+        },
+        "friction": 0.4,
+        "restitution": 0.2,
+        "sensor": false
+      },
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "e53c0f23-6845-4e9a-82c7-4be127bd62d8",
+      "parent": null,
+      "name": "Toppled",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"toppled\",\"target\":14,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "de40dc48-cb66-4146-b3c7-248bf1876328",
+      "parent": null,
+      "name": "Balls",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"balls\",\"target\":null,\"value\":10}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "1a1a14c6-ebb5-458c-93b4-5ca502552938",
+      "parent": null,
+      "name": "Out",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"out\",\"target\":1,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "dbeca8f8-ed17-498d-95bd-c46a6489224c",
+      "parent": null,
+      "name": "Throw Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"throw\",\"inputs\":[\"MouseLeft\",\"KeyF\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "270b999f-c2fd-4ed3-924a-3a53e4926598",
+      "parent": null,
+      "name": "Score Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopRight\",\"button\":false,\"color\":[1,0.93,0.8,1],\"font_size\":24,\"offset\":[16,16],\"requires\":null,\"text\":\"Blocks down: {toppled} / 14\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "2c0878f4-cb6e-4e18-aa73-d2831c30b263",
+      "parent": null,
+      "name": "Balls Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopRight\",\"button\":false,\"color\":[1,0.93,0.8,1],\"font_size\":22,\"offset\":[16,48],\"requires\":null,\"text\":\"Balls: {balls}\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "204b28a3-6533-4892-b694-2945236fffad",
+      "parent": null,
+      "name": "Crosshair",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Center\",\"button\":false,\"color\":[1,1,1,0.9],\"font_size\":26,\"offset\":[0,0],\"requires\":null,\"text\":\"+\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "34bb7bb6-6357-4a58-b3d7-2ebecedeeefa",
+      "parent": null,
+      "name": "Win Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Center\",\"button\":false,\"color\":[1,0.85,0.3,1],\"font_size\":40,\"offset\":[0,-60],\"requires\":\"toppled\",\"text\":\"Every block is down! Press F to play again.\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "f45ab681-b89b-4119-9d53-0cc90345d38b",
+      "parent": null,
+      "name": "Out Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Center\",\"button\":false,\"color\":[1,0.6,0.5,1],\"font_size\":32,\"offset\":[0,-60],\"requires\":\"out\",\"text\":\"Out of balls. Press F to try again.\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "f0d7f7b0-2c88-46be-b8d2-5b74d4b78c4d",
+      "parent": null,
+      "name": "Last Throw",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"last_throw\",\"target\":null,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    }
+  ],
+  "render": {
+    "quality": "Balanced",
+    "culling": "Auto"
+  },
+  "simulation": {
+    "determinism": "Off"
+  }
+}

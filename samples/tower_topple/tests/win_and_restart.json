@@ -1,0 +1,229 @@
+{
+ "name": "Knocking every block down wins, and a throw starts a new round",
+ "ticks": 50,
+ "steps": [
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 1",
+    "path": "/transform/position",
+    "value": [
+     -6.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 2",
+    "path": "/transform/position",
+    "value": [
+     -5.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 3",
+    "path": "/transform/position",
+    "value": [
+     -4.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 4",
+    "path": "/transform/position",
+    "value": [
+     -3.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 5",
+    "path": "/transform/position",
+    "value": [
+     -2.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 6",
+    "path": "/transform/position",
+    "value": [
+     -1.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 7",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 8",
+    "path": "/transform/position",
+    "value": [
+     1.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 9",
+    "path": "/transform/position",
+    "value": [
+     2.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 10",
+    "path": "/transform/position",
+    "value": [
+     3.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 11",
+    "path": "/transform/position",
+    "value": [
+     4.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 12",
+    "path": "/transform/position",
+    "value": [
+     5.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 13",
+    "path": "/transform/position",
+    "value": [
+     6.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 0,
+   "set": {
+    "entity": "Block 14",
+    "path": "/transform/position",
+    "value": [
+     7.0,
+     0.3,
+     2.0
+    ]
+   }
+  },
+  {
+   "tick": 1,
+   "within": 20,
+   "expect": {
+    "entity": "Toppled",
+    "path": "/components/rusting.counter/value",
+    "equals": 14
+   }
+  },
+  {
+   "tick": 20,
+   "expect": {
+    "entity": "Out",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 30,
+   "capture": "shots/win.png"
+  },
+  {
+   "tick": 40,
+   "press": "throw"
+  },
+  {
+   "tick": 41,
+   "release": "throw"
+  },
+  {
+   "tick": 42,
+   "within": 45,
+   "expect": {
+    "entity": "Toppled",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 45,
+   "expect": {
+    "entity": "Balls",
+    "path": "/components/rusting.counter/value",
+    "equals": 10
+   }
+  },
+  {
+   "tick": 45,
+   "expect": {
+    "entity": "Block 1",
+    "path": "/transform/position/1",
+    "equals": 1.3,
+    "tolerance": 0.05
+   }
+  }
+ ]
+}

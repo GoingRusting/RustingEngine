@@ -16,9 +16,10 @@ use uuid::Uuid;
 
 use crate::rendering::capture::HeadlessCapture;
 use crate::runtime::{
-    picking, scene_document, ActionMap, Camera, CollisionEvent, EventQueue,
-    FrameTime, GlobalTransform, InputBinding, MeshRenderer, Name, RandomSeed,
-    RenderWorld, RuntimeInput, SceneId,
+    picking, scene_document, set_registered_component,
+    set_registered_component_field, ActionMap, Camera, CollisionEvent,
+    EventQueue, FrameTime, GlobalTransform, InputBinding, MeshRenderer, Name,
+    RandomSeed, RenderWorld, RuntimeInput, SceneId, SceneTransform,
 };
 use crate::{App, AssetServer, Transform};
 
@@ -164,6 +165,10 @@ pub struct Scenario {
     pub capture_size: [u32; 2],
     #[serde(default)]
     pub steps: Vec<ScenarioStep>,
+    /// Runs on after a failed step, so one run reports every failure. A
+    /// check that failed is not repeated on later ticks.
+    #[serde(default)]
+    pub keep_going: bool,
 }
 
 fn default_capture_size() -> [u32; 2] {
@@ -180,6 +185,10 @@ pub struct ScenarioStep {
     /// reports the first tick it stopped holding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<u32>,
+    /// Passes on the first tick through this one where the check holds, so
+    /// a test need not know the exact tick something happens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<u32>,
     #[serde(flatten)]
     pub action: StepAction,
 }
@@ -197,6 +206,35 @@ pub enum StepAction {
     ExpectEvents(EventExpectation),
     /// Writes the frame to this path, relative to the scenario file.
     Capture(PathBuf),
+    /// Changes one value before the tick's update, to set up a test: move
+    /// the player, fill a counter.
+    Set(Assignment),
+    /// Moves the mouse cursor to this point of the view, as fractions of
+    /// its width and height from the top-left corner: `[0.5, 0.5]` is the
+    /// center.
+    Pointer([f32; 2]),
+    /// Records one value of an entity's scene form in the report, on every
+    /// tick through `until`. Never fails; use it to debug a scenario.
+    Log(LoggedValue),
+}
+
+/// The value a `log` step records.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LoggedValue {
+    /// Entity name or scene ID.
+    pub entity: String,
+    /// JSON pointer into the entity's scene form, as for `expect`.
+    pub path: String,
+}
+
+/// A write to `/transform/...` or `/components/<name>/...` of an entity's
+/// scene form.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Assignment {
+    /// Persistent ID or name.
+    pub entity: String,
+    pub path: String,
+    pub value: Value,
 }
 
 /// A check on the entity's scene form, the same JSON that scene files and
@@ -206,15 +244,22 @@ pub enum StepAction {
 pub struct Expectation {
     /// Persistent ID or name.
     pub entity: String,
-    /// JSON pointer, for example `/transform/position/1`.
+    /// JSON pointer, for example `/transform/position/1`. Empty for the
+    /// whole entity.
+    #[serde(default)]
     pub path: String,
+    /// Whether the entity and path exist, for example `false` for an object
+    /// the game despawned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greater_than: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub less_than: Option<f64>,
-    /// Allowed difference when `equals` compares numbers.
+    /// Allowed difference when `equals` compares numbers, also each number
+    /// inside an array or object such as a position.
     #[serde(default)]
     pub tolerance: f64,
 }
@@ -243,7 +288,7 @@ impl Scenario {
     pub fn validate(&self) -> Result<(), String> {
         for (index, step) in self.steps.iter().enumerate() {
             let fail = |message: &str| Err(format!("step {index}: {message}"));
-            let last = step.until.unwrap_or(step.tick);
+            let last = step.until.or(step.within).unwrap_or(step.tick);
             if last > self.ticks || last < step.tick {
                 return fail("tick or until is outside the scenario");
             }
@@ -251,17 +296,27 @@ impl Scenario {
                 step.action,
                 StepAction::Expect(_) | StepAction::ExpectEvents(_)
             );
-            if step.until.is_some() && !repeatable {
-                return fail("only expect steps accept until");
+            if step.within.is_some() && !repeatable
+                || step.until.is_some()
+                    && !repeatable
+                    && !matches!(step.action, StepAction::Log(_))
+            {
+                return fail(
+                    "only expect and log steps accept until or within",
+                );
+            }
+            if step.until.is_some() && step.within.is_some() {
+                return fail("until and within cannot both be set");
             }
             match &step.action {
                 StepAction::Expect(expect)
                     if expect.equals.is_none()
                         && expect.greater_than.is_none()
-                        && expect.less_than.is_none() =>
+                        && expect.less_than.is_none()
+                        && expect.exists.is_none() =>
                 {
                     return fail(
-                        "expect needs equals, greater_than or less_than",
+                        "expect needs equals, greater_than, less_than or exists",
                     )
                 }
                 StepAction::ExpectEvents(expect)
@@ -300,9 +355,10 @@ pub struct ScenarioReport {
     pub passed: bool,
     /// Fixed ticks simulated before the run ended.
     pub ticks_run: u64,
-    /// The first failed step; the run stops there.
+    /// The first failed step; the run stops there unless `keep_going`.
     pub first_failure: Option<StepResult>,
-    /// Every step result in order, ending at the first failure. Repeated
+    /// Every step result in order, ending at the first failure unless
+    /// `keep_going`. Repeated
     /// checks appear once, at their last passing tick or their failure.
     pub steps: Vec<StepResult>,
     pub captures: Vec<PathBuf>,
@@ -350,18 +406,29 @@ pub fn run_scenario(
     let mut events = Vec::new();
     // Repeated checks report once; this holds their last passing result.
     let mut pending: Vec<Option<StepResult>> = vec![None; scenario.steps.len()];
+    // `within` checks that already passed.
+    let mut passed = vec![false; scenario.steps.len()];
 
     'ticks: for tick in 0..=scenario.ticks {
         for (index, step) in scenario.steps.iter().enumerate() {
             if step.tick != tick {
                 continue;
             }
-            let (action, pressed) = match &step.action {
-                StepAction::Press(action) => (action, true),
-                StepAction::Release(action) => (action, false),
+            let result = match &step.action {
+                StepAction::Press(action) => {
+                    press(app.world_mut(), action, true)
+                }
+                StepAction::Release(action) => {
+                    press(app.world_mut(), action, false)
+                }
+                StepAction::Set(assignment) => {
+                    assign(app.world_mut(), assignment)
+                }
+                StepAction::Pointer(point) => {
+                    point_at(app.world_mut(), *point, scenario.capture_size)
+                }
                 _ => continue,
             };
-            let result = press(app.world_mut(), action, pressed);
             let failed = result.is_err();
             report.steps.push(StepResult {
                 tick,
@@ -370,7 +437,7 @@ pub fn run_scenario(
                 message: result.unwrap_or_else(|error| error),
                 actual: Value::Null,
             });
-            if failed {
+            if failed && !scenario.keep_going {
                 break 'ticks;
             }
         }
@@ -406,8 +473,8 @@ pub fn run_scenario(
         }));
 
         for (index, step) in scenario.steps.iter().enumerate() {
-            let last = step.until.unwrap_or(step.tick);
-            if !(step.tick..=last).contains(&tick) {
+            let last = step.until.or(step.within).unwrap_or(step.tick);
+            if !(step.tick..=last).contains(&tick) || passed[index] {
                 continue;
             }
             let outcome = match &step.action {
@@ -431,7 +498,26 @@ pub fn run_scenario(
                         None => unreachable!("captures open a renderer"),
                     }
                 }
-                StepAction::Press(_) | StepAction::Release(_) => continue,
+                StepAction::Log(logged) => {
+                    let subject =
+                        format!("`{}` {}", logged.entity, logged.path);
+                    let actual = reflected(world, &logged.entity)
+                        .ok()
+                        .and_then(|state| state.pointer(&logged.path).cloned())
+                        .unwrap_or(Value::Null);
+                    report.steps.push(StepResult {
+                        tick,
+                        step: index,
+                        ok: true,
+                        message: format!("log: {subject} is {actual}"),
+                        actual,
+                    });
+                    continue;
+                }
+                StepAction::Press(_)
+                | StepAction::Release(_)
+                | StepAction::Set(_)
+                | StepAction::Pointer(_) => continue,
             };
             let (ok, message, actual) = match outcome {
                 Ok(message) => (true, message, Value::Null),
@@ -444,11 +530,18 @@ pub fn run_scenario(
                 message,
                 actual,
             };
-            if !ok || tick == last {
+            if step.within.is_some() && !ok && tick < last {
+                continue;
+            }
+            passed[index] = step.within.is_some() && ok;
+            if !ok || tick == last || passed[index] {
                 pending[index] = None;
                 report.steps.push(result);
                 if !ok {
-                    break 'ticks;
+                    if !scenario.keep_going {
+                        break 'ticks;
+                    }
+                    passed[index] = true;
                 }
             } else {
                 pending[index] = Some(result);
@@ -468,6 +561,8 @@ fn press(
     action: &str,
     pressed: bool,
 ) -> Result<String, String> {
+    // Scene bindings are added by the first update; tick 0 comes before it.
+    crate::runtime::bind_input_actions(world);
     let bindings = world.resource::<ActionMap>().bindings(action).to_vec();
     if bindings.is_empty() {
         return Err(format!("action `{action}` has no bindings"));
@@ -483,6 +578,23 @@ fn press(
     }
     let verb = if pressed { "pressed" } else { "released" };
     Ok(format!("{verb} `{action}`"))
+}
+
+/// Places the cursor at `point`, a fraction of the view. A headless run
+/// has no window, so the view takes the capture size.
+fn point_at(
+    world: &mut World,
+    point: [f32; 2],
+    capture_size: [u32; 2],
+) -> Result<String, String> {
+    let mut input = world.resource_mut::<RuntimeInput>();
+    let mut size = input.viewport_size();
+    if size.contains(&0.0) {
+        size = capture_size.map(|side| side as f32);
+        input.record_viewport_size(size);
+    }
+    input.record_cursor_position([point[0] * size[0], point[1] * size[1]]);
+    Ok(format!("pointer at {point:?}"))
 }
 
 type Check = Result<String, (String, Value)>;
@@ -517,10 +629,72 @@ fn reflected(world: &mut World, wanted: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+fn assign(world: &mut World, set: &Assignment) -> Result<String, String> {
+    let entity =
+        find_entity(world, &set.entity, |_, _| true).ok_or_else(|| {
+            format!("no entity has the ID or name `{}`", set.entity)
+        })?;
+    let subject = format!("`{}` {}", set.entity, set.path);
+    if let Some(rest) = set.path.strip_prefix("/components/") {
+        let (name, field) = rest.split_once('/').unwrap_or((rest, ""));
+        if field.is_empty() {
+            set_registered_component(
+                world,
+                entity,
+                name,
+                &set.value.to_string(),
+            )
+        } else {
+            set_registered_component_field(
+                world,
+                entity,
+                name,
+                &format!("/{field}"),
+                set.value.clone(),
+            )
+        }
+        .map_err(|error| format!("{subject}: {error}"))?;
+    } else if let Some(field) = set.path.strip_prefix("/transform") {
+        let transform = world
+            .get::<Transform>(entity)
+            .ok_or_else(|| format!("`{}` has no transform", set.entity))?;
+        let mut value = serde_json::to_value(SceneTransform::from(*transform))
+            .expect("transforms serialize");
+        let slot = value
+            .pointer_mut(field)
+            .ok_or_else(|| format!("{subject} does not exist"))?;
+        *slot = set.value.clone();
+        let transform: SceneTransform = serde_json::from_value(value)
+            .map_err(|error| format!("{subject}: {error}"))?;
+        world.entity_mut(entity).insert(Transform::from(transform));
+    } else {
+        return Err(format!(
+            "{subject}: set reaches /transform/... and /components/... only"
+        ));
+    }
+    Ok(format!("{subject} set to {}", set.value))
+}
+
 fn check_value(world: &mut World, expect: &Expectation) -> Check {
     let subject = format!("`{}` {}", expect.entity, expect.path);
-    let state = reflected(world, &expect.entity)
-        .map_err(|error| (error, Value::Null))?;
+    let state = reflected(world, &expect.entity);
+    if let Some(wanted) = expect.exists {
+        let found = state
+            .as_ref()
+            .is_ok_and(|state| state.pointer(&expect.path).is_some());
+        if found != wanted {
+            let missing = if wanted {
+                "does not exist"
+            } else {
+                "still exists"
+            };
+            return Err((format!("{subject} {missing}"), Value::Bool(found)));
+        }
+        if !found {
+            return Ok(format!("{subject} does not exist"));
+        }
+    }
+    let state = state.map_err(|error| (error, Value::Null))?;
     let actual = state
         .pointer(&expect.path)
         .cloned()
@@ -533,13 +707,7 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
         ))
     };
     if let Some(equals) = &expect.equals {
-        let same = match (number, equals.as_f64()) {
-            (Some(actual), Some(equals)) => {
-                (actual - equals).abs() <= expect.tolerance
-            }
-            _ => &actual == equals,
-        };
-        if !same {
+        if !close(&actual, equals, expect.tolerance) {
             return fail(format!("{equals} ± {}", expect.tolerance));
         }
     }
@@ -554,6 +722,38 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
         }
     }
     Ok(format!("{subject} is {actual}"))
+}
+
+/// Whether `actual` equals `wanted`, with numbers, including those inside
+/// arrays and objects such as a position, allowed to differ by `tolerance`.
+fn close(actual: &Value, wanted: &Value, tolerance: f64) -> bool {
+    match (actual, wanted) {
+        (Value::Number(a), Value::Number(b)) => {
+            // A whole number is not f32 state: counters above 2^24 must
+            // match exactly.
+            let whole = |n: &serde_json::Number| n.is_i64() || n.is_u64();
+            a.as_f64().zip(b.as_f64()).is_some_and(|(x, y)| {
+                // Engine state is f32. serde_json parses decimal text only to
+                // within an f64 ulp, so an exact f32 also matches any
+                // spelling that rounds to the same f32.
+                (x - y).abs() <= tolerance
+                    || (!(whole(a) && whole(b))
+                        && f64::from(x as f32) == x
+                        && x as f32 == y as f32)
+            })
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| close(a, b, tolerance))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter().all(|(key, a)| {
+                    b.get(key).is_some_and(|b| close(a, b, tolerance))
+                })
+        }
+        _ => actual == wanted,
+    }
 }
 
 fn check_events(
@@ -610,6 +810,50 @@ mod tests {
         PhysicsBody, RenderExtractPlugin, RigidBody, RigidBodyKind,
         ScheduleStage,
     };
+
+    #[test]
+    fn whole_numbers_above_the_f32_range_match_exactly() {
+        assert!(!close(
+            &serde_json::json!(16_777_216_u64),
+            &serde_json::json!(16_777_217_u64),
+            0.0
+        ));
+        assert!(close(
+            &serde_json::json!(16_777_217_u64),
+            &serde_json::json!(16_777_217_u64),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn a_printed_f32_matches_itself_with_tolerance_zero() {
+        let actual = serde_json::json!(-1.733_868_f32);
+        let printed: Value = serde_json::from_str(&actual.to_string()).unwrap();
+        assert!(close(&actual, &printed, 0.0));
+        let nearby: Value =
+            serde_json::from_str("-1.7338680028915403").unwrap();
+        assert!(close(&actual, &nearby, 0.0));
+        assert!(!close(&actual, &serde_json::json!(-1.7338), 0.0));
+    }
+
+    #[test]
+    fn tolerance_applies_to_every_number_in_a_vector_or_object() {
+        let position = serde_json::json!([1.5, -2.0, 0.100_000_001_5]);
+        assert!(close(&position, &serde_json::json!([1.5, -2, 0.1]), 1e-3));
+        assert!(!close(&position, &serde_json::json!([1.5, -2, 0.1]), 0.0));
+        assert!(!close(&position, &serde_json::json!([1.5, -2.0]), 1.0));
+        let color = serde_json::json!({"r": 0.5, "name": "red"});
+        assert!(close(
+            &color,
+            &serde_json::json!({"r": 0.51, "name": "red"}),
+            0.02
+        ));
+        assert!(!close(
+            &color,
+            &serde_json::json!({"r": 0.5, "name": "blue"}),
+            1.0
+        ));
+    }
 
     /// A cube falling onto fixed ground, and a game system that lifts the
     /// ground by 1 while `jump` is held and writes a seeded value to the
@@ -670,6 +914,47 @@ mod tests {
     }
 
     #[test]
+    fn keep_going_reports_every_failed_check() {
+        let mut scenario = scenario(
+            5,
+            json!([
+                {"tick": 1, "until": 3, "expect": {"entity": "Cube",
+                    "path": "/transform/position/1", "equals": 99.0}},
+                {"tick": 4, "expect": {"entity": "Cube",
+                    "path": "/transform/position/1", "equals": -99.0}},
+            ]),
+        );
+        assert_eq!(run(&scenario).steps.len(), 1);
+        scenario.keep_going = true;
+        let report = run(&scenario);
+        assert!(!report.passed);
+        let failed: Vec<_> = report.steps.iter().filter(|s| !s.ok).collect();
+        assert_eq!(
+            failed.iter().map(|s| (s.tick, s.step)).collect::<Vec<_>>(),
+            [(1, 0), (4, 1)]
+        );
+        assert_eq!(report.ticks_run, 5);
+    }
+
+    #[test]
+    fn set_steps_move_entities_before_the_tick_runs() {
+        let report = run(&scenario(
+            20,
+            json!([
+                {"tick": 10, "set": {"entity": "Cube",
+                    "path": "/transform/position", "value": [0.0, 20.0, 0.0]}},
+                {"tick": 10, "expect": {"entity": "Cube",
+                    "path": "/transform/position/1", "greater_than": 19.0}},
+                {"tick": 11, "set": {"entity": "Cube",
+                    "path": "/mesh", "value": 1}},
+            ]),
+        ));
+        assert!(report.steps[0].ok && report.steps[1].ok, "{report:#?}");
+        assert!(!report.passed);
+        assert!(report.steps[2].message.contains("/transform/... and"));
+    }
+
+    #[test]
     fn inputs_state_and_events_pass_at_fixed_ticks() {
         let report = run(&scenario(
             90,
@@ -709,6 +994,20 @@ mod tests {
     }
 
     #[test]
+    fn pointer_steps_place_the_cursor_in_the_capture_sized_view() {
+        let mut world = World::new();
+        world.insert_resource(RuntimeInput::default());
+        point_at(&mut world, [0.25, 0.5], [800, 600]).unwrap();
+        let input = world.resource::<RuntimeInput>();
+        assert_eq!(input.viewport_size(), [800.0, 600.0]);
+        assert_eq!(input.cursor_position(), Some([200.0, 300.0]));
+        let step: ScenarioStep =
+            serde_json::from_value(json!({"tick": 3, "pointer": [0.5, 0.5]}))
+                .unwrap();
+        assert!(matches!(step.action, StepAction::Pointer([0.5, 0.5])));
+    }
+
+    #[test]
     fn failure_trace_names_the_first_failing_tick() {
         let report = run(&scenario(
             60,
@@ -727,6 +1026,59 @@ mod tests {
 
         let unbound = run(&scenario(1, json!([{"tick": 1, "press": "fly"}])));
         assert!(unbound.first_failure.unwrap().message.contains("fly"));
+    }
+
+    #[test]
+    fn within_passes_on_the_first_tick_the_check_holds() {
+        let falls = |within: u32| {
+            run(&scenario(
+                60,
+                json!([{"tick": 0, "within": within, "expect": {"entity": "Cube",
+                    "path": "/transform/position/1", "less_than": 2.5}}]),
+            ))
+        };
+        let report = falls(60);
+        assert!(report.passed, "{report:#?}");
+        let pass = &report.steps[0];
+        assert!(pass.tick > 5 && pass.tick < 60, "{pass:?}");
+
+        let report = falls(3);
+        assert!(!report.passed);
+        assert_eq!(report.first_failure.unwrap().tick, 3);
+    }
+
+    #[test]
+    fn log_steps_record_a_value_every_tick_and_never_fail() {
+        let report = run(&scenario(
+            10,
+            json!([
+                {"tick": 1, "until": 4, "log": {"entity": "Cube",
+                    "path": "/transform/position/1"}},
+                {"tick": 5, "log": {"entity": "Ghost", "path": ""}},
+            ]),
+        ));
+        assert!(report.passed, "{report:#?}");
+        let ticks: Vec<_> = report.steps.iter().map(|step| step.tick).collect();
+        assert_eq!(ticks, [1, 2, 3, 4, 5]);
+        assert!(report.steps[3].actual.as_f64().unwrap() < 3.0, "falling");
+        assert_eq!(report.steps[4].actual, Value::Null);
+    }
+
+    #[test]
+    fn exists_checks_entities_and_paths() {
+        let check = |entity: &str, path: &str, exists: bool| {
+            run(&scenario(
+                1,
+                json!([{"tick": 1, "expect": {"entity": entity, "path": path, "exists": exists}}]),
+            ))
+            .passed
+        };
+        assert!(check("Cube", "", true));
+        assert!(check("Cube", "/transform", true));
+        assert!(check("Ghost", "", false));
+        assert!(check("Cube", "/components/nope", false));
+        assert!(!check("Cube", "", false));
+        assert!(!check("Ghost", "", true));
     }
 
     #[test]

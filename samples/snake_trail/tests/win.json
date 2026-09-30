@@ -1,0 +1,14 @@
+{
+ "name": "The tenth apple wins, and R starts a new round",
+ "ticks": 120,
+ "steps": [
+  {"tick": 0, "set": {"entity": "Apples Counter", "path": "/components/rusting.counter/value", "value": 9}},
+  {"tick": 1, "within": 90, "expect": {"entity": "Apples Counter", "path": "/components/rusting.counter/value", "equals": 10}},
+  {"tick": 95, "capture": "shots/won.png"},
+  {"tick": 100, "press": "restart"},
+  {"tick": 101, "release": "restart"},
+  {"tick": 106, "expect": {"entity": "Apples Counter", "path": "/components/rusting.counter/value", "equals": 0}},
+  {"tick": 106, "expect": {"entity": "Segment 3", "exists": false}},
+  {"tick": 106, "expect": {"entity": "Head", "path": "/transform/position", "equals": [-4.5, -0.5, 0.1], "tolerance": 0.001}}
+ ]
+}

@@ -11,11 +11,15 @@
 //! With `camera_distance` above zero the controller is third person: the
 //! `Camera` children orbit behind the body at that distance, around a point
 //! `camera_height` above the body center, and pitch swings them up and down.
+//! A solid collider between that point and the camera pulls the camera in
+//! in front of it, so walls behind the player do not hide the view.
 //!
 //! The body moves as its `Collider` shape (unscaled), or as
 //! [`DEFAULT_PLAYER_SHAPE`] without one. Give it a `Collider`, a CPU
 //! `PhysicsBody`, and a kinematic `RigidBody` to make sensors report it and
-//! let it push dynamic bodies.
+//! let it push dynamic bodies; `push_bodies: false` keeps it from moving
+//! them. Surfaces steeper than `max_slope` are walls, and ledges up to
+//! `max_step_height` are stepped onto.
 //!
 //! Movement reads the named actions in [`PLAYER_ACTIONS`] from the
 //! [`ActionMap`]. `App::new` binds them to WASD/arrow keys, Space, and Shift;
@@ -27,10 +31,13 @@ use serde::{Deserialize, Serialize};
 
 use super::sim_math;
 use super::{
-    ActionMap, Camera, Children, Collider, ColliderShape, FrameTime,
-    InputBinding, KeyCode, MouseButton, PhysicsWorld, RuntimeInput,
+    ActionMap, Camera, CharacterMove, Children, Collider, ColliderShape,
+    FrameTime, InputBinding, KeyCode, MouseButton, PhysicsWorld, RuntimeInput,
 };
 use crate::Transform;
+
+/// Room the third-person camera keeps from walls behind it.
+const CAMERA_RADIUS: f32 = 0.2;
 
 pub const PLAYER_FORWARD: &str = "player.forward";
 pub const PLAYER_BACK: &str = "player.back";
@@ -76,6 +83,13 @@ pub struct PlayerController {
     pub camera_distance: f32,
     /// Height of the third-person orbit center above the body center.
     pub camera_height: f32,
+    /// Steepest ground in radians the body stands on and walks up.
+    pub max_slope: f32,
+    /// Highest ledge in metres the body steps onto while walking.
+    pub max_step_height: f32,
+    /// Whether the body pushes dynamic bodies it walks into. Off, they
+    /// still block it but never move.
+    pub push_bodies: bool,
     #[serde(skip)]
     pub vertical_speed: f32,
     #[serde(skip)]
@@ -83,6 +97,10 @@ pub struct PlayerController {
     /// Set when jump is pressed; the next grounded fixed step consumes it.
     #[serde(skip)]
     pub jump_requested: bool,
+    /// The floor body under the controller after the last step and where
+    /// it was, so a moving platform carries the controller.
+    #[serde(skip)]
+    pub floor: Option<(Entity, [f32; 3])>,
 }
 
 impl Default for PlayerController {
@@ -98,9 +116,13 @@ impl Default for PlayerController {
             pitch: 0.0,
             camera_distance: 0.0,
             camera_height: 0.6,
+            max_slope: 45.0_f32.to_radians(),
+            max_step_height: 0.3,
+            push_bodies: true,
             vertical_speed: 0.0,
             grounded: false,
             jump_requested: false,
+            floor: None,
         }
     }
 }
@@ -127,7 +149,9 @@ pub(super) fn bind_default_actions(map: &mut ActionMap) {
 pub(super) fn player_look(
     mut input: ResMut<RuntimeInput>,
     actions: Res<ActionMap>,
+    physics: Res<PhysicsWorld>,
     mut players: Query<(
+        Entity,
         &mut PlayerController,
         &mut Transform,
         Option<&Children>,
@@ -147,7 +171,7 @@ pub(super) fn player_look(
     }
     let motion = input.mouse_motion();
     let jump = actions.just_pressed(&input, PLAYER_JUMP);
-    for (mut player, mut transform, children) in &mut players {
+    for (entity, mut player, mut transform, children) in &mut players {
         if input.cursor_captured() {
             let sensitivity = player.look_sensitivity;
             player.yaw -= motion[0] * sensitivity;
@@ -159,7 +183,26 @@ pub(super) fn player_look(
         // Behind the orbit center along the view direction, which is -Z
         // tilted up by pitch.
         let (sin, cos) = sim_math::sin_cos(player.pitch);
-        let distance = player.camera_distance;
+        let mut distance = player.camera_distance;
+        if distance > 0.0 {
+            // Stop a camera-sized sphere at the first solid collider behind
+            // the orbit center, ignoring the player's own body.
+            let [x, y, z] = transform.position;
+            let (yaw_sin, yaw_cos) = sim_math::sin_cos(player.yaw);
+            let back = [cos * yaw_sin, -sin, cos * yaw_cos];
+            if let Some(hit) = physics.shape_cast(
+                ColliderShape::Sphere {
+                    radius: CAMERA_RADIUS,
+                },
+                [x, y + player.camera_height, z],
+                back,
+                distance,
+                u32::MAX,
+                Some(entity),
+            ) {
+                distance = hit.distance;
+            }
+        }
         for child in children.into_iter().flat_map(|children| &children.0) {
             if let Ok(mut camera) = cameras.get_mut(*child) {
                 camera.rotation = [player.pitch, 0.0, 0.0];
@@ -187,6 +230,7 @@ pub(super) fn player_move(
         &mut Transform,
         Option<&Collider>,
     )>,
+    floors: Query<&Transform, Without<PlayerController>>,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
     let axis = |positive, negative| {
@@ -222,18 +266,36 @@ pub(super) fn player_move(
         player.jump_requested = false;
         player.vertical_speed -= player.gravity * dt;
         motion[1] = player.vertical_speed * dt;
-
-        let moved = physics.move_character(
-            collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape),
+        let shape =
+            collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
+        let start = CharacterMove::ride(
+            &physics,
+            shape,
             transform.position,
+            player.floor,
+            player.collision_mask,
+            entity,
+            |floor| floors.get(floor).ok().map(|floor| floor.position),
+        );
+
+        let moved = physics.move_character_on_foot(
+            shape,
+            start,
             motion,
             player.collision_mask,
             Some(entity),
+            player.max_slope,
+            player.max_step_height,
         );
         player.grounded = moved.grounded;
-        if moved.grounded && player.vertical_speed < 0.0 {
+        if (moved.grounded && player.vertical_speed < 0.0)
+            || (moved.ceiling && player.vertical_speed > 0.0)
+        {
             player.vertical_speed = 0.0;
         }
+        player.floor = moved
+            .floor
+            .and_then(|floor| Some((floor, floors.get(floor).ok()?.position)));
         transform.position = moved.position;
     }
 }

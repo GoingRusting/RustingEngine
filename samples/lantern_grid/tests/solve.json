@@ -1,0 +1,26 @@
+{
+ "name": "Clicking the three scrambled cells lights every lantern and wins; R starts over",
+ "ticks": 80,
+ "steps": [
+  {"tick": 5, "pointer": [0.41, 0.34]},
+  {"tick": 6, "press": "select"},
+  {"tick": 7, "release": "select"},
+  {"tick": 10, "pointer": [0.59, 0.5]},
+  {"tick": 11, "press": "select"},
+  {"tick": 12, "release": "select"},
+  {"tick": 15, "pointer": [0.5, 0.82]},
+  {"tick": 16, "press": "select"},
+  {"tick": 17, "release": "select"},
+  {"tick": 20, "expect": {"entity": "Lit Counter", "path": "/components/rusting.counter/value", "equals": 25}},
+  {"tick": 20, "expect": {"entity": "Moves Counter", "path": "/components/rusting.counter/value", "equals": 3}},
+  {"tick": 20, "capture": "shots/solved.png"},
+  {"tick": 25, "pointer": [0.5, 0.5]},
+  {"tick": 26, "press": "select"},
+  {"tick": 27, "release": "select"},
+  {"tick": 30, "expect": {"entity": "Lit Counter", "path": "/components/rusting.counter/value", "equals": 25}},
+  {"tick": 40, "press": "restart"},
+  {"tick": 41, "release": "restart"},
+  {"tick": 50, "expect": {"entity": "Lit Counter", "path": "/components/rusting.counter/value", "equals": 11}},
+  {"tick": 50, "expect": {"entity": "Moves Counter", "path": "/components/rusting.counter/value", "equals": 0}}
+ ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Three burns end the run and a pulse starts a new one",
+  "ticks": 280,
+  "steps": [
+    {"tick": 0, "set": {"entity": "Burns", "path": "/components/rusting.counter/value", "value": 3}},
+    {"tick": 1, "until": 200, "expect": {"entity": "Spawned", "path": "/components/rusting.counter/value", "equals": 0}},
+    {"tick": 120, "capture": "shots/game_over.png"},
+    {"tick": 200, "press": "pulse"},
+    {"tick": 201, "release": "pulse"},
+    {"tick": 202, "within": 205, "expect": {"entity": "Burns", "path": "/components/rusting.counter/value", "equals": 0}},
+    {"tick": 205, "within": 280, "expect": {"entity": "Spawned", "path": "/components/rusting.counter/value", "equals": 1}}
+  ]
+}

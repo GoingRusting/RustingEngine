@@ -11,6 +11,6 @@ testModels
 /compare
 testModels/
 *.rscene.bin
-AGENTS.md
+/AGENTS.md
 issues.md
 missingFeatures.md

@@ -26,6 +26,10 @@ pub const HEADLESS_TICKS_ENV: &str = "RUSTING_HEADLESS_TICKS";
 /// `StateHashReport` as JSON, for determinism checks across processes.
 pub const STATE_HASH_OUT_ENV: &str = "RUSTING_STATE_HASH_OUT";
 
+/// Environment variable naming a file where a headless run saves the scene
+/// as it stands after the last tick, so tools can query the end state.
+pub const FINAL_SCENE_OUT_ENV: &str = "RUSTING_FINAL_SCENE_OUT";
+
 /// Environment variable naming a file where a windowed game writes a
 /// `Replay` of the session as JSON when it exits.
 pub const REPLAY_OUT_ENV: &str = "RUSTING_REPLAY_OUT";
@@ -68,6 +72,17 @@ pub fn first_frame_ms(output: &str) -> Option<u64> {
             .trim()
             .parse()
             .ok()
+    })
+}
+
+/// Printed by a headless run with the mean wall time of one fixed tick.
+pub const TICK_TIME_MARKER: &str = "[rusting] headless ms per tick";
+
+/// Milliseconds per tick the game reported with [`TICK_TIME_MARKER`].
+#[must_use]
+pub fn tick_time_ms(output: &str) -> Option<f64> {
+    output.lines().find_map(|line| {
+        line.strip_prefix(TICK_TIME_MARKER)?.trim().parse().ok()
     })
 }
 
@@ -556,7 +571,7 @@ fn write_project_template(
         )
     };
     let cargo = format!(
-        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nrusting_engine = {{ {engine_dependency}, default-features = false, features = [\"ui\"] }}\n\n[workspace]\n"
+        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nrusting_engine = {{ {engine_dependency}, default-features = false, features = [\"ui\"] }}\n\n[workspace]\n\n# Debug builds of the engine are too slow to play: optimize dependencies\n# and keep the game's own code quick to rebuild.\n[profile.dev.package.\"*\"]\nopt-level = 3\n"
     );
     std::fs::write(root.join("Cargo.toml"), cargo)?;
 
@@ -574,6 +589,8 @@ fn write_project_template(
         serde_json::to_vec_pretty(&manifest)?,
     )?;
     std::fs::write(root.join("src/main.rs"), default_game_source())?;
+    std::fs::write(root.join("AGENTS.md"), include_str!("project_agents.md"))?;
+    std::fs::write(root.join(".gitignore"), "/target\n/build\n/tests/shots\n")?;
     std::fs::write(
         root.join("scenes/main.rscene"),
         serde_json::to_vec_pretty(&match template {
@@ -627,12 +644,18 @@ fn default_scene(name: &str) -> SceneDocument {
                 mesh_renderer: Some(SceneMeshRenderer {
                     mesh: SceneMesh::BuiltinCube,
                     material: SceneMaterial::Inline(SceneMaterialData {
+                        name: String::new(),
                         model: SceneMaterialModel::Pbr,
                         alpha_mode: SceneAlphaMode::Opaque,
                         base_color: [0.1, 0.45, 0.95, 1.0],
                         emissive: [0.0; 3],
                         metallic: 0.0,
                         roughness: 0.5,
+                        transmission: 0.0,
+                        ior: crate::assets::MaterialAsset::default().ior,
+                        thickness: 0.0,
+                        uv_scale: [1.0; 2],
+                        uv_offset: [0.0; 2],
                         base_color_texture: None,
                         normal_texture: None,
                         metallic_roughness_texture: None,
@@ -1371,6 +1394,11 @@ pub fn package_game_files(
         if assets.is_dir() {
             copy_directory(&assets, &temporary.join("assets"))?;
         }
+        // Scenes a game loads later, next to the cooked main scene.
+        let scenes = project_root.join("scenes");
+        if scenes.is_dir() {
+            copy_directory(&scenes, &temporary.join("scenes"))?;
+        }
         let engine_license =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("LICENSE.md");
         if engine_license.is_file() {
@@ -1506,6 +1534,8 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
         assert_eq!(project.manifest.name, "Example Game");
         assert!(project.root.join("Cargo.toml").is_file());
         assert!(project.root.join("src/main.rs").is_file());
+        assert!(project.root.join("AGENTS.md").is_file());
+        assert!(project.root.join(".gitignore").is_file());
         assert!(project.root.join("scenes/main.rscene").is_file());
         assert!(project.root.join("assets").is_dir());
         assert!(project.root.join("shaders").is_dir());

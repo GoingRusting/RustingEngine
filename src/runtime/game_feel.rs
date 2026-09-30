@@ -26,6 +26,7 @@
 use std::collections::BTreeSet;
 use std::f32::consts::{PI, TAU};
 
+use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Commands, Component, Or, Query, Res, ResMut, With};
 use serde::{Deserialize, Serialize};
@@ -399,7 +400,7 @@ impl Default for Pickup {
 
 /// The counter called `name` with the lowest `SceneId`, so duplicates
 /// resolve the same way on every run.
-fn find_counter<'a, C: std::ops::Deref<Target = Counter>>(
+pub(crate) fn find_counter<'a, C: std::ops::Deref<Target = Counter>>(
     counters: impl Iterator<Item = (C, Option<&'a SceneId>)>,
     name: &str,
 ) -> Option<C> {
@@ -468,6 +469,161 @@ pub(super) fn apply_scene_background(
         if settings.background_color != color {
             settings.background_color = color;
         }
+    }
+}
+
+/// Equirectangular (2:1) sky image that surfaces reflect and that lights
+/// them from every side, replacing the [`SkyLight`](super::SkyLight)
+/// hemisphere. Rough surfaces sample blurrier mip levels. The one on the
+/// entity with the lowest ID is used.
+// ponytail: 8-bit images only, so reflections top out at `intensity`; add
+// `.hdr` loading with the sky system milestone.
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvironmentMap {
+    /// Image path relative to the project's `assets` folder.
+    pub texture: std::path::PathBuf,
+    pub intensity: f32,
+    /// The loaded `texture`, set by the engine.
+    #[serde(skip)]
+    pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+}
+
+impl Default for EnvironmentMap {
+    fn default() -> Self {
+        Self {
+            texture: std::path::PathBuf::new(),
+            intensity: 1.0,
+            handle: None,
+        }
+    }
+}
+
+/// Box around the entity's position whose surfaces reflect the scene as
+/// seen from that position, in place of the [`EnvironmentMap`]. Reflections
+/// are projected onto the box walls, so a probe sized to its room lines up
+/// with the walls. Overlapping probes blend; up to four are used.
+// ponytail: captured when a probe is added or changes, not every frame, so
+// moving objects do not show in probe reflections.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReflectionProbe {
+    /// Half size of the box along each world axis.
+    pub extents: [f32; 3],
+    pub intensity: f32,
+}
+
+impl Default for ReflectionProbe {
+    fn default() -> Self {
+        Self {
+            extents: [5.0; 3],
+            intensity: 1.0,
+        }
+    }
+}
+
+/// Exponential height fog: the scene fades into `color` with distance, and
+/// the fog thins out above `height`. Looking toward the sun brightens it.
+/// The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fog {
+    /// Linear RGB color that distant objects fade into.
+    pub color: [f32; 3],
+    /// Extinction per metre at `height`. 0.01 hides things about 300 m away.
+    pub density: f32,
+    /// World height, in metres, where the fog has its full `density`.
+    pub height: f32,
+    /// How fast the fog thins with height, per metre. 0 makes it uniform.
+    pub height_falloff: f32,
+    /// Brightens fog toward the shadow-casting (or first) directional light.
+    pub sun_scatter: f32,
+    /// How much the background behind everything fades into the fog.
+    pub sky_affect: f32,
+}
+
+impl Default for Fog {
+    fn default() -> Self {
+        Self {
+            color: [0.5, 0.6, 0.7],
+            density: 0.01,
+            height: 0.0,
+            height_falloff: 0.1,
+            sun_scatter: 0.3,
+            sky_affect: 1.0,
+        }
+    }
+}
+
+/// Glow around bright pixels. Light above `threshold` spreads over the
+/// screen before tone mapping. The one on the entity with the lowest ID is
+/// used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bloom {
+    /// Share of the light above `threshold` added back as glow.
+    pub intensity: f32,
+    /// Linear brightness where the glow starts, with a soft knee below it.
+    pub threshold: f32,
+    /// 0 keeps the glow tight around bright pixels; 1 spreads it widely.
+    pub spread: f32,
+}
+
+impl Default for Bloom {
+    fn default() -> Self {
+        Self {
+            intensity: 0.5,
+            threshold: 1.0,
+            spread: 0.7,
+        }
+    }
+}
+
+/// Screen-space ambient occlusion: darkens ambient and sky light in creases
+/// and corners where nearby geometry blocks it. Off on the Eco quality
+/// profile. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AmbientOcclusion {
+    /// World-space distance, in metres, that is searched for occluders.
+    pub radius: f32,
+    /// Exponent on the occlusion. Above 1 darkens creases more.
+    pub intensity: f32,
+}
+
+impl Default for AmbientOcclusion {
+    fn default() -> Self {
+        Self {
+            radius: 1.0,
+            intensity: 1.0,
+        }
+    }
+}
+
+/// Loads the image of each added or changed [`EnvironmentMap`].
+pub(super) fn load_environment_maps(
+    assets: Option<ResMut<crate::assets::AssetServer>>,
+    mut maps: Query<
+        &mut EnvironmentMap,
+        bevy_ecs::query::Changed<EnvironmentMap>,
+    >,
+) {
+    let Some(mut assets) = assets else {
+        return;
+    };
+    for mut map in &mut maps {
+        let map = map.bypass_change_detection();
+        map.handle = (!map.texture.as_os_str().is_empty())
+            .then(|| {
+                assets
+                    .textures
+                    .handle_for_path(&map.texture)
+                    .map(Ok)
+                    .unwrap_or_else(|| assets.load_texture(&map.texture))
+                    .map_err(|error| eprintln!("environment map: {error}"))
+                    .ok()
+            })
+            .flatten();
     }
 }
 
@@ -694,10 +850,23 @@ pub(super) fn draw_hud(
     mut pressed: ResMut<EventQueue<HudButtonPressed>>,
     elements: Query<(Entity, &HudElement, Option<&SceneId>)>,
     counters: Query<(&Counter, Option<&SceneId>)>,
+    visibility: Query<&super::Visibility>,
+    parents: Query<&super::Parent>,
 ) {
+    // Hidden like a mesh: by itself or by any parent.
+    let visible = |entity: Entity| {
+        std::iter::successors(Some(entity), |&entity| {
+            parents.get(entity).ok().map(|parent| parent.0)
+        })
+        .take(1024)
+        .all(|entity| visibility.get(entity).map_or(true, |v| v.visible))
+    };
     let mut elements: Vec<_> = elements.iter().collect();
     elements.sort_by_key(|(entity, _, id)| (id.map(|id| id.0), *entity));
     for (entity, element, _) in elements {
+        if !visible(entity) {
+            continue;
+        }
         if let Some(required) = &element.requires {
             if !find_counter(counters.iter(), required)
                 .is_some_and(|counter| counter.complete())
@@ -734,7 +903,9 @@ pub(super) fn draw_hud(
                         pressed.send(HudButtonPressed { entity });
                     }
                 } else {
-                    ui.label(text);
+                    // Lines break only where the text says: an anchored
+                    // area would otherwise wrap text that grew this frame.
+                    ui.add(egui::Label::new(text).extend());
                 }
             });
     }

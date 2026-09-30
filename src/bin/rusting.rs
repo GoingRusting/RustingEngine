@@ -42,12 +42,50 @@ fn usage(message: impl Into<String>) -> CliResult {
     CliResult::failure("CLI_USAGE", message, None)
 }
 
+/// Inserts `.` for a left-out project root, so `rusting check` works inside
+/// a project. `extra` is how many positional arguments follow the root.
+fn default_root(mut args: Vec<&str>) -> Vec<&str> {
+    const COMMANDS: &[(&[&str], usize)] = &[
+        (&["check"], 0),
+        (&["validate"], 0),
+        (&["cook"], 0),
+        (&["run"], 0),
+        (&["determinism"], 0),
+        (&["project", "inspect"], 0),
+        (&["asset", "list"], 0),
+        (&["test"], 1),
+    ];
+    for (command, extra) in COMMANDS {
+        if !args.starts_with(command) {
+            continue;
+        }
+        let given = args[command.len()..]
+            .iter()
+            .take_while(|arg| !arg.starts_with("--"))
+            .count();
+        let project_only = *command == ["test"]
+            && given == 1
+            && Path::new(args[1]).join("project.json").is_file();
+        if project_only {
+            // `rusting test <project>` runs that project's tests folder.
+            args.insert(2, "tests");
+        } else if given == *extra {
+            args.insert(command.len(), ".");
+        } else if *command == ["test"] && given == 0 {
+            args.splice(1..1, [".", "tests"]);
+        }
+        break;
+    }
+    args
+}
+
 fn execute(args: &[String]) -> CliResult {
-    let positional: Vec<_> = args
-        .iter()
-        .filter(|arg| arg.as_str() != "--json")
-        .map(String::as_str)
-        .collect();
+    let positional = default_root(
+        args.iter()
+            .filter(|arg| arg.as_str() != "--json")
+            .map(String::as_str)
+            .collect(),
+    );
     match positional.as_slice() {
         ["doctor"] => cli::doctor(),
         ["new", parent, name] => {
@@ -106,7 +144,13 @@ fn execute(args: &[String]) -> CliResult {
         ["run", root, flags @ ..] | ["test", root, _, flags @ ..] => {
             let mut options = cli::RunOptions::default();
             if let ["test", _, scenario, ..] = positional.as_slice() {
-                options.scenario = Some(Path::new(scenario).to_path_buf());
+                // A scenario path is looked up in the project root first.
+                let in_root = Path::new(root).join(scenario);
+                options.scenario = Some(if in_root.exists() {
+                    in_root
+                } else {
+                    Path::new(scenario).to_path_buf()
+                });
             }
             let mut flags = flags.iter();
             while let Some(flag) = flags.next() {
@@ -126,7 +170,13 @@ fn execute(args: &[String]) -> CliResult {
                     _ => return usage(format!("unknown run flag `{flag}`")),
                 }
             }
-            cli::run_game_project(Path::new(root), options)
+            match &options.scenario {
+                Some(folder) if folder.is_dir() => {
+                    let folder = folder.clone();
+                    cli::test_game_folder(Path::new(root), &folder, options)
+                }
+                _ => cli::run_game_project(Path::new(root), options),
+            }
         }
         ["export", root, parent] => {
             cli::export_game_project(Path::new(root), Path::new(parent), None)
@@ -267,6 +317,20 @@ fn execute(args: &[String]) -> CliResult {
 
 fn render_human(result: &CliResult) -> String {
     let mut lines = Vec::new();
+    for run in result
+        .data
+        .get("scenarios")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        lines.push(format!(
+            "{} {}: {}",
+            if run["ok"] == true { "PASS" } else { "FAIL" },
+            run["file"].as_str().unwrap_or("?"),
+            run["message"].as_str().unwrap_or("")
+        ));
+    }
     if result.ok {
         let data = &result.data;
         if let Some(version) = data.get("engine_version") {
@@ -328,9 +392,13 @@ fn render_human(result: &CliResult) -> String {
             for change in patch["changes"].as_array().into_iter().flatten() {
                 lines.push(format!(
                     "  {}{}: {} -> {}",
-                    change["name"]
-                        .as_str()
-                        .unwrap_or(change["id"].as_str().unwrap_or("?")),
+                    match (change["name"].as_str(), change["id"].as_str()) {
+                        (Some(name), _) => name,
+                        (None, Some(id)) if id == Uuid::nil().to_string() => {
+                            "(scene)"
+                        }
+                        (None, id) => id.unwrap_or("?"),
+                    },
                     change["path"].as_str().unwrap_or(""),
                     change["before"],
                     change["after"]
@@ -347,6 +415,11 @@ fn render_human(result: &CliResult) -> String {
                     game["exit_code"], game["timed_out"]
                 ));
             }
+        }
+        if let Some(path) = data.get("final_scene").and_then(|v| v.as_str()) {
+            lines.push(format!(
+                "Final state: {path} (inspect with `rusting scene query`)"
+            ));
         }
         if let Some(operations) =
             data.get("operations").and_then(|v| v.as_array())
@@ -511,5 +584,35 @@ mod tests {
         let value = serde_json::to_value(&result).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["diagnostics"][0]["code"], "CLI_USAGE");
+    }
+
+    #[test]
+    fn project_root_defaults_to_the_current_folder() {
+        assert_eq!(default_root(vec!["check"]), ["check", "."]);
+        assert_eq!(
+            default_root(vec!["run", "--ticks", "5"]),
+            ["run", ".", "--ticks", "5"]
+        );
+        assert_eq!(default_root(vec!["run", "game"]), ["run", "game"]);
+        assert_eq!(
+            default_root(vec!["test", "a.json"]),
+            ["test", ".", "a.json"]
+        );
+        assert_eq!(
+            default_root(vec!["test", "game", "a.json"]),
+            ["test", "game", "a.json"]
+        );
+        assert_eq!(
+            default_root(vec!["test", "samples/putt_course"]),
+            ["test", "samples/putt_course", "tests"]
+        );
+        assert_eq!(
+            default_root(vec!["test", "--release"]),
+            ["test", ".", "tests", "--release"]
+        );
+        assert_eq!(
+            default_root(vec!["project", "inspect"]),
+            ["project", "inspect", "."]
+        );
     }
 }

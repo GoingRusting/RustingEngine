@@ -1,0 +1,42 @@
+{
+ "name": "Breaking every brick wins, and R starts over",
+ "ticks": 40,
+ "steps": [
+  {
+   "tick": 5,
+   "set": {
+    "entity": "Score",
+    "path": "/components/rusting.counter/value",
+    "value": 32
+   }
+  },
+  {
+   "tick": 10,
+   "capture": "shots/win.png"
+  },
+  {
+   "tick": 20,
+   "press": "restart"
+  },
+  {
+   "tick": 21,
+   "release": "restart"
+  },
+  {
+   "tick": 23,
+   "expect": {
+    "entity": "Score",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 23,
+   "expect": {
+    "entity": "Brick 1",
+    "exists": true,
+    "path": "/transform"
+   }
+  }
+ ]
+}

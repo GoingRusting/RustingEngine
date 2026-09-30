@@ -1111,12 +1111,29 @@ pub enum AlphaMode {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialAsset {
+    /// Editor name, such as "glass"; empty when unnamed. Two materials
+    /// that differ only by name stay separate assets.
+    pub name: String,
     pub model: MaterialModel,
     pub alpha_mode: AlphaMode,
     pub base_color: [f32; 4],
     pub emissive: [f32; 3],
     pub metallic: f32,
     pub roughness: f32,
+    /// Share of light that passes through instead of being diffused, 0 to 1.
+    /// Above 0 the material draws after opaque objects and shows them
+    /// through itself, bent by `ior` and tinted by the base color.
+    pub transmission: f32,
+    /// Index of refraction: 1.0 does not bend light, glass is about 1.5.
+    pub ior: f32,
+    /// How far light travels inside, in world units; 0 is a thin sheet
+    /// that does not bend what is behind it.
+    pub thickness: f32,
+    /// How many times the textures repeat across each face of the mesh, per
+    /// axis; `[4.0, 8.0]` tiles a long floor instead of stretching it.
+    pub uv_scale: [f32; 2],
+    /// Shifts the textures across each face, in whole-texture units.
+    pub uv_offset: [f32; 2],
     pub base_color_texture: Option<Handle<TextureAsset>>,
     pub normal_texture: Option<Handle<TextureAsset>>,
     pub metallic_roughness_texture: Option<Handle<TextureAsset>>,
@@ -1127,12 +1144,18 @@ pub struct MaterialAsset {
 impl Default for MaterialAsset {
     fn default() -> Self {
         Self {
+            name: String::new(),
             model: MaterialModel::Pbr,
             alpha_mode: AlphaMode::Opaque,
             base_color: [1.0; 4],
             emissive: [0.0; 3],
             metallic: 0.0,
             roughness: 0.5,
+            transmission: 0.0,
+            ior: 1.5,
+            thickness: 0.0,
+            uv_scale: [1.0; 2],
+            uv_offset: [0.0; 2],
             base_color_texture: None,
             normal_texture: None,
             metallic_roughness_texture: None,
@@ -1545,6 +1568,10 @@ impl AssetServer {
                 let material = self.materials.insert_with_path(
                     material_key,
                     MaterialAsset {
+                        name: gltf_material
+                            .name()
+                            .map(str::to_owned)
+                            .unwrap_or_default(),
                         model: MaterialModel::Pbr,
                         alpha_mode: match gltf_material.alpha_mode() {
                             gltf::material::AlphaMode::Opaque => {
@@ -1570,6 +1597,10 @@ impl AssetServer {
                         metallic_roughness_texture,
                         occlusion_texture,
                         emissive_texture,
+                        // ponytail: KHR_materials_transmission, ior and
+                        // volume need gltf crate features; enable them when
+                        // an imported glass model needs it.
+                        ..MaterialAsset::default()
                     },
                 )?;
                 imported.push(ImportedGltfPrimitive {
@@ -2378,11 +2409,13 @@ fn fallback_cube() -> MeshAsset {
     let mut indices = Vec::with_capacity(36);
     for (normal, positions) in faces {
         let base = vertices.len() as u32;
+        // glTF convention: v = 0 is the image's first row, at the top edge
+        // of each side face and at the -Z edge of the top and bottom faces.
         for (position, uv) in positions.into_iter().zip([
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
             [0.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 0.0],
         ]) {
             vertices.push(MeshVertex {
                 position,
@@ -2930,6 +2963,17 @@ mod tests {
             .count();
         assert_eq!(extra_primitives, 1, "second primitive is a child entity");
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn cube_side_faces_show_the_first_image_row_at_the_top() {
+        let cube = fallback_cube();
+        for vertex in &cube.vertices {
+            if vertex.normal[1] == 0.0 {
+                let top = vertex.position[1] > 0.0;
+                assert_eq!(vertex.uv[1], if top { 0.0 } else { 1.0 });
+            }
+        }
     }
 
     #[test]

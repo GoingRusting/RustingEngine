@@ -15,6 +15,7 @@ mod overlay;
 mod picking;
 pub mod profiler;
 mod project;
+mod project_settings;
 mod shortcuts;
 pub mod view;
 
@@ -46,11 +47,11 @@ pub use shortcuts::{
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Resource, World};
-use egui::{CentralPanel, Context, DragValue, TopBottomPanel};
+use egui::{CentralPanel, Context, TopBottomPanel};
 use std::path::PathBuf;
 
 use crate::rendering::debug_overlay::RenderDebugOverlay;
-use crate::rendering::scene_renderer::SceneDebugView;
+use crate::rendering::scene_renderer::{SceneDebugView, SceneEffects};
 use crate::runtime::{
     add_registered_component, cook_scene, load_scene,
     registered_component_names, registered_component_values,
@@ -311,6 +312,31 @@ pub fn apply_font_scale(context: &Context, scale: f32) {
     });
 }
 
+/// Tile Painter tools, as in Godot's tile map editor.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum TileTool {
+    /// Clicks and drags paint the cells under the pointer.
+    #[default]
+    Paint,
+    /// A drag fills the rectangle between the pressed and released cells.
+    Rectangle,
+    /// A click flood fills the joined cells that match the clicked one.
+    Fill,
+    /// A drag paints a straight line of cells from the pressed cell to the
+    /// released one.
+    Line,
+}
+
 /// Editor interaction mode. Edit state never advances gameplay fixed updates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorMode {
@@ -349,6 +375,19 @@ impl GameBuildProfile {
     }
 }
 
+/// A Scene View handle that edits one component field when dragged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SceneHandle {
+    /// A fog height square: `main` for the one at `height`, else the
+    /// falloff square. `anchor` is the grabbed point on its edge.
+    FogHeight { main: bool, anchor: [f32; 3] },
+    /// A reflection probe box face on world `axis` (0 = X).
+    ProbeFace { axis: usize },
+    /// A `RenderBounds` handle from `render_bounds_handles`: a box face
+    /// or a point on the sphere.
+    BoundsFace { index: usize },
+}
+
 /// Internal mode of the first live viewport. Areas use [`EditorPanel`] for
 /// their independently selected content.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -369,6 +408,18 @@ pub struct EditorState {
     pub selection: Vec<Entity>,
     /// Name filter typed into the Hierarchy search box.
     pub hierarchy_filter: String,
+    /// Tile character that Scene View clicks paint into the selected tile
+    /// map; `.` erases. `None` leaves clicks to selection and the gizmo.
+    pub tile_brush: Option<char>,
+    /// Scene before the current tile stroke; it becomes an Undo step only
+    /// once the stroke changes a cell.
+    pub tile_stroke_undo: Option<SceneDocument>,
+    /// How Scene View strokes apply the tile brush.
+    pub tile_tool: TileTool,
+    /// Pressed cell of a Rectangle or Line drag.
+    pub tile_rect_start: Option<(usize, usize)>,
+    /// Scene View handle being dragged, and the entity it edits.
+    pub scene_handle: Option<(Entity, SceneHandle)>,
     /// Tells the editor if the game is stopped, playing, or paused.
     pub mode: EditorMode,
     /// Chooses a fast Debug build or an optimized Release build for Play.
@@ -452,6 +503,8 @@ pub struct EditorGizmoSettings {
     pub show_selected_bounds: bool,
     /// Diagnostic shading of the Scene View; Play always renders lit.
     pub shading: SceneDebugView,
+    /// Atmosphere effects the Scene View draws; Play draws all of them.
+    pub effects: SceneEffects,
 }
 
 #[derive(
@@ -475,6 +528,7 @@ pub enum GizmoAxis {
 pub struct EditorGizmoDrag {
     pub mode: Option<TransformModes>,
     pub snap_enabled: bool,
+    pub snap_steps: shortcuts::SnapSteps,
     pub global_axes: bool,
     /// Squared projection of each world scale axis onto local scale axes.
     pub global_scale_weights: [[f32; 3]; 3],
@@ -519,6 +573,16 @@ pub fn editor_debug_view(world: &World) -> SceneDebugView {
     }
 }
 
+/// Atmosphere effects the renderer draws this frame: the Scene View's
+/// toggles, or all of them in every other workspace.
+pub fn editor_scene_effects(world: &World) -> SceneEffects {
+    if world.resource::<EditorState>().workspace == EditorWorkspace::Scene {
+        world.resource::<EditorGizmoSettings>().effects
+    } else {
+        SceneEffects::default()
+    }
+}
+
 impl Default for EditorGizmoSettings {
     fn default() -> Self {
         Self {
@@ -526,6 +590,7 @@ impl Default for EditorGizmoSettings {
             show_selected_axes: true,
             show_selected_bounds: true,
             shading: SceneDebugView::Lit,
+            effects: SceneEffects::default(),
         }
     }
 }
@@ -567,6 +632,11 @@ impl Default for EditorState {
             selected: None,
             selection: Vec::new(),
             hierarchy_filter: String::new(),
+            tile_brush: None,
+            tile_stroke_undo: None,
+            tile_tool: TileTool::Paint,
+            tile_rect_start: None,
+            scene_handle: None,
             mode: EditorMode::Edit,
             game_build_profile: GameBuildProfile::Debug,
             scene_path: String::new(),

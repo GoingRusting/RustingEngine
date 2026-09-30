@@ -13,6 +13,7 @@ pub mod debug_overlay;
 pub mod egui_painter;
 pub mod frame_pacer;
 pub mod frame_passes;
+mod post_effects;
 pub mod readback;
 pub mod scene_renderer;
 pub mod swapchain;

@@ -297,6 +297,27 @@ impl EditorTheme {
         Self::menu_item(ui, text, false, enabled)
     }
 
+    /// Menu action with its key binding drawn muted at the right edge,
+    /// like Blender and Godot menus.
+    pub fn menu_shortcut_action(
+        ui: &mut egui::Ui,
+        text: &str,
+        shortcut: Option<&str>,
+        enabled: bool,
+    ) -> egui::Response {
+        let response = Self::menu_item(ui, text, false, enabled);
+        if let Some(shortcut) = shortcut {
+            ui.painter().text(
+                response.rect.right_center() - egui::vec2(8.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                shortcut,
+                egui::TextStyle::Small.resolve(ui.style()),
+                Self::TEXT_MUTED,
+            );
+        }
+        response
+    }
+
     /// Full-width selectable value used inside styled dropdowns.
     pub fn menu_choice(
         ui: &mut egui::Ui,

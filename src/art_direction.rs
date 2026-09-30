@@ -177,7 +177,7 @@ pub fn preset_patch(
     });
     let mut set = |id: Uuid, path: &str, value: Value| {
         operations.push(PatchOperation::Set {
-            id,
+            id: id.into(),
             path: path.into(),
             value,
             expected: None,

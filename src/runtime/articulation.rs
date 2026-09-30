@@ -150,11 +150,12 @@ pub(super) fn build(
         trees: Vec::new(),
         of_body: vec![None; bodies.len()],
     };
-    let find = |entity: Entity| {
-        bodies
-            .binary_search_by_key(&entity, |body| body.entity)
-            .ok()
-    };
+    let index: std::collections::HashMap<Entity, usize> = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| (body.entity, index))
+        .collect();
+    let find = |entity: Entity| index.get(&entity).copied();
     let mut roots: Vec<_> = world
         .query::<(Entity, &Articulation)>()
         .iter(world)

@@ -1,0 +1,15 @@
+{
+ "name": "Aiming at the first drone and firing destroys it before it reaches the core",
+ "ticks": 200,
+ "steps": [
+  {"tick": 1, "pointer": [0.5, 0.85]},
+  {"tick": 100, "press": "fire"},
+  {"tick": 101, "release": "fire"},
+  {"tick": 102, "expect": {"entity": "Bolt 1", "path": "", "exists": true}},
+  {"tick": 110, "capture": "shots/firing.png"},
+  {"tick": 102, "within": 180, "expect": {"entity": "Kills Counter", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 190, "expect": {"entity": "Drone 1", "path": "", "exists": false}},
+  {"tick": 190, "expect": {"entity": "Bolt 1", "path": "", "exists": false}},
+  {"tick": 190, "expect": {"entity": "Core Counter", "path": "/components/rusting.counter/value", "equals": 5}}
+ ]
+}

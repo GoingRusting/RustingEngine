@@ -130,6 +130,26 @@ fn schedules_and_fixed_catch_up_are_deterministic() {
     assert_eq!(counts.extracted, 2);
 }
 
+#[test]
+fn fixed_steps_slower_than_real_time_fall_back_to_slow_motion() {
+    fn sluggish(_: ResMut<Counts>) {
+        std::thread::sleep(Duration::from_millis(3));
+    }
+    let mut app = EngineBuilder::new()
+        .fixed_delta(Duration::from_millis(1))
+        .max_fixed_steps(4)
+        .build()
+        .unwrap();
+    app.insert_resource(Counts::default())
+        .add_systems(ScheduleStage::FixedUpdate, sluggish);
+    // Each step takes 3 ms to simulate 1 ms, so catching up never ends.
+    let steps = (0..6)
+        .map(|_| app.update(Duration::from_millis(50)).unwrap().fixed_steps)
+        .collect::<Vec<_>>();
+    assert_eq!(steps[0], 4);
+    assert_eq!(steps[4..], [1, 1], "one step per frame: {steps:?}");
+}
+
 fn slow(_: ResMut<Counts>) {
     std::thread::sleep(Duration::from_millis(2));
 }
@@ -289,6 +309,18 @@ fn rendering_is_uncapped_by_default() {
     assert!(!settings.vsync);
     assert!(!settings.limit_fps);
     assert!(settings.max_fps > 0);
+}
+
+#[test]
+fn the_reflections_setting_reaches_the_render_world() {
+    let mut app = App::new();
+    app.add_plugin(RenderExtractPlugin).unwrap();
+    assert!(RenderSettings::default().reflections);
+    app.update(Duration::ZERO).unwrap();
+    assert!(!app.world().resource::<RenderWorld>().reflections_disabled);
+    app.world_mut().resource_mut::<RenderSettings>().reflections = false;
+    app.update(Duration::ZERO).unwrap();
+    assert!(app.world().resource::<RenderWorld>().reflections_disabled);
 }
 
 #[test]
@@ -763,6 +795,39 @@ fn condition_shaders_reach_the_render_world_with_registered_events() {
 }
 
 #[test]
+fn environment_maps_resolve_their_texture_and_reach_the_render_world() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.add_plugin(RenderExtractPlugin).unwrap();
+    let texture = app
+        .world_mut()
+        .resource_mut::<crate::assets::AssetServer>()
+        .textures
+        .insert_with_path(
+            "sky.png",
+            crate::assets::TextureAsset {
+                size: [1, 1],
+                rgba8: vec![255; 4],
+                color_space: crate::assets::TextureColorSpace::Srgb,
+                sampler: crate::assets::TextureSampler::default(),
+            },
+        )
+        .unwrap();
+    // An empty path loads nothing, so the second map is the one used.
+    app.spawn(EnvironmentMap::default());
+    app.spawn(EnvironmentMap {
+        texture: "sky.png".into(),
+        intensity: 2.0,
+        ..EnvironmentMap::default()
+    });
+    app.update(Duration::ZERO).unwrap();
+    assert_eq!(
+        app.world().resource::<RenderWorld>().environment,
+        Some((texture, 2.0))
+    );
+}
+
+#[test]
 fn clicking_a_rendered_cube_fires_a_click_event() {
     let mut app = App::new();
     app.add_plugin(crate::assets::AssetPlugin).unwrap();
@@ -1232,6 +1297,42 @@ fn cpu_bodies_sleep_when_still_and_wake_on_touch_or_edit() {
 }
 
 #[test]
+fn sleeping_cpu_bodies_fall_when_their_support_is_removed_or_moved() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let trapdoor = |world: &mut World, x| {
+        cpu_body(
+            world,
+            [x, -0.5, 0.0],
+            ColliderShape::Box {
+                half_extents: [1.0, 0.5, 1.0],
+            },
+            RigidBodyKind::Fixed,
+        )
+    };
+    let removed = trapdoor(world, -3.0);
+    let moved = trapdoor(world, 3.0);
+    let on_removed =
+        cpu_body(world, [-3.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    let on_moved =
+        cpu_body(world, [3.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    run_fixed_steps(&mut app, SLEEP_STEPS + 10);
+    assert!(app.world().get::<Sleeping>(on_removed).is_some());
+    assert!(app.world().get::<Sleeping>(on_moved).is_some());
+
+    app.world_mut().despawn(removed);
+    app.world_mut()
+        .get_mut::<Transform>(moved)
+        .unwrap()
+        .position[1] = -5.0;
+    run_fixed_steps(&mut app, 30);
+    for body in [on_removed, on_moved] {
+        let y = app.world().get::<Transform>(body).unwrap().position[1];
+        assert!(y < -0.5, "the box falls once its trapdoor goes: {y}");
+    }
+}
+
+#[test]
 fn fast_cpu_bodies_do_not_tunnel_through_thin_walls() {
     let mut app = App::new();
     let world = app.world_mut();
@@ -1256,6 +1357,44 @@ fn fast_cpu_bodies_do_not_tunnel_through_thin_walls() {
     run_fixed_steps(&mut app, 5);
     let z = app.world().get::<Transform>(bullet).unwrap().position[2];
     assert!(z > -5.0 && z < -4.8, "bullet stops at the wall: {z}");
+}
+
+#[test]
+fn a_fast_ball_between_two_dynamic_boxes_pushes_both_back() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    world.resource_mut::<PhysicsSettings>().gravity = [0.0; 3];
+    let half_extents = [0.3; 3];
+    // A 0.02 m seam: the ball's center ray passes between the boxes.
+    let boxes = [-0.31, 0.31].map(|x| {
+        cpu_body(
+            world,
+            [x, 0.0, -5.0],
+            ColliderShape::Box { half_extents },
+            RigidBodyKind::Dynamic,
+        )
+    });
+    let ball = cpu_body(
+        world,
+        [0.0; 3],
+        ColliderShape::Sphere { radius: 0.2 },
+        RigidBodyKind::Dynamic,
+    );
+    // 22 m/s moves 0.37 m per step, farther than the ball's radius.
+    world.get_mut::<RigidBody>(ball).unwrap().linear_velocity =
+        [0.0, 0.0, -22.0];
+    run_fixed_steps(&mut app, 30);
+    let z = |entity| app.world().get::<Transform>(entity).unwrap().position[2];
+    for block in boxes {
+        assert!(
+            z(block) < -5.3,
+            "the ball pushes each box back: {}",
+            z(block)
+        );
+    }
+    // Unhindered, the ball would reach z = -11; the boxes took its momentum.
+    let ball_z = z(ball);
+    assert!(ball_z > -8.0, "the ball hands its momentum over: {ball_z}");
 }
 
 #[test]
@@ -1826,6 +1965,38 @@ fn third_person_camera_orbits_behind_the_body() {
 }
 
 #[test]
+fn third_person_camera_stops_in_front_of_a_wall_behind_the_body() {
+    let mut app = App::new();
+    // A wall 2 m behind the body; its near face is at z = 1.5.
+    cpu_body(
+        app.world_mut(),
+        [0.0, 1.0, 2.0],
+        ColliderShape::Box {
+            half_extents: [5.0, 3.0, 0.5],
+        },
+        RigidBodyKind::Fixed,
+    );
+    // The player's own capsule must not block its camera.
+    let player = cpu_body(
+        app.world_mut(),
+        [0.0, 1.0, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    app.world_mut().entity_mut(player).insert(PlayerController {
+        camera_distance: 4.0,
+        camera_height: 0.5,
+        ..PlayerController::default()
+    });
+    let camera = app.spawn((Transform::default(), Camera::default()));
+    app.set_parent(camera, player).unwrap();
+    run_fixed_steps(&mut app, 1);
+    app.update(Duration::ZERO).unwrap();
+    let z = app.world().get::<Transform>(camera).unwrap().position[2];
+    assert!(z > 1.0 && z < 1.31, "{z}");
+}
+
+#[test]
 fn player_controller_settings_round_trip_through_scene_registry() {
     let mut app = App::new();
     let player = app.spawn((
@@ -2115,6 +2286,93 @@ fn hud_draws_scene_text_and_reports_button_clicks() {
     assert_eq!(pressed, vec![HudButtonPressed { entity: button }]);
 }
 
+#[cfg(feature = "ui")]
+#[test]
+fn hidden_hud_elements_are_not_drawn() {
+    let mut app = App::new();
+    let parent = app.spawn(Visibility { visible: false });
+    let text = app.spawn(HudElement {
+        text: "Out of balls".into(),
+        ..HudElement::default()
+    });
+    app.set_parent(text, parent).unwrap();
+    let shapes = |app: &mut App| {
+        // egui sizes new areas invisibly on their first frame.
+        for _ in 0..2 {
+            app.world_mut()
+                .resource_mut::<RuntimeUi>()
+                .set_input(egui::RawInput::default());
+            app.update(Duration::from_millis(16)).unwrap();
+        }
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .take_output()
+            .unwrap()
+            .shapes
+            .len()
+    };
+    assert_eq!(shapes(&mut app), 0);
+    app.world_mut()
+        .get_mut::<Visibility>(parent)
+        .unwrap()
+        .visible = true;
+    assert!(shapes(&mut app) > 0);
+}
+
+#[test]
+fn tile_map_cells_are_found_by_position_and_painted_with_padding() {
+    let mut map = TileMap {
+        tile_size: 0.5,
+        rows: vec!["#".into()],
+        ..TileMap::default()
+    };
+    assert_eq!(map.cell_at([0.1, -0.1]), Some((0, 0)));
+    assert_eq!(map.cell_at([1.2, -0.6]), Some((2, 1)));
+    assert_eq!(map.cell_at([-0.1, -0.1]), None);
+    assert_eq!(map.cell_at([0.1, 0.1]), None);
+    assert!(map.set_cell(2, 1, '#'));
+    assert_eq!(map.rows, vec!["#", "..#"]);
+    assert!(!map.set_cell(2, 1, '#'));
+    // Erasing outside the grid changes nothing.
+    assert!(!map.set_cell(5, 4, '.'));
+    assert_eq!(map.rows, vec!["#", "..#"]);
+    assert!(map.set_cell(0, 0, '.'));
+    assert_eq!(map.rows[0], ".");
+}
+
+#[test]
+fn tile_map_rectangles_and_flood_fills_paint_regions() {
+    let mut map = TileMap {
+        rows: vec!["#.#".into(), "#..".into(), "###".into()],
+        ..TileMap::default()
+    };
+    // The open cells join through (1, 1); the fill stops at the walls.
+    assert!(map.fill(1, 0, 'o'));
+    assert_eq!(map.rows, vec!["#o#", "#oo", "###"]);
+    assert!(!map.fill(1, 0, 'o'));
+    // Filling a wall repaints the joined wall cells only; the top right
+    // one touches them by a corner, not an edge.
+    assert!(map.fill(0, 0, 'x'));
+    assert_eq!(map.rows, vec!["xo#", "xoo", "xxx"]);
+    assert!(map.fill_rect((2, 3), (1, 2), '#'));
+    assert_eq!(map.rows, vec!["xo#", "xoo", "x##", ".##"]);
+    assert!(!map.fill_rect((1, 2), (2, 3), '#'));
+    // A fill outside the used area does nothing rather than grow the grid.
+    assert!(!map.fill(5, 1, 'x'));
+    assert_eq!(map.rows.len(), 4);
+    // A line is one cell per step along its longer side.
+    assert_eq!(
+        TileMap::line_cells((0, 0), (3, 1)),
+        [(0, 0), (1, 0), (2, 1), (3, 1)]
+    );
+    assert_eq!(
+        TileMap::line_cells((2, 2), (2, 0)),
+        [(2, 2), (2, 1), (2, 0)]
+    );
+    assert!(map.fill_line((0, 3), (2, 3), 'o'));
+    assert_eq!(map.rows[3], "ooo");
+}
+
 #[test]
 fn tile_maps_spawn_merged_colliders_and_rebuild_or_clean_up() {
     let mut app = App::new();
@@ -2223,6 +2481,55 @@ fn platformer_runs_jumps_and_lands_on_tiles() {
     let (back, end) = state(&app);
     assert!(back.grounded);
     assert!((end[1] - 0.5).abs() < 0.02, "{end:?}");
+}
+
+#[test]
+fn controllers_ride_moving_platforms_and_stop_at_ceilings() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let platform = cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [2.0, 0.5, 2.0],
+        },
+        RigidBodyKind::Kinematic,
+    );
+    world.entity_mut(platform).insert(Tween {
+        from: [0.0, -0.5, 0.0],
+        to: [3.0, -0.5, 0.0],
+        duration: 1.0,
+        // Both bodies land before the platform starts.
+        delay: 0.5,
+        easing: Easing::Linear,
+        repeat: TweenRepeat::Once,
+        ..Tween::default()
+    });
+    let runner = world
+        .spawn((
+            Transform::new([0.0, 0.6, 0.0]),
+            PlatformerController::default(),
+        ))
+        .id();
+    let walker = world
+        .spawn((Transform::new([0.0, 1.0, 1.0]), PlayerController::default()))
+        .id();
+    run_fixed_steps(&mut app, 120);
+    for body in [runner, walker] {
+        let x = app.world().get::<Transform>(body).unwrap().position[0];
+        assert!((x - 3.0).abs() < 0.01, "rode to {x}");
+    }
+
+    // A jump into a low ceiling stops rising instead of sticking to it.
+    let world = app.world_mut();
+    cpu_body(world, [3.0, 1.6, 0.0], UNIT_BOX, RigidBodyKind::Fixed);
+    world
+        .get_mut::<PlatformerController>(runner)
+        .unwrap()
+        .vertical_speed = 8.0;
+    run_fixed_steps(&mut app, 3);
+    let runner = *app.world().get::<PlatformerController>(runner).unwrap();
+    assert!(runner.vertical_speed < 0.0, "{runner:?}");
 }
 
 #[test]
@@ -3387,4 +3694,493 @@ fn floating_articulations_land_rest_and_round_trip_through_scenes() {
         .unwrap();
     let mut query = loaded.world_mut().query::<&Articulation>();
     assert_eq!(query.iter(loaded.world()).count(), 1);
+}
+
+#[test]
+fn atmosphere_settings_come_from_the_lowest_entity() {
+    let mut app = App::new();
+    app.add_plugin(RenderExtractPlugin).unwrap();
+    app.update(Duration::ZERO).unwrap();
+    let render_world = app.world().resource::<RenderWorld>();
+    assert_eq!(render_world.fog, None);
+    assert_eq!(render_world.bloom, None);
+    assert_eq!(render_world.ambient_occlusion, None);
+    let fog = Fog {
+        density: 0.2,
+        ..Fog::default()
+    };
+    app.spawn(fog);
+    app.spawn(Fog::default());
+    app.spawn(Bloom::default());
+    app.spawn(AmbientOcclusion::default());
+    app.update(Duration::ZERO).unwrap();
+    let render_world = app.world().resource::<RenderWorld>();
+    assert_eq!(render_world.fog, Some(fog));
+    assert_eq!(render_world.bloom, Some(Bloom::default()));
+    assert_eq!(
+        render_world.ambient_occlusion,
+        Some(AmbientOcclusion::default())
+    );
+}
+
+#[test]
+fn removing_an_unregistered_component_drops_its_kept_json() {
+    let mut world = bevy_ecs::world::World::new();
+    world.insert_resource(SceneComponentRegistry::default());
+    let entity = world
+        .spawn(UnregisteredComponents(
+            [("game.spin".to_owned(), "{\"speed\":2}".to_owned())].into(),
+        ))
+        .id();
+
+    remove_registered_component(&mut world, entity, "game.spin").unwrap();
+
+    assert!(world
+        .get::<UnregisteredComponents>(entity)
+        .unwrap()
+        .0
+        .is_empty());
+    assert!(
+        remove_registered_component(&mut world, entity, "game.spin").is_err()
+    );
+}
+
+#[test]
+fn players_step_onto_low_ledges_but_not_high_ones_and_can_leave_crates_alone() {
+    // Walks the player toward -Z into a box of `height` for two seconds and
+    // returns where it ended and where a dynamic crate beside it ended.
+    let walk = |height: f32, player: PlayerController| {
+        let mut app = App::new();
+        let world = app.world_mut();
+        cpu_body(
+            world,
+            [0.0, -0.5, 0.0],
+            ColliderShape::Box {
+                half_extents: [10.0, 0.5, 10.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        cpu_body(
+            world,
+            [0.0, height / 2.0, -7.0],
+            ColliderShape::Box {
+                half_extents: [2.0, height / 2.0, 5.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        let crate_ = cpu_body(
+            world,
+            [0.5, 0.25, 0.0],
+            ColliderShape::Box {
+                half_extents: [0.25; 3],
+            },
+            RigidBodyKind::Dynamic,
+        );
+        let body = cpu_body(
+            world,
+            [0.0, 0.91, 0.0],
+            DEFAULT_PLAYER_SHAPE,
+            RigidBodyKind::Kinematic,
+        );
+        world.entity_mut(body).insert(player);
+        run_fixed_steps(&mut app, 30);
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_key(KeyCode::KeyW, true);
+        run_fixed_steps(&mut app, 120);
+        let at =
+            |entity| app.world().get::<Transform>(entity).unwrap().position;
+        (at(body), at(crate_))
+    };
+    let (on_low, _) = walk(0.25, PlayerController::default());
+    assert!(on_low[2] < -2.5 && on_low[1] > 1.1, "{on_low:?}");
+    let (at_high, _) = walk(0.5, PlayerController::default());
+    assert!(at_high[2] > -2.0 && at_high[1] < 0.95, "{at_high:?}");
+    let flat = PlayerController {
+        max_step_height: 0.0,
+        ..PlayerController::default()
+    };
+    let (at_low, _) = walk(0.25, flat);
+    assert!(at_low[2] > -2.0 && at_low[1] < 0.95, "{at_low:?}");
+
+    // The crate starts overlapping the player, which walks into it (+X).
+    let into_crate = |push_bodies| PlayerController {
+        yaw: -std::f32::consts::FRAC_PI_2,
+        push_bodies,
+        ..PlayerController::default()
+    };
+    let (_, crate_pushed) = walk(0.25, into_crate(true));
+    let (player, crate_kept) = walk(0.25, into_crate(false));
+    assert!(crate_pushed[0] > 0.53, "{crate_pushed:?}");
+    assert!((crate_kept[0] - 0.5).abs() < 1e-3, "{crate_kept:?}");
+    assert!(player[0] < 0.1, "{player:?}");
+}
+
+#[test]
+fn a_crate_dropped_on_a_player_that_pushes_nothing_rests_on_it() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [10.0, 0.5, 10.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let body = cpu_body(
+        world,
+        [0.0, 0.91, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    world.entity_mut(body).insert(PlayerController {
+        push_bodies: false,
+        ..PlayerController::default()
+    });
+    let crate_ = cpu_body(
+        world,
+        [0.0, 3.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.25; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    run_fixed_steps(&mut app, 120);
+    let y = |entity| app.world().get::<Transform>(entity).unwrap().position[1];
+    assert!(y(crate_) > 1.8, "crate sank to {}", y(crate_));
+    assert!((y(body) - 0.91).abs() < 0.05, "player moved to {}", y(body));
+}
+
+#[test]
+fn fluid_volumes_step_with_the_fixed_tick() {
+    let mut app = App::new();
+    let settings = FluidSettings {
+        bounds: ([-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]),
+        ..FluidSettings::default()
+    };
+    let fluid = Fluid::block([-0.2, 1.0, -0.2], [4, 4, 4], settings.spacing);
+    let start = fluid.positions.clone();
+    let entity = app
+        .world_mut()
+        .spawn(FluidVolume::new(settings, fluid))
+        .id();
+    run_fixed_steps(&mut app, 30);
+    let volume = app.world().get::<FluidVolume>(entity).unwrap();
+    assert_eq!(volume.fluid.positions.len(), start.len());
+    let mean = |points: &[[f32; 3]]| {
+        points.iter().map(|p| p[1]).sum::<f32>() / points.len() as f32
+    };
+    assert!(mean(&volume.fluid.positions) < mean(&start) - 0.3);
+}
+
+#[test]
+fn fluid_volumes_with_a_visual_own_one_entity_per_particle() {
+    use crate::assets::PrimitiveShape;
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let (mesh, material) = {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        (
+            assets.builtin_primitives[&PrimitiveShape::Sphere],
+            assets.fallback_material,
+        )
+    };
+    let settings = FluidSettings::default();
+    let fluid = Fluid::block([0.0, 1.0, 0.0], [2, 2, 2], settings.spacing);
+    let mut volume = FluidVolume::new(settings, fluid);
+    volume.visual = Some(MeshRenderer {
+        mesh,
+        material,
+        cast_shadows: false,
+        receive_shadows: false,
+    });
+    let entity = app.world_mut().spawn(volume).id();
+    run_fixed_steps(&mut app, 3);
+    let world = app.world_mut();
+    let count = |world: &mut bevy_ecs::world::World| {
+        world.query::<&MeshRenderer>().iter(world).count()
+    };
+    assert_eq!(count(world), 8);
+    assert_eq!(
+        world
+            .query::<&crate::runtime::FluidParticle>()
+            .iter(world)
+            .count(),
+        8
+    );
+    world.get_mut::<FluidVolume>(entity).unwrap().visual = None;
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(count(app.world_mut()), 0);
+}
+
+fn fluid_visual_app() -> (App, bevy_ecs::entity::Entity) {
+    use crate::assets::PrimitiveShape;
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let (mesh, material) = {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        (
+            assets.builtin_primitives[&PrimitiveShape::Sphere],
+            assets.fallback_material,
+        )
+    };
+    let settings = FluidSettings::default();
+    let fluid = Fluid::block([0.0, 1.0, 0.0], [2, 2, 2], settings.spacing);
+    let mut volume = FluidVolume::new(settings, fluid);
+    volume.visual = Some(MeshRenderer {
+        mesh,
+        material,
+        cast_shadows: false,
+        receive_shadows: false,
+    });
+    let entity = app.world_mut().spawn(volume).id();
+    (app, entity)
+}
+
+fn fluid_particle_count(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world
+        .query::<&crate::runtime::FluidParticle>()
+        .iter(world)
+        .count()
+}
+
+#[test]
+fn despawning_a_fluid_volume_removes_its_particle_entities() {
+    let (mut app, volume) = fluid_visual_app();
+    run_fixed_steps(&mut app, 3);
+    assert_eq!(fluid_particle_count(&mut app), 8);
+    app.world_mut().despawn(volume);
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(fluid_particle_count(&mut app), 0);
+}
+
+#[test]
+fn a_copied_fluid_volume_gets_its_own_particle_entities() {
+    let (mut app, volume) = fluid_visual_app();
+    run_fixed_steps(&mut app, 3);
+    let copy = app.world().get::<FluidVolume>(volume).unwrap().clone();
+    let copy = app.world_mut().spawn(copy).id();
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(fluid_particle_count(&mut app), 16);
+    let original = app.world().get::<FluidVolume>(volume).unwrap();
+    let copied = app.world().get::<FluidVolume>(copy).unwrap();
+    assert!(original
+        .particles
+        .iter()
+        .all(|p| !copied.particles.contains(p)));
+}
+
+#[test]
+fn fluids_snapshot_and_restore_to_the_same_future() {
+    let (mut original, volume) = fluid_visual_app();
+    run_fixed_steps(&mut original, 3);
+    let snapshot = original.snapshot().unwrap();
+    run_fixed_steps(&mut original, 5);
+    let (mut restored, _) = fluid_visual_app();
+    restored.restore(&snapshot).unwrap();
+    run_fixed_steps(&mut restored, 5);
+    let hash = |app: &App, entity| {
+        app.world()
+            .get::<FluidVolume>(entity)
+            .unwrap()
+            .fluid
+            .state_hash()
+    };
+    assert_eq!(hash(&restored, volume), hash(&original, volume));
+    assert_eq!(fluid_particle_count(&mut restored), 8);
+}
+
+#[test]
+fn a_light_ball_floats_in_a_fluid_and_a_heavy_one_sinks() {
+    let rest_height = |mass: f32| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        let settings = FluidSettings {
+            bounds: ([-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]),
+            ..FluidSettings::default()
+        };
+        let fluid =
+            Fluid::block([-0.4, 0.0, -0.4], [9, 5, 9], settings.spacing);
+        app.world_mut().spawn(FluidVolume::new(settings, fluid));
+        let ball = cpu_body(
+            app.world_mut(),
+            [0.0, 0.6, 0.0],
+            ColliderShape::Sphere { radius: 0.15 },
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().get_mut::<RigidBody>(ball).unwrap().mass = mass;
+        run_fixed_steps(&mut app, 240);
+        app.world().get::<Transform>(ball).unwrap().position[1]
+    };
+    let light = rest_height(7.0);
+    let heavy = rest_height(50.0);
+    assert!(heavy < 0.3, "heavy ball rests at {heavy}");
+    assert!(light > heavy + 0.05, "light {light} vs heavy {heavy}");
+}
+
+#[test]
+fn a_light_box_floats_in_a_fluid_and_a_heavy_one_sinks() {
+    let rest_height = |mass: f32| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        let settings = FluidSettings {
+            bounds: ([-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]),
+            ..FluidSettings::default()
+        };
+        let fluid =
+            Fluid::block([-0.4, 0.0, -0.4], [9, 5, 9], settings.spacing);
+        app.world_mut().spawn(FluidVolume::new(settings, fluid));
+        let body = cpu_body(
+            app.world_mut(),
+            [0.0, 0.6, 0.0],
+            ColliderShape::Box {
+                half_extents: [0.12; 3],
+            },
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().get_mut::<RigidBody>(body).unwrap().mass = mass;
+        run_fixed_steps(&mut app, 240);
+        let y = app.world().get::<Transform>(body).unwrap().position[1];
+        assert!(y.is_finite());
+        y
+    };
+    let light = rest_height(5.0);
+    let heavy = rest_height(100.0);
+    assert!(heavy < 0.3, "heavy box rests at {heavy}");
+    assert!(light > heavy + 0.05, "light {light} vs heavy {heavy}");
+}
+
+#[test]
+fn a_light_capsule_floats_in_a_fluid_and_a_heavy_one_sinks() {
+    let rest_height = |mass: f32| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        let settings = FluidSettings {
+            bounds: ([-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]),
+            ..FluidSettings::default()
+        };
+        let fluid =
+            Fluid::block([-0.4, 0.0, -0.4], [9, 5, 9], settings.spacing);
+        app.world_mut().spawn(FluidVolume::new(settings, fluid));
+        let body = cpu_body(
+            app.world_mut(),
+            [0.0, 0.6, 0.0],
+            ColliderShape::Capsule {
+                half_height: 0.1,
+                radius: 0.12,
+            },
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().get_mut::<RigidBody>(body).unwrap().mass = mass;
+        run_fixed_steps(&mut app, 240);
+        let y = app.world().get::<Transform>(body).unwrap().position[1];
+        assert!(y.is_finite());
+        y
+    };
+    let light = rest_height(5.0);
+    let heavy = rest_height(100.0);
+    assert!(heavy < 0.3, "heavy capsule rests at {heavy}");
+    assert!(light > heavy + 0.05, "light {light} vs heavy {heavy}");
+}
+
+#[test]
+fn fluid_blocks_round_trip_through_scenes_and_become_volumes() {
+    let block = FluidBlock {
+        count_x: 3,
+        count_y: 2,
+        count_z: 4,
+        viscosity: 0.2,
+        visible: false,
+        ..FluidBlock::default()
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let entity = app.spawn((Transform::new([1.0, 2.0, 3.0]), block));
+    let document = scene_document(app.world_mut(), "fluid").unwrap();
+    let mut loaded = App::new();
+    loaded.add_plugin(crate::assets::AssetPlugin).unwrap();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut query = loaded.world_mut().query::<&FluidBlock>();
+    assert_eq!(query.single(loaded.world()).unwrap(), &block);
+    run_fixed_steps(&mut loaded, 2);
+    let mut query = loaded.world_mut().query::<&FluidVolume>();
+    let volume = query.single(loaded.world()).unwrap();
+    assert_eq!(volume.fluid.positions.len(), 24);
+    assert_eq!(volume.settings.bounds.0[1], 1.5);
+    let _ = entity;
+}
+
+#[test]
+fn a_fluid_surface_is_one_entity_whose_mesh_follows_the_particles() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let material = app
+        .world()
+        .resource::<crate::assets::AssetServer>()
+        .fallback_material;
+    let settings = FluidSettings::default();
+    let fluid = Fluid::block([0.0, 1.0, 0.0], [3, 3, 3], settings.spacing);
+    let mut volume = FluidVolume::new(settings, fluid);
+    volume.surface = Some(crate::runtime::FluidSurface::new(material));
+    app.world_mut().spawn(volume);
+    run_fixed_steps(&mut app, 1);
+    let world = app.world_mut();
+    let handles: Vec<_> = world
+        .query::<&MeshRenderer>()
+        .iter(world)
+        .map(|renderer| renderer.mesh)
+        .collect();
+    assert_eq!(
+        handles.len(),
+        1,
+        "one surface entity, no sphere per particle"
+    );
+    let assets = world.resource::<crate::assets::AssetServer>();
+    let before = assets.meshes.get(handles[0]).unwrap().clone();
+    assert!(before.vertices.len() > 100);
+    run_fixed_steps(&mut app, 20);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&MeshRenderer>().iter(world).count(), 1);
+    let after = world
+        .resource::<crate::assets::AssetServer>()
+        .meshes
+        .get(handles[0])
+        .unwrap();
+    assert_ne!(*after, before, "the surface moves with the fluid");
+}
+
+#[test]
+fn a_water_body_draws_one_surface_floats_a_light_ball_and_carries_it() {
+    use crate::runtime::WaterBody;
+    let end = |mass: f32| {
+        let mut app = App::new();
+        app.add_plugin(crate::assets::AssetPlugin).unwrap();
+        app.world_mut().spawn((
+            Transform::new([0.0, 0.0, 0.0]),
+            WaterBody {
+                wave_height: 0.0,
+                flow_speed: 2.0,
+                ..WaterBody::default()
+            },
+        ));
+        let ball = cpu_body(
+            app.world_mut(),
+            [0.0, 0.0, 0.0],
+            ColliderShape::Sphere { radius: 0.15 },
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().get_mut::<RigidBody>(ball).unwrap().mass = mass;
+        run_fixed_steps(&mut app, 240);
+        let world = app.world_mut();
+        assert_eq!(world.query::<&MeshRenderer>().iter(world).count(), 1);
+        world.get::<Transform>(ball).unwrap().position
+    };
+    let light = end(7.0);
+    let heavy = end(50.0);
+    assert!(light[1] > -0.1, "light ball floats: {light:?}");
+    assert!(heavy[1] < -1.0, "heavy ball sinks: {heavy:?}");
+    assert!(light[0] > 0.5, "the current carries the ball: {light:?}");
 }

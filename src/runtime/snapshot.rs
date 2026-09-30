@@ -426,6 +426,11 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<BurstEmitter>();
     types.register::<BurstParticle>();
     types.register::<Camera>();
+    types.register::<FluidBlock>();
+    types.register::<super::WaterBody>();
+    types.register::<super::WaterMesh>();
+    types.register::<super::FluidParticle>();
+    types.register::<super::FluidVolume>();
     types.register::<Children>();
     types.register::<Collider>();
     types.register::<CollisionLayers>();
@@ -451,9 +456,15 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<RenderBounds>();
     types.register::<RigidBody>();
     types.register::<SceneBackground>();
+    types.register::<super::EnvironmentMap>();
+    types.register::<super::ReflectionProbe>();
+    types.register::<super::Fog>();
+    types.register::<super::Bloom>();
+    types.register::<super::AmbientOcclusion>();
     types.register::<SceneId>();
     types.register::<SkyLight>();
     types.register::<Sleeping>();
+    types.register::<super::SpawnOrder>();
     types.register::<SoundCue>();
     types.register::<SpotLight>();
     types.register::<TileMap>();
@@ -485,6 +496,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<PhysicsBackendStatus>();
     types.register::<PhysicsIdRegistry>();
     types.register::<PhysicsSettings>();
+    types.register::<super::NextSpawnOrder>();
     types.register::<PhysicsWorld>();
     types.register::<rusting_core::hierarchy::PropagationFingerprint>();
     types.register::<RandomSeed>();

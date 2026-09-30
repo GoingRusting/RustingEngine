@@ -1,6 +1,7 @@
 //! Inspector panel: the selected object's components drawn as Godot-style
 //! sections of property rows.
 
+mod add_component;
 pub(super) mod data_asset;
 pub(super) mod placement;
 mod reflected;
@@ -15,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::gui_elements::EditorTheme;
-use super::{AssetRequest, EditorState};
+use super::{AssetRequest, EditorState, TileTool};
 use crate::assets::{
     AlphaMode, AssetServer, Handle, MaterialAsset, MaterialModel, TextureAsset,
 };
@@ -24,8 +25,8 @@ use crate::runtime::{
     DirectionalLight, FrameTime, GpuStateMirror, MeshRenderer, Name,
     ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
     PhysicsSyncMode, PointLight, Projection, RenderBounds, RigidBody,
-    RigidBodyKind, SimulationClass, SpotLight, AUTO_SIMULATION_COMPONENT,
-    PHYSICS_SYNC_COMPONENT,
+    RigidBodyKind, SimulationClass, SpotLight, UnregisteredComponents,
+    AUTO_SIMULATION_COMPONENT, PHYSICS_SYNC_COMPONENT,
 };
 use crate::Transform;
 
@@ -217,6 +218,42 @@ pub(super) fn draw_inspector_area(
                     widgets::vec3(ui, "Scale", &mut transform.scale, 0.01);
                 });
             }
+            if let Some(map) = world.get::<crate::runtime::TileMap>(entity) {
+                widgets::section(ui, "Tile Painter", false, |ui| {
+                    widgets::property_row(ui, "Brush", |ui| {
+                        tile_palette(ui, map, &mut state.tile_brush);
+                    });
+                    widgets::choice(
+                        ui,
+                        "Tool",
+                        &mut state.tile_tool,
+                        &[
+                            (TileTool::Paint, "Paint"),
+                            (TileTool::Rectangle, "Rectangle"),
+                            (TileTool::Line, "Line"),
+                            (TileTool::Fill, "Fill"),
+                        ],
+                    );
+                    ui.colored_label(
+                        EditorTheme::TEXT_MUTED,
+                        match state.tile_tool {
+                            TileTool::Paint => {
+                                "Click or drag in the Scene View to paint."
+                            }
+                            TileTool::Rectangle => {
+                                "Drag in the Scene View to fill a rectangle."
+                            }
+                            TileTool::Line => {
+                                "Drag in the Scene View to paint a line."
+                            }
+                            TileTool::Fill => {
+                                "Click in the Scene View to fill the joined \
+                                 matching tiles."
+                            }
+                        },
+                    );
+                });
+            }
             if let Some(renderer) = world.get::<MeshRenderer>(entity) {
                 widgets::section(ui, "Mesh Renderer", false, |ui| {
                     if let Some(assets) = world.get_resource::<AssetServer>() {
@@ -225,7 +262,16 @@ pub(super) fn draw_inspector_area(
                                 "Cube (built-in)".to_owned()
                             } else {
                                 assets.meshes.path(handle).map_or_else(
-                                    || format!("Mesh #{:016x}", handle.key()),
+                                    || {
+                                        let number =
+                                            scene_assignable_meshes(assets)
+                                                .iter()
+                                                .position(|other| {
+                                                    *other == handle
+                                                })
+                                                .map_or(0, |index| index + 1);
+                                        format!("Mesh {number}")
+                                    },
                                     |path| {
                                         path.file_name()
                                             .unwrap_or(path.as_os_str())
@@ -261,23 +307,21 @@ pub(super) fn draw_inspector_area(
                         });
                         let material_label = |handle| {
                             if handle == assets.fallback_material {
-                                "Default (built-in)".to_owned()
-                            } else {
-                                assets.materials.path(handle).map_or_else(
-                                    || {
-                                        format!(
-                                            "Material #{:016x}",
-                                            handle.key()
-                                        )
-                                    },
-                                    |path| {
-                                        path.file_name()
-                                            .unwrap_or(path.as_os_str())
-                                            .to_string_lossy()
-                                            .into_owned()
-                                    },
-                                )
+                                return "Default (built-in)".to_owned();
                             }
+                            let name = assets
+                                .materials
+                                .get(handle)
+                                .map(|material| material.name.as_str())
+                                .filter(|name| !name.is_empty());
+                            name.map(str::to_owned).unwrap_or_else(|| {
+                                let number = assets
+                                    .materials
+                                    .iter()
+                                    .position(|(other, _)| other == handle)
+                                    .map_or(0, |index| index + 1);
+                                format!("Material {number}")
+                            })
                         };
                         widgets::property_row(ui, "Material", |ui| {
                             egui::ComboBox::from_id_salt(
@@ -439,6 +483,39 @@ pub(super) fn draw_inspector_area(
                 }
             }
 
+            // The game's code registers these, and this editor build does not
+            // know them. They save back unchanged; editing waits for a way to
+            // validate the JSON against the game.
+            for (name, serialized) in world
+                .get::<UnregisteredComponents>(entity)
+                .map(|kept| kept.0.iter())
+                .into_iter()
+                .flatten()
+            {
+                let label = placement::component_label(name);
+                let removed = widgets::section(ui, &label, true, |ui| {
+                    ui.colored_label(
+                        EditorTheme::TEXT_MUTED,
+                        "Not registered in this editor. Saved unchanged.",
+                    );
+                    let pretty =
+                        serde_json::from_str::<serde_json::Value>(serialized)
+                            .and_then(|value| {
+                                serde_json::to_string_pretty(&value)
+                            })
+                            .unwrap_or_else(|_| serialized.clone());
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(pretty).monospace(),
+                    ));
+                });
+                if removed {
+                    component_edits.push(ComponentEdit::Remove {
+                        entity,
+                        name: name.clone(),
+                    });
+                }
+            }
+
             ui.add_space(6.0);
             let present = custom_values
                 .iter()
@@ -464,34 +541,26 @@ pub(super) fn draw_inspector_area(
                 })
                 .collect::<Vec<_>>();
             addable.sort_by(|a, b| a.0.cmp(&b.0));
-            ui.menu_button("Add Component", |ui| {
-                ui.set_min_width(200.0);
-                if edited_physics.is_none()
-                    && EditorTheme::menu_action(ui, "Physics", true).clicked()
-                {
+            let entries = addable
+                .into_iter()
+                .map(|(label, name, blocked)| add_component::Entry {
+                    label,
+                    name: name.clone(),
+                    blocked,
+                })
+                .collect::<Vec<_>>();
+            match add_component::draw(ui, &entries, edited_physics.is_none()) {
+                Some(add_component::Pick::Physics) => {
                     *add_physics = true;
                     *edited_physics = Some(PhysicsBody::default());
                     *edited_rigid_body = Some(RigidBody::default());
                     *edited_collider = Some(Collider::default());
-                    ui.close_menu();
                 }
-                if !addable.is_empty() {
-                    EditorTheme::menu_section(ui, "GAME COMPONENTS");
+                Some(add_component::Pick::Component(name)) => {
+                    component_edits.push(ComponentEdit::Add { entity, name });
                 }
-                for (label, name, blocked) in addable {
-                    let response =
-                        EditorTheme::menu_action(ui, &label, blocked.is_none());
-                    if let Some(reason) = blocked {
-                        response.on_disabled_hover_text(reason);
-                    } else if response.on_hover_text(name.as_str()).clicked() {
-                        component_edits.push(ComponentEdit::Add {
-                            entity,
-                            name: name.clone(),
-                        });
-                        ui.close_menu();
-                    }
-                }
-            });
+                None => {}
+            }
         });
 }
 
@@ -846,6 +915,7 @@ fn draw_material(
             *asset_request = Some(AssetRequest::NewMaterial);
         }
     });
+    widgets::text(ui, "Name", &mut material.name);
     widgets::choice(ui, "Model", &mut material.model, &MATERIAL_MODELS);
     let mut alpha = match material.alpha_mode {
         AlphaMode::Opaque => 0,
@@ -876,11 +946,17 @@ fn draw_material(
     if widgets::color(ui, "Base Color", &mut rgb) {
         [*r, *g, *b] = rgb;
     }
-    widgets::drag(
+    // An opaque surface ignores alpha, so lowering opacity there would do
+    // nothing; it switches the material to Blend instead.
+    if widgets::drag(
         ui,
         "Opacity",
         DragValue::new(a).range(0.0..=1.0).speed(0.01),
-    );
+    ) && *a < 1.0
+        && material.alpha_mode == AlphaMode::Opaque
+    {
+        material.alpha_mode = AlphaMode::Blend;
+    }
     widgets::drag(
         ui,
         "Metallic",
@@ -896,6 +972,29 @@ fn draw_material(
             .speed(0.01),
     );
     widgets::color(ui, "Emissive", &mut material.emissive);
+    widgets::drag(
+        ui,
+        "Transmission",
+        DragValue::new(&mut material.transmission)
+            .range(0.0..=1.0)
+            .speed(0.01),
+    );
+    if material.transmission > 0.0 {
+        widgets::drag(
+            ui,
+            "IOR",
+            DragValue::new(&mut material.ior)
+                .range(1.0..=3.0)
+                .speed(0.01),
+        );
+        widgets::drag(
+            ui,
+            "Thickness",
+            DragValue::new(&mut material.thickness)
+                .range(0.0..=f32::MAX)
+                .speed(0.01),
+        );
+    }
 
     let Some(assets) = world.get_resource::<AssetServer>() else {
         return;
@@ -977,6 +1076,16 @@ fn edit_render_bounds(
     );
     if kind != current {
         *bounds = bounds_for_kind(kind, mesh_box);
+    }
+    if bounds.is_some() && mesh_box.is_some() {
+        let fit = widgets::property_row(ui, "", |ui| {
+            ui.small_button("Fit to Mesh")
+                .on_hover_text("Wrap the volume around the mesh")
+                .clicked()
+        });
+        if fit {
+            *bounds = bounds_for_kind(kind, mesh_box);
+        }
     }
     match bounds {
         None => {}
@@ -1073,9 +1182,159 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
     widgets::checkbox(ui, "Trigger", &mut collider.sensor);
 }
 
+/// One swatch per tile in its color with its character on top, then Erase
+/// and Off. Returns true when the brush changed.
+// ponytail: a textured tile shows its color only; its path is in the
+// tooltip. Draw texture thumbnails once the palette needs them.
+fn tile_palette(
+    ui: &mut egui::Ui,
+    map: &crate::runtime::TileMap,
+    brush: &mut Option<char>,
+) -> bool {
+    let before = *brush;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+        let tiles = map.tiles.iter().filter_map(|(key, kind)| {
+            let character = key.chars().next()?;
+            let fill: egui::Color32 = egui::Rgba::from_rgba_unmultiplied(
+                kind.color[0],
+                kind.color[1],
+                kind.color[2],
+                1.0,
+            )
+            .into();
+            let mut tip = format!("Paint '{character}'");
+            if let Some(texture) = &kind.texture {
+                tip.push_str(&format!("\n{}", texture.display()));
+            }
+            Some((Some(character), fill, tip))
+        });
+        let erase = (Some('.'), EditorTheme::INPUT, "Erase".to_owned());
+        for (value, fill, tip) in tiles.chain([erase]) {
+            let size = egui::Vec2::splat(EditorTheme::ROW_HEIGHT);
+            let (rect, response) =
+                ui.allocate_exact_size(size, egui::Sense::click());
+            let selected = *brush == value;
+            let stroke = if selected {
+                egui::Stroke::new(2.0, EditorTheme::ACCENT_HOVER)
+            } else if response.hovered() {
+                egui::Stroke::new(1.0, EditorTheme::TEXT_MUTED)
+            } else {
+                egui::Stroke::new(1.0, EditorTheme::BORDER)
+            };
+            let painter = ui.painter();
+            painter.rect_filled(rect, f32::from(EditorTheme::RADIUS), fill);
+            painter.rect_stroke(
+                rect,
+                f32::from(EditorTheme::RADIUS),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            // Dark text on light tiles, light text on dark ones.
+            let light =
+                fill.r() as u32 + fill.g() as u32 + fill.b() as u32 > 3 * 150;
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                value.unwrap_or(' '),
+                egui::FontId::monospace(12.0),
+                if light {
+                    EditorTheme::BACKGROUND
+                } else {
+                    EditorTheme::TEXT
+                },
+            );
+            if response.on_hover_text(tip).clicked() {
+                *brush = value;
+            }
+        }
+        if ui.selectable_label(brush.is_none(), "Off").clicked() {
+            *brush = None;
+        }
+    });
+    *brush != before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tile_palette_shows_each_tile_color_and_picks_a_brush() {
+        let map = crate::runtime::TileMap {
+            tiles: [
+                ("#".to_owned(), crate::runtime::TileKind::default()),
+                (
+                    "~".to_owned(),
+                    crate::runtime::TileKind {
+                        color: [0.0, 0.0, 1.0, 1.0],
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let context = egui::Context::default();
+        let mut brush = Some('#');
+        let draw = |brush: &mut Option<char>, click: Option<egui::Pos2>| {
+            let mut events = Vec::new();
+            if let Some(pos) = click {
+                events.push(egui::Event::PointerMoved(pos));
+                for pressed in [true, false] {
+                    events.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::default(),
+                    });
+                }
+            }
+            let mut changed = false;
+            let output = context.run(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        changed = tile_palette(ui, &map, brush);
+                    });
+                },
+            );
+            let mut texts = Vec::new();
+            let mut fills = Vec::new();
+            for clipped in &output.shapes {
+                match &clipped.shape {
+                    egui::Shape::Text(text) => texts.push((
+                        text.galley.text().to_owned(),
+                        text.pos + text.galley.rect.center().to_vec2(),
+                    )),
+                    egui::Shape::Rect(rect) => fills.push(rect.fill),
+                    _ => {}
+                }
+            }
+            (changed, texts, fills)
+        };
+        let (changed, texts, fills) = draw(&mut brush, None);
+        assert!(!changed);
+        // The water swatch is drawn in its tile color.
+        assert!(fills.contains(&egui::Color32::from_rgb(0, 0, 255)));
+        let at = |label: &str| {
+            texts
+                .iter()
+                .find(|(text, _)| text == label)
+                .map(|(_, pos)| *pos)
+                .unwrap_or_else(|| panic!("no {label:?} in {texts:?}"))
+        };
+        let (water, erase, off) = (at("~"), at("."), at("Off"));
+        assert!(draw(&mut brush, Some(water)).0);
+        assert_eq!(brush, Some('~'));
+        draw(&mut brush, Some(erase));
+        assert_eq!(brush, Some('.'));
+        draw(&mut brush, Some(off));
+        assert_eq!(brush, None);
+    }
 
     #[test]
     fn mesh_picker_excludes_transient_unsaved_handles() {

@@ -5,11 +5,12 @@ use rusting_engine::demo::{DemoPlugin, Spin};
 use rusting_engine::editor::{
     add_mouse_delta, configure_editor_style, draw_editor_view,
     editor_debug_view, editor_navigation_active,
-    editor_needs_continuous_redraw, handle_keyboard_input,
-    handle_mouse_button_input, handle_mouse_wheel, load_editor_scene,
-    release_editor_navigation, ui_receives_during_navigation,
-    update_fly_camera, EditorDebugOverlay, EditorPlugin, EditorShortcuts,
-    EditorState, EditorViewport, EditorWorkspace, SCENE_VIEW_TEXTURE,
+    editor_needs_continuous_redraw, editor_scene_effects,
+    handle_keyboard_input, handle_mouse_button_input, handle_mouse_wheel,
+    load_editor_scene, release_editor_navigation,
+    ui_receives_during_navigation, update_fly_camera, EditorDebugOverlay,
+    EditorPlugin, EditorShortcuts, EditorState, EditorViewport,
+    EditorWorkspace, SCENE_VIEW_TEXTURE,
 };
 use rusting_engine::rendering::egui_painter::EguiPainter;
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
@@ -304,6 +305,7 @@ impl EditorWindowRunner {
                     debug_overlay: scene_view
                         .then(|| &world.resource::<EditorDebugOverlay>().0),
                     debug_view: editor_debug_view(world),
+                    effects: editor_scene_effects(world),
                 },
                 world.resource::<RenderWorld>(),
                 world.resource::<AssetServer>(),

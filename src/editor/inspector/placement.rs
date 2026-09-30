@@ -12,9 +12,11 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 
 use crate::runtime::{
-    AmbientLight, Camera, DirectionalLight, MeshRenderer, Name, PointLight,
-    SceneBackground, SkyLight, SpotLight, ToneMapping, AMBIENT_LIGHT_COMPONENT,
-    BACKGROUND_COMPONENT, HUD_ELEMENT_COMPONENT, SKY_LIGHT_COMPONENT,
+    AmbientLight, AmbientOcclusion, Bloom, Camera, DirectionalLight, Fog,
+    MeshRenderer, Name, PointLight, SceneBackground, SkyLight, SpotLight,
+    ToneMapping, AMBIENT_LIGHT_COMPONENT, AMBIENT_OCCLUSION_COMPONENT,
+    BACKGROUND_COMPONENT, BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT,
+    FOG_COMPONENT, HUD_ELEMENT_COMPONENT, SKY_LIGHT_COMPONENT,
     TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 
@@ -38,7 +40,11 @@ fn kind(name: &str) -> Kind {
         AMBIENT_LIGHT_COMPONENT
         | SKY_LIGHT_COMPONENT
         | TONE_MAPPING_COMPONENT
-        | BACKGROUND_COMPONENT => Kind::Environment,
+        | BACKGROUND_COMPONENT
+        | ENVIRONMENT_MAP_COMPONENT
+        | FOG_COMPONENT
+        | BLOOM_COMPONENT
+        | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
         TILE_MAP_COMPONENT => Kind::TileMap,
         _ => Kind::Behavior,
@@ -87,6 +93,12 @@ pub(in crate::editor) fn placement(
         AMBIENT_LIGHT_COMPONENT => first_with::<AmbientLight>(world),
         TONE_MAPPING_COMPONENT => first_with::<ToneMapping>(world),
         BACKGROUND_COMPONENT => first_with::<SceneBackground>(world),
+        ENVIRONMENT_MAP_COMPONENT => {
+            first_with::<crate::runtime::EnvironmentMap>(world)
+        }
+        FOG_COMPONENT => first_with::<Fog>(world),
+        BLOOM_COMPONENT => first_with::<Bloom>(world),
+        AMBIENT_OCCLUSION_COMPONENT => first_with::<AmbientOcclusion>(world),
         _ => None,
     };
     match holder {
@@ -119,6 +131,17 @@ fn first_with<T: Component>(world: &World) -> Option<Entity> {
 /// Display name for a registered component: the part after the last `.`,
 /// in title case, so `rusting.sky_light` reads "Sky Light" and a game's
 /// `my_game.health` reads "Health".
+/// Group heading the Add Component picker lists `name` under.
+pub(in crate::editor) fn component_group(name: &str) -> &'static str {
+    match kind(name) {
+        Kind::Environment => "Environment",
+        Kind::Hud => "User Interface",
+        Kind::TileMap => "2D",
+        Kind::Behavior if name.starts_with("rusting.") => "Engine",
+        Kind::Behavior => "Game",
+    }
+}
+
 pub(in crate::editor) fn component_label(name: &str) -> String {
     match name {
         HUD_ELEMENT_COMPONENT => return "HUD Element".to_owned(),
@@ -201,6 +224,44 @@ mod tests {
         assert_eq!(
             placement(world, sky, HUD_ELEMENT_COMPONENT, &present),
             Placement::Hidden
+        );
+    }
+
+    #[test]
+    fn atmosphere_settings_go_on_one_environment_object() {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let lamp = world
+            .spawn((Transform::default(), PointLight::default()))
+            .id();
+        let sky = world
+            .spawn((
+                Name("Environment".into()),
+                SkyLight::default(),
+                Fog::default(),
+            ))
+            .id();
+        let empty = world.spawn(Transform::default()).id();
+        let world = app.world();
+        let present = [SKY_LIGHT_COMPONENT, FOG_COMPONENT];
+        for name in
+            [FOG_COMPONENT, BLOOM_COMPONENT, AMBIENT_OCCLUSION_COMPONENT]
+        {
+            assert_eq!(placement(world, lamp, name, &[]), Placement::Hidden);
+            assert_eq!(
+                placement(world, sky, name, &present),
+                Placement::Allowed
+            );
+        }
+        assert_eq!(
+            placement(world, empty, FOG_COMPONENT, &[]),
+            Placement::Blocked(
+                "The scene already has a Fog on Environment".into()
+            )
+        );
+        assert_eq!(
+            placement(world, empty, BLOOM_COMPONENT, &[]),
+            Placement::Allowed
         );
     }
 }

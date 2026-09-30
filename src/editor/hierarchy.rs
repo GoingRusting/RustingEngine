@@ -43,11 +43,14 @@ fn is_preview_spawned(state: &EditorState, entity: Entity) -> bool {
 
 /// Builds a parent-first tree where every child directly follows its parent.
 pub(super) fn collect_entities(world: &mut World) -> Vec<HierarchyItem> {
-    let mut query = world.query::<(
+    let mut query = world.query_filtered::<(
         Entity,
         Option<&Name>,
         Option<&Parent>,
         Option<&Transform>,
+    ), (
+        bevy_ecs::query::Without<crate::runtime::TileOf>,
+        bevy_ecs::query::Without<crate::runtime::FluidParticle>,
     )>();
     let mut raw = query
         .iter(world)

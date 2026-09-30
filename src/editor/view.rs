@@ -6,7 +6,10 @@
 use egui::Pos2;
 use nalgebra::{Matrix4, Rotation3, Vector3, Vector4};
 
-use super::picking::{pick_entity, project_world_to_screen, scene_ray};
+use super::picking::{
+    drag_scene_handle, edit_tile_map, grab_scene_handle, pick_entity,
+    point_handles, project_world_to_screen, scene_ray, tile_cell_under,
+};
 use super::*;
 use crate::editor::overlay::{add_axis, add_bound_box};
 use crate::runtime::{CullingMode, QualityProfile};
@@ -125,6 +128,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut gizmo_drag = take_resource::<EditorGizmoDrag>(world);
     let mut transform_mode = *world.resource::<EditorTransformMode>();
     let editor_shortcuts = world.resource::<EditorShortcuts>().clone();
+    let shortcut_label = |action| {
+        editor_shortcuts
+            .get(ShortcutAction::Editor(action))
+            .map(KeyBinding::label)
+    };
     let physics_backends = *world.resource::<PhysicsBackendStatus>();
     let asset_counts = world.get_resource::<AssetServer>().map(|assets| {
         (
@@ -132,6 +140,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             assets.materials.len(),
             assets.textures.len(),
             assets.scenes.len(),
+            assets.lod_groups.len(),
         )
     });
     let render_report = world
@@ -476,9 +485,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     )
                                     .clicked();
                                 save_clicked |=
-                                    gui_elements::EditorTheme::menu_action(
+                                    gui_elements::EditorTheme::menu_shortcut_action(
                                         ui,
                                         "Save Scene",
+                                        shortcut_label(EditorAction::SaveScene)
+                                            .as_deref(),
                                         has_open_project,
                                     )
                                     .clicked();
@@ -502,9 +513,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     ui, "HISTORY",
                                 );
                                 undo_clicked |=
-                                    gui_elements::EditorTheme::menu_action(
+                                    gui_elements::EditorTheme::menu_shortcut_action(
                                         ui,
                                         "Undo",
+                                        shortcut_label(EditorAction::Undo)
+                                            .as_deref(),
                                         !history.undo.is_empty()
                                             || history
                                                 .pending_inspector
@@ -512,9 +525,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                     )
                                     .clicked();
                                 redo_clicked |=
-                                    gui_elements::EditorTheme::menu_action(
+                                    gui_elements::EditorTheme::menu_shortcut_action(
                                         ui,
                                         "Redo",
+                                        shortcut_label(EditorAction::Redo)
+                                            .as_deref(),
                                         !history.redo.is_empty(),
                                     )
                                     .clicked();
@@ -889,6 +904,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     let mut rendered_workspace = None;
     let mut active_area = state.active_area;
     let mut focus_requested = false;
+    let mut orthographic = world
+        .get_resource::<shortcuts::EditorFlyCamera>()
+        .is_some_and(|fly| fly.perspective_fov.is_some());
+    let was_orthographic = orthographic;
     // Every movable area lives inside this one transparent central panel.
     CentralPanel::default()
         .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
@@ -1065,6 +1084,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                                         ui,
                                         rect,
                                         &mut gizmo_settings,
+                                        &mut orthographic,
                                     );
                                 if transform_toolbar_hovered || settings_hovered {
                                     // The toolbar floats over the viewport, so its
@@ -1169,113 +1189,40 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             });
                     }
                     EditorPanel::Project => {
-                        egui::ScrollArea::both()
-                            .id_salt("project_panel_scroll")
-                            .auto_shrink([false, false])
-                            .scroll_bar_visibility(
-                                egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                            )
-                            .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Project folder");
-                            if state.project_root.is_empty() {
-                                ui.colored_label(
-                                    gui_elements::EditorTheme::TEXT_MUTED,
-                                    "No project open",
-                                );
-                            } else {
-                                ui.monospace(&state.project_root);
-                            }
-                            ui.label("Scene (relative)");
-                            ui.text_edit_singleline(&mut state.scene_path);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut render_settings.vsync, "VSync");
-                            ui.checkbox(
-                                &mut render_settings.limit_fps,
-                                "Limit FPS",
-                            );
-                            ui.add_enabled(
-                                render_settings.limit_fps,
-                                DragValue::new(&mut render_settings.max_fps)
-                                    .range(1..=1_000),
-                            );
-                        });
-                        draw_scene_render_settings(ui, &mut render_settings);
-                        if ui
-                            .add_enabled(
-                                !build_running,
-                                egui::Button::new("Export Game..."),
-                            )
-                            .on_hover_text(
-                                "Build a native release and copy runtime files",
-                            )
-                            .clicked()
-                        {
-                            dialogs.pick_folder(
-                                DialogPurpose::ExportGame { target: None },
-                                rfd::AsyncFileDialog::new()
-                                    .set_title("Choose Export Parent Folder"),
-                            );
-                        }
-                        if !cfg!(target_os = "windows")
-                            && ui
-                                .add_enabled(
-                                    !build_running,
-                                    egui::Button::new(
-                                        "Export for Windows...",
-                                    ),
-                                )
-                                .on_hover_text(format!(
-                                    "Cross-build a Windows .exe. Needs \
-                                     `rustup target add {WINDOWS_TARGET}` \
-                                     and mingw-w64"
-                                ))
-                                .clicked()
-                        {
+                        let physics_text = physics_label.as_deref();
+                        let export = project_settings::draw(
+                            ui,
+                            project_settings::ProjectSettingsView {
+                                project_root: &state.project_root,
+                                scene_path: &mut state.scene_path,
+                                scene_message: state.scene_message.as_deref(),
+                                settings: &mut render_settings,
+                                build_running,
+                                asset_counts,
+                                capabilities: renderer_capabilities.as_ref(),
+                                extraction: render_report,
+                                culling: culling_stats,
+                                counters: render_counters,
+                                cpu: cpu_timings,
+                                gpu_passes: gpu_pass_times.as_deref(),
+                                physics: physics_text,
+                                windows_target: WINDOWS_TARGET,
+                            },
+                        );
+                        if let Some(export) = export {
                             dialogs.pick_folder(
                                 DialogPurpose::ExportGame {
-                                    target: Some(WINDOWS_TARGET),
+                                    target: match export {
+                                        project_settings::ExportRequest::Native => None,
+                                        project_settings::ExportRequest::Windows => {
+                                            Some(WINDOWS_TARGET)
+                                        }
+                                    },
                                 },
                                 rfd::AsyncFileDialog::new()
                                     .set_title("Choose Export Parent Folder"),
                             );
                         }
-                        if let Some(message) = &state.scene_message {
-                            ui.label(message);
-                        }
-                        if let Some((meshes, materials, textures, scenes)) =
-                            asset_counts
-                        {
-                            ui.label(format!(
-                                "Meshes {meshes} | Materials {materials} | Textures {textures} | Scenes {scenes}"
-                            ));
-                        }
-                        if let Some(report) = render_report {
-                            ui.label(format!(
-                                "Renderables {} | +{} ~{} -{}",
-                                report.total,
-                                report.added,
-                                report.changed,
-                                report.removed
-                            ));
-                        }
-                        if let Some(stats) = culling_stats {
-                            ui.label(culling_stats_label(&stats));
-                        }
-                        if let Some(label) = &gpu_pass_times {
-                            ui.label(label);
-                        }
-                        if let Some(timings) = &cpu_timings {
-                            ui.label(cpu_timings_label(timings));
-                        }
-                        if let Some(counters) = &render_counters {
-                            ui.label(render_counters_label(counters));
-                        }
-                        if let Some(label) = &physics_label {
-                            ui.label(label);
-                        }
-                            });
                     }
                     EditorPanel::Shortcuts => {
                         let mut shortcuts =
@@ -1362,6 +1309,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
             layout: state.dock_layout.clone(),
             active_area: state.active_area,
             next_area_id: state.next_area_id,
+            snap: Some((
+                transform_mode.snap_enabled,
+                transform_mode.snap_steps,
+            )),
         };
         state.scene_message = Some(
             serde_json::to_vec_pretty(&file)
@@ -1390,6 +1341,10 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                         state.dock_layout = file.layout;
                         state.active_area = file.active_area;
                         state.next_area_id = file.next_area_id;
+                        if let Some((enabled, steps)) = file.snap {
+                            transform_mode.snap_enabled = enabled;
+                            transform_mode.snap_steps = steps;
+                        }
                         format!("Loaded layout from {}", layout_path.display())
                     },
                 ),
@@ -1397,6 +1352,160 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     }
     if let Some(workspace) = rendered_workspace {
         state.workspace = workspace;
+    }
+
+    // Dragging a handle of the selected object edits one field instead of
+    // picking: a fog square sets `height` (main square) or
+    // `height_falloff`, and a reflection probe face sets its `extents`.
+    if let (Some(entity), Some(viewport), Some(camera), true) = (
+        state.selected,
+        viewport_rect,
+        state.editor_camera,
+        state.mode == EditorMode::Edit
+            && state.workspace == EditorWorkspace::Scene,
+    ) {
+        let grabbed = scene_drag_left_started
+            .filter(|&point| viewport.contains(point))
+            .and_then(|point| {
+                grab_scene_handle(world, camera, entity, point, viewport)
+            });
+        if let Some(handle) = grabbed {
+            // ponytail: a drag that ends where it began still adds an Undo
+            // step, like a tile stroke.
+            if let Err(error) = remember_scene_before_edit(world, &mut history)
+            {
+                state.scene_message = Some(error);
+            }
+            state.scene_handle = Some((entity, handle));
+        }
+        if let Some((_, handle)) =
+            state.scene_handle.filter(|handle| handle.0 == entity)
+        {
+            if let Some(point) = scene_drag_left_position {
+                state.scene_dirty |= drag_scene_handle(
+                    world, camera, entity, handle, point, viewport,
+                );
+            }
+            scene_click_position = None;
+            scene_drag_left_started = None;
+            scene_drag_left_position = None;
+            scene_drag_left_stopped = false;
+        }
+    }
+    if !context.input(|input| input.pointer.primary_down()) {
+        state.scene_handle = None;
+    }
+
+    // With a tile brush on a selected tile map, left clicks and drags in
+    // the Scene View paint instead of reaching the gizmo and picking.
+    let tile_map = state.selected.filter(|&entity| {
+        world.get::<crate::runtime::TileMap>(entity).is_some()
+    });
+    let mut tile_preview = None;
+    if let (Some(brush), Some(map), true) = (
+        state.tile_brush,
+        tile_map,
+        state.mode == EditorMode::Edit
+            && state.workspace == EditorWorkspace::Scene,
+    ) {
+        let inside = |point: Pos2| {
+            viewport_rect.is_some_and(|rect| rect.contains(point))
+        };
+        let camera = state.editor_camera;
+        let cell_at = |world: &World, point: Option<Pos2>| {
+            tile_cell_under(
+                world,
+                camera?,
+                map,
+                point.filter(|&point| inside(point))?,
+                viewport_rect?,
+            )
+        };
+        let hover =
+            cell_at(world, scene_drag_left_position.or(scene_hover_position));
+        let pressed = cell_at(world, scene_drag_left_started);
+        if scene_drag_left_started.is_some_and(inside) {
+            state.tile_stroke_undo =
+                match scene_document(world, "Undo Snapshot") {
+                    Ok(document) => Some(document),
+                    Err(error) => {
+                        state.scene_message = Some(format!(
+                            "Could not create undo snapshot: {error}"
+                        ));
+                        None
+                    }
+                };
+            state.tile_rect_start = pressed;
+        }
+        // Only strokes that began in the viewport took an Undo snapshot.
+        let stroke = context
+            .input(|input| input.pointer.press_origin())
+            .is_some_and(inside);
+        let changed = match state.tile_tool {
+            TileTool::Paint => {
+                stroke
+                    && cell_at(
+                        world,
+                        scene_drag_left_position.or(scene_drag_left_started),
+                    )
+                    .is_some_and(|(column, row)| {
+                        edit_tile_map(world, map, |tiles| {
+                            tiles.set_cell(column, row, brush)
+                        })
+                    })
+            }
+            TileTool::Fill => pressed.is_some_and(|(column, row)| {
+                edit_tile_map(world, map, |tiles| {
+                    tiles.fill(column, row, brush)
+                })
+            }),
+            TileTool::Rectangle | TileTool::Line if scene_drag_left_stopped => {
+                let tool = state.tile_tool;
+                state.tile_rect_start.take().zip(hover).is_some_and(
+                    |(from, to)| {
+                        edit_tile_map(world, map, |tiles| {
+                            if tool == TileTool::Line {
+                                tiles.fill_line(from, to, brush)
+                            } else {
+                                tiles.fill_rect(from, to, brush)
+                            }
+                        })
+                    },
+                )
+            }
+            TileTool::Rectangle | TileTool::Line => false,
+        };
+        if changed {
+            state.scene_dirty = true;
+            if let Some(document) = state.tile_stroke_undo.take() {
+                if let Some(pending) = history.pending_inspector.take() {
+                    history.push_undo(pending);
+                }
+                history.push_undo(document);
+            }
+        }
+        if !stroke {
+            state.tile_stroke_undo = None;
+            state.tile_rect_start = None;
+        }
+        // The cell under the pointer, or the rectangle or line being
+        // dragged, as rectangles to outline.
+        tile_preview = hover.map(|to| {
+            let from = state.tile_rect_start.unwrap_or(to);
+            let rects = match state.tile_tool {
+                TileTool::Rectangle => vec![(from, to)],
+                TileTool::Line => crate::runtime::TileMap::line_cells(from, to)
+                    .into_iter()
+                    .map(|cell| (cell, cell))
+                    .collect(),
+                TileTool::Paint | TileTool::Fill => vec![(to, to)],
+            };
+            (map, rects)
+        });
+        scene_click_position = None;
+        scene_drag_left_started = None;
+        scene_drag_left_position = None;
+        scene_drag_left_stopped = false;
     }
 
     let (hovered_gizmo, gizmo_consumed) =
@@ -2760,8 +2869,11 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 Some(format!("Could not start Cargo: {error}"));
         }
     }
+    if state.mode == EditorMode::Edit {
+        crate::runtime::run_edit_mode_systems(world);
+    }
     crate::runtime::propagate_transforms(world);
-    let overlay = if state.workspace == EditorWorkspace::Scene {
+    let mut overlay = if state.workspace == EditorWorkspace::Scene {
         build_scene_debug_overlay(
             world,
             state.editor_camera,
@@ -2776,6 +2888,28 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     } else {
         RenderDebugOverlay::default()
     };
+    if let Some((map, rects)) = tile_preview {
+        if let (Some(tiles), Some(transform)) = (
+            world.get::<crate::runtime::TileMap>(map),
+            world.get::<crate::Transform>(map),
+        ) {
+            for (from, to) in rects {
+                for [start, end] in crate::editor::overlay::tile_rect_lines(
+                    tiles.tile_size,
+                    transform.position,
+                    from,
+                    to,
+                ) {
+                    overlay.line_on_top(
+                        start,
+                        end,
+                        [1.0, 0.78, 0.12, 1.0],
+                        2.0,
+                    );
+                }
+            }
+        }
+    }
     world.resource_mut::<EditorDebugOverlay>().0 = overlay;
     *world.resource_mut::<EditorGizmoSettings>() = gizmo_settings;
     *world.resource_mut::<EditorTransformMode>() = transform_mode;
@@ -2797,6 +2931,9 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
     if focus_requested {
         shortcuts::camera_to_object(world);
     }
+    if orthographic != was_orthographic {
+        shortcuts::toggle_orthographic(world);
+    }
     world.insert_resource(history);
     world.insert_resource(pending_action);
     world.insert_resource(editor_assets);
@@ -2817,29 +2954,37 @@ fn draw_console_area(ui: &mut egui::Ui, console: &mut EditorConsole) {
     for entry in &console.entries {
         counts[entry.level as usize] += entry.count;
     }
-    ui.horizontal(|ui| {
-        for ((level, label, color), count) in levels.iter().zip(counts) {
-            let shown = &mut console.hidden[*level as usize];
-            let text = egui::RichText::new(format!("{label} {count}")).color(
-                if *shown {
-                    EditorTheme::TEXT_MUTED
-                } else {
-                    *color
-                },
-            );
-            if ui.selectable_label(!*shown, text).clicked() {
-                *shown = !*shown;
-            }
-        }
-        if ui.button("Clear").clicked() {
-            console.entries.clear();
-        }
-        ui.add(
-            egui::TextEdit::singleline(&mut console.filter)
-                .hint_text("Filter messages")
-                .desired_width(f32::INFINITY),
-        );
-    });
+    egui::Frame::new()
+        .fill(EditorTheme::PANEL_RAISED)
+        .stroke(egui::Stroke::new(1.0, EditorTheme::BORDER_SOFT))
+        .corner_radius(EditorTheme::RADIUS)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for ((level, label, color), count) in levels.iter().zip(counts)
+                {
+                    let shown = &mut console.hidden[*level as usize];
+                    let text = egui::RichText::new(format!("{label} {count}"))
+                        .color(if *shown {
+                            EditorTheme::TEXT_MUTED
+                        } else {
+                            *color
+                        });
+                    if ui.selectable_label(!*shown, text).clicked() {
+                        *shown = !*shown;
+                    }
+                }
+                if ui.button("Clear").clicked() {
+                    console.entries.clear();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut console.filter)
+                        .hint_text("Filter messages")
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
+    ui.add_space(4.0);
     let filter = console.filter.to_lowercase();
     let visible: Vec<&ConsoleEntry> = console
         .entries
@@ -2851,37 +2996,100 @@ fn draw_console_area(ui: &mut egui::Ui, console: &mut EditorConsole) {
                 || entry.source.to_lowercase().contains(&filter)
         })
         .collect();
-    egui::ScrollArea::vertical()
-        .id_salt("console_panel_scroll")
-        .auto_shrink([false, false])
-        .stick_to_bottom(true)
+    egui::Frame::new()
+        .fill(EditorTheme::BACKGROUND)
+        .stroke(egui::Stroke::new(1.0, EditorTheme::BORDER_SOFT))
+        .corner_radius(EditorTheme::RADIUS)
         .show(ui, |ui| {
-            if visible.is_empty() {
-                ui.colored_label(
-                    EditorTheme::TEXT_MUTED,
-                    if console.entries.is_empty() {
-                        "No console messages."
-                    } else {
-                        "No messages match the filter."
-                    },
-                );
-            }
-            for entry in visible {
-                let color = levels[entry.level as usize].2;
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(
-                        EditorTheme::TEXT_MUTED,
-                        format!("[{}]", entry.source),
-                    );
-                    ui.colored_label(color, &entry.message);
-                    if entry.count > 1 {
-                        ui.colored_label(
-                            EditorTheme::TEXT_MUTED,
-                            format!("x{}", entry.count),
+            egui::ScrollArea::vertical()
+                .id_salt("console_panel_scroll")
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    if visible.is_empty() {
+                        ui.add_space(8.0);
+                        ui.vertical_centered(|ui| {
+                            ui.colored_label(
+                                EditorTheme::TEXT_MUTED,
+                                if console.entries.is_empty() {
+                                    "No console messages."
+                                } else {
+                                    "No messages match the filter."
+                                },
+                            );
+                        });
+                    }
+                    for (index, entry) in visible.into_iter().enumerate() {
+                        let color = levels[entry.level as usize].2;
+                        let fill = if index % 2 == 0 {
+                            EditorTheme::BACKGROUND
+                        } else {
+                            EditorTheme::INPUT
+                        };
+                        let row = egui::Frame::new()
+                            .fill(fill)
+                            .inner_margin(egui::Margin {
+                                left: 10,
+                                right: 6,
+                                top: 3,
+                                bottom: 3,
+                            })
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(entry.source)
+                                            .small()
+                                            .color(EditorTheme::ACCENT_HOVER)
+                                            .background_color(
+                                                EditorTheme::PANEL,
+                                            ),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(&entry.message)
+                                            .monospace()
+                                            .color(
+                                                if entry.level
+                                                    == ConsoleLevel::Info
+                                                {
+                                                    EditorTheme::TEXT
+                                                } else {
+                                                    color
+                                                },
+                                            ),
+                                    );
+                                    if entry.count > 1 {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "x{}",
+                                                entry.count
+                                            ))
+                                            .small()
+                                            .color(EditorTheme::TEXT_STRONG)
+                                            .background_color(
+                                                EditorTheme::ACCENT,
+                                            ),
+                                        );
+                                    }
+                                });
+                            });
+                        // Level stripe on the row's left edge.
+                        let rect = row.response.rect;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                rect.min,
+                                egui::vec2(3.0, rect.height()),
+                            ),
+                            0.0,
+                            if entry.level == ConsoleLevel::Info {
+                                EditorTheme::ACCENT
+                            } else {
+                                color
+                            },
                         );
                     }
                 });
-            }
         });
 }
 
@@ -3027,6 +3235,7 @@ fn update_transform_gizmo(
     if drag.is_active() {
         drag.axis_mask = transform_mode.axis_mask;
         drag.snap_enabled = transform_mode.snap_enabled;
+        drag.snap_steps = transform_mode.snap_steps;
         drag.active_axis = single_enabled_axis(drag.axis_mask);
         let pointer = if drag.modal { hover } else { drag_position };
         if let Some(pointer) = pointer {
@@ -3355,7 +3564,7 @@ fn draw_add_object_modal(
                         .show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 let has_environment = super::inspector::placement::scene_has_environment(world);
-                                let presets: [(&'static str, &'static [&'static str], bool, &str); 2] = [
+                                let presets: [(&'static str, &'static [&'static str], bool, &str); 4] = [
                                     (
                                         "World Environment",
                                         &super::inspector::placement::ENVIRONMENT_COMPONENTS,
@@ -3365,6 +3574,18 @@ fn draw_add_object_modal(
                                     (
                                         "HUD Element",
                                         &[crate::runtime::HUD_ELEMENT_COMPONENT],
+                                        true,
+                                        "",
+                                    ),
+                                    (
+                                        "Reflection Probe",
+                                        &[crate::runtime::REFLECTION_PROBE_COMPONENT],
+                                        true,
+                                        "",
+                                    ),
+                                    (
+                                        "Water",
+                                        &[crate::runtime::WATER_COMPONENT],
                                         true,
                                         "",
                                     ),
@@ -3497,11 +3718,31 @@ fn draw_viewport_transform_toolbar(
                     ui.separator();
                     if ui
                         .selectable_label(transform.snap_enabled, "Snap")
-                        .on_hover_text("Snap move to 1 unit, rotation to 15°, and scale to 0.1 increments")
+                        .on_hover_text("Snap move, rotation and scale to the increments set in the menu beside it")
                         .clicked()
                     {
                         transform.snap_enabled = !transform.snap_enabled;
                     }
+                    ui.menu_button("⏷", |ui| {
+                        let steps = &mut transform.snap_steps;
+                        for (label, value, speed, suffix) in [
+                            ("Move", &mut steps.translate, 0.05, " m"),
+                            ("Rotate", &mut steps.rotate_degrees, 1.0, "°"),
+                            ("Scale", &mut steps.scale, 0.01, ""),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(label);
+                                ui.add(
+                                    egui::DragValue::new(value)
+                                        .speed(speed)
+                                        .range(0.001..=360.0)
+                                        .suffix(suffix),
+                                );
+                            });
+                        }
+                    })
+                    .response
+                    .on_hover_text("Snap increments");
                     if ui
                         .add_enabled(
                             !drag_active,
@@ -3720,6 +3961,7 @@ fn draw_viewport_render_settings(
     ui: &mut egui::Ui,
     viewport: egui::Rect,
     settings: &mut EditorGizmoSettings,
+    orthographic: &mut bool,
 ) -> bool {
     let toolbar_rect = egui::Rect::from_min_size(
         egui::pos2(viewport.right() - 44.0, viewport.top() + 8.0),
@@ -3769,6 +4011,12 @@ fn draw_viewport_render_settings(
                     egui::popup::PopupCloseBehavior::CloseOnClickOutside,
                     |ui| {
                         ui.set_min_width(190.0);
+                        gui_elements::EditorTheme::menu_section(ui, "VIEW");
+                        ui.checkbox(orthographic, "Orthographic")
+                            .on_hover_text(
+                                "No perspective: parallel lines stay \
+                                 parallel (Numpad 5)",
+                            );
                         gui_elements::EditorTheme::menu_section(
                             ui,
                             "VIEWPORT OVERLAYS",
@@ -3799,6 +4047,25 @@ fn draw_viewport_render_settings(
                                 view.label(),
                             );
                         }
+                        gui_elements::EditorTheme::menu_section(
+                            ui,
+                            "SCENE EFFECTS",
+                        );
+                        let effects = &mut settings.effects;
+                        ui.checkbox(&mut effects.fog, "Fog").on_hover_text(
+                            "Draw the scene's fog here; Play always does",
+                        );
+                        ui.checkbox(&mut effects.bloom, "Bloom").on_hover_text(
+                            "Draw the scene's bloom here; Play always does",
+                        );
+                        ui.checkbox(
+                            &mut effects.ambient_occlusion,
+                            "Ambient Occlusion",
+                        )
+                        .on_hover_text(
+                            "Draw the scene's ambient occlusion here; Play \
+                             always does",
+                        );
                         ui.min_rect()
                     },
                 );
@@ -4016,7 +4283,11 @@ fn transformed_from_pointer(
                 single_enabled_axis(drag.axis_mask),
             ) {
                 let distance = current_parameter - start_parameter;
-                let distance = snap_value(distance, 1.0, drag.snap_enabled);
+                let distance = snap_value(
+                    distance,
+                    drag.snap_steps.translate,
+                    drag.snap_enabled,
+                );
                 let axis = gizmo_axis_index(axis);
                 for component in 0..3 {
                     transform.position[component] +=
@@ -4030,8 +4301,11 @@ fn transformed_from_pointer(
                 [delta.x, delta.y],
             );
             for (axis, coefficient) in coefficients.into_iter().enumerate() {
-                let coefficient =
-                    snap_value(coefficient, 1.0, drag.snap_enabled);
+                let coefficient = snap_value(
+                    coefficient,
+                    drag.snap_steps.translate,
+                    drag.snap_enabled,
+                );
                 for component in 0..3 {
                     transform.position[component] +=
                         drag.local_delta_axes[axis][component] * coefficient;
@@ -4054,7 +4328,12 @@ fn transformed_from_pointer(
                     / length_squared)
                     .max(0.01)
             };
-            let factor = 1.0 + snap_value(factor - 1.0, 0.1, drag.snap_enabled);
+            let factor = 1.0
+                + snap_value(
+                    factor - 1.0,
+                    drag.snap_steps.scale,
+                    drag.snap_enabled,
+                );
             for local_axis in 0..3 {
                 let weight = if drag.global_axes {
                     (0..3)
@@ -4080,6 +4359,7 @@ fn transformed_from_pointer(
                     original,
                     drag.view_rotation_axis,
                     snap_angle(
+                        drag,
                         raw_screen_rotation_angle(drag, pointer),
                         drag.snap_enabled,
                     ),
@@ -4089,6 +4369,7 @@ fn transformed_from_pointer(
             if let Some(axis) = single_enabled_axis(drag.axis_mask) {
                 let index = gizmo_axis_index(axis);
                 angles[index] = snap_angle(
+                    drag,
                     screen_rotation_angle(drag, pointer, index),
                     drag.snap_enabled,
                 );
@@ -4104,12 +4385,13 @@ fn transformed_from_pointer(
             } else {
                 let index = gizmo_axis_index(drag.active_axis?);
                 angles[index] = snap_angle(
+                    drag,
                     screen_rotation_angle(drag, pointer, index),
                     drag.snap_enabled,
                 );
             }
             for angle in &mut angles {
-                *angle = snap_angle(*angle, drag.snap_enabled);
+                *angle = snap_angle(drag, *angle, drag.snap_enabled);
             }
             transform = if drag.global_axes {
                 angles.into_iter().enumerate().fold(
@@ -4136,15 +4418,15 @@ fn transformed_from_pointer(
 }
 
 fn snap_value(value: f32, step: f32, enabled: bool) -> f32 {
-    if enabled {
+    if enabled && step > 0.0 {
         (value / step).round() * step
     } else {
         value
     }
 }
 
-fn snap_angle(angle: f32, enabled: bool) -> f32 {
-    snap_value(angle, 15.0_f32.to_radians(), enabled)
+fn snap_angle(drag: &EditorGizmoDrag, angle: f32, enabled: bool) -> f32 {
+    snap_value(angle, drag.snap_steps.rotate_degrees.to_radians(), enabled)
 }
 
 fn move_axis_parameter(
@@ -4540,6 +4822,29 @@ fn build_scene_debug_overlay(
             }
         }
     }
+    // The selected environment's fog height, like a light's range.
+    if let Some(fog) =
+        selected.and_then(|entity| world.get::<crate::runtime::Fog>(entity))
+    {
+        for ([start, end], main) in
+            crate::editor::overlay::fog_height_lines(fog)
+        {
+            let alpha = if main { 0.9 } else { 0.45 };
+            overlay.line_on_top(start, end, [0.45, 0.7, 1.0, alpha], 1.5);
+        }
+    }
+    // Point handles of the selection: reflection probe and render bounds
+    // faces, dragged to resize them. Each is a small 3D cross.
+    for (_, position) in
+        selected.map_or_else(Vec::new, |entity| point_handles(world, entity))
+    {
+        for axis in 0..3 {
+            let (mut start, mut end) = (position, position);
+            start[axis] -= 0.12;
+            end[axis] += 0.12;
+            overlay.line_on_top(start, end, [1.0, 0.78, 0.12, 1.0], 2.5);
+        }
+    }
     if settings.show_selected_bounds {
         // Blender style: the rest of a multi-selection in darker orange.
         for &entity in
@@ -4759,22 +5064,6 @@ fn cross3(left: [f32; 3], right: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// Finds the selected mesh's local bounds and asks the overlay helper to draw
-/// them in world space. Physics colliders are intentionally not involved.
-/// One profiler line: culling path, instance counts, and culling time.
-fn culling_stats_label(
-    stats: &crate::rendering::scene_renderer::CullingStats,
-) -> String {
-    let time = stats.time.map_or_else(
-        || "time n/a".to_owned(),
-        |time| format!("{:.3} ms", time.as_secs_f64() * 1000.0),
-    );
-    format!(
-        "Culling {:?} | {} submitted, {} visible, {} culled | {time}",
-        stats.path, stats.submitted, stats.visible, stats.culled
-    )
-}
-
 /// One profiler line: total GPU frame time, then each pass's time.
 fn gpu_pass_times_label(
     times: &crate::rendering::scene_renderer::GpuPassTimes,
@@ -4785,35 +5074,6 @@ fn gpu_pass_times_label(
         label += &format!(" | {} {:.3}", pass.label(), ms(*time));
     }
     label
-}
-
-/// One profiler line: CPU time per frame part, in milliseconds.
-fn cpu_timings_label(timings: &crate::runtime::CpuFrameTimings) -> String {
-    let ms = |time: std::time::Duration| time.as_secs_f64() * 1000.0;
-    format!(
-        "CPU Physics {:.3} | Extract {:.3} | Prepare {:.3} | Record {:.3} | Editor {:.3} ms",
-        ms(timings.physics),
-        ms(timings.extraction),
-        ms(timings.preparation),
-        ms(timings.recording),
-        ms(timings.editor)
-    )
-}
-
-/// One profiler line: the renderer's work counters.
-fn render_counters_label(
-    counters: &crate::rendering::scene_renderer::RenderCounters,
-) -> String {
-    let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
-    format!(
-        "Draws {} | Dispatches {} | Triangles {} | Visible {} | Upload {:.2} MiB | GPU memory {:.1} MiB",
-        counters.draws,
-        counters.dispatches,
-        counters.triangles,
-        counters.visible_instances,
-        mib(counters.upload_bytes),
-        mib(counters.gpu_memory_bytes)
-    )
 }
 
 /// One profiler line: GPU physics work, traffic and contact-grid fallbacks.
@@ -4935,62 +5195,6 @@ mod gizmo_tests {
             physics_counters_label(&counters, &capacity),
             "GPU Physics: Dispatches 8 | Commands 2 (0.2 KiB) | Events 2.0 KiB | States 0.5 KiB | Latency 2 frames | Grid overflow 3 | Oversized 1 | Hash collisions 4 | Fallback tests 40 | Events lost 5"
         );
-    }
-
-    #[test]
-    fn render_counters_label_shows_each_counter() {
-        use crate::rendering::scene_renderer::RenderCounters;
-        let counters = RenderCounters {
-            draws: 12,
-            dispatches: 3,
-            triangles: 4096,
-            visible_instances: 40,
-            upload_bytes: 512 * 1024,
-            gpu_memory_bytes: 256 * 1024 * 1024,
-            ..RenderCounters::default()
-        };
-        assert_eq!(
-            render_counters_label(&counters),
-            "Draws 12 | Dispatches 3 | Triangles 4096 | Visible 40 | Upload 0.50 MiB | GPU memory 256.0 MiB"
-        );
-    }
-
-    #[test]
-    fn cpu_timings_label_shows_each_part() {
-        use crate::runtime::CpuFrameTimings;
-        use std::time::Duration;
-        let timings = CpuFrameTimings {
-            physics: Duration::from_micros(200),
-            extraction: Duration::from_micros(50),
-            preparation: Duration::from_micros(300),
-            recording: Duration::from_micros(400),
-            editor: Duration::from_micros(1500),
-        };
-        assert_eq!(
-            cpu_timings_label(&timings),
-            "CPU Physics 0.200 | Extract 0.050 | Prepare 0.300 | Record 0.400 | Editor 1.500 ms"
-        );
-    }
-
-    #[test]
-    fn culling_stats_label_shows_counts_and_time() {
-        use crate::rendering::scene_renderer::{CullingPath, CullingStats};
-        let stats = CullingStats {
-            path: CullingPath::Gpu,
-            submitted: 4,
-            visible: 3,
-            culled: 1,
-            time: Some(std::time::Duration::from_micros(250)),
-        };
-        assert_eq!(
-            culling_stats_label(&stats),
-            "Culling Gpu | 4 submitted, 3 visible, 1 culled | 0.250 ms"
-        );
-        let untimed = CullingStats {
-            time: None,
-            ..stats
-        };
-        assert!(culling_stats_label(&untimed).ends_with("| time n/a"));
     }
 
     #[test]
@@ -5198,8 +5402,29 @@ mod gizmo_tests {
             transformed_from_pointer(&scale_drag, Pos2::new(14.0, 0.0), None)
                 .unwrap();
         assert_eq!(scaled.scale, [1.2; 3]);
-        assert!((snap_angle(0.3, true) - 15.0_f32.to_radians()).abs() < 0.0001);
-        assert_eq!(snap_angle(0.3, false), 0.3);
+        let drag = &EditorGizmoDrag::default();
+        assert!(
+            (snap_angle(drag, 0.3, true) - 15.0_f32.to_radians()).abs()
+                < 0.0001
+        );
+        assert_eq!(snap_angle(drag, 0.3, false), 0.3);
+
+        let fine_drag = EditorGizmoDrag {
+            snap_steps: super::super::shortcuts::SnapSteps {
+                translate: 0.25,
+                rotate_degrees: 10.0,
+                scale: 0.5,
+            },
+            ..move_drag
+        };
+        let moved =
+            transformed_from_pointer(&fine_drag, Pos2::new(14.0, 0.0), None)
+                .unwrap();
+        assert_eq!(moved.position, [1.5, 0.0, 0.0]);
+        assert!(
+            (snap_angle(&fine_drag, 0.3, true) - 20.0_f32.to_radians()).abs()
+                < 0.0001
+        );
     }
 
     #[test]

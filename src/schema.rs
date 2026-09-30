@@ -62,10 +62,10 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "project inspect",
-        usage: "project inspect <project-root> [--json]",
+        usage: "project inspect [project-root] [--json]",
         summary: "Inspect and validate project.json, Cargo.toml, the main scene path, and src/main.rs.",
         gpu: NO_GPU,
-        defaults: &[],
+        defaults: &[("project-root", "the current folder")],
         example: "project inspect my_game --json",
     },
     Operation {
@@ -94,50 +94,50 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "validate",
-        usage: "validate <project-root> [--json]",
+        usage: "validate [project-root] [--json]",
         summary: "Check project files, scene structure, referenced assets, and that every physics solver and custom shader in the main scene supports project.json `determinism` (Off | Local | CrossPlatform), without Vulkan or a window.",
         gpu: NO_GPU,
-        defaults: &[],
+        defaults: &[("project-root", "the current folder")],
         example: "validate my_game --json",
     },
     Operation {
         name: "cook",
-        usage: "cook <project-root> [--json]",
+        usage: "cook [project-root] [--json]",
         summary: "Validate and cook the manifest's main scene to its configured cooked_scene path.",
         gpu: NO_GPU,
-        defaults: &[],
+        defaults: &[("project-root", "the current folder")],
         example: "cook my_game --json",
     },
     Operation {
         name: "check",
-        usage: "check <project-root> [--json]",
+        usage: "check [project-root] [--json]",
         summary: "Validate the project, then type-check its Rust code with `cargo check`.",
         gpu: NO_GPU,
-        defaults: &[],
+        defaults: &[("project-root", "the current folder")],
         example: "check my_game --json",
     },
     Operation {
         name: "run",
-        usage: "run <project-root> [--release] [--ticks N] [--timeout SECONDS] [--json]",
-        summary: "Cook, build, and run the game from the project folder. --ticks N runs N fixed ticks without a window and exits. --timeout stops a game still running; reaching it is not a failure.",
+        usage: "run [project-root] [--release] [--ticks N] [--timeout SECONDS] [--json]",
+        summary: "Cook, build, and run the game from the project folder. --ticks N runs N fixed ticks without a window, saves the end state to build/final.rscene for `scene query`, and exits. --timeout stops a game still running; reaching it is not a failure.",
         gpu: "required for a window; none with --ticks",
-        defaults: &[("--release", "off (debug build)"), ("--ticks", "off (opens a window)"), ("--timeout", "none")],
+        defaults: &[("--release", "off (debug build)"), ("--ticks", "off (opens a window)"), ("--timeout", "none"), ("project-root", "the current folder")],
         example: "run my_game --ticks 120 --json",
     },
     Operation {
         name: "test",
-        usage: "test <project-root> <scenario.json> [--release] [--timeout SECONDS] [--json]",
-        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Fails with SCENARIO_FAILED and the first failing tick and step. The scenario format is under `scenario` in `rusting schema`.",
+        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--json]",
+        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. The scenario format is under `scenario` in `rusting schema`.",
         gpu: "optional: only capture steps render, and they are skipped without Vulkan; one frame readback per capture",
-        defaults: &[("--release", "off (debug build)"), ("--timeout", "none")],
+        defaults: &[("--release", "off (debug build)"), ("--timeout", "none"), ("project-root", "the current folder"), ("scenario", "every file in tests/")],
         example: "test my_game my_game/tests/falls.json --json",
     },
     Operation {
         name: "determinism",
-        usage: "determinism <project-root> [--ticks N] [--json]",
+        usage: "determinism [project-root] [--ticks N] [--json]",
         summary: "Build the game in debug and release, run each headless for N ticks (release also pinned to one CPU when `taskset` exists), and compare every tick's world-state hash. Fails with DETERMINISM_DIVERGED naming the first divergent tick and entity. Hash reports go to build/determinism/<configuration>-<ticks>.json. GPU physics bodies do not simulate headless.",
         gpu: NO_GPU,
-        defaults: &[("--ticks", "600")],
+        defaults: &[("--ticks", "600"), ("project-root", "the current folder")],
         example: "determinism my_game --ticks 300 --json",
     },
     Operation {
@@ -182,10 +182,10 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "asset list",
-        usage: "asset list <project-root> [--json]",
+        usage: "asset list [project-root] [--json]",
         summary: "List imported assets with ID, dependencies, provenance, settings, and referencing scenes. Fails on missing files or dependencies, invalid or duplicate metadata; warns on files changed since import, files without .rmeta, and assets without a license.",
         gpu: NO_GPU,
-        defaults: &[],
+        defaults: &[("project-root", "the current folder")],
         example: "asset list my_game --json",
     },
     Operation {
@@ -314,9 +314,11 @@ const ENTITY_SECTIONS: &[Section] = &[
         example: || json!({
             "mesh": {"BuiltinPrimitive": "Torus"},
             "material": {"Inline": {
-                "model": "Pbr", "alpha_mode": "Opaque",
+                "name": "", "model": "Pbr", "alpha_mode": "Opaque",
                 "base_color": [0.8, 0.5, 0.2, 1.0], "emissive": [0.0, 0.0, 0.0],
                 "metallic": 0.0, "roughness": 0.6,
+                "transmission": 0.0, "ior": 1.5, "thickness": 0.0,
+                "uv_scale": [1.0, 1.0], "uv_offset": [0.0, 0.0],
                 "base_color_texture": null, "normal_texture": null,
                 "metallic_roughness_texture": null, "occlusion_texture": null,
                 "emissive_texture": null
@@ -325,17 +327,23 @@ const ENTITY_SECTIONS: &[Section] = &[
         }),
         fields: &[
             field("/mesh/BuiltinPrimitive", "", "Cube, Sphere, Triangle, Plane, Tetrahedron, Octahedron, Dodecahedron, Icosahedron, Pyramid, Cylinder, Cone, Torus, Quad", "other variants: \"BuiltinCube\", \"BuiltinSphere\", {\"AssetPath\": \"assets/model.gltf\"}"),
+            field("/material/Inline/name", "", "text", "label shown in the editor; may be empty"),
             field("/material/Inline/model", "", "Pbr | Unlit", "other variant: \"BuiltinError\""),
             field("/material/Inline/alpha_mode", "", "Opaque | {\"Mask\": {\"cutoff\": 0..1}} | Blend", ""),
             field("/material/Inline/base_color", "linear RGBA", "0..1", ""),
             field("/material/Inline/emissive", RGB, ">= 0", "HDR; values above 1 glow"),
             field("/material/Inline/metallic", "", "0..1", ""),
             field("/material/Inline/roughness", "", "0..1", ""),
-            field("/material/Inline/base_color_texture", "project path", "", "null for none; same for the other texture slots"),
-            field("/material/Inline/normal_texture", "project path", "", ""),
-            field("/material/Inline/metallic_roughness_texture", "project path", "", "glTF layout: roughness in G, metallic in B"),
-            field("/material/Inline/occlusion_texture", "project path", "", ""),
-            field("/material/Inline/emissive_texture", "project path", "", ""),
+            field("/material/Inline/transmission", "", "0..1", "optional, default 0; light passing through, tinted by base_color (glass)"),
+            field("/material/Inline/ior", "", "1..3", "optional, default 1.5; index of refraction"),
+            field("/material/Inline/thickness", "m", ">= 0", "optional, default 0; how far the refracted ray travels"),
+            field("/material/Inline/uv_scale", "", "[u, v]", "optional, default [1, 1]; texture repeats per face, [8, 4] tiles a long floor"),
+            field("/material/Inline/uv_offset", "", "[u, v]", "optional, default [0, 0]; texture shift in whole-texture units"),
+            field("/material/Inline/base_color_texture", "path relative to the scene file", "", "a plain string such as \"../assets/textures/crate.png\", not {\"$asset\": ...}; null for none; same for the other texture slots"),
+            field("/material/Inline/normal_texture", "path relative to the scene file", "", ""),
+            field("/material/Inline/metallic_roughness_texture", "path relative to the scene file", "", "glTF layout: roughness in G, metallic in B"),
+            field("/material/Inline/occlusion_texture", "path relative to the scene file", "", ""),
+            field("/material/Inline/emissive_texture", "path relative to the scene file", "", ""),
             field("/cast_shadows", "", "", ""),
             field("/receive_shadows", "", "", ""),
         ],
@@ -463,6 +471,36 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"mapper": "Aces", "exposure": 1.2}),
     },
     ComponentSection {
+        key: "rusting.environment_map",
+        summary: "Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere. Rough surfaces see it blurred. The first one found is used.",
+        gpu: NO_GPU,
+        example: || json!({"texture": "sky.png", "intensity": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.reflection_probe",
+        summary: "Box of half size extents around the object's position. Surfaces inside reflect the scene as seen from that position, projected onto the box walls, in place of the environment map. Captured when added or changed; up to four are used.",
+        gpu: "each probe renders the scene six times when captured",
+        example: || json!({"extents": [5.0, 3.0, 5.0], "intensity": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.fog",
+        summary: "Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre. Brighter toward the sun by sun_scatter; sky_affect fades the background too. The first one found is used.",
+        gpu: "a few instructions per pixel, plus one full-screen sky pass when sky_affect > 0",
+        example: || json!({"color": [0.55, 0.65, 0.75], "density": 0.02, "height": 0.0, "height_falloff": 0.1, "sun_scatter": 0.3, "sky_affect": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.bloom",
+        summary: "Glow around pixels brighter than threshold (linear, before exposure), spread over the screen before tone mapping. The first one found is used.",
+        gpu: "a half-resolution blur chain of about 12 compute passes",
+        example: || json!({"intensity": 0.5, "threshold": 1.0, "spread": 0.7}),
+    },
+    ComponentSection {
+        key: "rusting.ambient_occlusion",
+        summary: "Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres. Off on the Eco quality profile. The first one found is used.",
+        gpu: "a depth prepass plus two full-screen compute passes",
+        example: || json!({"radius": 1.0, "intensity": 1.0}),
+    },
+    ComponentSection {
         key: "rusting.background",
         summary: "Clear color behind the scene. The one on the entity with the lowest ID is used; without one the game keeps its render settings.",
         gpu: NO_GPU,
@@ -488,9 +526,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies.",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6, "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true}),
     },
     ComponentSection {
         key: "rusting.tween",
@@ -511,10 +549,28 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"count": 20, "speed": 4.0, "lifetime": 0.8, "particle_scale": 0.1, "gravity": 9.81, "on_collision": false}),
     },
     ComponentSection {
+        key: "rusting.fluid_block",
+        summary: "Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity. It runs every fixed tick, floats and sinks dynamic bodies with sphere colliders, and draws a smooth water surface when visible (show_particles adds a sphere per particle). CPU only, deterministic; a few thousand particles at most.",
+        gpu: NO_GPU,
+        example: || json!({"spacing": 0.1, "count_x": 6, "count_y": 6, "count_z": 6, "container_half_extents": [0.5, 0.5, 0.5], "iterations": 4, "viscosity": 0.01, "visible": true, "show_particles": false}),
+    },
+    ComponentSection {
+        key: "rusting.water",
+        summary: "Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored). Dynamic bodies with sphere, box or capsule colliders float in it, and flow_speed carries them along flow_direction, which also turns the waves. Deterministic and cheap; a long thin rectangle with a flow_speed is a river. Put it on an empty object.",
+        gpu: "one mesh of about resolution squared vertices, rewritten every fixed tick",
+        example: || json!({"size": [20.0, 20.0], "resolution": 64, "wave_height": 0.25, "wave_length": 4.0, "wave_speed": 1.0, "flow_direction": 0.0, "flow_speed": 0.0, "color": [0.1, 0.4, 0.7, 0.7]}),
+    },
+    ComponentSection {
         key: "rusting.hud",
         summary: "Text label or button drawn over the game view. A clicked button sends HudButtonPressed.",
         gpu: "a few egui triangles",
         example: || json!({"text": "Score: 0", "anchor": "TopRight", "offset": [24.0, 24.0], "font_size": 24.0, "color": [1.0, 0.9, 0.4, 1.0], "button": false, "requires": null}),
+    },
+    ComponentSection {
+        key: "rusting.input_action",
+        summary: "Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps. Bindings add to the ActionMap; the player.* actions are already bound.",
+        gpu: NO_GPU,
+        example: || json!({"action": "fire", "inputs": ["MouseLeft", "KeyF"]}),
     },
     ComponentSection {
         key: "rusting.counter",
@@ -568,13 +624,34 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
 
 /// The scene form of an entity holding every built-in section and every
 /// registered component at its default value.
-fn defaults() -> (Map<String, Value>, Map<String, Value>) {
+pub(crate) fn defaults() -> &'static (Map<String, Value>, Map<String, Value>) {
+    static DEFAULTS: std::sync::OnceLock<(
+        Map<String, Value>,
+        Map<String, Value>,
+    )> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(build_defaults)
+}
+
+fn build_defaults() -> (Map<String, Value>, Map<String, Value>) {
     let mut app = App::new();
     app.add_plugin(AssetPlugin)
         .expect("a new app accepts the asset plugin");
     let world = app.world_mut();
+    // Built from the asset defaults, so the scene form cannot drift from them.
+    let renderer = {
+        let mut assets = world.resource_mut::<crate::assets::AssetServer>();
+        let material = assets.materials.insert(Default::default());
+        crate::runtime::MeshRenderer {
+            mesh: assets.builtin_primitives
+                [&crate::assets::PrimitiveShape::Cube],
+            material,
+            cast_shadows: true,
+            receive_shadows: true,
+        }
+    };
     let entity = world
         .spawn((
+            renderer,
             SceneId(Uuid::nil()),
             Name("Default".into()),
             Transform::default(),
@@ -610,6 +687,9 @@ fn defaults() -> (Map<String, Value>, Map<String, Value>) {
         unreachable!("an entity saves as an object");
     };
     entity.remove("components");
+    // The document writes a cube as "BuiltinCube"; the docs list the
+    // primitive form.
+    entity["mesh_renderer"]["mesh"] = json!({"BuiltinPrimitive": "Cube"});
     (entity, components)
 }
 
@@ -792,14 +872,16 @@ pub fn catalog() -> Value {
         "physics_sync_readback_bytes": PhysicsSyncMode::STATE_READBACK_BYTES,
         "scene_patch": {
             "file": "JSON object: expected_revision (optional, from scene inspect), operations",
+            "ids": "id, parent and create's entity.parent take a UUID or the unique name of an entity",
             "paths": "JSON pointers into the entity's scene form with registered components parsed, as in scenario expect paths; /id cannot change",
             "operations": {
-                "create": "{\"op\": \"create\", \"entity\": {\"name\": \"Crate\", \"parent\": null}}: a missing id gets a new UUID",
+                "create": "{\"op\": \"create\", \"entity\": {\"name\": \"Crate\", \"parent\": null}}: a missing id gets a new UUID; fields left out of built-in sections take their defaults",
                 "set": "{\"op\": \"set\", \"id\": UUID, \"path\": \"/transform/position/1\", \"value\": 2.0, \"expected\": 1.0}: expected is optional",
                 "remove": "{\"op\": \"remove\", \"id\": UUID, \"path\": \"/collider\"}",
                 "reparent": "{\"op\": \"reparent\", \"id\": UUID, \"parent\": UUID or null}",
                 "duplicate": "{\"op\": \"duplicate\", \"id\": UUID, \"new_id\": UUID, \"name\": \"Copy\"}: one entity, no children; unnamed unless name is given",
                 "delete": "{\"op\": \"delete\", \"id\": UUID}: also deletes descendants",
+                "set_scene": "{\"op\": \"set_scene\", \"path\": \"/render/quality\", \"value\": \"High\"}: scene fields (name, render, simulation); expected is optional",
             },
             "errors": "SCENE_CONFLICT (revision or expected value differs), PATCH_OPERATION, PATCH_INVALID",
         },
@@ -808,9 +890,11 @@ pub fn catalog() -> Value {
             "steps": {
                 "press": "{\"tick\": 5, \"press\": \"player.jump\"}: press every input bound to the action before the tick's update",
                 "release": "{\"tick\": 6, \"release\": \"player.jump\"}",
-                "expect": "{\"tick\": 30, \"until\": 60, \"expect\": {\"entity\": \"Cube\", \"path\": \"/transform/position/1\", \"less_than\": 0.0}}: JSON pointer into the entity's scene form; equals (with tolerance), greater_than, less_than",
+                "pointer": "{\"tick\": 10, \"pointer\": [0.5, 0.5]}: moves the mouse cursor to this point of the view, as fractions of its width and height from the top-left corner",
+                "expect": "{\"tick\": 30, \"until\": 60, \"expect\": {\"entity\": \"Cube\", \"path\": \"/transform/position/1\", \"less_than\": 0.0}}: JSON pointer into the entity's scene form; equals (with tolerance), greater_than, less_than, or exists (false once an entity is despawned; empty path means the whole entity); until: an absolute tick; the check must hold every tick from `tick` through it; within: an absolute tick; passes on the first tick from `tick` through it that holds",
                 "expect_events": "{\"tick\": 60, \"expect_events\": {\"kind\": \"collision\", \"entity\": \"Cube\", \"at_least\": 1}}: events gameplay saw from tick 0",
                 "capture": "{\"tick\": 30, \"capture\": \"shots/tick30.png\"}: path relative to the scenario file; skipped without Vulkan",
+                "set": "{\"tick\": 0, \"set\": {\"entity\": \"Player\", \"path\": \"/transform/position\", \"value\": [0.0, 1.0, -12.0]}}: writes before the tick runs; path under /transform or /components/<name>, for example /components/rusting.counter/value",
             },
             "tick_length_seconds": 1.0 / 60.0,
         },

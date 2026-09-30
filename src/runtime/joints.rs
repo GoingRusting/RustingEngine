@@ -475,16 +475,17 @@ impl RowBuilder<'_> {
     }
 }
 
-/// Joints whose body and target (if any) are CPU bodies, in entity order.
+/// Joints whose body and target (if any) are CPU bodies, in body order.
 pub(super) fn gather_joints(
     world: &mut World,
     bodies: &[Body],
 ) -> Vec<JointLink> {
-    let find = |entity: Entity| {
-        bodies
-            .binary_search_by_key(&entity, |body| body.entity)
-            .ok()
-    };
+    let index: std::collections::HashMap<Entity, usize> = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| (body.entity, index))
+        .collect();
+    let find = |entity: Entity| index.get(&entity).copied();
     let mut links: Vec<_> = world
         .query::<(Entity, &Joint)>()
         .iter(world)
@@ -502,7 +503,8 @@ pub(super) fn gather_joints(
             })
         })
         .collect();
-    links.sort_unstable_by_key(|link| link.entity);
+    // Each joint sits on its own body, so body order is a stable order.
+    links.sort_unstable_by_key(|link| link.b);
     links
 }
 

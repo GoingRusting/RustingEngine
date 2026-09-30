@@ -1,0 +1,103 @@
+{
+ "name": "heist",
+ "ticks": 130,
+ "steps": [
+  {
+   "tick": 1,
+   "set": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "value": [
+     -10,
+     1,
+     8
+    ]
+   }
+  },
+  {
+   "tick": 2,
+   "expect": {
+    "entity": "Keys Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   },
+   "within": 15
+  },
+  {
+   "tick": 20,
+   "set": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "value": [
+     0,
+     1,
+     -12.5
+    ]
+   }
+  },
+  {
+   "tick": 21,
+   "press": "player.forward"
+  },
+  {
+   "tick": 22,
+   "expect": {
+    "entity": "Escaped Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   },
+   "until": 59
+  },
+  {
+   "tick": 60,
+   "set": {
+    "entity": "Keys Counter",
+    "path": "/components/rusting.counter/value",
+    "value": 3
+   }
+  },
+  {
+   "tick": 61,
+   "expect": {
+    "entity": "Escaped Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   },
+   "within": 70
+  },
+  {
+   "tick": 80,
+   "capture": "shots/escaped.png"
+  },
+  {
+   "tick": 90,
+   "release": "player.forward"
+  },
+  {
+   "tick": 100,
+   "press": "restart"
+  },
+  {
+   "tick": 101,
+   "release": "restart"
+  },
+  {
+   "tick": 102,
+   "expect": {
+    "entity": "Escaped Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   },
+   "within": 110
+  },
+  {
+   "tick": 102,
+   "expect": {
+    "entity": "Keys Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   },
+   "within": 110
+  }
+ ]
+}

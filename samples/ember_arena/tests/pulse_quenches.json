@@ -1,0 +1,14 @@
+{
+  "name": "A charged pulse quenches an ember in range and scores it",
+  "ticks": 140,
+  "steps": [
+    {"tick": 0, "set": {"entity": "Player", "path": "/transform/position", "value": [0.0, 1.0, -10.0]}},
+    {"tick": 70, "capture": "shots/before_pulse.png"},
+    {"tick": 75, "press": "pulse"},
+    {"tick": 76, "release": "pulse"},
+    {"tick": 77, "within": 80, "expect": {"entity": "Score", "path": "/components/rusting.counter/value", "equals": 1}},
+    {"tick": 80, "expect": {"entity": "Ember 1", "path": "", "exists": false}},
+    {"tick": 80, "until": 140, "expect": {"entity": "Burns", "path": "/components/rusting.counter/value", "equals": 0}},
+    {"tick": 80, "expect": {"entity": "Charge", "path": "/components/rusting.counter/value", "less_than": 10}}
+  ]
+}

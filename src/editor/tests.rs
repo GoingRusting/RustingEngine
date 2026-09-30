@@ -207,7 +207,7 @@ fn material_edits_copy_shared_materials_and_edit_owned_ones_in_place() {
     // drag frame.
     let blue = MaterialAsset {
         base_color: [0.0, 0.0, 1.0, 1.0],
-        ..red
+        ..red.clone()
     };
     super::view::set_material(world, edited, blue.clone());
     assert_eq!(material_of(world, edited), owned);
@@ -276,7 +276,7 @@ fn scene_render_settings_edits_are_undoable_scene_changes() {
 }
 
 #[test]
-fn scene_view_shading_applies_only_in_the_scene_workspace() {
+fn scene_view_shading_and_effects_apply_only_in_the_scene_workspace() {
     let mut app = App::new();
     app.add_plugin(EditorPlugin).unwrap();
     assert_eq!(editor_debug_view(app.world()), SceneDebugView::Lit);
@@ -285,10 +285,23 @@ fn scene_view_shading_applies_only_in_the_scene_workspace() {
         .resource_mut::<EditorGizmoSettings>()
         .shading = SceneDebugView::Normals;
     assert_eq!(editor_debug_view(app.world()), SceneDebugView::Normals);
+    let off = crate::rendering::scene_renderer::SceneEffects {
+        fog: false,
+        bloom: true,
+        ambient_occlusion: false,
+    };
+    app.world_mut()
+        .resource_mut::<EditorGizmoSettings>()
+        .effects = off;
+    assert_eq!(editor_scene_effects(app.world()), off);
 
     app.world_mut().resource_mut::<EditorState>().workspace =
         EditorWorkspace::Game;
     assert_eq!(editor_debug_view(app.world()), SceneDebugView::Lit);
+    assert_eq!(
+        editor_scene_effects(app.world()),
+        crate::rendering::scene_renderer::SceneEffects::default()
+    );
 }
 
 #[test]
@@ -559,12 +572,26 @@ fn dock_layout_round_trips_through_project_settings() {
         layout: EditorDockNode::default_layout(),
         active_area: 2,
         next_area_id: 5,
+        snap: Some((
+            true,
+            shortcuts::SnapSteps {
+                translate: 0.5,
+                ..shortcuts::SnapSteps::default()
+            },
+        )),
     };
     let json = serde_json::to_string(&file).unwrap();
     let restored: EditorLayoutFile = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.layout, file.layout);
     assert_eq!(restored.active_area, 2);
     assert_eq!(restored.next_area_id, 5);
+    assert_eq!(restored.snap, file.snap);
+    let old: EditorLayoutFile = serde_json::from_str(&json.replace(
+        r#","snap":[true,{"translate":0.5,"rotate_degrees":15.0,"scale":0.1}]"#,
+        "",
+    ))
+    .unwrap();
+    assert_eq!(old.snap, None);
 }
 
 #[test]
@@ -656,6 +683,8 @@ fn export_package_contains_executable_scene_assets_and_readme() {
     std::fs::write(&executable, "binary").unwrap();
     std::fs::write(project.join("build/main.rscene.bin"), "scene").unwrap();
     std::fs::write(project.join("assets/texture.png"), "texture").unwrap();
+    std::fs::create_dir_all(project.join("scenes")).unwrap();
+    std::fs::write(project.join("scenes/level_two.rscene"), "scene").unwrap();
 
     let exported = package_game_files(
         &project,
@@ -676,6 +705,7 @@ fn export_package_contains_executable_scene_assets_and_readme() {
     assert!(exported.join(executable_name).is_file());
     assert!(exported.join("build/main.rscene.bin").is_file());
     assert!(exported.join("assets/texture.png").is_file());
+    assert!(exported.join("scenes/level_two.rscene").is_file());
     assert!(exported.join("README.txt").is_file());
 
     // A Windows export from any system gets an .exe in its own folder.
@@ -1227,9 +1257,53 @@ fn shortcuts_area_lists_every_action_with_its_key() {
         "Undo",
         "Ctrl+Z",
         "Press a key...",
+        // Redo's second key, beside its waiting first one.
+        "Ctrl+Y",
         "Fly Camera",
         "Numpad0",
     ] {
+        assert!(texts.contains(expected), "{expected} missing from {texts}");
+    }
+}
+
+#[test]
+fn project_area_shows_lod_groups_and_the_resolved_auto_quality() {
+    use crate::rendering::scene_renderer::{Capability, RendererCapabilities};
+    let mut app = App::new();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    app.world_mut().insert_resource(AssetServer::default());
+    app.world_mut().insert_resource(RendererCapabilities {
+        device_name: String::new(),
+        integrated_gpu: true,
+        device_local_bytes: 16 << 30,
+        multi_draw_indirect: Capability::default(),
+        draw_indirect_count: Capability::default(),
+        bindless_textures: Capability::default(),
+        memory_budget: Capability::default(),
+        sampler_anisotropy: Capability::default(),
+        timestamp_queries: false,
+        msaa_samples: 1,
+        msaa_2x: false,
+    });
+    app.world_mut().resource_mut::<EditorState>().dock_layout =
+        EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Project,
+        };
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+    let mut texts = String::new();
+    for clipped in &output.shapes {
+        if let egui::Shape::Text(text) = &clipped.shape {
+            texts.push_str(text.galley.text());
+            texts.push('\n');
+        }
+    }
+    // Auto picks Eco on an integrated GPU.
+    for expected in ["LOD GROUPS", "Resolved quality", "Eco"] {
         assert!(texts.contains(expected), "{expected} missing from {texts}");
     }
 }
@@ -1953,4 +2027,85 @@ fn data_assets_are_created_edited_and_reloaded_from_the_editor() {
     std::fs::write(&broken, "{").unwrap();
     assert!(DataInspection::open(broken, None).error.is_some());
     let _ = std::fs::remove_dir_all(folder);
+}
+
+#[test]
+fn edit_mode_builds_tile_maps_without_listing_or_saving_tiles() {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+    let map = world
+        .spawn((
+            SceneId::default(),
+            Name("Level".into()),
+            Transform::default(),
+            crate::runtime::TileMap {
+                rows: vec!["##".into()],
+                tiles: std::collections::BTreeMap::from([(
+                    "#".into(),
+                    crate::runtime::TileKind::default(),
+                )]),
+                ..crate::runtime::TileMap::default()
+            },
+        ))
+        .id();
+    let tiles = |world: &mut World| {
+        world.query::<&crate::runtime::TileOf>().iter(world).count()
+    };
+    crate::runtime::run_edit_mode_systems(world);
+    // Two drawn tiles and one merged collider.
+    assert_eq!(tiles(world), 3);
+    crate::runtime::run_edit_mode_systems(world);
+    assert_eq!(tiles(world), 3, "unchanged maps are not rebuilt");
+    let listed = hierarchy::collect_entities(world);
+    assert_eq!(
+        listed.iter().map(|item| item.entity).collect::<Vec<_>>(),
+        vec![map]
+    );
+    let saved = crate::runtime::scene_document(world, "Level").unwrap();
+    assert_eq!(saved.entities.len(), 1);
+
+    world.despawn(map);
+    crate::runtime::run_edit_mode_systems(world);
+    assert_eq!(tiles(world), 0);
+}
+
+#[test]
+fn fluid_particles_are_not_listed_in_the_hierarchy() {
+    let mut world = World::new();
+    let volume = world.spawn(crate::Transform::default()).id();
+    world.spawn((
+        crate::Transform::default(),
+        crate::runtime::FluidParticle(volume),
+    ));
+    let listed = hierarchy::collect_entities(&mut world);
+    assert_eq!(
+        listed.iter().map(|item| item.entity).collect::<Vec<_>>(),
+        vec![volume]
+    );
+}
+
+#[test]
+fn menu_actions_show_their_shortcut() {
+    let context = Context::default();
+    let output = context.run(egui::RawInput::default(), |context| {
+        egui::CentralPanel::default().show(context, |ui| {
+            gui_elements::EditorTheme::menu_shortcut_action(
+                ui,
+                "Undo",
+                Some("Ctrl+Z"),
+                true,
+            );
+        });
+    });
+    let texts: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert!(texts.contains(&"Undo".into()), "{texts:?}");
+    assert!(texts.contains(&"Ctrl+Z".into()), "{texts:?}");
 }

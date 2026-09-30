@@ -1,0 +1,534 @@
+{
+  "format_version": 7,
+  "name": "Crate Keeper",
+  "entities": [
+    {
+      "id": "d066db54-d430-4d88-a7f6-9fad40dc0f4f",
+      "parent": null,
+      "name": "Level",
+      "classes": [],
+      "transform": {
+        "position": [
+          -4.0,
+          3.5,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.tile_map": "{\"rows\":[\"########\",\"#,,,,,,#\",\"#,,,o,,#\",\"#,,,,o,#\",\"#,,,,,,#\",\"#,,,,o,#\",\"########\"],\"tile_size\":1.0,\"tiles\":{\"#\":{\"color\":[0.24,0.27,0.34,1.0],\"solid\":true,\"texture\":null},\",\":{\"color\":[0.13,0.14,0.18,1.0],\"solid\":false},\"o\":{\"color\":[0.95,0.75,0.2,1.0],\"solid\":false}}}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "f7095128-184f-4388-bc02-91f8a7d03a2e",
+      "parent": null,
+      "name": "Player",
+      "classes": [],
+      "transform": {
+        "position": [
+          -1.5,
+          -2.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "b6053968-fa91-485c-96ea-71215fa257a7",
+      "parent": "f7095128-184f-4388-bc02-91f8a7d03a2e",
+      "name": "Player Sprite",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.7,
+          0.7,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.25,
+              0.65,
+              0.95,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 1.0,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": false
+      },
+      "camera": null,
+      "visible": true,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "dfa3631d-c873-4415-9e4e-19bfdea5a4d6",
+      "parent": null,
+      "name": "Game Camera",
+      "classes": [],
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          10.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh_renderer": null,
+      "camera": {
+        "projection": {
+          "Orthographic": {
+            "vertical_size": 9.0,
+            "near": 0.1,
+            "far": 100.0
+          }
+        },
+        "active": true,
+        "priority": 10
+      },
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "bb00e3fb-eacb-4521-8a6d-ae0b96dc8343",
+      "parent": null,
+      "name": "Help",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopLeft\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":18.0,\"offset\":[16.0,16.0],\"requires\":null,\"text\":\"Arrows or WASD move. Push every crate onto a gold square.\\nR starts over.\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "c09e8e17-c972-4d84-8e85-8f07fe9cca89",
+      "parent": null,
+      "name": "Crate 1",
+      "classes": [
+        "crate"
+      ],
+      "transform": {
+        "position": [
+          -1.5,
+          1.0,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.7,
+              0.42,
+              0.22,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": false
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "286849db-7872-4899-bd6a-15745abe6c70",
+      "parent": null,
+      "name": "Crate 2",
+      "classes": [
+        "crate"
+      ],
+      "transform": {
+        "position": [
+          -0.5,
+          0.0,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.7,
+              0.42,
+              0.22,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": false
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "fa97ae19-4bf1-4863-8d0e-710ca8ebc744",
+      "parent": null,
+      "name": "Crate 3",
+      "classes": [
+        "crate"
+      ],
+      "transform": {
+        "position": [
+          -0.5,
+          -1.0,
+          0.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          1.0
+        ]
+      },
+      "mesh_renderer": {
+        "mesh": {
+          "BuiltinPrimitive": "Quad"
+        },
+        "material": {
+          "Inline": {
+            "model": "Unlit",
+            "alpha_mode": "Opaque",
+            "base_color": [
+              0.7,
+              0.42,
+              0.22,
+              1.0
+            ],
+            "emissive": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "metallic": 0.0,
+            "roughness": 0.5,
+            "transmission": 0.0,
+            "ior": 1.5,
+            "thickness": 0.0,
+            "base_color_texture": null,
+            "normal_texture": null,
+            "metallic_roughness_texture": null,
+            "occlusion_texture": null,
+            "emissive_texture": null
+          }
+        },
+        "cast_shadows": false,
+        "receive_shadows": false
+      },
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {},
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "06bc4891-5a47-49d8-ba45-e12d68d68e9b",
+      "parent": null,
+      "name": "Moves",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"moves\",\"target\":null,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "00769b99-8cf3-41ae-9e57-bbf3f5c48c9e",
+      "parent": null,
+      "name": "Placed",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.counter": "{\"name\":\"placed\",\"target\":3,\"value\":0}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "b7ee4635-25ea-48c2-a8d9-f9a37b4e1d8b",
+      "parent": null,
+      "name": "Restart Input",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.input_action": "{\"action\":\"restart\",\"inputs\":[\"KeyR\"]}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "77e98e56-03f7-4d48-b6f0-40ea161b3bca",
+      "parent": null,
+      "name": "Moves Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"TopRight\",\"button\":false,\"color\":[1.0,1.0,1.0,1.0],\"font_size\":18,\"offset\":[16,16],\"requires\":null,\"text\":\"Moves: {moves}\\nOn target: {placed} / 3\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    },
+    {
+      "id": "819e49d1-ef50-4ef5-929b-0c3afc5b98a5",
+      "parent": null,
+      "name": "Win Text",
+      "classes": [],
+      "transform": null,
+      "mesh_renderer": null,
+      "camera": null,
+      "visible": null,
+      "physics_body": null,
+      "rigid_body": null,
+      "collider": null,
+      "collision_layers": null,
+      "gpu_physics_watch": null,
+      "components": {
+        "rusting.hud": "{\"anchor\":\"Bottom\",\"button\":false,\"color\":[0.95,0.8,0.3,1.0],\"font_size\":30,\"offset\":[0,24],\"requires\":\"placed\",\"text\":\"Solved in {moves} moves! R plays again.\"}"
+      },
+      "directional_light": null,
+      "point_light": null,
+      "spot_light": null
+    }
+  ],
+  "render": {
+    "quality": "Balanced",
+    "culling": "Auto"
+  },
+  "simulation": {
+    "determinism": "Off"
+  }
+}

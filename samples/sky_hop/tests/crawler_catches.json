@@ -1,0 +1,9 @@
+{
+ "name": "the crawler sends the player back to the start",
+ "ticks": 200,
+ "steps": [
+  {"tick": 1, "set": {"entity": "Player", "path": "/transform/position", "value": [25.0, 0.51, 0.0]}},
+  {"tick": 1, "within": 190, "expect": {"entity": "Falls", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 199, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 2.5, "tolerance": 0.1}}
+ ]
+}

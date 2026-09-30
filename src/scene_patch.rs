@@ -40,7 +40,7 @@ pub enum PatchOperation {
     /// Replaces or inserts the value at `path`. With `expected`, the current
     /// value must equal it first.
     Set {
-        id: Uuid,
+        id: EntityRef,
         path: String,
         value: Value,
         #[serde(default)]
@@ -49,24 +49,69 @@ pub enum PatchOperation {
     /// Removes an object key or array element, for example an optional
     /// section such as `/collider`.
     Remove {
-        id: Uuid,
+        id: EntityRef,
         path: String,
         #[serde(default)]
         expected: Option<Value>,
     },
     /// Moves an entity under `parent`, or to the root with `null`.
-    Reparent { id: Uuid, parent: Option<Uuid> },
+    Reparent {
+        id: EntityRef,
+        parent: Option<EntityRef>,
+    },
     /// Copies one entity without its children. The copy has no name unless
     /// `name` is given, because scene names are unique.
     Duplicate {
-        id: Uuid,
+        id: EntityRef,
         #[serde(default)]
         new_id: Option<Uuid>,
         #[serde(default)]
         name: Option<String>,
     },
     /// Deletes an entity and all of its descendants.
-    Delete { id: Uuid },
+    Delete { id: EntityRef },
+    /// Like `set`, on the scene itself: `/name`, `/render/...` or
+    /// `/simulation/...`. Entities and the format version are off limits.
+    SetScene {
+        path: String,
+        value: Value,
+        #[serde(default)]
+        expected: Option<Value>,
+    },
+}
+
+/// An entity addressed by persistent ID or by its unique name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EntityRef {
+    Id(Uuid),
+    Name(String),
+}
+
+impl From<Uuid> for EntityRef {
+    fn from(id: Uuid) -> Self {
+        Self::Id(id)
+    }
+}
+
+impl EntityRef {
+    fn resolve(&self, entities: &[Value]) -> Result<Uuid, String> {
+        let name = match self {
+            Self::Id(id) => return Ok(*id),
+            Self::Name(name) => name,
+        };
+        let mut found = entities
+            .iter()
+            .filter(|entity| {
+                entity.get("name").and_then(Value::as_str) == Some(name)
+            })
+            .filter_map(entity_id);
+        match (found.next(), found.next()) {
+            (Some(id), None) => Ok(id),
+            (None, _) => Err(format!("no entity is named `{name}`")),
+            _ => Err(format!("more than one entity is named `{name}`")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -296,6 +341,14 @@ fn apply_operation(
                 return Err(fail("`entity` must be an object".into()));
             };
             let mut object = object.clone();
+            if let Some(Value::String(parent)) = object.get("parent") {
+                if parent.parse::<Uuid>().is_err() {
+                    let id = EntityRef::Name(parent.clone())
+                        .resolve(entities)
+                        .map_err(fail)?;
+                    object.insert("parent".into(), id.to_string().into());
+                }
+            }
             object
                 .entry("id")
                 .or_insert_with(|| Value::String(Uuid::new_v4().to_string()));
@@ -307,32 +360,45 @@ fn apply_operation(
             value,
             expected,
         } => {
-            let position = find(entities, *id)?;
+            let id = id.resolve(entities).map_err(fail)?;
+            let position = find(entities, id)?;
             let entity = &mut entities[position];
-            check_expected(index, *id, entity, path, expected.as_ref())?;
+            check_expected(index, id, entity, path, expected.as_ref())?;
             set_pointer(entity, path, value.clone()).map_err(fail)?;
         }
         PatchOperation::Remove { id, path, expected } => {
-            let position = find(entities, *id)?;
+            let id = id.resolve(entities).map_err(fail)?;
+            let position = find(entities, id)?;
             let entity = &mut entities[position];
-            check_expected(index, *id, entity, path, expected.as_ref())?;
+            check_expected(index, id, entity, path, expected.as_ref())?;
             remove_pointer(entity, path).map_err(fail)?;
         }
         PatchOperation::Reparent { id, parent } => {
-            let position = find(entities, *id)?;
+            let id = id.resolve(entities).map_err(fail)?;
+            let parent = parent
+                .as_ref()
+                .map(|parent| parent.resolve(entities))
+                .transpose()
+                .map_err(fail)?;
+            let position = find(entities, id)?;
             let entity = &mut entities[position];
             entity["parent"] = serde_json::to_value(parent).unwrap_or_default();
         }
         PatchOperation::Duplicate { id, new_id, name } => {
-            let mut copy = entities[find(entities, *id)?].clone();
+            let id = id.resolve(entities).map_err(fail)?;
+            let mut copy = entities[find(entities, id)?].clone();
             copy["id"] =
                 Value::String(new_id.unwrap_or_else(Uuid::new_v4).to_string());
             copy["name"] = name.clone().map_or(Value::Null, Value::String);
             entities.push(copy);
         }
+        PatchOperation::SetScene { .. } => {
+            unreachable!("apply_patch handles scene operations")
+        }
         PatchOperation::Delete { id } => {
-            find(entities, *id)?;
-            let removed = descendants(entities, *id);
+            let id = id.resolve(entities).map_err(fail)?;
+            find(entities, id)?;
+            let removed = descendants(entities, id);
             entities.retain(|entity| {
                 entity_id(entity).is_none_or(|id| !removed.contains(&id))
             });
@@ -371,6 +437,59 @@ fn diff_values(
     }
 }
 
+/// Fills fields left out of built-in sections from `default`, so a patch can
+/// write `{"transform": {"position": [0, 1, 0]}}`. An enum variant other than
+/// the default one is kept as given. A key the default does not have is an
+/// error, since serde would drop it and the field would silently take its
+/// default. `path` names the section for the message.
+// Registered components pass `strict: false`: reflection already rejects
+// their unknown fields, and a map default holds sample keys.
+// ponytail: an object whose default is empty (a map) is not checked.
+fn fill_defaults(
+    value: &mut Value,
+    default: &Value,
+    path: &str,
+    strict: bool,
+) -> Result<(), String> {
+    let (Value::Object(value), Value::Object(default)) = (value, default)
+    else {
+        return Ok(());
+    };
+    let variant = |key: &String| key.starts_with(char::is_uppercase);
+    if default.len() == 1
+        && default.keys().all(variant)
+        && !default.keys().all(|key| value.contains_key(key))
+    {
+        return Ok(());
+    }
+    if strict && !default.is_empty() {
+        if let Some(key) = value.keys().find(|key| !default.contains_key(*key))
+        {
+            let known: Vec<&str> = default.keys().map(String::as_str).collect();
+            return Err(format!(
+                "unknown field `{key}` in `{path}`; known fields: {}",
+                known.join(", ")
+            ));
+        }
+    }
+    for (key, default) in default {
+        match value.get_mut(key) {
+            Some(value) => {
+                fill_defaults(
+                    value,
+                    default,
+                    &format!("{path}/{key}"),
+                    strict,
+                )?;
+            }
+            None => {
+                value.insert(key.clone(), default.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Applies `patch` to a parsed scene. Nothing changes on error.
 pub fn apply_patch(
     document: &SceneDocument,
@@ -379,8 +498,65 @@ pub fn apply_patch(
     let before: Vec<Value> =
         document.entities.iter().map(entity_form).collect();
     let mut entities = before.clone();
+    let Ok(Value::Object(mut settings)) = serde_json::to_value(document) else {
+        unreachable!("a scene serializes as an object");
+    };
+    settings.remove("entities");
+    let mut settings = Value::Object(settings);
+    let settings_before = settings.clone();
     for (index, operation) in patch.operations.iter().enumerate() {
+        if let PatchOperation::SetScene {
+            path,
+            value,
+            expected,
+        } = operation
+        {
+            if path.is_empty()
+                || path.starts_with("/entities")
+                || path == "/format_version"
+            {
+                return Err(PatchError::Operation {
+                    operation: index,
+                    message: format!("`{path}` cannot change with set_scene"),
+                });
+            }
+            check_expected(
+                index,
+                Uuid::nil(),
+                &settings,
+                path,
+                expected.as_ref(),
+            )?;
+            set_pointer(&mut settings, path, value.clone()).map_err(
+                |message| PatchError::Operation {
+                    operation: index,
+                    message,
+                },
+            )?;
+            continue;
+        }
         apply_operation(&mut entities, index, operation)?;
+    }
+    let (defaults, component_defaults) = crate::schema::defaults();
+    for entity in &mut entities {
+        let Value::Object(sections) = entity else {
+            continue;
+        };
+        for (key, section) in sections.iter_mut() {
+            if let Some(default) = defaults.get(key) {
+                fill_defaults(section, default, key, true)
+                    .map_err(PatchError::Invalid)?;
+            }
+        }
+        if let Some(Value::Object(components)) = sections.get_mut("components")
+        {
+            for (key, component) in components {
+                if let Some(default) = component_defaults.get(key) {
+                    fill_defaults(component, default, key, false)
+                        .map_err(PatchError::Invalid)?;
+                }
+            }
+        }
     }
 
     // Back to stored form: registered components are JSON strings.
@@ -392,8 +568,9 @@ pub fn apply_patch(
             }
         }
     }
-    let mut patched = document.clone();
-    patched.entities = serde_json::from_value(Value::Array(stored))
+    let mut scene = settings.clone();
+    scene["entities"] = Value::Array(stored);
+    let patched: SceneDocument = serde_json::from_value(scene)
         .map_err(|error| PatchError::Invalid(error.to_string()))?;
     validate_scene_structure(&patched)
         .map_err(|error| PatchError::Invalid(error.to_string()))?;
@@ -423,6 +600,17 @@ pub fn apply_patch(
         unvalidated_components,
         written: false,
     };
+    let mut leaves = Vec::new();
+    diff_values(String::new(), &settings_before, &settings, &mut leaves);
+    outcome
+        .changes
+        .extend(leaves.into_iter().map(|(path, before, after)| FieldChange {
+            id: Uuid::nil(),
+            name: None,
+            path,
+            before,
+            after,
+        }));
     for (id, after) in &new {
         let Some(before) = old.get(id) else { continue };
         let mut leaves = Vec::new();
@@ -547,6 +735,139 @@ mod tests {
 
     fn patch(value: Value) -> ScenePatch {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_misspelled_field_in_a_section_is_an_error() {
+        let path = scene_file("misspelled");
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set", "id": CUBE, "path": "/directional_light",
+                 "value": {"intensity": 5.0}},
+            ]})),
+            true,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("unknown field `intensity`"), "{message}");
+        assert!(message.contains("illuminance"), "{message}");
+    }
+
+    #[test]
+    fn a_full_material_and_light_pass_the_field_check() {
+        let path = scene_file("full-material");
+        let (defaults, _) = crate::schema::defaults();
+        let mut material = defaults["mesh_renderer"].clone();
+        material["material"]["Inline"]["transmission"] = json!(0.5);
+        patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set", "id": CUBE, "path": "/mesh_renderer", "value": material},
+                {"op": "set", "id": LAMP, "path": "/directional_light",
+                 "value": {"illuminance": 5.0}},
+            ]})),
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn created_sections_take_defaults_for_missing_fields() {
+        let path = scene_file("defaults");
+        patch_scene_file(&path, &patch(json!({"operations": [
+            {"op": "create", "entity": {"id": "00000000-0000-0000-0000-000000000005", "name": "Gem",
+             "transform": {"position": [1.0, 2.0, 3.0]},
+             "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Sphere"},
+                               "material": {"Inline": {"base_color": [1.0, 0.0, 0.0, 1.0]}}},
+             "collider": {"shape": {"Sphere": {"radius": 0.5}}, "sensor": true},
+             "components": {"rusting.counter": {"name": "gems"}}}},
+        ]})), false)
+        .unwrap();
+        let scene =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let gem = entity_form(&scene.entities[2]);
+        assert_eq!(gem["transform"]["scale"], json!([1.0, 1.0, 1.0]));
+        assert_eq!(
+            gem["mesh_renderer"]["mesh"],
+            json!({"BuiltinPrimitive": "Sphere"})
+        );
+        assert_eq!(
+            gem["mesh_renderer"]["material"]["Inline"]["roughness"],
+            json!(0.5)
+        );
+        assert_eq!(
+            gem["collider"]["shape"],
+            json!({"Sphere": {"radius": 0.5}})
+        );
+        assert_eq!(gem["collider"]["friction"], json!(0.5));
+        assert_eq!(gem["camera"], Value::Null, "absent sections stay absent");
+        assert_eq!(
+            gem["components"]["rusting.counter"],
+            json!({"name": "gems", "value": 0, "target": null})
+        );
+    }
+
+    #[test]
+    fn set_scene_changes_scene_fields_but_not_entities() {
+        let path = scene_file("settings");
+        let outcome = patch_scene_file(&path, &patch(json!({"operations": [
+            {"op": "set_scene", "path": "/name", "value": "Level 1", "expected": "Main"},
+        ]})), false)
+        .unwrap();
+        assert_eq!(outcome.changes[0].id, Uuid::nil());
+        assert_eq!(outcome.changes[0].path, "/name");
+        let scene =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(scene.name, "Level 1");
+        assert_eq!(scene.entities.len(), 2);
+
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set_scene", "path": "/entities/0", "value": null},
+            ]})),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot change"), "{error}");
+
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set_scene", "path": "", "value": {"format_version": 1}},
+            ]})),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot change"), "{error}");
+    }
+
+    #[test]
+    fn operations_address_entities_by_unique_name() {
+        let path = scene_file("names");
+        patch_scene_file(&path, &patch(json!({"operations": [
+            {"op": "create", "entity": {"name": "Shelf", "parent": "Cube"}},
+            {"op": "set", "id": "Shelf", "path": "/visible", "value": false},
+            {"op": "reparent", "id": "Lamp", "parent": "Shelf"},
+        ]})), false)
+        .unwrap();
+        let scene =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let shelf = &scene.entities[2];
+        assert_eq!(shelf.parent, Some(CUBE.parse().unwrap()));
+        assert_eq!(shelf.visible, Some(false));
+        assert_eq!(scene.entities[1].parent, Some(shelf.id));
+
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "delete", "id": "Nobody"},
+            ]})),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no entity is named `Nobody`"));
     }
 
     #[test]

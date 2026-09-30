@@ -10,6 +10,8 @@ mod components;
 mod cpu_physics;
 mod determinism;
 mod events;
+pub mod fluid;
+pub mod fluid_surface;
 mod game_feel;
 pub(crate) mod hierarchy;
 mod hybrid_physics;
@@ -33,18 +35,25 @@ mod time;
 mod two_d;
 #[cfg(feature = "ui")]
 mod ui;
+pub mod water;
 
-pub use actions::{ActionMap, InputBinding};
+pub use actions::{
+    bind_input_actions, parse_input, ActionMap, InputAction, InputBinding,
+};
 pub use classes::ClassIndex;
 pub use components::*;
-pub(crate) use cpu_physics::gpu_shape_words;
+pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
     Articulation, AxisMotion, CharacterMove, CollisionEvent, Contact,
     GpuCollider, Joint, JointAxis, JointBroken, JointKind, JointMotor,
-    JointSpring, PhysicsWorld, RayHit, Sleeping, SLEEP_STEPS,
+    JointSpring, NextSpawnOrder, PhysicsWorld, RayHit, Sleeping, SpawnOrder,
+    SLEEP_STEPS,
 };
 pub use determinism::*;
 pub use events::EventQueue;
+pub use fluid::{
+    Fluid, FluidBlock, FluidParticle, FluidSettings, FluidSurface, FluidVolume,
+};
 pub use game_feel::*;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
@@ -75,6 +84,7 @@ pub use time::{FrameTime, RandomSeed, TimeControl};
 pub use two_d::*;
 #[cfg(feature = "ui")]
 pub use ui::RuntimeUi;
+pub use water::{WaterBody, WaterMesh};
 
 use std::hash::Hasher;
 use std::time::{Duration, Instant};
@@ -148,6 +158,10 @@ pub struct App {
     plugins: Vec<&'static str>,
     replay_recorder: Option<ReplayRecorder>,
     snapshot_types: snapshot::SnapshotTypes,
+    /// The last frame hit the fixed-step cap and its steps took longer than
+    /// the time they simulate; see [`App::update`].
+    overloaded: bool,
+    overload_reported: bool,
 }
 
 impl Default for App {
@@ -201,6 +215,8 @@ impl Default for App {
             plugins: Vec::new(),
             replay_recorder: None,
             snapshot_types: snapshot::SnapshotTypes::default(),
+            overloaded: false,
+            overload_reported: false,
         };
         snapshot::register_engine_types(&mut app.snapshot_types);
         app.add_event::<ClickEvent>();
@@ -222,10 +238,18 @@ impl Default for App {
                 game_feel::update_burst_particles,
                 game_feel::fire_bursts,
                 game_feel::advance_tweens,
+                fluid::spawn_fluid_volumes,
+                fluid::couple_fluids,
+                fluid::step_fluids,
+                fluid::sync_fluid_visuals,
+                fluid::sync_fluid_surfaces,
+                water::float_in_water,
+                water::sync_water,
             )
                 .chain(),
         );
         app.add_system(ScheduleStage::Update, player::player_look);
+        app.add_system(ScheduleStage::Update, actions::bind_input_actions);
         app.add_event::<SoundEvent>();
         app.add_event::<HudButtonPressed>();
         #[cfg(feature = "ui")]
@@ -235,6 +259,7 @@ impl Default for App {
             ScheduleStage::Update,
             game_feel::apply_scene_background,
         );
+        app.add_system(ScheduleStage::Update, game_feel::load_environment_maps);
         app.add_system(ScheduleStage::Update, two_d::platformer_jump);
         app
     }
@@ -536,10 +561,36 @@ impl App {
     }
 
     /// Advances every schedule once using a caller-provided real-frame delta.
+    ///
+    /// When the fixed steps take longer than the time they simulate (a
+    /// debug build, too many bodies), catching up would make every frame
+    /// slower than the last. The frame after such a frame counts as one
+    /// fixed step long, so the game runs in slow motion instead of
+    /// freezing, and a warning is printed once.
     pub fn update(
         &mut self,
         real_delta: Duration,
     ) -> Result<FrameReport, AppError> {
+        let control = self.world.resource::<TimeControl>();
+        // Clamped before recording, so a replay steps the same way. One
+        // fixed step of scaled time, whatever `time_scale` is.
+        let real_delta = match control.time_scale {
+            scale if self.overloaded && scale > 0.0 && scale.is_finite() => {
+                real_delta.min(control.fixed_delta.div_f64(scale))
+            }
+            _ => real_delta,
+        };
+        self.update_exact(real_delta)
+    }
+
+    /// [`Self::update`] without the slow-motion clamp. Replay uses it: the
+    /// recorded delta is already clamped, and whether this machine is
+    /// overloaded must not change how a replay steps.
+    pub(crate) fn update_exact(
+        &mut self,
+        real_delta: Duration,
+    ) -> Result<FrameReport, AppError> {
+        let fixed_delta = self.world.resource::<TimeControl>().fixed_delta;
         if !self.startup_complete {
             self.startup.run(&mut self.world);
             self.startup_complete = true;
@@ -570,6 +621,21 @@ impl App {
             recorder.frame_hashes(&self.world, fixed_steps);
         }
         let physics = start.elapsed();
+        let cap = self.world.resource::<TimeControl>().max_fixed_steps;
+        let slow = physics > fixed_delta.saturating_mul(fixed_steps);
+        // Enter slow motion only on a capped frame; leave it once the steps
+        // keep up again.
+        if fixed_steps > 0 {
+            self.overloaded =
+                slow && (self.overloaded || fixed_steps >= cap.max(2));
+        }
+        if self.overloaded && !self.overload_reported {
+            self.overload_reported = true;
+            eprintln!(
+                "warning: {fixed_steps} fixed steps took {physics:.0?} but simulate {:.0?}; the game now runs in slow motion. A debug build of the engine is the usual cause: add `[profile.dev.package.\"*\"] opt-level = 3` to the game's Cargo.toml, or use fewer bodies.",
+                fixed_delta.saturating_mul(fixed_steps)
+            );
+        }
         #[cfg(feature = "ui")]
         if let Some(mut ui) = self.world.get_resource_mut::<RuntimeUi>() {
             ui.begin_pass();
@@ -679,5 +745,33 @@ impl EngineBuilder {
             app.plugins.push(name);
         }
         Ok(app)
+    }
+}
+
+/// Systems registered once by [`run_edit_mode_systems`], so their change
+/// detection carries over from one frame to the next.
+#[derive(bevy_ecs::prelude::Resource)]
+struct EditModeSystems([bevy_ecs::system::SystemId; 3]);
+
+/// Runs the scene-data systems whose output the editor needs while editing,
+/// when no App schedule runs: tile maps build their tiles and
+/// `rusting.background` sets the clear color.
+pub fn run_edit_mode_systems(world: &mut World) {
+    let systems = match world.get_resource::<EditModeSystems>() {
+        Some(systems) => systems.0,
+        None => {
+            let systems = [
+                world.register_system(two_d::build_tile_maps),
+                world.register_system(game_feel::apply_scene_background),
+                world.register_system(game_feel::load_environment_maps),
+            ];
+            world.insert_resource(EditModeSystems(systems));
+            systems
+        }
+    };
+    for system in systems {
+        if let Err(error) = world.run_system(system) {
+            eprintln!("edit mode system: {error}");
+        }
     }
 }

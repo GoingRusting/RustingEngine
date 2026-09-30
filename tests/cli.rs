@@ -49,7 +49,10 @@ fn repository_project_inspects_validates_and_cooks() {
     assert!(output.status.success(), "{scene}");
     assert!(scene["data"]["entity_count"].as_u64().unwrap() > 0);
     assert_eq!(scene["data"]["scene_version"], 3);
-    assert_eq!(scene["data"]["loaded_scene_version"], 7);
+    assert_eq!(
+        scene["data"]["loaded_scene_version"],
+        rusting_engine::runtime::SCENE_FORMAT_VERSION
+    );
     let (output, validated) = run(&["validate", root]);
     assert!(output.status.success(), "{validated}");
 }

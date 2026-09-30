@@ -1,0 +1,13 @@
+{
+ "name": "A shot aimed away from the drone flies off and is removed",
+ "ticks": 160,
+ "steps": [
+  {"tick": 1, "pointer": [0.5, 0.1]},
+  {"tick": 100, "press": "fire"},
+  {"tick": 101, "release": "fire"},
+  {"tick": 110, "expect": {"entity": "Bolt 1", "path": "/transform/position/2", "less_than": -2.0}},
+  {"tick": 110, "within": 150, "expect": {"entity": "Bolt 1", "path": "", "exists": false}},
+  {"tick": 155, "expect": {"entity": "Kills Counter", "path": "/components/rusting.counter/value", "equals": 0}},
+  {"tick": 155, "expect": {"entity": "Drone 1", "path": "", "exists": true}}
+ ]
+}

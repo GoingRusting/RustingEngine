@@ -1,0 +1,15 @@
+{
+ "name": "The fifth drone to reach the core ends the game, and R restarts it",
+ "ticks": 430,
+ "steps": [
+  {"tick": 0, "set": {"entity": "Breaches Counter", "path": "/components/rusting.counter/value", "value": 4}},
+  {"tick": 0, "set": {"entity": "Core Counter", "path": "/components/rusting.counter/value", "value": 1}},
+  {"tick": 200, "within": 400, "expect": {"entity": "Core Counter", "path": "/components/rusting.counter/value", "equals": 0}},
+  {"tick": 400, "capture": "shots/core_fell.png"},
+  {"tick": 400, "expect": {"entity": "Drone 1", "path": "", "exists": false}},
+  {"tick": 410, "press": "restart"},
+  {"tick": 411, "release": "restart"},
+  {"tick": 420, "expect": {"entity": "Core Counter", "path": "/components/rusting.counter/value", "equals": 5}},
+  {"tick": 420, "expect": {"entity": "Breaches Counter", "path": "/components/rusting.counter/value", "equals": 0}}
+ ]
+}

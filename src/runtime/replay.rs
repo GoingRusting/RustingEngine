@@ -180,7 +180,7 @@ fn play_frame(
         current.clone_from(input);
     }
     let report = app
-        .update(Duration::from_nanos(frame.delta_nanos))
+        .update_exact(Duration::from_nanos(frame.delta_nanos))
         .map_err(ReplayError::App)?;
     Ok(app
         .world()

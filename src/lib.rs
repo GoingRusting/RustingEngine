@@ -49,15 +49,18 @@ pub use runtime::{
 #[cfg(feature = "window")]
 pub mod prelude {
     pub use crate::project_runner::{
-        CubeSpawn, GameObject, GameResult, GameScene, GpuBodySettings,
-        SphereSpawn,
+        CubeSpawn, GameObject, GameResult, GameScene, GameSnapshot,
+        GpuBodySettings, InitialState, RayHit, SphereSpawn,
     };
     pub use crate::runtime::{
         FrameTime, GpuCondition, GpuEventMode, GpuEventPayload,
-        GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch, ObjectClasses,
-        PhysicsSolver,
+        GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch, Name, ObjectClasses,
+        PhysicsSolver, PhysicsWorld, PlayerController, RigidBody,
+        RigidBodyKind,
     };
     pub use crate::rusting_game;
     pub use crate::Transform;
     pub use crate::{AlphaMode, MaterialAsset, MaterialModel};
+    pub use bevy_ecs::entity::Entity;
+    pub use bevy_ecs::world::World;
 }

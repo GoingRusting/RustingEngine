@@ -1,0 +1,11 @@
+{
+ "name": "Holding past full power lets the power fall back",
+ "ticks": 120,
+ "steps": [
+  {"tick": 1, "pointer": [0.5, 0.25]},
+  {"tick": 10, "press": "putt"},
+  {"tick": 69, "expect": {"entity": "Power Counter", "path": "/components/rusting.counter/value", "equals": 100}},
+  {"tick": 99, "expect": {"entity": "Power Counter", "path": "/components/rusting.counter/value", "equals": 50}},
+  {"tick": 99, "expect": {"entity": "Strokes Counter", "path": "/components/rusting.counter/value", "equals": 0}}
+ ]
+}

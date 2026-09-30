@@ -1,0 +1,11 @@
+{
+ "name": "The snake runs right into the first apple and grows by one segment",
+ "ticks": 100,
+ "steps": [
+  {"tick": 0, "within": 90, "expect": {"entity": "Apples Counter", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 91, "expect": {"entity": "Length Counter", "path": "/components/rusting.counter/value", "equals": 3}},
+  {"tick": 91, "expect": {"entity": "Segment 3", "path": "/visible", "equals": true}},
+  {"tick": 91, "expect": {"entity": "Apple", "path": "/transform/position", "equals": [2.5, 3.5, 0.1], "tolerance": 0.001}},
+  {"tick": 91, "capture": "shots/grown.png"}
+ ]
+}

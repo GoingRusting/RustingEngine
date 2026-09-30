@@ -1,0 +1,7 @@
+{"name": "fall respawns", "ticks": 240, "steps": [
+  {"tick": 5, "press": "player.left"},
+  {"tick": 60, "within": 200, "expect": {"entity": "Player", "path": "/transform/position/1", "less_than": -4.0}},
+  {"tick": 90, "release": "player.left"},
+  {"tick": 200, "until": 240, "expect": {"entity": "Player", "path": "/transform/position/1", "greater_than": 0.5}},
+  {"tick": 240, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.01}}
+]}

@@ -820,8 +820,11 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
     };
     let mut game = Command::new(&executable);
     game.current_dir(&project.root);
+    let final_scene = project.root.join("build/final.rscene");
     if let Some(ticks) = options.headless_ticks {
-        game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string());
+        let _ = std::fs::remove_file(&final_scene);
+        game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
+            .env(crate::project::FINAL_SCENE_OUT_ENV, &final_scene);
     }
     let report_path = project.root.join("build/scenario-report.json");
     if let Some(scenario) = &options.scenario {
@@ -860,6 +863,8 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
         "timings": {
             "build_ms": build.duration.as_millis() as u64,
             "game_first_frame_ms": first_frame,
+            // Includes loading the scene; a debug build shows here first.
+            "headless_ms_per_tick": crate::project::tick_time_ms(&run.stderr),
             "command_to_first_frame_ms": first_frame
                 .map(|ms| launched_after.as_millis() as u64 + ms),
         },
@@ -904,6 +909,9 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
             result.data = data;
             break 'result result;
         }
+        if final_scene.is_file() && options.headless_ticks.is_some() {
+            data["final_scene"] = json!(final_scene);
+        }
         if run.success || run.timed_out {
             break 'result CliResult::success(data);
         }
@@ -922,6 +930,83 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
     };
     result.diagnostics.extend(asset_warnings);
     result
+}
+
+/// Runs every `.json` scenario in `folder`, in name order, and fails when
+/// any of them fails.
+pub fn test_game_folder(
+    root: &Path,
+    folder: &Path,
+    options: RunOptions,
+) -> CliResult {
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(folder) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect(),
+        Err(error) => {
+            return CliResult::failure(
+                "FILE_NOT_FOUND",
+                format!("cannot read {}: {error}", folder.display()),
+                Some(folder.to_path_buf()),
+            )
+        }
+    };
+    files.sort();
+    if files.is_empty() {
+        return CliResult::failure(
+            "FILE_NOT_FOUND",
+            format!("no scenario files in {}", folder.display()),
+            Some(folder.to_path_buf()),
+        );
+    }
+    let mut runs = Vec::new();
+    let mut first_failure = None;
+    for file in files {
+        let result = run_game_project(
+            root,
+            RunOptions {
+                scenario: Some(file.clone()),
+                ..options.clone()
+            },
+        );
+        let message = match result.diagnostics.first() {
+            Some(diagnostic) if !result.ok => diagnostic.message.clone(),
+            _ => format!(
+                "{} after {} ticks",
+                result.data["scenario"]["name"],
+                result.data["scenario"]["ticks_run"]
+            ),
+        };
+        let logs: Vec<_> = result.data["scenario"]["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|step| {
+                step["message"]
+                    .as_str()
+                    .is_some_and(|message| message.starts_with("log: "))
+            })
+            .map(|step| json!({"tick": step["tick"], "message": step["message"]}))
+            .collect();
+        runs.push(json!({
+            "file": file,
+            "ok": result.ok,
+            "message": message,
+            "logs": logs,
+        }));
+        if !result.ok && first_failure.is_none() {
+            first_failure = Some(result);
+        }
+    }
+    let data = json!({"root": root, "scenarios": runs});
+    match first_failure {
+        None => CliResult::success(data),
+        Some(mut result) => {
+            result.data = data;
+            result
+        }
+    }
 }
 
 /// One way to build and run the game for [`check_game_determinism`].

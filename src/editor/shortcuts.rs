@@ -19,7 +19,8 @@ use crate::runtime::{Camera, GlobalTransform, MeshRenderer, Projection};
 use crate::{AssetServer, Transform};
 
 use super::{
-    EditorGizmoDrag, EditorState, EditorViewport, EditorWorkspace, GizmoAxis,
+    EditorGizmoDrag, EditorMode, EditorState, EditorViewport, EditorWorkspace,
+    GizmoAxis, TileTool,
 };
 
 /// Input state in which a shortcut is meaningful.
@@ -33,6 +34,8 @@ pub enum ShortcutContext {
     SceneView,
     TransformModal,
     FlyCamera,
+    /// A tile brush is active on a selected tile map.
+    TilePainter,
 }
 
 /// Named editor commands that can receive user-configurable shortcuts.
@@ -111,13 +114,26 @@ pub enum SceneViewAction {
     FlyUp,
     FlySprint,
     FocusObject,
+    /// Frames every rendered object in the scene.
+    FrameAll,
+    /// Blender numpad views: look along -Z, -X or straight down, keeping
+    /// the orbit pivot.
+    ViewFront,
+    ViewRight,
+    ViewTop,
+    /// Turns the Scene view to look the other way through the orbit pivot.
+    ViewOpposite,
+    /// Switches the Scene view between perspective and orthographic.
+    ToggleOrthographic,
     TransformModes(TransformModes),
     TransformAxis(GizmoAxis),
+    /// Picks a Tile Painter tool while a brush is active.
+    TileTool(TileTool),
 }
 
 impl SceneViewAction {
     /// Stable display order used by shortcut settings and tests.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 25] = [
         Self::ToggleFly,
         Self::FlyForward,
         Self::FlyBackward,
@@ -127,12 +143,22 @@ impl SceneViewAction {
         Self::FlyUp,
         Self::FlySprint,
         Self::FocusObject,
+        Self::FrameAll,
+        Self::ViewFront,
+        Self::ViewRight,
+        Self::ViewTop,
+        Self::ViewOpposite,
+        Self::ToggleOrthographic,
         Self::TransformModes(TransformModes::Move),
         Self::TransformModes(TransformModes::Rotate),
         Self::TransformModes(TransformModes::Scale),
         Self::TransformAxis(GizmoAxis::X),
         Self::TransformAxis(GizmoAxis::Y),
         Self::TransformAxis(GizmoAxis::Z),
+        Self::TileTool(TileTool::Paint),
+        Self::TileTool(TileTool::Rectangle),
+        Self::TileTool(TileTool::Line),
+        Self::TileTool(TileTool::Fill),
     ];
 
     #[must_use]
@@ -146,9 +172,16 @@ impl SceneViewAction {
             | Self::FlyUp
             | Self::FlySprint => ShortcutContext::FlyCamera,
             Self::TransformAxis(_) => ShortcutContext::TransformModal,
-            Self::ToggleFly | Self::FocusObject | Self::TransformModes(_) => {
-                ShortcutContext::SceneView
-            }
+            Self::TileTool(_) => ShortcutContext::TilePainter,
+            Self::ToggleFly
+            | Self::FocusObject
+            | Self::FrameAll
+            | Self::ViewFront
+            | Self::ViewRight
+            | Self::ViewTop
+            | Self::ViewOpposite
+            | Self::ToggleOrthographic
+            | Self::TransformModes(_) => ShortcutContext::SceneView,
         }
     }
 
@@ -164,6 +197,12 @@ impl SceneViewAction {
             Self::FlyUp => "Fly up",
             Self::FlySprint => "Fly faster",
             Self::FocusObject => "Focus selected object",
+            Self::FrameAll => "Frame all objects",
+            Self::ViewFront => "Front view",
+            Self::ViewRight => "Right view",
+            Self::ViewTop => "Top view",
+            Self::ViewOpposite => "Opposite view",
+            Self::ToggleOrthographic => "Perspective / orthographic",
             Self::TransformModes(TransformModes::Move) => "Move gizmo",
             Self::TransformModes(TransformModes::Rotate) => "Rotate gizmo",
             Self::TransformModes(TransformModes::Scale) => "Scale gizmo",
@@ -171,6 +210,10 @@ impl SceneViewAction {
             Self::TransformAxis(GizmoAxis::X) => "Constrain to X axis",
             Self::TransformAxis(GizmoAxis::Y) => "Constrain to Y axis",
             Self::TransformAxis(GizmoAxis::Z) => "Constrain to Z axis",
+            Self::TileTool(TileTool::Paint) => "Paint tool",
+            Self::TileTool(TileTool::Rectangle) => "Rectangle tool",
+            Self::TileTool(TileTool::Line) => "Line tool",
+            Self::TileTool(TileTool::Fill) => "Fill tool",
         }
     }
 }
@@ -262,15 +305,22 @@ pub fn is_modifier_key(key: KeyCode) -> bool {
 #[derive(Resource, Clone, Debug)]
 pub struct EditorShortcuts {
     bindings: HashMap<ShortcutAction, KeyBinding>,
+    /// Second keys, as Blender deletes with both X and Delete.
+    alternates: HashMap<ShortcutAction, KeyBinding>,
     /// Action waiting for its new key; the next key press binds it and
     /// Escape cancels.
     pub capturing: Option<ShortcutAction>,
+    /// The waiting action takes its second key instead of its first.
+    pub capturing_alternate: bool,
 }
 
 /// Saved form of [`EditorShortcuts`]: every binding, in no special order.
 #[derive(Serialize, Deserialize)]
 struct EditorShortcutsFile {
     bindings: Vec<(ShortcutAction, KeyBinding)>,
+    /// Files saved before second keys existed keep the default ones.
+    #[serde(default)]
+    alternates: Option<Vec<(ShortcutAction, KeyBinding)>>,
 }
 
 impl Default for EditorShortcuts {
@@ -286,6 +336,12 @@ impl Default for EditorShortcuts {
             (SceneViewAction::FlyUp, KeyCode::Space),
             (SceneViewAction::FlySprint, KeyCode::ShiftLeft),
             (SceneViewAction::FocusObject, KeyCode::KeyF),
+            (SceneViewAction::FrameAll, KeyCode::Home),
+            (SceneViewAction::ViewFront, KeyCode::Numpad1),
+            (SceneViewAction::ViewRight, KeyCode::Numpad3),
+            (SceneViewAction::ViewTop, KeyCode::Numpad7),
+            (SceneViewAction::ViewOpposite, KeyCode::Numpad9),
+            (SceneViewAction::ToggleOrthographic, KeyCode::Numpad5),
             (
                 SceneViewAction::TransformModes(TransformModes::Move),
                 KeyCode::KeyG,
@@ -301,6 +357,14 @@ impl Default for EditorShortcuts {
             (SceneViewAction::TransformAxis(GizmoAxis::X), KeyCode::KeyX),
             (SceneViewAction::TransformAxis(GizmoAxis::Y), KeyCode::KeyY),
             (SceneViewAction::TransformAxis(GizmoAxis::Z), KeyCode::KeyZ),
+            // Godot's tile map editor keys.
+            (SceneViewAction::TileTool(TileTool::Paint), KeyCode::KeyD),
+            (
+                SceneViewAction::TileTool(TileTool::Rectangle),
+                KeyCode::KeyR,
+            ),
+            (SceneViewAction::TileTool(TileTool::Line), KeyCode::KeyL),
+            (SceneViewAction::TileTool(TileTool::Fill), KeyCode::KeyB),
         ];
         for (action, key) in defaults {
             bindings.insert(
@@ -327,9 +391,15 @@ impl Default for EditorShortcuts {
         for (action, binding) in editor {
             bindings.insert(ShortcutAction::Editor(action), binding);
         }
+        let alternates = HashMap::from([(
+            ShortcutAction::Editor(EditorAction::Redo),
+            KeyBinding::ctrl(KeyCode::KeyY),
+        )]);
         Self {
             bindings,
+            alternates,
             capturing: None,
+            capturing_alternate: false,
         }
     }
 }
@@ -341,26 +411,65 @@ impl EditorShortcuts {
         self.bindings.get(&action).copied()
     }
 
+    /// Returns the second key assigned to an action.
+    #[must_use]
+    pub fn get_alternate(&self, action: ShortcutAction) -> Option<KeyBinding> {
+        self.alternates.get(&action).copied()
+    }
+
     /// Changes an action binding and returns the action in the same
-    /// context that lost the key, which is left unbound.
+    /// context that lost the key.
     pub fn set(
+        &mut self,
+        action: ShortcutAction,
+        shortcut: KeyBinding,
+    ) -> Option<ShortcutAction> {
+        let replaced = self.take_key(action, shortcut);
+        self.bindings.insert(action, shortcut);
+        replaced
+    }
+
+    /// Changes an action's second key, or removes it with `None`, and
+    /// returns the action in the same context that lost the key.
+    pub fn set_alternate(
+        &mut self,
+        action: ShortcutAction,
+        shortcut: Option<KeyBinding>,
+    ) -> Option<ShortcutAction> {
+        self.alternates.remove(&action);
+        let shortcut = shortcut.filter(|&key| self.get(action) != Some(key))?;
+        let replaced = self.take_key(action, shortcut);
+        self.alternates.insert(action, shortcut);
+        replaced
+    }
+
+    /// Frees `shortcut` for `action`: removes it from every other action in
+    /// the same context, and from `action`'s own other slot.
+    fn take_key(
         &mut self,
         action: ShortcutAction,
         shortcut: KeyBinding,
     ) -> Option<ShortcutAction> {
         // Only duplicates within the action's context conflict. The same key
         // remains available in another context.
-        let replaced = self.bindings.iter().find_map(|(candidate, binding)| {
-            (*candidate != action
-                && candidate.context() == action.context()
-                && *binding == shortcut)
-                .then_some(*candidate)
-        });
-        if let Some(replaced) = replaced {
-            self.bindings.remove(&replaced);
+        let mut replaced = None;
+        for map in [&mut self.bindings, &mut self.alternates] {
+            map.retain(|candidate, binding| {
+                let taken = *binding == shortcut
+                    && candidate.context() == action.context();
+                if taken && *candidate != action {
+                    replaced = Some(*candidate);
+                }
+                !taken
+            });
         }
-        self.bindings.insert(action, shortcut);
         replaced
+    }
+
+    fn all_bindings(
+        &self,
+    ) -> impl Iterator<Item = (&ShortcutAction, &KeyBinding)> {
+        self.bindings.iter().chain(&self.alternates)
     }
 
     /// Resolves a physical key in one editor context without panicking when it
@@ -372,8 +481,7 @@ impl EditorShortcuts {
         context: ShortcutContext,
         key: KeyCode,
     ) -> Option<SceneViewAction> {
-        self.bindings
-            .iter()
+        self.all_bindings()
             .find_map(|(action, binding)| match *action {
                 ShortcutAction::SceneView(action)
                     if binding.key == key && action.context() == context =>
@@ -393,8 +501,7 @@ impl EditorShortcuts {
     ) -> Option<EditorAction> {
         let pressed =
             KeyBinding::pressed(key, modifiers, ShortcutContext::Editor);
-        self.bindings
-            .iter()
+        self.all_bindings()
             .find_map(|(action, binding)| match *action {
                 ShortcutAction::Editor(action) if *binding == pressed => {
                     Some(action)
@@ -417,13 +524,19 @@ impl EditorShortcuts {
 
     fn load_from(path: &Path) -> Self {
         let mut shortcuts = Self::default();
-        let saved = std::fs::read(path).ok().and_then(|bytes| {
+        let Some(saved) = std::fs::read(path).ok().and_then(|bytes| {
             serde_json::from_slice::<EditorShortcutsFile>(&bytes).ok()
-        });
-        for (action, binding) in
-            saved.map(|file| file.bindings).unwrap_or_default()
-        {
+        }) else {
+            return shortcuts;
+        };
+        if saved.alternates.is_some() {
+            shortcuts.alternates.clear();
+        }
+        for (action, binding) in saved.bindings {
             shortcuts.set(action, binding);
+        }
+        for (action, binding) in saved.alternates.unwrap_or_default() {
+            shortcuts.set_alternate(action, Some(binding));
         }
         shortcuts
     }
@@ -442,6 +555,12 @@ impl EditorShortcuts {
                 .iter()
                 .map(|(action, binding)| (*action, *binding))
                 .collect(),
+            alternates: Some(
+                self.alternates
+                    .iter()
+                    .map(|(action, binding)| (*action, *binding))
+                    .collect(),
+            ),
         };
         crate::runtime::write_atomic(path, &serde_json::to_vec_pretty(&file)?)?;
         Ok(())
@@ -460,13 +579,33 @@ pub enum TransformModes {
     Combo,
 }
 
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Gizmo snap increments: move in units, rotation in degrees, scale as a
+/// factor step.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnapSteps {
+    pub translate: f32,
+    pub rotate_degrees: f32,
+    pub scale: f32,
+}
+
+impl Default for SnapSteps {
+    fn default() -> Self {
+        Self {
+            translate: 1.0,
+            rotate_degrees: 15.0,
+            scale: 0.1,
+        }
+    }
+}
+
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct EditorTransformMode {
     pub active_mode: TransformModes,
     pub axis_mask: [bool; 3],
     pub start_requested: bool,
     /// Quantize move, rotation, and scale previews while dragging.
     pub snap_enabled: bool,
+    pub snap_steps: SnapSteps,
     /// Use world axes for movement, rotation, and scale handles.
     pub global_axes: bool,
 }
@@ -478,6 +617,7 @@ impl Default for EditorTransformMode {
             axis_mask: [true; 3],
             start_requested: false,
             snap_enabled: false,
+            snap_steps: SnapSteps::default(),
             global_axes: false,
         }
     }
@@ -534,6 +674,8 @@ pub struct EditorFlyCamera {
     pub sprint_multiplier: f32,
     /// Mouse radians per physical pixel.
     pub look_sensitivity: f32,
+    /// Field of view to return to while the Scene view is orthographic.
+    pub perspective_fov: Option<f32>,
 }
 
 impl Default for EditorFlyCamera {
@@ -548,8 +690,19 @@ impl Default for EditorFlyCamera {
             speed: 6.0,
             sprint_multiplier: 3.0,
             look_sensitivity: 0.002,
+            perspective_fov: None,
         }
     }
+}
+
+/// A tile brush is active on the selected tile map in Edit mode.
+fn tile_painting(world: &World) -> bool {
+    let state = world.resource::<EditorState>();
+    state.tile_brush.is_some()
+        && state.mode == EditorMode::Edit
+        && state.selected.is_some_and(|entity| {
+            world.get::<crate::runtime::TileMap>(entity).is_some()
+        })
 }
 
 /// Handles keyboard input after egui has received the operating-system event.
@@ -598,6 +751,24 @@ pub fn handle_keyboard_input(
             return true;
         }
     }
+    // Tile tool keys win over Scene View keys (R rotates otherwise) while a
+    // brush is active, as in Godot.
+    let tile_action = world
+        .resource::<EditorShortcuts>()
+        .scene_view_action(ShortcutContext::TilePainter, key);
+    if let Some(SceneViewAction::TileTool(tool)) = tile_action {
+        if tile_painting(world)
+            && scene_view_is_active
+            && !ui_wants_keyboard
+            && !is_fly_active
+            && !transform_active
+        {
+            if is_pressed {
+                world.resource_mut::<EditorState>().tile_tool = tool;
+            }
+            return true;
+        }
+    }
     let (scene_action, transform_action, fly_action) = {
         let shortcuts = world.resource::<EditorShortcuts>();
         (
@@ -640,9 +811,47 @@ pub fn handle_keyboard_input(
     let Some(action) = action else {
         return false;
     };
-    if action == SceneViewAction::FocusObject {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    // Ctrl turns to the opposite side, as in Blender: back, left, bottom.
+    let flip = modifiers.control_key();
+    let view = match action {
+        SceneViewAction::ViewFront => Some([0.0, if flip { PI } else { 0.0 }]),
+        SceneViewAction::ViewRight => {
+            Some([0.0, if flip { -FRAC_PI_2 } else { FRAC_PI_2 }])
+        }
+        SceneViewAction::ViewTop => {
+            Some([if flip { FRAC_PI_2 } else { -FRAC_PI_2 }, 0.0])
+        }
+        _ => None,
+    };
+    if let Some([pitch, yaw]) = view {
         if is_pressed && !event.repeat {
-            camera_to_object(world);
+            camera_to_view(world, pitch, yaw);
+        }
+        return true;
+    }
+    if action == SceneViewAction::ViewOpposite {
+        if is_pressed && !event.repeat {
+            camera_to_opposite(world);
+        }
+        return true;
+    }
+    if action == SceneViewAction::ToggleOrthographic {
+        if is_pressed && !event.repeat {
+            toggle_orthographic(world);
+        }
+        return true;
+    }
+    if matches!(
+        action,
+        SceneViewAction::FocusObject | SceneViewAction::FrameAll
+    ) {
+        if is_pressed && !event.repeat {
+            if action == SceneViewAction::FrameAll {
+                camera_to_all(world);
+            } else {
+                camera_to_object(world);
+            }
         }
         return true;
     }
@@ -716,6 +925,7 @@ pub(crate) fn capture_shortcut(
     let action = shortcuts.capturing?;
     if key == KeyCode::Escape {
         shortcuts.capturing = None;
+        shortcuts.capturing_alternate = false;
         return Some(false);
     }
     // Ctrl+Z is pressed as Ctrl, then Z: wait for the real key.
@@ -724,10 +934,18 @@ pub(crate) fn capture_shortcut(
     }
     shortcuts.capturing = None;
     let binding = KeyBinding::pressed(key, modifiers, action.context());
-    let replaced = shortcuts.set(action, binding);
+    let replaced = if std::mem::take(&mut shortcuts.capturing_alternate) {
+        shortcuts.set_alternate(action, Some(binding))
+    } else {
+        shortcuts.set(action, binding)
+    };
     let mut message = format!("{} is now {}", action.label(), binding.label());
     if let Some(replaced) = replaced {
-        message.push_str(&format!("; {} is unbound", replaced.label()));
+        message.push_str(&format!(
+            "; {} loses {}",
+            replaced.label(),
+            binding.label()
+        ));
     }
     world
         .resource_mut::<super::EditorConsole>()
@@ -876,7 +1094,162 @@ pub fn camera_to_object(world: &mut World) {
                 world.resource::<AssetServer>().mesh_bounds(renderer.mesh)
             });
     let (target, radius) = world_bounds(global.matrix, bounds);
+    frame_sphere(world, camera_entity, target, radius);
+}
 
+/// Frames the bounds of every rendered object except the editor camera.
+pub fn camera_to_all(world: &mut World) {
+    let Some(camera_entity) = world.resource::<EditorState>().editor_camera
+    else {
+        return;
+    };
+    let mut query = world.query::<(
+        bevy_ecs::entity::Entity,
+        &GlobalTransform,
+        &MeshRenderer,
+    )>();
+    let spheres: Vec<_> = query
+        .iter(world)
+        .filter(|(entity, _, _)| {
+            *entity != camera_entity
+                && crate::runtime::visible_in_hierarchy(world, *entity)
+        })
+        .map(|(_, global, renderer)| {
+            let bounds =
+                world.resource::<AssetServer>().mesh_bounds(renderer.mesh);
+            world_bounds(global.matrix, bounds)
+        })
+        .collect();
+    let Some(&first) = spheres.first() else {
+        return;
+    };
+    // ponytail: box around the spheres, not the tightest enclosing sphere.
+    let (mut minimum, mut maximum) = (first.0, first.0);
+    for (center, radius) in spheres {
+        for axis in 0..3 {
+            minimum[axis] = minimum[axis].min(center[axis] - radius);
+            maximum[axis] = maximum[axis].max(center[axis] + radius);
+        }
+    }
+    let minimum = Vector3::from(minimum);
+    let maximum = Vector3::from(maximum);
+    let target = (minimum + maximum) * 0.5;
+    let radius = (maximum - minimum).norm() * 0.5;
+    frame_sphere(world, camera_entity, target.into(), radius);
+}
+
+/// Turns the editor camera to `pitch` and `yaw` while keeping the orbit
+/// pivot in front of it.
+pub fn camera_to_view(world: &mut World, pitch: f32, yaw: f32) {
+    let Some(camera_entity) = world.resource::<EditorState>().editor_camera
+    else {
+        return;
+    };
+    let distance = world
+        .get_resource::<EditorFlyCamera>()
+        .map_or(5.0, |fly| fly.orbit_distance);
+    let Some(mut transform) = world.get_mut::<Transform>(camera_entity) else {
+        return;
+    };
+    let forward = |rotation: [f32; 3]| {
+        Rotation3::from_euler_angles(rotation[0], rotation[1], rotation[2])
+            * Vector3::new(0.0, 0.0, -1.0)
+    };
+    let pivot = Vector3::from(transform.position)
+        + forward(transform.rotation) * distance;
+    transform.rotation = [pitch, yaw, 0.0];
+    transform.position =
+        (pivot - forward(transform.rotation) * distance).into();
+}
+
+/// Turns the editor camera to look back at the orbit pivot from the other
+/// side, as Blender's Numpad 9 does.
+pub fn camera_to_opposite(world: &mut World) {
+    use std::f32::consts::PI;
+    let Some([pitch, yaw, _]) = world
+        .resource::<EditorState>()
+        .editor_camera
+        .and_then(|camera| world.get::<Transform>(camera))
+        .map(|transform| transform.rotation)
+    else {
+        return;
+    };
+    // yaw + PI, kept in [-PI, PI).
+    camera_to_view(world, -pitch, (yaw + 2.0 * PI).rem_euclid(2.0 * PI) - PI);
+}
+
+/// Switches the editor camera between perspective and an orthographic view
+/// that shows the same size at the orbit pivot.
+pub fn toggle_orthographic(world: &mut World) {
+    let Some(camera_entity) = world.resource::<EditorState>().editor_camera
+    else {
+        return;
+    };
+    let Some(projection) = world
+        .get::<Camera>(camera_entity)
+        .map(|camera| camera.projection)
+    else {
+        return;
+    };
+    let mut fly = world.resource_mut::<EditorFlyCamera>();
+    let projection = match projection {
+        Projection::Perspective {
+            vertical_fov_radians,
+            near,
+            far,
+        } => {
+            fly.perspective_fov = Some(vertical_fov_radians);
+            Projection::Orthographic {
+                vertical_size: 0.0,
+                near,
+                far,
+            }
+        }
+        Projection::Orthographic { near, far, .. } => Projection::Perspective {
+            vertical_fov_radians: fly
+                .perspective_fov
+                .take()
+                .unwrap_or(std::f32::consts::FRAC_PI_3),
+            near,
+            far,
+        },
+    };
+    if let Some(mut camera) = world.get_mut::<Camera>(camera_entity) {
+        camera.projection = projection;
+    }
+    sync_orthographic_size(world);
+}
+
+/// Keeps an orthographic editor camera's view size matched to the orbit
+/// distance, so dolly and framing zoom it like a perspective view.
+fn sync_orthographic_size(world: &mut World) {
+    let Some(camera_entity) = world.resource::<EditorState>().editor_camera
+    else {
+        return;
+    };
+    let fly = world.resource::<EditorFlyCamera>();
+    let Some(fov) = fly.perspective_fov else {
+        return;
+    };
+    let size = 2.0 * fly.orbit_distance * (fov * 0.5).tan();
+    if let Some(mut camera) = world.get_mut::<Camera>(camera_entity) {
+        if let Projection::Orthographic { vertical_size, .. } =
+            &mut camera.projection
+        {
+            if *vertical_size != size {
+                *vertical_size = size;
+            }
+        }
+    }
+}
+
+/// Moves the editor camera back along its view until the sphere fits.
+fn frame_sphere(
+    world: &mut World,
+    camera_entity: bevy_ecs::entity::Entity,
+    target: [f32; 3],
+    radius: f32,
+) {
     let Some(camera_transform) = world.get::<Transform>(camera_entity).copied()
     else {
         return;
@@ -891,17 +1264,24 @@ pub fn camera_to_object(world: &mut World) {
         camera_transform.rotation[2],
     );
     let forward = rotation * Vector3::new(0.0, 0.0, -1.0);
-    let distance = match projection {
+    // An orthographic view zooms with the orbit distance, so it frames
+    // with the field of view it will return to.
+    let (fov, near) = match projection {
         Projection::Perspective {
             vertical_fov_radians,
             near,
             ..
-        } => {
-            let half_fov = (vertical_fov_radians * 0.5).clamp(0.05, 1.5);
-            (radius / half_fov.sin() * 1.2).max(near * 2.0)
-        }
-        Projection::Orthographic { near, .. } => radius.max(near * 2.0),
+        } => (vertical_fov_radians, near),
+        Projection::Orthographic { near, .. } => (
+            world
+                .get_resource::<EditorFlyCamera>()
+                .and_then(|fly| fly.perspective_fov)
+                .unwrap_or(std::f32::consts::FRAC_PI_3),
+            near,
+        ),
     };
+    let half_fov = (fov * 0.5).clamp(0.05, 1.5);
+    let distance = (radius / half_fov.sin() * 1.2).max(near * 2.0);
     let position = Vector3::from(target) - forward * distance;
     if let Some(mut camera_transform) =
         world.get_mut::<Transform>(camera_entity)
@@ -971,6 +1351,7 @@ fn world_bounds(
 /// Applies one frame of pointer look and WASD/vertical movement.
 pub fn update_fly_camera(world: &mut World, delta: Duration) {
     update_mouse_navigation(world);
+    sync_orthographic_size(world);
     let (active, actions, mouse_delta, speed, sprint_multiplier, sensitivity) = {
         let mut fly = world.resource_mut::<EditorFlyCamera>();
         if fly.drag.is_some() {
@@ -1178,6 +1559,7 @@ pub(super) fn draw_shortcuts_area(
         ("Scene View", ShortcutContext::SceneView),
         ("Transform", ShortcutContext::TransformModal),
         ("Fly Camera", ShortcutContext::FlyCamera),
+        ("Tile Painter", ShortcutContext::TilePainter),
     ];
     let actions = EditorAction::ALL
         .map(ShortcutAction::Editor)
@@ -1191,7 +1573,8 @@ pub(super) fn draw_shortcuts_area(
         .show(ui, |ui| {
             ui.colored_label(
                 EditorTheme::TEXT_MUTED,
-                "Click a shortcut, then press the new key. Escape cancels.",
+                "Click a shortcut, then press the new key. Escape cancels. \
+                 Each action can have a second key; right-click removes it.",
             );
             for (title, context) in groups {
                 section(ui, title, false, |ui| {
@@ -1199,25 +1582,48 @@ pub(super) fn draw_shortcuts_area(
                         .iter()
                         .filter(|action| action.context() == context)
                     {
-                        let capturing = shortcuts.capturing == Some(action);
-                        let text = if capturing {
-                            "Press a key...".to_owned()
-                        } else {
-                            shortcuts.get(action).map_or_else(
-                                || "Unbound".to_owned(),
-                                KeyBinding::label,
-                            )
-                        };
+                        // Two buttons: the first key and a second one.
+                        // Right-click removes the second key.
+                        let slots = [
+                            (false, shortcuts.get(action), "Unbound"),
+                            (true, shortcuts.get_alternate(action), "Add"),
+                        ];
+                        let waiting = shortcuts.capturing == Some(action);
                         let clicked = property_row(ui, action.label(), |ui| {
-                            ui.add_sized(
-                                [ui.available_width(), EditorTheme::ROW_HEIGHT],
-                                egui::Button::new(text).selected(capturing),
-                            )
-                            .clicked()
+                            let width = (ui.available_width()
+                                - ui.spacing().item_spacing.x)
+                                / 2.0;
+                            let mut clicked = None;
+                            for (alternate, binding, empty) in slots {
+                                let capturing = waiting
+                                    && shortcuts.capturing_alternate
+                                        == alternate;
+                                let text = if capturing {
+                                    "Press a key...".to_owned()
+                                } else {
+                                    binding.map_or_else(
+                                        || empty.to_owned(),
+                                        KeyBinding::label,
+                                    )
+                                };
+                                let response = ui.add_sized(
+                                    [width, EditorTheme::ROW_HEIGHT],
+                                    egui::Button::new(text).selected(capturing),
+                                );
+                                if response.clicked() {
+                                    clicked = Some((alternate, capturing));
+                                }
+                                if alternate && response.secondary_clicked() {
+                                    clicked = Some((true, true));
+                                    shortcuts.set_alternate(action, None);
+                                }
+                            }
+                            clicked
                         });
-                        if clicked {
+                        if let Some((alternate, capturing)) = clicked {
                             shortcuts.capturing =
                                 (!capturing).then_some(action);
+                            shortcuts.capturing_alternate = alternate;
                         }
                     }
                 });
@@ -1392,6 +1798,70 @@ mod tests {
     }
 
     #[test]
+    fn second_keys_trigger_actions_and_move_between_actions() {
+        let ctrl = ModifiersState::CONTROL;
+        let none = ModifiersState::empty();
+        let redo = ShortcutAction::Editor(EditorAction::Redo);
+        let delete = ShortcutAction::Editor(EditorAction::DeleteSelection);
+        let mut shortcuts = EditorShortcuts::default();
+        assert_eq!(
+            shortcuts.editor_action(KeyCode::KeyY, ctrl),
+            Some(EditorAction::Redo)
+        );
+
+        // Blender deletes with both X and Delete.
+        assert_eq!(
+            shortcuts
+                .set_alternate(delete, Some(KeyBinding::key(KeyCode::KeyX))),
+            None
+        );
+        for key in [KeyCode::KeyX, KeyCode::Delete] {
+            assert_eq!(
+                shortcuts.editor_action(key, none),
+                Some(EditorAction::DeleteSelection)
+            );
+        }
+        // A second key equal to the first is not stored twice.
+        shortcuts.set_alternate(delete, Some(KeyBinding::key(KeyCode::Delete)));
+        assert_eq!(shortcuts.get_alternate(delete), None);
+        assert_eq!(
+            shortcuts.get(delete),
+            Some(KeyBinding::key(KeyCode::Delete))
+        );
+
+        // Taking Redo's second key leaves its first one.
+        let undo = ShortcutAction::Editor(EditorAction::Undo);
+        assert_eq!(
+            shortcuts.set(undo, KeyBinding::ctrl(KeyCode::KeyY)),
+            Some(redo)
+        );
+        assert_eq!(shortcuts.get_alternate(redo), None);
+        assert!(shortcuts.get(redo).is_some());
+
+        // A removed default second key stays removed after a reload.
+        let folder = std::env::temp_dir()
+            .join(format!("rusting_shortcuts_{}", uuid::Uuid::new_v4()));
+        let path = folder.join("editor_shortcuts.json");
+        let mut saved = EditorShortcuts::default();
+        saved.set_alternate(redo, None);
+        saved.set_alternate(delete, Some(KeyBinding::key(KeyCode::KeyX)));
+        saved.save_to(&path).unwrap();
+        let loaded = EditorShortcuts::load_from(&path);
+        assert_eq!(loaded.get_alternate(redo), None);
+        assert_eq!(
+            loaded.get_alternate(delete),
+            Some(KeyBinding::key(KeyCode::KeyX))
+        );
+        // Files from before second keys existed keep the defaults.
+        std::fs::write(&path, r#"{"bindings": []}"#).unwrap();
+        assert_eq!(
+            EditorShortcuts::load_from(&path).get_alternate(redo),
+            Some(KeyBinding::ctrl(KeyCode::KeyY))
+        );
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn covered_viewport_does_not_take_pointer_events() {
         let mut world = World::new();
         world.insert_resource(EditorState {
@@ -1478,6 +1948,38 @@ mod tests {
     }
 
     #[test]
+    fn tile_tool_keys_apply_only_while_a_brush_paints_a_tile_map() {
+        let shortcuts = EditorShortcuts::default();
+        // R picks the Rectangle tool while painting and rotates otherwise.
+        assert_eq!(
+            shortcuts
+                .scene_view_action(ShortcutContext::TilePainter, KeyCode::KeyR),
+            Some(SceneViewAction::TileTool(TileTool::Rectangle))
+        );
+        assert_eq!(
+            shortcuts
+                .scene_view_action(ShortcutContext::SceneView, KeyCode::KeyR),
+            Some(SceneViewAction::TransformModes(TransformModes::Rotate))
+        );
+
+        let mut world = World::new();
+        let map = world.spawn(crate::runtime::TileMap::default()).id();
+        let cube = world.spawn(Transform::default()).id();
+        world.insert_resource(EditorState {
+            selected: Some(map),
+            ..EditorState::default()
+        });
+        assert!(!tile_painting(&world), "no brush");
+        world.resource_mut::<EditorState>().tile_brush = Some('#');
+        assert!(tile_painting(&world));
+        world.resource_mut::<EditorState>().mode = EditorMode::Play;
+        assert!(!tile_painting(&world), "Play mode");
+        world.resource_mut::<EditorState>().mode = EditorMode::Edit;
+        world.resource_mut::<EditorState>().selected = Some(cube);
+        assert!(!tile_painting(&world), "not a tile map");
+    }
+
+    #[test]
     fn rebinding_only_replaces_an_action_in_the_same_context() {
         let mut shortcuts = EditorShortcuts::default();
         let replaced = shortcuts.set(
@@ -1561,6 +2063,116 @@ mod tests {
         assert_eq!(camera.position[0], 10.0);
         assert_eq!(camera.position[1], 2.0);
         assert!(camera.position[2] > -3.0);
+    }
+
+    #[test]
+    fn numpad_views_keep_the_pivot_and_frame_all_sees_every_mesh() {
+        let mut world = World::new();
+        world.insert_resource(AssetServer::default());
+        let camera = world
+            .spawn((Transform::new([0.0, 0.0, 5.0]), Camera::default()))
+            .id();
+        world.insert_resource(EditorState {
+            editor_camera: Some(camera),
+            ..EditorState::default()
+        });
+        world.insert_resource(EditorFlyCamera {
+            orbit_distance: 5.0,
+            ..EditorFlyCamera::default()
+        });
+
+        camera_to_view(&mut world, -std::f32::consts::FRAC_PI_2, 0.0);
+        let top = *world.get::<Transform>(camera).unwrap();
+        assert!(
+            (Vector3::from(top.position) - Vector3::new(0.0, 5.0, 0.0)).norm()
+                < 1e-4
+        );
+        camera_to_view(&mut world, 0.0, std::f32::consts::FRAC_PI_2);
+        let right = *world.get::<Transform>(camera).unwrap();
+        assert!(
+            (Vector3::from(right.position) - Vector3::new(5.0, 0.0, 0.0))
+                .norm()
+                < 1e-4
+        );
+        camera_to_opposite(&mut world);
+        let left = *world.get::<Transform>(camera).unwrap();
+        assert!(
+            (Vector3::from(left.position) - Vector3::new(-5.0, 0.0, 0.0))
+                .norm()
+                < 1e-4
+        );
+        camera_to_view(&mut world, -0.5, 0.3);
+        let above = *world.get::<Transform>(camera).unwrap();
+        camera_to_opposite(&mut world);
+        let below = *world.get::<Transform>(camera).unwrap();
+        assert!(
+            (Vector3::from(above.position) + Vector3::from(below.position))
+                .norm()
+                < 1e-4
+        );
+        camera_to_view(&mut world, 0.0, std::f32::consts::FRAC_PI_2);
+
+        let renderer = {
+            let assets = world.resource::<AssetServer>();
+            MeshRenderer {
+                mesh: assets.fallback_mesh,
+                material: assets.fallback_material,
+                cast_shadows: true,
+                receive_shadows: true,
+            }
+        };
+        for x in [-10.0, 10.0] {
+            world.spawn((
+                GlobalTransform {
+                    matrix: Transform::new([x, 0.0, 0.0]).to_matrix(),
+                },
+                renderer,
+            ));
+        }
+        camera_to_all(&mut world);
+        let framed = world.get::<Transform>(camera).unwrap();
+        assert!(framed.position[0] > 10.0);
+        assert!(framed.position[1].abs() < 1e-4);
+        assert!(framed.position[2].abs() < 1e-4);
+    }
+
+    #[test]
+    fn orthographic_view_matches_the_pivot_size_and_follows_the_dolly() {
+        let mut world = World::new();
+        let camera = world
+            .spawn((Transform::new([0.0, 0.0, 5.0]), Camera::default()))
+            .id();
+        world.insert_resource(EditorState {
+            editor_camera: Some(camera),
+            ..EditorState::default()
+        });
+        world.insert_resource(EditorFlyCamera {
+            orbit_distance: 5.0,
+            ..EditorFlyCamera::default()
+        });
+        let size = |world: &World| match world
+            .get::<Camera>(camera)
+            .unwrap()
+            .projection
+        {
+            Projection::Orthographic { vertical_size, .. } => vertical_size,
+            Projection::Perspective { .. } => 0.0,
+        };
+        let fov = std::f32::consts::FRAC_PI_3;
+
+        toggle_orthographic(&mut world);
+        assert!((size(&world) - 10.0 * (fov * 0.5).tan()).abs() < 1e-4);
+        // Dolly halves the orbit distance, and the view size with it.
+        world.resource_mut::<EditorFlyCamera>().orbit_distance = 2.5;
+        update_fly_camera(&mut world, Duration::ZERO);
+        assert!((size(&world) - 5.0 * (fov * 0.5).tan()).abs() < 1e-4);
+
+        toggle_orthographic(&mut world);
+        assert_eq!(
+            world.get::<Camera>(camera).unwrap().projection,
+            Projection::default()
+        );
+        assert_eq!(world.resource::<EditorFlyCamera>().perspective_fov, None);
     }
 
     #[test]

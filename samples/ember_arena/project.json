@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "name": "ember_arena",
+  "main_scene": "scenes/main.rscene",
+  "cooked_scene": "build/main.rscene.bin",
+  "binary_name": "ember_arena"
+}

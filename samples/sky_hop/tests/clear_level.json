@@ -1,0 +1,171 @@
+{
+ "name": "clear the level with inputs only",
+ "ticks": 1020,
+ "steps": [
+  {
+   "tick": 1,
+   "press": "player.right"
+  },
+  {
+   "tick": 12,
+   "press": "player.jump"
+  },
+  {
+   "tick": 14,
+   "release": "player.jump"
+  },
+  {
+   "tick": 60,
+   "expect": {
+    "entity": "Coins",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 105,
+   "release": "player.right"
+  },
+  {
+   "tick": 240,
+   "press": "player.right"
+  },
+  {
+   "tick": 268,
+   "release": "player.right"
+  },
+  {
+   "tick": 360,
+   "press": "player.right"
+  },
+  {
+   "tick": 365,
+   "release": "player.right"
+  },
+  {
+   "tick": 365,
+   "expect": {
+    "entity": "Player",
+    "path": "/transform/position/0",
+    "greater_than": 17.0
+   }
+  },
+  {
+   "tick": 480,
+   "press": "player.right"
+  },
+  {
+   "tick": 540,
+   "release": "player.right"
+  },
+  {
+   "tick": 540,
+   "press": "player.jump"
+  },
+  {
+   "tick": 542,
+   "release": "player.jump"
+  },
+  {
+   "tick": 586,
+   "press": "player.jump"
+  },
+  {
+   "tick": 588,
+   "release": "player.jump"
+  },
+  {
+   "tick": 592,
+   "press": "player.right"
+  },
+  {
+   "tick": 620,
+   "expect": {
+    "entity": "Coins",
+    "path": "/components/rusting.counter/value",
+    "equals": 2
+   }
+  },
+  {
+   "tick": 668,
+   "press": "player.jump"
+  },
+  {
+   "tick": 670,
+   "release": "player.jump"
+  },
+  {
+   "tick": 712,
+   "press": "player.jump"
+  },
+  {
+   "tick": 714,
+   "release": "player.jump"
+  },
+  {
+   "tick": 755,
+   "release": "player.right"
+  },
+  {
+   "tick": 755,
+   "press": "player.jump"
+  },
+  {
+   "tick": 757,
+   "release": "player.jump"
+  },
+  {
+   "tick": 790,
+   "expect": {
+    "entity": "Coins",
+    "path": "/components/rusting.counter/value",
+    "equals": 3
+   }
+  },
+  {
+   "tick": 805,
+   "press": "player.right"
+  },
+  {
+   "tick": 875,
+   "press": "player.jump"
+  },
+  {
+   "tick": 877,
+   "release": "player.jump"
+  },
+  {
+   "tick": 920,
+   "expect": {
+    "entity": "Coins",
+    "path": "/components/rusting.counter/value",
+    "equals": 4
+   }
+  },
+  {
+   "tick": 920,
+   "within": 1010,
+   "expect": {
+    "entity": "Goal Count",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 1010,
+   "expect": {
+    "entity": "Goal",
+    "path": "/components/rusting.pickup/collected",
+    "equals": true
+   }
+  },
+  {
+   "tick": 1019,
+   "expect": {
+    "entity": "Falls",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  }
+ ]
+}

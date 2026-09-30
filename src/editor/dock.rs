@@ -123,6 +123,10 @@ pub(super) struct EditorLayoutFile {
     pub(super) active_area: u64,
     /// Number that will be given to the next new area.
     pub(super) next_area_id: u64,
+    /// Gizmo snap on/off and increments. Files saved before this field
+    /// existed leave the current snap settings alone.
+    #[serde(default)]
+    pub(super) snap: Option<(bool, super::shortcuts::SnapSteps)>,
 }
 
 impl EditorDockNode {

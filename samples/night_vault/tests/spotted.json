@@ -1,0 +1,40 @@
+{
+ "name": "spotted",
+ "ticks": 80,
+ "steps": [
+  {
+   "tick": 1,
+   "set": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "value": [
+     -3,
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "tick": 2,
+   "expect": {
+    "entity": "Alert Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 20
+   },
+   "within": 30
+  },
+  {
+   "tick": 2,
+   "expect": {
+    "entity": "Caught Counter",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   },
+   "within": 60
+  },
+  {
+   "tick": 70,
+   "capture": "shots/spotted.png"
+  }
+ ]
+}

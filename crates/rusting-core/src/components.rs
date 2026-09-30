@@ -387,12 +387,17 @@ pub struct RenderSettings {
     pub vsync: bool,
     pub limit_fps: bool,
     pub max_fps: u32,
+    /// Reserved. The renderer does not read this yet, so changing it has no
+    /// effect (see the render scale gap in `roadmap.md`).
     pub render_scale: f32,
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
     pub culling: CullingMode,
     pub antialiasing: Antialiasing,
     pub shadows: ShadowQuality,
+    /// Screen-space reflections and refraction of the opaque scene. Off
+    /// skips the scene copy, mip chain and depth pyramid.
+    pub reflections: bool,
 }
 
 impl Default for RenderSettings {
@@ -407,6 +412,7 @@ impl Default for RenderSettings {
             culling: CullingMode::Auto,
             antialiasing: Antialiasing::Auto,
             shadows: ShadowQuality::Auto,
+            reflections: true,
         }
     }
 }

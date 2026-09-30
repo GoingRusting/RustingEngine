@@ -1,0 +1,93 @@
+{
+ "name": "R puts the player and the crates back",
+ "ticks": 19,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "player.forward"
+  },
+  {
+   "tick": 6,
+   "release": "player.forward"
+  },
+  {
+   "tick": 8,
+   "press": "player.forward"
+  },
+  {
+   "tick": 9,
+   "release": "player.forward"
+  },
+  {
+   "tick": 11,
+   "press": "player.forward"
+  },
+  {
+   "tick": 12,
+   "release": "player.forward"
+  },
+  {
+   "tick": 14,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 3
+   }
+  },
+  {
+   "tick": 14,
+   "expect": {
+    "entity": "Crate 1",
+    "path": "/transform/position",
+    "equals": [
+     -1.5,
+     2.0,
+     0.1
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 15,
+   "press": "restart"
+  },
+  {
+   "tick": 16,
+   "release": "restart"
+  },
+  {
+   "tick": 17,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 17,
+   "expect": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "equals": [
+     -1.5,
+     -2.0,
+     0.0
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 17,
+   "expect": {
+    "entity": "Crate 1",
+    "path": "/transform/position",
+    "equals": [
+     -1.5,
+     1.0,
+     0.1
+    ],
+    "tolerance": 0.001
+   }
+  }
+ ]
+}

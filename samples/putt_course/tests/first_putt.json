@@ -1,0 +1,17 @@
+{
+ "name": "Charging and releasing putts the ball toward the cursor and counts a stroke",
+ "ticks": 600,
+ "steps": [
+  {"tick": 1, "pointer": [0.5, 0.25]},
+  {"tick": 5, "expect": {"entity": "Aim", "path": "/visible", "equals": true}},
+  {"tick": 20, "press": "putt"},
+  {"tick": 49, "expect": {"entity": "Power Counter", "path": "/components/rusting.counter/value", "equals": 50}},
+  {"tick": 49, "capture": "shots/aiming.png"},
+  {"tick": 50, "release": "putt"},
+  {"tick": 52, "expect": {"entity": "Strokes Counter", "path": "/components/rusting.counter/value", "equals": 1}},
+  {"tick": 55, "expect": {"entity": "Aim", "path": "/visible", "equals": false}},
+  {"tick": 60, "expect": {"entity": "Ball", "path": "/transform/position/2", "less_than": 7.5}},
+  {"tick": 60, "expect": {"entity": "Ball", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.01}},
+  {"tick": 60, "within": 599, "expect": {"entity": "Aim", "path": "/visible", "equals": true}}
+ ]
+}

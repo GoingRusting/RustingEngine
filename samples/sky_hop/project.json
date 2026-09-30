@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "name": "sky_hop",
+  "main_scene": "scenes/main.rscene",
+  "cooked_scene": "build/main.rscene.bin",
+  "binary_name": "sky_hop"
+}

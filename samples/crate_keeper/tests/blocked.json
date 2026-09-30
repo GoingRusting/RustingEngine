@@ -1,0 +1,101 @@
+{
+ "name": "The player cannot push a crate into another crate or walk into a wall",
+ "ticks": 23,
+ "steps": [
+  {
+   "tick": 5,
+   "press": "player.right"
+  },
+  {
+   "tick": 6,
+   "release": "player.right"
+  },
+  {
+   "tick": 8,
+   "press": "player.forward"
+  },
+  {
+   "tick": 9,
+   "release": "player.forward"
+  },
+  {
+   "tick": 11,
+   "expect": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "equals": [
+     -0.5,
+     -2.0,
+     0.0
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 11,
+   "expect": {
+    "entity": "Crate 3",
+    "path": "/transform/position",
+    "equals": [
+     -0.5,
+     -1.0,
+     0.1
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 11,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 12,
+   "press": "player.left"
+  },
+  {
+   "tick": 13,
+   "release": "player.left"
+  },
+  {
+   "tick": 15,
+   "press": "player.left"
+  },
+  {
+   "tick": 16,
+   "release": "player.left"
+  },
+  {
+   "tick": 18,
+   "press": "player.left"
+  },
+  {
+   "tick": 19,
+   "release": "player.left"
+  },
+  {
+   "tick": 21,
+   "expect": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "equals": [
+     -2.5,
+     -2.0,
+     0.0
+    ],
+    "tolerance": 0.001
+   }
+  },
+  {
+   "tick": 21,
+   "expect": {
+    "entity": "Moves",
+    "path": "/components/rusting.counter/value",
+    "equals": 3
+   }
+  }
+ ]
+}
