@@ -187,24 +187,32 @@ impl GpuEventRegistry {
     }
 }
 
-/// Physics value that a built-in condition can read on the GPU.
+/// Physics value that a built-in condition reads on the GPU, through
+/// `GpuCondition::field(GpuStateField::PositionX)` and the like.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum GpuStateField {
+    /// World position in meters.
     PositionX,
     PositionY,
     PositionZ,
+    /// Velocity in meters per second.
     VelocityX,
     VelocityY,
     VelocityZ,
+    /// Spin in radians per second.
     AngularVelocityX,
     AngularVelocityY,
     AngularVelocityZ,
+    /// The transform's scale.
     ScaleX,
     ScaleY,
     ScaleZ,
+    /// Mass in kilograms.
     Mass,
     GravityScale,
+    /// Length of the velocity, in meters per second.
     Speed,
+    /// Custom value 0 to 3.
     Custom(u8),
 }
 
@@ -286,26 +294,33 @@ pub struct GpuCondition {
 }
 
 impl GpuCondition {
+    /// Starts a comparison on any [`GpuStateField`]:
+    /// `GpuCondition::field(GpuStateField::PositionX).inside(-1.0, 1.0)`.
     #[must_use]
     pub fn field(field: GpuStateField) -> GpuFieldCondition {
         GpuFieldCondition { field }
     }
 
+    /// Starts a comparison on the world Y position, in meters.
     #[must_use]
     pub fn position_y() -> GpuFieldCondition {
         Self::field(GpuStateField::PositionY)
     }
 
+    /// Starts a comparison on the Y velocity, in meters per second.
     #[must_use]
     pub fn velocity_y() -> GpuFieldCondition {
         Self::field(GpuStateField::VelocityY)
     }
 
+    /// Starts a comparison on custom value `index` (0 to 3), as set by
+    /// `GpuBodyCommand::SetCustomValues` or a condition shader.
     #[must_use]
     pub fn custom(index: u8) -> GpuFieldCondition {
         Self::field(GpuStateField::Custom(index))
     }
 
+    /// True while the body touches another body or a collider.
     #[must_use]
     pub fn colliding() -> Self {
         Self {
@@ -313,6 +328,8 @@ impl GpuCondition {
         }
     }
 
+    /// True while the body sleeps: it touched something and stayed slower
+    /// than 0.05 m/s and 0.05 rad/s for 20 ticks. A push wakes it.
     #[must_use]
     pub fn sleeping() -> Self {
         Self {
@@ -320,6 +337,8 @@ impl GpuCondition {
         }
     }
 
+    /// True once `seconds` of simulated time have passed since physics
+    /// started.
     #[must_use]
     pub fn timer_elapsed(seconds: f32) -> Self {
         Self {
@@ -327,6 +346,7 @@ impl GpuCondition {
         }
     }
 
+    /// True when both conditions are.
     #[must_use]
     pub fn and(self, other: Self) -> Self {
         Self {
@@ -337,6 +357,7 @@ impl GpuCondition {
         }
     }
 
+    /// True when either condition is.
     #[must_use]
     pub fn or(self, other: Self) -> Self {
         Self {
@@ -347,6 +368,7 @@ impl GpuCondition {
         }
     }
 
+    /// True when `self` is false; `!condition` does the same.
     #[must_use]
     pub fn inverted(self) -> Self {
         Self {
@@ -367,6 +389,22 @@ impl GpuCondition {
             });
         }
         Ok(instructions)
+    }
+}
+
+impl std::ops::BitAnd for GpuCondition {
+    type Output = Self;
+
+    fn bitand(self, other: Self) -> Self::Output {
+        self.and(other)
+    }
+}
+
+impl std::ops::BitOr for GpuCondition {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self::Output {
+        self.or(other)
     }
 }
 
@@ -395,36 +433,44 @@ impl GpuFieldCondition {
         }
     }
 
+    /// True while the value is below `value`.
     #[must_use]
     pub fn less_than(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::Less, value)
     }
 
+    /// True while the value is at most `value`.
     #[must_use]
     pub fn less_or_equal(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::LessOrEqual, value)
     }
 
+    /// True while the value is above `value`.
     #[must_use]
     pub fn greater_than(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::Greater, value)
     }
 
+    /// True while the value is at least `value`.
     #[must_use]
     pub fn greater_or_equal(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::GreaterOrEqual, value)
     }
 
+    /// True while the value equals `value` exactly.
     #[must_use]
     pub fn equal_to(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::Equal, value)
     }
 
+    /// True while the value differs from `value`.
     #[must_use]
     pub fn not_equal_to(self, value: f32) -> GpuCondition {
         self.compare(GpuComparison::NotEqual, value)
     }
 
+    /// True while the value is in `minimum..=maximum`; the bounds may come
+    /// in either order.
     #[must_use]
     pub fn inside(self, minimum: f32, maximum: f32) -> GpuCondition {
         GpuCondition {
@@ -814,12 +860,24 @@ pub const GPU_PHYSICS_ABI_VERSION: u32 = 1;
 /// The renderer compiles the source at runtime with `glslc` (from the Vulkan
 /// SDK or shaderc; set `RUSTING_GLSLC` to use another path). A shader that
 /// fails to compile is skipped and its error kept; see
-/// `SceneRenderer::condition_shader_errors`. The event buffer reserves one
-/// event per body, tick, and shader; more are counted as lost.
+/// `SceneRenderer::condition_shader_errors`. The event buffer reserves
+/// `events_per_body` events per body, tick, and shader (at most 262144 per
+/// frame in all); more are counted as lost and reported as
+/// [`GpuPhysicsEventsLost`].
+///
+/// `params` reach GLSL as `condition_params.values[i]` (a `vec4` each).
+/// Change them every frame to steer the shader; unlike `glsl`, a change does
+/// not recompile. Reading past the end is undefined, so check
+/// `condition_params.values.length()`.
+///
+/// See `rusting docs show guide/gpu-condition-shaders` for the whole ABI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuConditionShader {
     pub events: Vec<String>,
     pub glsl: String,
+    pub params: Vec<[f32; 4]>,
+    /// Most events one body emits per tick from this shader; 0 counts as 1.
+    pub events_per_body: u32,
 }
 
 /// Custom condition shaders, dispatched in list order after the built-in step.

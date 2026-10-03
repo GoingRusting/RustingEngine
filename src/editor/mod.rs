@@ -3,6 +3,7 @@
 //! The window runner calls [`draw_editor_view`] inside its egui frame and
 //! composites the resulting shapes over the Vulkan scene.
 
+mod agent_panel;
 mod assets_panel;
 mod diagnostics;
 mod dock;
@@ -173,9 +174,26 @@ fn reload_external_scene_change(
         Ok(()) => {
             history.redo.clear();
             world.insert_resource(disk);
+            let diff = history
+                .undo
+                .back()
+                .zip(scene_document(world, "Outside Change").ok())
+                .map(|(before, after)| outside_change(before, &after))
+                .unwrap_or_default();
+            highlight_scene_ids(world, state, &diff.touched());
+            if let Some(mut journal) =
+                world.get_resource_mut::<agent_panel::AgentJournal>()
+            {
+                journal.record(agent_panel::JournalEntry {
+                    path: path.display().to_string(),
+                    summary: diff.summary(),
+                    ids: diff.touched(),
+                });
+            }
             format!(
-                "Reloaded outside change to {}; Undo reverts it",
-                path.display()
+                "Reloaded outside change to {} ({}); Undo reverts it",
+                path.display(),
+                diff.summary()
             )
         }
         Err(error) => {
@@ -184,6 +202,84 @@ fn reload_external_scene_change(
             format!("Could not reload outside change: {error}")
         }
     });
+}
+
+/// Entities an outside write added, removed, or changed, by scene ID.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OutsideChange {
+    added: Vec<uuid::Uuid>,
+    removed: Vec<uuid::Uuid>,
+    changed: Vec<uuid::Uuid>,
+}
+
+impl OutsideChange {
+    /// IDs still in the scene that the change touched.
+    fn touched(&self) -> Vec<uuid::Uuid> {
+        self.added.iter().chain(&self.changed).copied().collect()
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{} added, {} changed, {} removed",
+            self.added.len(),
+            self.changed.len(),
+            self.removed.len()
+        )
+    }
+}
+
+fn outside_change(
+    before: &SceneDocument,
+    after: &SceneDocument,
+) -> OutsideChange {
+    let by_id = |document: &SceneDocument| {
+        document
+            .entities
+            .iter()
+            .map(|entity| {
+                (entity.id, serde_json::to_value(entity).unwrap_or_default())
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let (old, new) = (by_id(before), by_id(after));
+    OutsideChange {
+        added: new
+            .keys()
+            .filter(|id| !old.contains_key(id))
+            .copied()
+            .collect(),
+        removed: old
+            .keys()
+            .filter(|id| !new.contains_key(id))
+            .copied()
+            .collect(),
+        changed: new
+            .iter()
+            .filter(|(id, entity)| {
+                old.get(id).is_some_and(|was| was != *entity)
+            })
+            .map(|(id, _)| *id)
+            .collect(),
+    }
+}
+
+/// Selects the entities with these scene IDs, so the Hierarchy and Scene
+/// View highlight them. Leaves the selection alone when none exist.
+fn highlight_scene_ids(
+    world: &mut World,
+    state: &mut EditorState,
+    ids: &[uuid::Uuid],
+) {
+    let mut query = world.query::<(Entity, &SceneId)>();
+    let entities: Vec<Entity> = query
+        .iter(world)
+        .filter(|(_, id)| ids.contains(&id.0))
+        .map(|(entity, _)| entity)
+        .collect();
+    if let Some(&first) = entities.first() {
+        state.selected = Some(first);
+        state.selection = entities;
+    }
 }
 
 /// Saves the scene, then the editor camera pose and selection beside it.
@@ -792,6 +888,7 @@ impl Plugin for EditorPlugin {
             .insert_resource(EditorTransformMode::default())
             .insert_resource(EditorFlyCamera::default())
             .insert_resource(EditorConsole::default())
+            .insert_resource(agent_panel::AgentJournal::default())
             .insert_resource(profiler::EditorProfiler::default())
             .insert_resource(EditorHistory::default())
             .insert_resource(PendingDestructiveAction::default())

@@ -14,7 +14,7 @@ pub(crate) fn set_parent(
     hierarchy::set_parent(world, child, parent).map_err(map_error)
 }
 
-pub(super) fn clear_parent(
+pub(crate) fn clear_parent(
     world: &mut World,
     child: Entity,
 ) -> Result<(), AppError> {

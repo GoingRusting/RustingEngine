@@ -70,10 +70,29 @@ pub struct Camera {
     pub projection: Projection,
     pub active: bool,
     pub priority: i32,
+    /// Part of the window this camera draws into, as fractions
+    /// `[x, y, width, height]` from the top-left corner. `None` fills the
+    /// window.
+    pub viewport: Option<[f32; 4]>,
 }
 
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct Name(pub String);
+
+impl Name {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for Name {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Reusable classes assigned to one scene object.
 ///
@@ -387,9 +406,12 @@ pub struct RenderSettings {
     pub vsync: bool,
     pub limit_fps: bool,
     pub max_fps: u32,
-    /// Reserved. The renderer does not read this yet, so changing it has no
-    /// effect (see the render scale gap in `roadmap.md`).
+    /// Fraction of the target size the 3D scene renders at, 0.25 to 2.0.
+    /// The frame is stretched over the target; UI stays at full resolution.
     pub render_scale: f32,
+    /// Stretch a scaled frame with nearest-neighbour filtering, so a low
+    /// `render_scale` shows square pixels instead of blur.
+    pub pixelated: bool,
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
     pub culling: CullingMode,
@@ -408,6 +430,7 @@ impl Default for RenderSettings {
             limit_fps: false,
             max_fps: 120,
             render_scale: 1.0,
+            pixelated: false,
             background_color: [0.025, 0.04, 0.07, 1.0],
             culling: CullingMode::Auto,
             antialiasing: Antialiasing::Auto,

@@ -86,6 +86,13 @@ impl TimeControl {
         self.paused = false;
     }
 
+    /// Time accumulated toward the next fixed step: how far real time has
+    /// run past the last completed tick.
+    #[must_use]
+    pub fn accumulator(&self) -> Duration {
+        self.accumulator
+    }
+
     /// Queues one fixed-schedule execution to be consumed while paused.
     pub fn step(&mut self) {
         self.pending_steps = self.pending_steps.saturating_add(1);

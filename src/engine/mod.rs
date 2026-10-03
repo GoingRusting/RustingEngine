@@ -593,6 +593,7 @@ impl Engine {
                 },
                 active: true,
                 priority: 100,
+                viewport: None,
             },
         ));
         self.runtime

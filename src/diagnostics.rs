@@ -1,0 +1,496 @@
+//! Registry of every diagnostic code the `rusting` tools emit, printed by
+//! `rusting explain`.
+//!
+//! A test scans the source tree for code literals, so a new code without an
+//! entry here, or an entry for a code nothing emits, fails the build.
+
+use serde_json::{json, Value};
+
+/// One diagnostic code: what it means, how to fix it, and an example.
+pub struct CodeInfo {
+    pub code: &'static str,
+    pub summary: &'static str,
+    pub fix: &'static str,
+    pub example: &'static str,
+}
+
+const fn code(
+    code: &'static str,
+    summary: &'static str,
+    fix: &'static str,
+    example: &'static str,
+) -> CodeInfo {
+    CodeInfo {
+        code,
+        summary,
+        fix,
+        example,
+    }
+}
+
+/// Every code, sorted by name.
+pub const CODES: &[CodeInfo] = &[
+    code(
+        "AGENTS_OUTDATED",
+        "The project's AGENTS.md is an engine copy that differs from this engine's, so it may miss newer features.",
+        "Run `rusting fix`; it replaces AGENTS.md and keeps the old file as AGENTS.md.old. Copy your own notes back.",
+        "rusting fix",
+    ),
+    code(
+        "ASSET_CHANGED",
+        "An imported file no longer matches the content hash in its .rmeta.",
+        "Record the new content with `rusting asset reimport`, or restore the original file.",
+        "rusting asset reimport . assets/textures/crate.png",
+    ),
+    code(
+        "ASSET_DEPENDENCY_MISSING",
+        "An imported asset needs a file (a glTF buffer or image) that is not in the project.",
+        "Copy the missing file next to the asset, or reimport the asset from a source folder that has it.",
+        "rusting asset reimport . assets/models/tree.gltf --from ~/art/tree.gltf",
+    ),
+    code(
+        "ASSET_DUPLICATE_ID",
+        "Two .rmeta files carry the same asset ID, usually because an asset folder was copied by hand.",
+        "Delete the copied .rmeta and import the copy again so it gets its own ID.",
+        "rm assets/crate_copy.png.rmeta && rusting asset import . assets/crate_copy.png",
+    ),
+    code(
+        "ASSET_EXISTS",
+        "The import target already exists in the project.",
+        "Use `rusting asset reimport` to replace it, or `--to` to import into another folder.",
+        "rusting asset import . ~/art/crate.png --to textures/v2",
+    ),
+    code(
+        "ASSET_INVALID",
+        "The file could not be loaded as the runtime would load it (bad image, bad glTF, or a URI that leaves its folder).",
+        "Open the file in its authoring tool and export it again; keep glTF buffers and images inside the model's folder.",
+        "rusting asset import . ~/art/level.glb",
+    ),
+    code(
+        "ASSET_IO",
+        "Reading or writing an asset file failed.",
+        "Check that the path exists and is writable, then run the command again.",
+        "rusting asset list --json",
+    ),
+    code(
+        "ASSET_META_INVALID",
+        "An .rmeta file is not valid JSON or has missing fields.",
+        "Restore it from version control, or delete it and import the asset again (this gives it a new ID).",
+        "git checkout -- assets/crate.png.rmeta",
+    ),
+    code(
+        "ASSET_MISSING",
+        "An .rmeta file has no imported file next to it.",
+        "Restore the file, or delete the .rmeta if the asset is no longer used.",
+        "rusting asset list --json",
+    ),
+    code(
+        "ASSET_NOT_FOUND",
+        "No asset has the given ID or path.",
+        "List the project's assets and use an ID or path from the list.",
+        "rusting asset list --json",
+    ),
+    code(
+        "ASSET_NOT_IMPORTED",
+        "A file under assets/ has no .rmeta, so it has no stable ID or license.",
+        "Import it so the engine records an ID, settings, and provenance.",
+        "rusting asset import . assets/sounds/jump.wav --license CC0-1.0",
+    ),
+    code(
+        "ASSET_NO_LICENSE",
+        "An asset has no license in its provenance record.",
+        "Reimport it with `--license` (and `--author`, `--url` where known).",
+        "rusting asset reimport . assets/crate.png --license CC0-1.0 --author \"Kenney\"",
+    ),
+    code(
+        "ASSET_RELOAD_FAILED",
+        "An asset failed to hot reload while the game was running; the old version stays loaded.",
+        "Fix the file named in the message; the game picks it up on the next save.",
+        "rusting asset list --json",
+    ),
+    code(
+        "ASSET_SOURCE_MISSING",
+        "The source file given to an import does not exist.",
+        "Check the path; relative paths are read from the current folder.",
+        "rusting asset import . ./art/crate.png",
+    ),
+    code(
+        "ASSET_UNSUPPORTED",
+        "The file type cannot be imported.",
+        "Convert it to png, jpeg, bmp, tga, gltf, or glb.",
+        "rusting asset import . ~/art/crate.png",
+    ),
+    code(
+        "BUILD_FAILED",
+        "Cargo failed to build the game; the message holds the end of its output.",
+        "Fix the first compiler error in the message, then run `rusting check` again.",
+        "rusting check --json",
+    ),
+    code(
+        "BUILD_TOOL_MISSING",
+        "Cargo could not be started.",
+        "Install Rust through rustup and make sure `cargo` is on PATH; `rusting doctor` reports what it finds.",
+        "rusting doctor",
+    ),
+    code(
+        "CAMERA_NOT_FOUND",
+        "No camera in the scene has the ID or name given to `--camera`, or the scene has no camera.",
+        "Query the scene for cameras and pass one of their IDs or names, or add a camera with a patch.",
+        "rusting scene query scenes/main.rscene --component camera --json",
+    ),
+    code(
+        "CAPTURE_FAILED",
+        "The scene could not be prepared or rendered for a capture.",
+        "Fix the scene error in the message; run `rusting validate` to see every problem.",
+        "rusting validate --json",
+    ),
+    code(
+        "CLI_OUTDATED",
+        "The `rusting` CLI is older than the engine the game builds against, so its docs, schema and checks may miss new features.",
+        "Reinstall the CLI from the engine the game uses, then run the command again.",
+        "cargo install --path <engine folder> --locked",
+    ),
+    code(
+        "CLI_USAGE",
+        "The command or its arguments are not valid. Exit code 2.",
+        "Read the usage for the command and run it again.",
+        "rusting --help scene patch",
+    ),
+    code(
+        "CODE_MISSING_ASSET",
+        "Game code names an asset path in `load_text` or `play_sound*` that is not a file under `assets/`.",
+        "Fix the path in the code (it is relative to `assets/`) or add the file.",
+        "rusting validate --json",
+    ),
+    code(
+        "DETERMINISM_DIVERGED",
+        "Two runs with the same inputs produced different state hashes; the message names the first tick that differs.",
+        "Remove wall-clock time, unseeded randomness, and order-dependent loops from game code; use `GameScene::random`.",
+        "rusting determinism --ticks 600 --json",
+    ),
+    code(
+        "DETERMINISM_NO_GPU_STATE",
+        "`rusting determinism --gpu` ran the scenario, but no GPU body state was hashed.",
+        "Set \"gpu\": true in the scenario and make sure the scene has GPU physics bodies.",
+        "rusting determinism --gpu tests/seed.json --json",
+    ),
+    code(
+        "DETERMINISM_UNSUPPORTED",
+        "project.json asks for a determinism mode that a scene entity does not support (for example a GPU-owned body).",
+        "Lower the mode in project.json, or change the entity to a body kind the mode supports.",
+        "rusting scene query scenes/main.rscene --component physics_body --json",
+    ),
+    code(
+        "EXPORT_FAILED",
+        "The export build or copy step failed.",
+        "Fix the error in the message; `rusting check` must pass before an export.",
+        "rusting check && rusting export . ../dist",
+    ),
+    code(
+        "EXPORT_NOT_VERIFIED",
+        "A cross-target export was written but not run, since it cannot run on this machine.",
+        "Run the exported game on the target platform to verify it.",
+        "rusting export . ../dist --target x86_64-pc-windows-gnu",
+    ),
+    code(
+        "EXPORT_VERIFY_FAILED",
+        "The exported game did not start cleanly from its own folder, so a file it needs was not packaged.",
+        "Make sure every file the game loads is under assets/ or scenes/, then export again.",
+        "rusting export . ../dist --json",
+    ),
+    code(
+        "FILE_NOT_FOUND",
+        "A scenario file or folder given to `rusting test` does not exist.",
+        "Scenario paths are looked up in the project first; check the name, or run `rusting test` for every file in tests/.",
+        "rusting test tests/win.json",
+    ),
+    code(
+        "GAME_FAILED",
+        "The game process could not start, crashed, or ended without its report.",
+        "Read `game.stderr` in the JSON result for the panic message, fix it, and run again.",
+        "rusting run --ticks 120 --json",
+    ),
+    code(
+        "GENERATOR_FAILED",
+        "An asset generator hook failed or printed no valid JSON result on its last output line.",
+        "Run the hook's command by hand with RUSTING_PROMPT and RUSTING_OUTPUT_DIR set and fix its output.",
+        "rusting asset generate . icons \"red gem\" --dry-run",
+    ),
+    code(
+        "GENERATOR_UNKNOWN",
+        "project.json has no generator hook with the given name.",
+        "Add the hook under `generators` in project.json, or use a name that is there.",
+        "rusting project inspect --json",
+    ),
+    code(
+        "IO_ERROR",
+        "A file or folder the command needs could not be created or written.",
+        "Check permissions and free space for the path in the message.",
+        "rusting determinism --json",
+    ),
+    code(
+        "PATCH_INVALID",
+        "Every operation applied, but the patched scene fails validation, so nothing was written.",
+        "Fix the operation that causes the problem in the message; use --dry-run to check before writing.",
+        "rusting scene patch scenes/main.rscene patch.json --dry-run",
+    ),
+    code(
+        "PATCH_JSON",
+        "The patch file is not valid JSON or does not match the patch format.",
+        "Read the patch format in `rusting schema --json` and fix the file.",
+        "{\"operations\": [{\"op\": \"set\", \"id\": \"Player\", \"path\": \"/transform/position\", \"value\": [0, 1, 0]}]}",
+    ),
+    code(
+        "PATCH_OPERATION",
+        "One patch operation could not be applied (unknown entity, bad path, or wrong value type); nothing was written.",
+        "Query the scene for the entity's current form and fix the operation the message numbers.",
+        "rusting scene query scenes/main.rscene --name Player --json",
+    ),
+    code(
+        "PATCH_UNVALIDATED_COMPONENT",
+        "A patch writes a component the tools do not know; the game validates it when it loads.",
+        "Check the component name and fields against the game's registration, then run `rusting check`.",
+        "rusting check --json",
+    ),
+    code(
+        "PRESET_SCOPE_UNKNOWN",
+        "`preset apply --only` named a scope that does not exist.",
+        "Use `lighting`, `camera` or `text`, comma separated.",
+        "rusting preset apply scenes/main.rscene night --only lighting --dry-run",
+    ),
+    code(
+        "PRESET_UNKNOWN",
+        "No art-direction preset has the given name.",
+        "List the presets and use one of their names.",
+        "rusting preset list",
+    ),
+    code(
+        "PROJECT_EXISTS",
+        "The project folder already exists.",
+        "Choose another name or parent folder.",
+        "rusting new . my_game_2",
+    ),
+    code(
+        "PROJECT_INVALID",
+        "The project or binary name is not valid.",
+        "Use only letters, numbers, spaces, - and _ in the project name.",
+        "rusting new . coin_run",
+    ),
+    code(
+        "PROJECT_IO",
+        "Reading or writing a project file failed.",
+        "Check that the folder exists and is writable.",
+        "rusting project inspect --json",
+    ),
+    code(
+        "PROJECT_MANIFEST_JSON",
+        "project.json is not valid JSON or has missing fields.",
+        "Fix the file; `rusting project inspect` reports the line.",
+        "rusting project inspect --json",
+    ),
+    code(
+        "PROJECT_MISSING_FILE",
+        "The folder is not a project (no project.json), or a file the manifest names is missing.",
+        "Run the command from the project folder, or pass the project root.",
+        "rusting check path/to/my_game",
+    ),
+    code(
+        "PROJECT_VERSION",
+        "project.json has a format version this engine does not read.",
+        "Use the engine version that made the project, or upgrade the manifest.",
+        "rusting doctor",
+    ),
+    code(
+        "RUST_BUILD_ERROR",
+        "Game code failed to compile during a code reload; the running game keeps the old code.",
+        "Fix the compiler error in the message; the game reloads on the next successful build.",
+        "rusting check --json",
+    ),
+    code(
+        "RUST_ENGINE_HINT",
+        "A rustc error in game code matches a known engine pattern; the hint says how to write it.",
+        "Apply the hint to the error it points at, then run `rusting check` again.",
+        "rusting check --json",
+    ),
+    code(
+        "SCENARIO_FAILED",
+        "A scenario check failed; the message names the first failing tick, entity, and path.",
+        "Inspect the state at that tick with a `log` step or `rusting run --ticks N`, then fix the game or the check.",
+        "rusting test tests/win.json --json",
+    ),
+    code(
+        "SCENE_COMPONENT_FIELD",
+        "A scene component has a field with the wrong name or type.",
+        "Compare the component with its entry in `rusting schema --json`.",
+        "rusting schema --json",
+    ),
+    code(
+        "SCENE_CONFLICT",
+        "The scene changed since the patch was built (revision or `expected` value mismatch); nothing was written.",
+        "Query the scene again, rebuild the patch from the current values, and apply it.",
+        "rusting scene inspect scenes/main.rscene --json",
+    ),
+    code(
+        "SCENE_INVALID",
+        "The scene failed validation.",
+        "Fix the problem in the message; `rusting validate` lists every problem in the project.",
+        "rusting validate --json",
+    ),
+    code(
+        "SCENE_IO",
+        "The scene file could not be read or written.",
+        "Check the path; scene paths are relative to the current folder.",
+        "rusting scene inspect scenes/main.rscene",
+    ),
+    code(
+        "SCENE_JSON",
+        "The scene file is not valid JSON or does not match the scene format.",
+        "When the diagnostic carries a fix (a misspelled required field), run `rusting fix`. Otherwise go to the line and column it gives; edit scenes with `rusting scene patch` instead of by hand, or restore the file from version control.",
+        "git checkout -- scenes/main.rscene",
+    ),
+    code(
+        "SCENE_MISSING_ASSET",
+        "The scene references an asset file that does not exist.",
+        "Import the asset, or patch the reference to an existing path; paths are relative to the scene file.",
+        "rusting asset list --json",
+    ),
+    code(
+        "SCENE_STRUCTURE",
+        "The scene has a duplicate ID, a duplicate unique name, a missing parent, or a parent cycle.",
+        "Patch the entity the message names; `reparent` and `set` on /name fix most cases.",
+        "{\"operations\": [{\"op\": \"reparent\", \"id\": \"Lamp\", \"parent\": null}]}",
+    ),
+    code(
+        "SCENE_UNKNOWN_FIELD",
+        "The scene file has a key the scene format does not have, so loading ignores it and the field keeps its default.",
+        "Run `rusting fix` when the diagnostic carries a fix (a close misspelling); otherwise rename the key to one the message lists, checking `rusting schema --json`.",
+        "rusting fix --dry-run",
+    ),
+    code(
+        "SCENE_VERSION",
+        "The scene has a format version this engine does not read.",
+        "Open it with the engine version that wrote it, or upgrade the engine.",
+        "rusting doctor",
+    ),
+    code(
+        "SHADER_BUILD_ERROR",
+        "A shader failed to compile during a reload; the old shader stays in use.",
+        "Fix the shader error in the message.",
+        "rusting check --json",
+    ),
+    code(
+        "VULKAN_UNAVAILABLE",
+        "No Vulkan device could render; captures fall back to CPU-only validation.",
+        "Install a Vulkan driver, or Mesa lavapipe for a software device (see docs/dev-environment.md).",
+        "rusting doctor",
+    ),
+];
+
+#[must_use]
+pub fn lookup(code: &str) -> Option<&'static CodeInfo> {
+    CODES.iter().find(|info| info.code == code)
+}
+
+#[must_use]
+pub fn to_json(info: &CodeInfo) -> Value {
+    json!({
+        "code": info.code,
+        "summary": info.summary,
+        "fix": info.fix,
+        "example": info.example,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use super::*;
+
+    /// Upper-case string literals that are not diagnostic codes.
+    fn not_a_code(literal: &str) -> bool {
+        ["RUSTING_", "RUST_LOG", "CARGO_", "XDG_"]
+            .iter()
+            .any(|prefix| {
+                literal.starts_with(prefix) && literal != "RUST_BUILD_ERROR"
+            })
+            || ["GRID_PASS", "D32_SFLOAT"].contains(&literal)
+    }
+
+    fn scan(folder: &Path, found: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path.ends_with("diagnostics.rs")
+            {
+                // A quote char or an escaped quote would shift which
+                // pieces are inside string literals.
+                let text = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("\\\"", "")
+                    .replace("'\"'", "");
+                for literal in text.split('"').skip(1).step_by(2) {
+                    let shaped = literal.contains('_')
+                        && literal
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase())
+                        && literal.chars().all(|c| {
+                            c.is_ascii_uppercase()
+                                || c.is_ascii_digit()
+                                || c == '_'
+                        });
+                    if shaped && !not_a_code(literal) {
+                        found.insert(literal.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_emitted_code_is_registered_and_every_registered_code_is_emitted() {
+        let mut emitted = BTreeSet::new();
+        scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut emitted,
+        );
+        let registered: BTreeSet<String> =
+            CODES.iter().map(|info| info.code.to_owned()).collect();
+        let missing: Vec<_> = emitted.difference(&registered).collect();
+        let unused: Vec<_> = registered.difference(&emitted).collect();
+        assert!(missing.is_empty(), "codes without an entry: {missing:?}");
+        assert!(unused.is_empty(), "entries nothing emits: {unused:?}");
+    }
+
+    #[test]
+    fn codes_are_sorted_unique_and_fully_documented() {
+        for pair in CODES.windows(2) {
+            assert!(
+                pair[0].code < pair[1].code,
+                "{} out of order",
+                pair[1].code
+            );
+        }
+        for info in CODES {
+            assert!(
+                !info.summary.is_empty()
+                    && !info.fix.is_empty()
+                    && !info.example.is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn json_patch_examples_parse_as_patches() {
+        for info in CODES.iter().filter(|info| info.example.starts_with('{')) {
+            serde_json::from_str::<crate::scene_patch::ScenePatch>(
+                info.example,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", info.code));
+        }
+    }
+}

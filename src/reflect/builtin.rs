@@ -81,6 +81,9 @@ crate::reflect! {
         jump_speed: f32 { unit: "m/s", min: 0.0 },
         gravity: f32 { unit: "m/s²", min: 0.0 },
         look_sensitivity: f32 { unit: "rad/pixel", min: 0.0 },
+        mouse_look: bool {
+            doc: "false: clicks never capture the cursor; the mouse stays free",
+        },
         collision_mask: u32 {
             unit: "bitmask", doc: "layers the body stops against",
         },
@@ -93,6 +96,10 @@ crate::reflect! {
         camera_height: f32 {
             unit: "m", doc: "third-person orbit center above the body",
         },
+        camera_offset: [f32; 3] {
+            unit: "m",
+            doc: "added to the camera position in the body's frame; [0.6, 0, 0] looks over the right shoulder",
+        },
         max_slope: f32 {
             unit: "rad", min: 0.0, max: 1.57,
             doc: "steepest ground it walks up; steeper is a wall",
@@ -101,10 +108,16 @@ crate::reflect! {
             unit: "m", min: 0.0, doc: "highest ledge it steps onto",
         },
         push_bodies: bool { doc: "false: dynamic bodies block it but never move" },
+        turn_speed: f32 {
+            unit: "rad/s", min: 0.0,
+            doc: "how fast non-camera children turn to the walk direction",
+        },
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_requested: bool,
         #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
+        #[skip] wall: Option<bevy_ecs::entity::Entity>,
+        #[skip] velocity: [f32; 3],
     }
 }
 
@@ -246,6 +259,13 @@ crate::reflect! {
         },
         gravity: f32 { unit: "m/s²" },
         on_collision: bool { doc: "CPU collider contacts only" },
+        rate: f32 {
+            unit: "particles/s", min: 0.0,
+            doc: "above 0 emits every fixed step, no trigger needed",
+        },
+        area: [f32; 3] { unit: "m", doc: "half extents of the start box" },
+        stretch: f32 { unit: "factor", min: 0.0, doc: "particle height" },
+        #[skip] pending: f32,
         #[skip] triggered: bool,
         #[skip] touching: bool,
     }
@@ -292,7 +312,7 @@ crate::reflect! {
         anchor: HudAnchor,
         offset: [f32; 2] {
             unit: "logical pixels",
-            doc: "from the anchor toward the screen center",
+            doc: "[x, y] inward from the anchor: [24, 24] on BottomRight is 24 px left of the right edge and 24 px above the bottom; on Top, Bottom and Center, +x is right",
         },
         font_size: f32 { unit: "logical pixels", min: 1.0 },
         color: [f32; 4] { unit: "sRGBA", min: 0.0, max: 1.0, color: true },
@@ -301,6 +321,10 @@ crate::reflect! {
             unit: "counter name",
             doc: "null, or shown only once that counter is complete",
         },
+        camera: Option<String> {
+            unit: "camera name",
+            doc: "null anchors to the window; a name anchors to that camera's viewport and shows only while it is active",
+        },
     }
 }
 
@@ -308,7 +332,7 @@ crate::reflect! {
     struct InputAction {
         action: String { doc: "name game code and scenarios use" },
         inputs: Vec<String> {
-            doc: "winit key names (KeyF, Space, ArrowUp) or MouseLeft, MouseRight, MouseMiddle",
+            doc: "winit key names (KeyF, Space, ArrowUp), MouseLeft, MouseRight, MouseMiddle, or gamepad inputs (PadSouth, PadStart, PadDpadUp, PadLeftStickUp)",
         },
     }
 }
@@ -515,7 +539,13 @@ crate::reflect! {
         vsync: bool,
         limit_fps: bool,
         max_fps: u32 { unit: "frames/s", min: 1.0 },
-        render_scale: f32 { unit: "factor", min: 0.25, max: 2.0 },
+        render_scale: f32 {
+            unit: "factor", min: 0.25, max: 2.0,
+            doc: "Fraction of the window size the 3D scene renders at, stretched over the window. Below 1 is faster and blurrier; UI stays sharp.",
+        },
+        pixelated: bool {
+            doc: "Stretch a scaled frame with nearest-neighbour filtering: square pixels instead of blur.",
+        },
         background_color: [f32; 4] {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
         },

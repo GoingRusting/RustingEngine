@@ -90,6 +90,9 @@ pub struct CharacterMove {
     pub floor: Option<Entity>,
     /// True when the move touched a surface facing down (a ceiling).
     pub ceiling: bool,
+    /// The last wall the move ran into (neither floor nor ceiling) and the
+    /// wall's normal, so a walking body can push it.
+    pub wall: Option<(Entity, [f32; 3])>,
 }
 
 /// Where an object is in the world: the propagated pose for a child, the
@@ -613,11 +616,27 @@ impl PhysicsWorld {
         max_distance: f32,
         layer_mask: u32,
     ) -> Option<RayHit> {
+        self.raycast_where(origin, direction, max_distance, layer_mask, |_| {
+            true
+        })
+    }
+
+    /// [`Self::raycast`] that skips colliders whose entity `keep` rejects.
+    #[must_use]
+    pub fn raycast_where(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        layer_mask: u32,
+        keep: impl Fn(Entity) -> bool,
+    ) -> Option<RayHit> {
         let origin = Vector3::from(origin);
         let direction = Vector3::from(direction).try_normalize(1e-6)?;
         self.bodies
             .iter()
             .filter(|body| body.layers.memberships & layer_mask != 0)
+            .filter(|body| keep(body.entity))
             .filter_map(|body| {
                 let (distance, normal) = ray_body(origin, direction, body)?;
                 (distance <= max_distance).then(|| RayHit {
@@ -812,6 +831,7 @@ impl PhysicsWorld {
         let mut grounded = false;
         let mut floor = None;
         let mut ceiling = false;
+        let mut wall = None;
         // Distance from the center down to the bottom of the shape.
         let bottom = match Shape::scaled(shape, [1.0; 3]) {
             Some(Shape::Sphere(radius)) => radius,
@@ -825,6 +845,24 @@ impl PhysicsWorld {
                 0.0
             }
         };
+        // A cast passes through a collider it starts inside, so a body
+        // teleported or risen into a floor would fall through it. Cast down
+        // from above to lift a body sunk less than its `bottom` onto the top.
+        if bottom > 0.0 {
+            let above = position + Vector3::y() * bottom;
+            if let Some(hit) = self.shape_cast(
+                shape,
+                above.into(),
+                [0.0, -1.0, 0.0],
+                bottom,
+                layer_mask,
+                exclude,
+            ) {
+                if hit.normal[1] > floor_y {
+                    position.y = above.y - hit.distance + SKIN;
+                }
+            }
+        }
         // Each slide removes motion into one surface; three covers a corner.
         for _ in 0..4 {
             let length = remaining.norm();
@@ -855,6 +893,9 @@ impl PhysicsWorld {
                 floor = Some(hit.entity);
             }
             ceiling |= normal.y < -0.7;
+            if normal.y.abs() <= floor_y {
+                wall = Some((hit.entity, hit.normal));
+            }
             let travel = (hit.distance - SKIN).max(0.0);
             position += direction * travel;
             remaining = direction * (length - travel);
@@ -869,6 +910,7 @@ impl PhysicsWorld {
             grounded,
             floor,
             ceiling,
+            wall,
         }
     }
 }
@@ -1728,10 +1770,18 @@ fn mesh_manifold(
     let normal = Vector3::from(contact.normal);
     // The smaller polyhedral body lies on the other; a triangle mesh has no
     // vertices here, so its partner is used.
-    let (vertices, toward) = [(a.vertices(), normal), (b.vertices(), -normal)]
-        .into_iter()
-        .filter(|(vertices, _)| !vertices.is_empty())
-        .min_by(|x, y| x.0.len().cmp(&y.0.len()))?;
+    let size = |body: &Body| match body.shape {
+        Shape::Box(half) => half.norm(),
+        Shape::Hull(ref mesh) => mesh.half_extents.norm(),
+        _ => f32::INFINITY,
+    };
+    let (vertices, toward, _) = [
+        (a.vertices(), normal, size(a)),
+        (b.vertices(), -normal, size(b)),
+    ]
+    .into_iter()
+    .filter(|(vertices, ..)| !vertices.is_empty())
+    .min_by(|x, y| x.2.total_cmp(&y.2))?;
     let deepest = vertices
         .iter()
         .map(|vertex| vertex.dot(&toward))

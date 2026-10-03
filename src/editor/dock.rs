@@ -29,10 +29,12 @@ pub enum EditorPanel {
     RenderSettings,
     /// Physics backend, workload, readback, and capacity diagnostics.
     PhysicsDiagnostics,
+    /// Journal of scene changes written by tools outside the editor.
+    Agent,
 }
 
 impl EditorPanel {
-    pub(super) const ALL: [Self; 12] = [
+    pub(super) const ALL: [Self; 13] = [
         Self::Scene,
         Self::Game,
         Self::Code,
@@ -45,6 +47,7 @@ impl EditorPanel {
         Self::Profiler,
         Self::RenderSettings,
         Self::PhysicsDiagnostics,
+        Self::Agent,
     ];
 
     pub(super) fn icon(self) -> super::EditorIcon {
@@ -62,6 +65,7 @@ impl EditorPanel {
             Self::Profiler => EditorIcon::ViewOptions,
             Self::RenderSettings => EditorIcon::Gear,
             Self::PhysicsDiagnostics => EditorIcon::ViewOptions,
+            Self::Agent => EditorIcon::Console,
         }
     }
 
@@ -79,6 +83,7 @@ impl EditorPanel {
             Self::Profiler => "Profiler",
             Self::RenderSettings => "Render Settings",
             Self::PhysicsDiagnostics => "Physics Diagnostics",
+            Self::Agent => "Agent",
         }
     }
 }

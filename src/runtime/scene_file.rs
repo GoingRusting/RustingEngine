@@ -1012,6 +1012,10 @@ pub struct SceneCamera {
     pub projection: SceneProjection,
     pub active: bool,
     pub priority: i32,
+    // No skip_serializing_if: cooked scenes are bincode, which needs every
+    // field written.
+    #[serde(default)]
+    pub viewport: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -1455,7 +1459,18 @@ fn reflect_error(
         current_version: ty.version(),
         path,
         problem,
+        object: None,
     }))
+}
+
+impl SceneIoError {
+    /// Records the scene object a component value error came from.
+    fn at_object(mut self, id: Uuid) -> Self {
+        if let Self::Reflection(error) = &mut self {
+            error.object.get_or_insert(id);
+        }
+        self
+    }
 }
 
 fn serde_error(name: &str, error: &serde_json::Error) -> SceneIoError {
@@ -1602,6 +1617,24 @@ pub fn scene_document(
     world: &mut World,
     name: impl Into<String>,
 ) -> Result<SceneDocument, SceneIoError> {
+    scene_document_with(world, name, false)
+}
+
+/// Like [`scene_document`], but an entity whose mesh or textures were made in
+/// code (so have no asset path) is kept without its `mesh_renderer` instead of
+/// failing the whole document. For reading state, never for saving.
+pub fn scene_document_lenient(
+    world: &mut World,
+    name: impl Into<String>,
+) -> Result<SceneDocument, SceneIoError> {
+    scene_document_with(world, name, true)
+}
+
+fn scene_document_with(
+    world: &mut World,
+    name: impl Into<String>,
+    lenient: bool,
+) -> Result<SceneDocument, SceneIoError> {
     let registrations = world
         .resource::<SceneComponentRegistry>()
         .registrations
@@ -1713,9 +1746,16 @@ pub fn scene_document(
                     .ok_or(SceneIoError::MissingParent(id.0))
             })
             .transpose()?;
-        let mesh_renderer = renderer
+        let mesh_renderer = match renderer
             .map(|renderer| scene_renderer(renderer, assets))
-            .transpose()?;
+            .transpose()
+        {
+            Ok(renderer) => renderer,
+            Err(
+                SceneIoError::UnsavedMesh(_) | SceneIoError::UnsavedTexture(_),
+            ) if lenient => None,
+            Err(error) => return Err(error),
+        };
         let mut components = world
             .get::<UnregisteredComponents>(entity)
             .map(|kept| kept.0.clone())
@@ -2207,7 +2247,8 @@ pub fn load_scene_document(
                         registration,
                         serialized,
                         Some(&spawned),
-                    )?,
+                    )
+                    .map_err(|error| error.at_object(scene_entity.id))?,
                     None => {
                         unregistered.insert(name.clone(), serialized.clone());
                     }
@@ -2287,6 +2328,30 @@ pub fn validate_scene_structure(
         }
     }
     Ok(())
+}
+
+/// Index in `document.entities` of the object a structure or component
+/// value error is about, so tools can point at it.
+#[must_use]
+pub fn error_object(
+    document: &SceneDocument,
+    error: &SceneIoError,
+) -> Option<usize> {
+    let entities = &document.entities;
+    let last_with_id =
+        |id: Uuid| entities.iter().rposition(|entity| entity.id == id);
+    match error {
+        SceneIoError::DuplicateEntity(id)
+        | SceneIoError::HierarchyCycle(id) => last_with_id(*id),
+        SceneIoError::DuplicateName(name) => entities
+            .iter()
+            .rposition(|entity| entity.name.as_deref() == Some(name)),
+        SceneIoError::MissingParent(parent) => entities
+            .iter()
+            .position(|entity| entity.parent == Some(*parent)),
+        SceneIoError::Reflection(error) => error.object.and_then(last_with_id),
+        _ => None,
+    }
 }
 
 fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
@@ -2508,9 +2573,13 @@ fn preload_component_assets(
             }
             let mut value: Value = serde_json::from_str(serialized)
                 .map_err(|error| serde_error(name, &error))?;
-            let saved = reflect::take_version(&mut value)
-                .map_err(|located| reflect_error(name, ty, 0, located))?;
-            let error = |located| reflect_error(name, ty, saved, located);
+            let saved =
+                reflect::take_version(&mut value).map_err(|located| {
+                    reflect_error(name, ty, 0, located).at_object(entity.id)
+                })?;
+            let error = |located| {
+                reflect_error(name, ty, saved, located).at_object(entity.id)
+            };
             reflect::migrate(&mut value, saved, &ty.migrations)
                 .map_err(error)?;
             let mut assets = world
@@ -2670,6 +2739,7 @@ fn scene_camera(camera: Camera) -> SceneCamera {
         },
         active: camera.active,
         priority: camera.priority,
+        viewport: camera.viewport,
     }
 }
 
@@ -2697,6 +2767,7 @@ fn runtime_camera(camera: SceneCamera) -> Camera {
         },
         active: camera.active,
         priority: camera.priority,
+        viewport: camera.viewport,
     }
 }
 
@@ -3117,6 +3188,14 @@ mod tests {
             Name("Camera".into()),
             Transform::default(),
             Camera::default(),
+        ));
+        app.spawn((
+            Name("Split".into()),
+            Transform::default(),
+            Camera {
+                viewport: Some([0.5, 0.0, 0.5, 1.0]),
+                ..Camera::default()
+            },
         ));
         let document = scene_document(app.world_mut(), "Compile").unwrap();
         let source = serde_json::to_vec(&document).unwrap();

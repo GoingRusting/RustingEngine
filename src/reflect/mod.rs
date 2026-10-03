@@ -637,7 +637,7 @@ pub enum ReflectProblem {
     /// A saved field the type does not have.
     UnknownField,
     /// A saved enum variant the type does not have.
-    UnknownVariant(String),
+    UnknownVariant(String, Vec<&'static str>),
     /// Saved by a build with more migrations than this one.
     NewerVersion,
     /// A handle to an asset that was not loaded from a file.
@@ -663,6 +663,8 @@ pub struct ReflectError {
     /// JSON pointer into the component's scene form.
     pub path: String,
     pub problem: ReflectProblem,
+    /// The scene object holding the component, when loading a scene.
+    pub object: Option<Uuid>,
 }
 
 impl Display for ReflectError {
@@ -688,9 +690,11 @@ impl Display for ReflectProblem {
                 "the type has no such field; register a rename or remove \
                  migration instead of dropping the saved value",
             ),
-            ReflectProblem::UnknownVariant(name) => {
-                write!(formatter, "the type has no variant `{name}`")
-            }
+            ReflectProblem::UnknownVariant(name, expected) => write!(
+                formatter,
+                "the type has no variant `{name}`; expected one of: {}",
+                expected.join(", ")
+            ),
             ReflectProblem::NewerVersion => formatter
                 .write_str("saved by a newer build with more migrations"),
             ReflectProblem::UnsavedAsset => formatter.write_str(
@@ -966,7 +970,10 @@ fn walk_at(
             } else {
                 Err(located(
                     pointer,
-                    ReflectProblem::UnknownVariant(name.clone()),
+                    ReflectProblem::UnknownVariant(
+                        name.clone(),
+                        info.variants.iter().map(|v| v.name).collect(),
+                    ),
                 ))
             }
         }
@@ -975,7 +982,10 @@ fn walk_at(
             let Some(variant) = info.variant(name) else {
                 return Err(located(
                     pointer,
-                    ReflectProblem::UnknownVariant(name.clone()),
+                    ReflectProblem::UnknownVariant(
+                        name.clone(),
+                        info.variants.iter().map(|v| v.name).collect(),
+                    ),
                 ));
             };
             let length = pointer.len();

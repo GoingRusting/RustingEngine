@@ -22,6 +22,36 @@ pub const PROJECT_FORMAT_VERSION: u32 = 1;
 /// exit, for smoke tests of built and exported games.
 pub const HEADLESS_TICKS_ENV: &str = "RUSTING_HEADLESS_TICKS";
 
+/// Environment variable naming the folder where game code keeps settings
+/// and saves (`GameScene::save_data`). `rusting test` points it at an empty
+/// `build/test-userdata/<scenario>/` folder for each scenario.
+pub const USER_DATA_ENV: &str = "RUSTING_USER_DATA";
+
+/// Folder for a game's settings and saves: [`USER_DATA_ENV`] when set, else
+/// a folder named after the game's executable in the user's data folder
+/// (`~/.local/share/<game>` on Linux, `~/Library/Application Support/<game>`
+/// on macOS, `%APPDATA%\<game>` on Windows).
+#[must_use]
+pub fn user_data_folder() -> PathBuf {
+    if let Some(folder) = std::env::var_os(USER_DATA_ENV) {
+        return PathBuf::from(folder);
+    }
+    let game = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.file_stem().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "rusting-game".into());
+    let env = |name| std::env::var_os(name).map(PathBuf::from);
+    let base = if cfg!(windows) {
+        env("APPDATA")
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|home| home.join("Library/Application Support"))
+    } else {
+        env("XDG_DATA_HOME")
+            .or_else(|| env("HOME").map(|home| home.join(".local/share")))
+    };
+    base.unwrap_or_else(|| PathBuf::from("userdata")).join(game)
+}
+
 /// Environment variable naming a file where a headless run writes its
 /// `StateHashReport` as JSON, for determinism checks across processes.
 pub const STATE_HASH_OUT_ENV: &str = "RUSTING_STATE_HASH_OUT";
@@ -33,6 +63,10 @@ pub const FINAL_SCENE_OUT_ENV: &str = "RUSTING_FINAL_SCENE_OUT";
 /// Environment variable naming a file where a windowed game writes a
 /// `Replay` of the session as JSON when it exits.
 pub const REPLAY_OUT_ENV: &str = "RUSTING_REPLAY_OUT";
+
+/// Milliseconds after which a windowed game closes itself as if its window
+/// closed, so `rusting run --record --timeout` still saves the replay.
+pub const QUIT_AFTER_MS_ENV: &str = "RUSTING_QUIT_AFTER_MS";
 
 /// Environment variable naming a `Replay` JSON file that a game plays back
 /// headless instead of opening a window, failing if any tick's hash differs.
@@ -590,6 +624,11 @@ fn write_project_template(
     )?;
     std::fs::write(root.join("src/main.rs"), default_game_source())?;
     std::fs::write(root.join("AGENTS.md"), include_str!("project_agents.md"))?;
+    std::fs::create_dir_all(root.join("skills/rusting-game"))?;
+    std::fs::write(
+        root.join("skills/rusting-game/SKILL.md"),
+        include_str!("../skills/rusting-game/SKILL.md"),
+    )?;
     std::fs::write(root.join(".gitignore"), "/target\n/build\n/tests/shots\n")?;
     std::fs::write(
         root.join("scenes/main.rscene"),
@@ -696,6 +735,7 @@ fn default_scene(name: &str) -> SceneDocument {
                     },
                     active: true,
                     priority: 10,
+                    viewport: None,
                 }),
                 visible: None,
                 physics_body: None,
@@ -1411,7 +1451,7 @@ pub fn package_game_files(
         std::fs::write(
             temporary.join("README.txt"),
             format!(
-                "{project_name}\n\nRun {executable_name} to start the game.\nThe system needs a Vulkan-capable graphics driver.\n"
+                "{project_name}\n\nRun {executable_name} to start the game.\nThe system needs a Vulkan-capable graphics driver.\n\nSettings and saves live in the user data folder: ~/.local/share/{binary_name} on Linux,\n~/Library/Application Support/{binary_name} on macOS, %APPDATA%\\{binary_name} on Windows.\nSet RUSTING_USER_DATA=<folder> to use another one.\n\nRUSTING_HEADLESS_TICKS=<n> runs n ticks with no window and exits, for smoke tests;\ncommand-line arguments reach the game code through std::env::args().\n"
             ),
         )
         .map_err(|error| error.to_string())?;
@@ -1535,6 +1575,7 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
         assert!(project.root.join("Cargo.toml").is_file());
         assert!(project.root.join("src/main.rs").is_file());
         assert!(project.root.join("AGENTS.md").is_file());
+        assert!(project.root.join("skills/rusting-game/SKILL.md").is_file());
         assert!(project.root.join(".gitignore").is_file());
         assert!(project.root.join("scenes/main.rscene").is_file());
         assert!(project.root.join("assets").is_dir());

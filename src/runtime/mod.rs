@@ -4,6 +4,7 @@
 //! integrations consume the ECS state through the `RenderExtract` schedule.
 
 mod actions;
+mod audio;
 mod classes;
 mod click;
 mod components;
@@ -40,6 +41,10 @@ pub mod water;
 pub use actions::{
     bind_input_actions, parse_input, ActionMap, InputAction, InputBinding,
 };
+pub use audio::{
+    route_sound_events, AudioCommand, AudioQueue, BeatClock, Sound, SoundId,
+    QUEUE_LIMIT,
+};
 pub use classes::ClassIndex;
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
@@ -58,7 +63,9 @@ pub use fluid::{
 pub use game_feel::*;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
-pub use input::{KeyCode, MouseButton, RuntimeInput};
+#[cfg(feature = "window")]
+pub use input::Gamepads;
+pub use input::{KeyCode, MouseButton, PadButton, RuntimeInput, Stick};
 pub use physics_benchmark::{
     BenchmarkBody, PhysicsBenchmark, BENCHMARK_TOWER_HEIGHT,
 };
@@ -141,9 +148,12 @@ pub trait Plugin: Send + Sync + 'static {
     }
 }
 
+/// Set by [`App::request_exit`] and `GameScene::quit`: the window runner
+/// closes after the frame, a headless run stops, and a scenario ends its
+/// run.
 #[derive(Resource, Clone, Default)]
-struct ExitState {
-    requested: bool,
+pub(crate) struct ExitState {
+    pub(crate) requested: bool,
 }
 
 /// Owns the canonical ECS world and all engine schedules.
@@ -231,6 +241,7 @@ impl Default for App {
             (
                 cpu_physics::step_cpu_physics,
                 player::player_move,
+                player::player_face,
                 two_d::platformer_move,
                 game_feel::trigger_on_contact,
                 game_feel::collect_pickups,
@@ -253,9 +264,11 @@ impl Default for App {
         app.add_system(ScheduleStage::Update, player::player_look);
         app.add_system(ScheduleStage::Update, actions::bind_input_actions);
         app.add_event::<SoundEvent>();
+        app.insert_resource(AudioQueue::default());
         app.add_event::<HudButtonPressed>();
         #[cfg(feature = "ui")]
-        app.add_system(ScheduleStage::Update, game_feel::draw_hud);
+        // After game code, so the HUD shows this frame's counters.
+        app.add_system(ScheduleStage::PostUpdate, game_feel::draw_hud);
         app.add_system(ScheduleStage::Update, two_d::build_tile_maps);
         app.add_system(
             ScheduleStage::Update,
@@ -643,8 +656,12 @@ impl App {
             );
         }
         #[cfg(feature = "ui")]
-        if let Some(mut ui) = self.world.get_resource_mut::<RuntimeUi>() {
-            ui.begin_pass();
+        if self.world.contains_resource::<RuntimeUi>() {
+            self.world.resource_scope(
+                |world, mut ui: bevy_ecs::world::Mut<RuntimeUi>| {
+                    ui.begin_pass(world.resource::<RuntimeInput>());
+                },
+            );
         }
         self.update.run(&mut self.world);
         self.post_update.run(&mut self.world);

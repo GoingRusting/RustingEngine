@@ -354,6 +354,14 @@ fn rust_condition_builder_compiles_to_postfix_gpu_instructions() {
     assert_eq!(instructions[0].values[0], -100.0);
     assert_eq!(instructions[1].values[0], 0.0);
     assert_ne!(instructions[2].opcode, instructions[5].opcode);
+
+    let operators = (GpuCondition::position_y().less_than(-100.0)
+        & GpuCondition::velocity_y().less_than(0.0))
+        | !GpuCondition::sleeping();
+    assert_eq!(
+        format!("{:?}", operators.compile().unwrap()),
+        format!("{instructions:?}")
+    );
 }
 
 #[test]
@@ -765,10 +773,13 @@ fn condition_shaders_reach_the_render_world_with_registered_events() {
         GpuConditionShader {
             events: vec!["fell".into(), "landed".into()],
             glsl: "void condition(inout PhysicsState body) {}".into(),
+            params: vec![[1.0, 2.0, 3.0, 4.0]],
+            events_per_body: 3,
         },
         GpuConditionShader {
             events: Vec::new(),
             glsl: "void condition(inout PhysicsState body) {}".into(),
+            ..Default::default()
         },
     ];
     app.update(Duration::ZERO).unwrap();
@@ -779,8 +790,11 @@ fn condition_shaders_reach_the_render_world_with_registered_events() {
         .id("fell")
         .unwrap();
     let sources = &app.world().resource::<RenderWorld>().gpu_condition_shaders;
+    assert_eq!(sources[0].params, [[1.0, 2.0, 3.0, 4.0]]);
+    assert_eq!(sources[0].events_per_body, 3);
+    assert_eq!(sources[1].events_per_body, 1, "0 counts as 1");
     assert_eq!(
-        sources[0],
+        sources[0].source,
         format!(
             "const uint EVENTS[2] = uint[]({}u, {}u);\n#line 1\n\
              void condition(inout PhysicsState body) {{}}",
@@ -789,7 +803,7 @@ fn condition_shaders_reach_the_render_world_with_registered_events() {
     );
     // No events means no table: GLSL has no zero-length arrays.
     assert_eq!(
-        sources[1],
+        sources[1].source,
         "#line 1\nvoid condition(inout PhysicsState body) {}"
     );
 }
@@ -846,6 +860,7 @@ fn clicking_a_rendered_cube_fires_a_click_event() {
             },
             active: true,
             priority: 0,
+            viewport: None,
         },
     ));
     let cube = app.spawn((
@@ -1043,6 +1058,54 @@ fn cpu_convex_mesh_lands_flat_on_a_triangle_mesh_floor() {
         .unwrap();
     assert_eq!(hit.entity, ground);
     assert!((hit.distance - 5.0).abs() < 1e-4);
+}
+
+#[test]
+fn a_barrel_with_a_convex_cylinder_collider_rolls() {
+    use crate::assets::PrimitiveShape;
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let (cylinder, material) = {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        (
+            assets.builtin_primitives[&PrimitiveShape::Cylinder],
+            assets.fallback_material,
+        )
+    };
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [20.0, 0.5, 20.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    // A unit cylinder on its side, axis along Z, rolled along X.
+    let barrel = cpu_body(
+        world,
+        [0.0, 0.51, 0.0],
+        ColliderShape::ConvexMesh,
+        RigidBodyKind::Dynamic,
+    );
+    world.entity_mut(barrel).insert(MeshRenderer {
+        mesh: cylinder,
+        material,
+        cast_shadows: true,
+        receive_shadows: true,
+    });
+    let mut transform = world.get_mut::<Transform>(barrel).unwrap();
+    transform.rotation = [std::f32::consts::FRAC_PI_2, 0.0, 0.0];
+    world.get_mut::<RigidBody>(barrel).unwrap().linear_velocity =
+        [3.0, 0.0, 0.0];
+    run_fixed_steps(&mut app, 60);
+    let world = app.world();
+    let position = world.get::<Transform>(barrel).unwrap().position;
+    let spin = world.get::<RigidBody>(barrel).unwrap().angular_velocity;
+    // The barrel rolls, spinning about Z, and stays on its side.
+    assert!(position[0] > 1.0, "barrel at {position:?}");
+    assert!(spin[2] < -0.5, "spin {spin:?}");
+    assert!((position[1] - 0.5).abs() < 0.05, "barrel at {position:?}");
 }
 
 #[test]
@@ -1937,6 +2000,32 @@ fn player_look_needs_captured_cursor_and_clamps_pitch() {
         .record_key(KeyCode::Escape, true);
     look(&mut app, [0.0; 2]);
     assert!(!app.world().resource::<RuntimeInput>().cursor_captured());
+
+    // The right stick looks with no captured cursor, at 3 rad/s full tilt.
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_stick(crate::runtime::Stick::Right, [1.0, 0.0]);
+    app.update(Duration::from_millis(100)).unwrap();
+    let turned = app.world().get::<PlayerController>(player).unwrap().yaw;
+    assert!((turned - (yaw - 0.3)).abs() < 1e-4, "{turned} {yaw}");
+
+    // Without mouse look a click leaves the cursor free, and an offset
+    // places the first-person camera.
+    {
+        let world = app.world_mut();
+        let mut controller = world.get_mut::<PlayerController>(player).unwrap();
+        controller.mouse_look = false;
+        controller.camera_offset = [0.5, 0.2, 0.0];
+        world
+            .resource_mut::<RuntimeInput>()
+            .record_mouse_button(MouseButton::Left, true);
+    }
+    look(&mut app, [0.0; 2]);
+    assert!(!app.world().resource::<RuntimeInput>().cursor_captured());
+    assert_eq!(
+        app.world().get::<Transform>(camera).unwrap().position,
+        [0.5, 0.2, 0.0]
+    );
 }
 
 #[test]
@@ -2218,8 +2307,12 @@ fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
         .get_mut::<BurstEmitter>(crate_body)
         .unwrap()
         .trigger();
+    let asked = app.world().resource::<AudioQueue>().requested();
     run_fixed_steps(&mut app, 2);
     assert_eq!(app.world().resource::<EventQueue<SoundEvent>>().len(), 1);
+    // The runner turns the cue's event into exactly one play request.
+    route_sound_events(app.world_mut());
+    assert_eq!(app.world().resource::<AudioQueue>().requested(), asked + 1);
     assert_eq!(
         app.world_mut()
             .query::<&BurstParticle>()
@@ -2284,6 +2377,49 @@ fn hud_draws_scene_text_and_reports_button_clicks() {
         .copied()
         .collect();
     assert_eq!(pressed, vec![HudButtonPressed { entity: button }]);
+}
+
+#[cfg(feature = "ui")]
+#[test]
+fn hud_elements_follow_their_camera_viewport() {
+    let mut app = App::new();
+    let camera = app.spawn((
+        Name("Right".into()),
+        Camera {
+            viewport: Some([0.5, 0.0, 0.5, 1.0]),
+            active: true,
+            ..Camera::default()
+        },
+    ));
+    app.spawn(HudElement {
+        text: "P2".into(),
+        anchor: HudAnchor::Center,
+        offset: [0.0, 0.0],
+        camera: Some("Right".into()),
+        ..HudElement::default()
+    });
+    let center = |app: &mut App| {
+        for _ in 0..2 {
+            app.world_mut().resource_mut::<RuntimeUi>().set_input(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    ..egui::RawInput::default()
+                },
+            );
+            app.update(Duration::from_millis(16)).unwrap();
+        }
+        app.world().resource::<RuntimeUi>().find_text("P2").ok()
+    };
+    let [x, y] = center(&mut app).unwrap();
+    assert!(
+        (x - 600.0).abs() < 2.0 && (y - 300.0).abs() < 2.0,
+        "{x} {y}"
+    );
+    app.world_mut().get_mut::<Camera>(camera).unwrap().active = false;
+    assert_eq!(center(&mut app), None);
 }
 
 #[cfg(feature = "ui")]
@@ -2806,6 +2942,45 @@ fn emitters_without_scene_ids_draw_their_own_bursts() {
     velocities.sort();
     velocities.dedup();
     assert_eq!(velocities.len(), 6, "two emitters shared a stream");
+}
+
+#[test]
+fn an_emitter_with_a_rate_rains_streaks_over_its_area() {
+    let mut app = App::new();
+    let rain = BurstEmitter {
+        rate: 120.0,
+        area: [5.0, 0.0, 5.0],
+        stretch: 8.0,
+        speed: 0.0,
+        on_collision: false,
+        ..BurstEmitter::default()
+    };
+    app.world_mut()
+        .spawn((Transform::new([0.0, 10.0, 0.0]), rain));
+    let dt = app
+        .world()
+        .resource::<FrameTime>()
+        .fixed_delta
+        .as_secs_f32();
+    run_fixed_steps(&mut app, 30);
+    let world = app.world_mut();
+    let drops: Vec<Transform> = world
+        .query_filtered::<&Transform, With<BurstParticle>>()
+        .iter(world)
+        .copied()
+        .collect();
+    let expected = (120.0 * dt * 30.0).floor() as usize;
+    assert!(drops.len().abs_diff(expected) <= 1, "{} drops", drops.len());
+    assert!(drops.iter().all(|drop| {
+        drop.position[0].abs() <= 5.0
+            && drop.position[2].abs() <= 5.0
+            && (drop.scale[1] - 8.0 * drop.scale[0]).abs() < 1e-4
+    }));
+    let spread = drops.iter().map(|drop| drop.position[0]);
+    let (low, high) = spread.fold((f32::MAX, f32::MIN), |(low, high), x| {
+        (low.min(x), high.max(x))
+    });
+    assert!(high - low > 5.0, "drops bunched in {low}..{high}");
 }
 
 #[test]
@@ -3814,6 +3989,137 @@ fn players_step_onto_low_ledges_but_not_high_ones_and_can_leave_crates_alone() {
     assert!(crate_pushed[0] > 0.53, "{crate_pushed:?}");
     assert!((crate_kept[0] - 0.5).abs() < 1e-3, "{crate_kept:?}");
     assert!(player[0] < 0.1, "{player:?}");
+}
+
+#[test]
+fn a_walking_player_keeps_pushing_a_crate_it_did_not_start_in() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [20.0, 0.5, 20.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let crate_ = cpu_body(
+        world,
+        [0.0, 0.5, -2.0],
+        ColliderShape::Box {
+            half_extents: [0.5; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    let body = cpu_body(
+        world,
+        [0.0, 0.91, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    world.entity_mut(body).insert(PlayerController::default());
+    run_fixed_steps(&mut app, 30);
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::KeyW, true);
+    run_fixed_steps(&mut app, 180);
+    let at = |entity| app.world().get::<Transform>(entity).unwrap().position;
+    // Three seconds at 4 m/s: the crate is shoved well past where the
+    // player first met it, and the player follows behind it.
+    assert!(at(crate_)[2] < -6.0, "crate at {:?}", at(crate_));
+    assert!(
+        at(body)[2] < at(crate_)[2] + 1.0,
+        "player at {:?}",
+        at(body)
+    );
+    assert!(
+        (at(crate_)[1] - 0.5).abs() < 0.05,
+        "crate at {:?}",
+        at(crate_)
+    );
+    let player = app.world().get::<PlayerController>(body).unwrap();
+    assert!(player.grounded);
+    assert!(player.floor.is_some(), "the floor counts as touched");
+    assert_eq!(player.wall, Some(crate_));
+    assert!(
+        (player.velocity[2] + 4.0).abs() < 0.5,
+        "{:?}",
+        player.velocity
+    );
+}
+
+#[test]
+fn a_player_teleported_into_a_platform_stands_on_top_of_it() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [10.0, 0.5, 10.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let lift = cpu_body(
+        world,
+        [0.0, 0.375, 0.0],
+        ColliderShape::Box {
+            half_extents: [1.0, 0.375, 1.0],
+        },
+        RigidBodyKind::Kinematic,
+    );
+    // The capsule bottom is 0.91 below its center: this sinks it 0.46 into
+    // the lift's top at 0.75, as Lantern Keeper's scenario teleport did.
+    let body = cpu_body(
+        world,
+        [0.0, 1.2, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    world.entity_mut(body).insert(PlayerController::default());
+    run_fixed_steps(&mut app, 10);
+    let y = app.world().get::<Transform>(body).unwrap().position[1];
+    assert!((y - 1.66).abs() < 0.05, "player at y {y}");
+    let player = app.world().get::<PlayerController>(body).unwrap();
+    assert_eq!(player.floor.map(|floor| floor.0), Some(lift));
+}
+
+#[test]
+fn a_player_with_a_turn_speed_faces_its_rig_where_it_walks() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [10.0, 0.5, 10.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let body = cpu_body(
+        world,
+        [0.0, 0.91, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    world.entity_mut(body).insert(PlayerController {
+        turn_speed: std::f32::consts::TAU,
+        ..PlayerController::default()
+    });
+    let rig = world.spawn(Transform::default()).id();
+    super::hierarchy::set_parent(world, rig, body).unwrap();
+    // Right is +X at yaw 0; a model facing -Z turns -90° about Y to face it.
+    world
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::KeyD, true);
+    run_fixed_steps(&mut app, 30);
+    let yaw = app.world().get::<Transform>(rig).unwrap().rotation[1];
+    assert!(
+        (yaw + std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+        "rig yaw {yaw}"
+    );
+    let body_yaw = app.world().get::<Transform>(body).unwrap().rotation[1];
+    assert_eq!(body_yaw, 0.0);
 }
 
 #[test]

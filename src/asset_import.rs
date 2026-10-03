@@ -223,6 +223,9 @@ pub struct ImportReport {
     /// Image size in pixels, glTF primitive count as `[count, 0]`, or WAV
     /// sample rate and length in milliseconds (`[0, 0]` for Ogg).
     pub size: [u32; 2],
+    /// WAV channel count: 1 mono, 2 stereo. A mono clip cannot pan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
     /// A preview: the checks ran on a staged copy and nothing was written.
     pub dry_run: bool,
     pub settings: ImportSettings,
@@ -340,6 +343,11 @@ fn audio_size(bytes: &[u8]) -> Result<[u32; 2], &'static str> {
     if bytes.starts_with(b"OggS") {
         return Ok([0, 0]);
     }
+    wav_format(bytes).map(|(_, rate, milliseconds)| [rate, milliseconds])
+}
+
+/// WAV channel count, sample rate and length in milliseconds.
+fn wav_format(bytes: &[u8]) -> Result<(u16, u32, u32), &'static str> {
     if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err("not a RIFF/WAVE or Ogg file");
     }
@@ -378,7 +386,11 @@ fn audio_size(bytes: &[u8]) -> Result<[u32; 2], &'static str> {
         {
             let frames = (data / usize::from(frame)) as u64;
             let milliseconds = frames * 1000 / u64::from(rate);
-            Ok([rate, u32::try_from(milliseconds).unwrap_or(u32::MAX)])
+            Ok((
+                channels,
+                rate,
+                u32::try_from(milliseconds).unwrap_or(u32::MAX),
+            ))
         }
         _ => Err("WAV file has no usable `fmt ` and `data` chunks"),
     }
@@ -495,12 +507,19 @@ fn report(
         reference: format!("../{}", slash(relative)),
         dependencies: meta.dependencies,
         size,
+        channels: wav_channels(asset),
         dry_run,
         settings: meta.settings,
         source: meta.source,
         referenced_by: scenes_referencing(project_root, asset),
         warnings,
     }
+}
+
+/// A WAV file's channel count; `None` for anything else.
+fn wav_channels(path: &Path) -> Option<u16> {
+    let bytes = std::fs::read(path).ok()?;
+    wav_format(&bytes).ok().map(|format| format.0)
 }
 
 /// A fresh folder under the system temp directory, removed on drop.
@@ -586,7 +605,11 @@ pub fn import_asset(
     if !dry_run {
         write_meta(&destination, &meta)?;
     }
-    Ok(report(project_root, &destination, meta, size, dry_run))
+    let mut report = report(project_root, &destination, meta, size, dry_run);
+    if dry_run {
+        report.channels = wav_channels(source);
+    }
+    Ok(report)
 }
 
 /// Replaces an imported asset, found by ID or project-relative path, and
@@ -632,7 +655,11 @@ pub fn reimport_asset(
     if !dry_run {
         write_meta(&path, &meta)?;
     }
-    Ok(report(project_root, &path, meta, size, dry_run))
+    let mut report = report(project_root, &path, meta, size, dry_run);
+    if dry_run {
+        report.channels = wav_channels(&source);
+    }
+    Ok(report)
 }
 
 /// A project command, listed under `generators` in `project.json`, that
@@ -1191,6 +1218,7 @@ mod tests {
         assert!(preview.dry_run);
         assert_eq!(preview.kind, ImportedKind::Audio);
         assert_eq!(preview.size, [8000, 500], "sample rate and milliseconds");
+        assert_eq!(preview.channels, Some(1), "a preview reads the source");
         assert!(
             !root.join("assets/sfx").exists(),
             "a preview writes nothing"
@@ -1206,6 +1234,7 @@ mod tests {
         )
         .unwrap();
         assert!(!imported.dry_run);
+        assert_eq!(imported.channels, Some(1), "mono");
         std::fs::write(&source, wav(8000, 8000)).unwrap();
         let replace = reimport_asset(
             &root,

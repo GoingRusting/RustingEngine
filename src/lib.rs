@@ -1,9 +1,15 @@
+pub mod annotate;
 pub mod art_direction;
 pub mod asset_import;
 pub mod assets;
 pub mod core;
+pub mod debug_session;
 pub mod demo;
+pub mod diagnostics;
+pub mod docs;
 // pub mod effects;
+#[cfg(feature = "window")]
+mod audio_output;
 pub mod cli;
 #[cfg(feature = "editor")]
 pub mod editor;
@@ -44,6 +50,8 @@ pub use runtime::{
     GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch,
     HybridPhysicsPlugin, ObjectClasses, PhysicsId, Plugin, RenderSettings,
 };
+/// For game code that saves settings or state as JSON.
+pub use serde_json;
 
 /// Common imports for concise native Rust gameplay code.
 #[cfg(feature = "window")]
@@ -53,10 +61,12 @@ pub mod prelude {
         GpuBodySettings, InitialState, RayHit, SphereSpawn,
     };
     pub use crate::runtime::{
-        FrameTime, GpuCondition, GpuEventMode, GpuEventPayload,
-        GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch, Name, ObjectClasses,
-        PhysicsSolver, PhysicsWorld, PlayerController, RigidBody,
-        RigidBodyKind,
+        BeatClock, FrameTime, GpuCondition, GpuConditionShader,
+        GpuConditionShaders, GpuEventMode, GpuEventPayload, GpuFieldCondition,
+        GpuPhysicsEvent, GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch,
+        GpuStateField, HudAnchor, HudElement, Name, ObjectClasses,
+        PhysicsSolver, PhysicsSyncMode, PhysicsWorld, PlayerController,
+        RigidBody, RigidBodyKind, Sound, SoundId, Stick,
     };
     pub use crate::rusting_game;
     pub use crate::Transform;

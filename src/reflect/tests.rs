@@ -164,7 +164,10 @@ fn unknown_fields_and_variants_are_rejected_with_their_path() {
     assert_eq!(error.path, "/aim");
     assert_eq!(
         error.problem,
-        ReflectProblem::UnknownVariant("Sleeping".into())
+        ReflectProblem::UnknownVariant(
+            "Sleeping".into(),
+            vec!["Idle", "At", "Point"]
+        )
     );
 }
 
@@ -389,6 +392,11 @@ fn entity_references_and_handles_save_as_ids_and_asset_paths() {
             .unwrap_err(),
     );
     assert!(matches!(error.problem, ReflectProblem::Asset(_)));
+    assert_eq!(
+        error.object.map(|id| id.to_string()),
+        Some(id("Guard")),
+        "names the scene object"
+    );
     let world = open.world_mut();
     let mut names = world.query::<&Name>();
     let names: Vec<_> = names.iter(world).map(|name| name.0.clone()).collect();

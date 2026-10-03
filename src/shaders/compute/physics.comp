@@ -104,6 +104,13 @@ void collide_with_colliders(inout PhysicsState body, BodyShape own) {
     }
 }
 
+// Built-in sleep; see the end of main.
+const float REST_SPEED = 0.05;
+const float REST_TICKS = 20.0;
+// Spin lost per second while touching something. The solver does not
+// rotate bodies, so without this a spun body would never sleep.
+const float CONTACT_SPIN_DAMPING = 5.0;
+
 bool is_dynamic(PhysicsState body) {
     return body.properties.z > 0.5 && body.properties.z < 1.5 && body.properties.x > 0.0;
 }
@@ -112,6 +119,8 @@ void apply_command(inout PhysicsState body, BodyCommand command) {
     // The CPU checked the generation too; this guards against a table
     // rebuilt between the check and the dispatch.
     if (command.header.z != body.metadata.y) return;
+    // Any command wakes the body.
+    body.angular_velocity.w = 0.0;
     uint kind = command.header.y;
     if (kind == COMMAND_TELEPORT) {
         body.model = mat4(command.values[0], command.values[1], command.values[2], command.values[3]);
@@ -194,7 +203,8 @@ bool evaluate_condition(PhysicsState body, uint offset, uint count) {
         } else if (operation == 3u) {
             stack[stack_size++] = body.velocity.w > 0.5;
         } else if (operation == 4u) {
-            stack[stack_size++] = sim_length(body.velocity.xyz) < 0.02 && sim_length(body.angular_velocity.xyz) < 0.02;
+            stack[stack_size++] = body.angular_velocity.w >= REST_TICKS
+                || (sim_length(body.velocity.xyz) < 0.02 && sim_length(body.angular_velocity.xyz) < 0.02);
         } else if (operation == 5u) {
             stack[stack_size++] = pc.elapsed >= instruction.values.x;
         } else if (operation == 16u && stack_size >= 2u) {
@@ -228,6 +238,11 @@ void main() {
     // properties.z: 0 = fixed, 1 = dynamic, 2 = kinematic.
     // Solver 3 is Custom: its own shader moves the body after this step.
     precise vec3 from_solver = abs(body.custom_values.xxx - vec3(2.0, 3.0, 4.0));
+    // Velocity after this tick's contacts and commands, before gravity: a
+    // body resting on others reads about zero here, not -g * dt.
+    vec3 settled_position = body.model[3].xyz;
+    float settled_speed = sim_length(body.velocity.xyz);
+    float settled_spin = sim_length(body.angular_velocity.xyz);
     if (is_dynamic(body) && from_solver.y > 0.5) {
         precise vec3 velocity = body.velocity.xyz;
         if (from_solver.z < 0.5) {
@@ -253,6 +268,29 @@ void main() {
         // Solver 2 is NoCollision.
         if (own.shape.x < 2.5 && from_solver.x > 0.5) {
             collide_with_colliders(body, own);
+        }
+        if (body.velocity.w > 0.5) {
+            precise vec3 spin = body.angular_velocity.xyz * max(1.0 - CONTACT_SPIN_DAMPING * pc.dt, 0.0);
+            body.angular_velocity.xyz = spin;
+        }
+        // Sleep: a body that touched something and stayed slower than
+        // REST_SPEED for REST_TICKS ticks in a row stops: its velocity is
+        // zeroed and it keeps its settled position, so a pile stops
+        // trading g * dt with its neighbours. angular_velocity.w counts
+        // the ticks. A push from a contact or collider, a command, or
+        // losing all contact wakes it.
+        precise float speed_now = sim_length(body.velocity.xyz);
+        precise float gravity_step = sim_length(vec3(pc.gravity_x, pc.gravity_y, pc.gravity_z)) * abs(body.properties.y) * pc.dt;
+        bool resting = body.velocity.w > 0.5
+            && settled_speed < REST_SPEED
+            && settled_spin < REST_SPEED
+            && speed_now < gravity_step + REST_SPEED;
+        precise float rest_ticks = resting ? min(body.angular_velocity.w + 1.0, REST_TICKS) : 0.0;
+        body.angular_velocity.w = rest_ticks;
+        if (rest_ticks >= REST_TICKS) {
+            body.model[3].xyz = settled_position;
+            body.velocity.xyz = vec3(0.0);
+            body.angular_velocity.xyz = vec3(0.0);
         }
     }
     bodies.data[body_index] = body;

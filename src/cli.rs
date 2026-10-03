@@ -1,6 +1,6 @@
 //! Window-free project and scene operations used by the `rusting` CLI.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -30,15 +30,90 @@ pub struct CliResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Diagnostic {
     pub code: &'static str,
     pub severity: &'static str,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<PathBuf>,
+    /// 1-based line and column in `file`, for text the tools could not parse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    /// JSON pointer into `file`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_location: Option<String>,
+    /// The scene object the diagnostic is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<EntityRef>,
+    /// A `scene patch` operation that fixes the problem for certain;
+    /// `rusting fix` applies every one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EntityRef {
+    pub id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl EntityRef {
+    fn of(entity: &SceneEntity) -> Self {
+        Self {
+            id: entity.id,
+            name: entity.name.clone(),
+        }
+    }
+}
+
+/// `--limit`, `--fields` and `--summary`: keep a listing command's output
+/// within an agent's budget.
+#[derive(Debug, Default)]
+pub struct Shape {
+    pub limit: Option<usize>,
+    pub fields: Option<Vec<String>>,
+    pub summary: bool,
+}
+
+impl Shape {
+    /// Applies the options to every array directly under `data`: `fields`
+    /// keeps only those keys of each object, `limit` keeps the first items,
+    /// and `summary` replaces the array with `{"count": N}`. Each cut array's
+    /// omitted count goes under `data.omitted`.
+    pub fn apply(&self, data: &mut Value) {
+        let Some(map) = data.as_object_mut() else {
+            return;
+        };
+        let mut omitted = serde_json::Map::new();
+        for (key, value) in map.iter_mut() {
+            let Some(items) = value.as_array_mut() else {
+                continue;
+            };
+            if let Some(fields) = &self.fields {
+                for item in items.iter_mut() {
+                    if let Some(object) = item.as_object_mut() {
+                        object.retain(|name, _| fields.contains(name));
+                    }
+                }
+            }
+            let total = items.len();
+            if self.summary {
+                *value = serde_json::json!({ "count": total });
+                continue;
+            }
+            if let Some(limit) = self.limit.filter(|limit| *limit < total) {
+                items.truncate(limit);
+                omitted.insert(key.clone(), (total - limit).into());
+            }
+        }
+        if !omitted.is_empty() {
+            map.insert("omitted".into(), Value::Object(omitted));
+        }
+    }
 }
 
 impl CliResult {
@@ -65,7 +140,7 @@ impl CliResult {
                 severity: "error",
                 message: message.into(),
                 file,
-                scene_location: None,
+                ..Diagnostic::default()
             }],
         }
     }
@@ -109,7 +184,110 @@ fn scene_error(error: SceneIoError, path: &Path) -> CliResult {
         SceneIoError::Reflection(_) => "SCENE_COMPONENT_FIELD",
         _ => "SCENE_INVALID",
     };
-    CliResult::failure(code, error.to_string(), Some(path.to_owned()))
+    let mut result =
+        CliResult::failure(code, error.to_string(), Some(path.to_owned()));
+    locate_scene_error(&error, path, &mut result.diagnostics[0]);
+    result
+}
+
+/// Points a scene load error at the line, or at the object, that caused it.
+fn locate_scene_error(
+    error: &SceneIoError,
+    path: &Path,
+    diagnostic: &mut Diagnostic,
+) {
+    if let SceneIoError::Source(error) = error {
+        diagnostic.line = u32::try_from(error.line()).ok();
+        diagnostic.column = u32::try_from(error.column()).ok();
+        let missing = error
+            .to_string()
+            .strip_prefix("missing field `")
+            .and_then(|rest| rest.split('`').next().map(str::to_owned));
+        if let Some((key, fix)) =
+            missing.and_then(|missing| misspelled_key(path, &missing))
+        {
+            diagnostic.message +=
+                &format!("; `{key}` looks like a misspelling of it");
+            diagnostic.fix = Some(fix);
+        }
+        return;
+    }
+    // Structure errors come after decoding, so the file still decodes.
+    let Some(document) = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<SceneDocument>(&bytes).ok())
+    else {
+        return;
+    };
+    let Some(index) = crate::runtime::error_object(&document, error) else {
+        return;
+    };
+    let mut pointer = format!("/entities/{index}");
+    if let SceneIoError::Reflection(error) = error {
+        let key = error.component.replace('~', "~0").replace('/', "~1");
+        pointer = format!("{pointer}/components/{key}");
+    }
+    diagnostic.scene_location = Some(pointer);
+    diagnostic.entity = Some(EntityRef::of(&document.entities[index]));
+}
+
+/// A `rename_key` fix for a required field the scene file misspells: the
+/// only key within two edits of `missing` in an object that lacks it, when
+/// that key appears once in the file.
+fn misspelled_key(path: &Path, missing: &str) -> Option<(String, Value)> {
+    fn walk(
+        value: &Value,
+        pointer: &str,
+        missing: &str,
+        out: &mut Vec<(String, String)>,
+    ) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    let child_pointer = format!(
+                        "{pointer}/{}",
+                        crate::scene_patch::escape(key)
+                    );
+                    if !object.contains_key(missing)
+                        && crate::scene_patch::edit_distance(key, missing) <= 2
+                    {
+                        out.push((key.clone(), child_pointer.clone()));
+                    }
+                    walk(child, &child_pointer, missing, out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{pointer}/{index}"), missing, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let raw: Value = serde_json::from_str(&text).ok()?;
+    let mut candidates = Vec::new();
+    walk(&raw, "", missing, &mut candidates);
+    let [(key, pointer)] = candidates.as_slice() else {
+        return None;
+    };
+    (key_positions(&text, key).len() == 1).then(|| {
+        (
+            key.clone(),
+            json!({"op": "rename_key", "path": pointer, "to": missing}),
+        )
+    })
+}
+
+/// Byte offsets of `"key"` used as an object key (followed by `:`).
+fn key_positions(text: &str, key: &str) -> Vec<usize> {
+    let quoted = format!("\"{key}\"");
+    text.match_indices(&quoted)
+        .filter(|(start, _)| {
+            text[start + quoted.len()..].trim_start().starts_with(':')
+        })
+        .map(|(start, _)| start)
+        .collect()
 }
 
 fn project_data(project: &OpenProject) -> Value {
@@ -132,7 +310,14 @@ pub fn new_project(
     template: ProjectTemplate,
 ) -> CliResult {
     match create_project_from(parent, name, template) {
-        Ok(project) => CliResult::success(project_data(&project)),
+        Ok(project) => {
+            let mut data = project_data(&project);
+            data["next"] = json!(
+                "Run `rusting check`. The first build compiles the engine \
+                 and takes a few minutes; later builds take seconds."
+            );
+            CliResult::success(data)
+        }
         Err(error) => project_error(error, &parent.join(name)),
     }
 }
@@ -165,7 +350,152 @@ fn scene_warnings(path: &Path, document: &SceneDocument) -> Vec<Diagnostic> {
                 scene_location: Some(format!(
                     "/entities/{index}/mesh_renderer"
                 )),
+                entity: Some(EntityRef::of(&document.entities[index])),
+                ..Diagnostic::default()
             })
+        })
+        .collect()
+}
+
+/// A `SCENE_MISSING_ASSET` per sound cue whose clip is not a file under
+/// `assets/`. Clips are relative to `assets/`, unlike the scene-relative
+/// asset `reference`, so a pasted `../assets/...` path is caught here.
+fn sound_clip_diagnostics(
+    root: &Path,
+    document: &SceneDocument,
+) -> Vec<Diagnostic> {
+    document
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entity)| {
+            let cue: crate::runtime::SoundCue = serde_json::from_str(
+                entity.components.get("rusting.sound_cue")?,
+            )
+            .ok()?;
+            let resolved = root.join("assets").join(&cue.clip);
+            (!resolved.is_file()).then(|| Diagnostic {
+                code: "SCENE_MISSING_ASSET",
+                severity: "warning",
+                message: format!(
+                    "sound clip `{}` is not a file under assets/; clips are relative to assets/ (`sounds/hit.wav`), not to the scene",
+                    cue.clip
+                ),
+                file: Some(resolved),
+                scene_location: Some(format!(
+                    "/entities/{index}/components/rusting.sound_cue"
+                )),
+                entity: Some(EntityRef::of(entity)),
+                ..Diagnostic::default()
+            })
+        })
+        .collect()
+}
+
+/// A `CODE_MISSING_ASSET` per literal path in game code, such as
+/// `load_text("charts/easy.json")` or `play_sound("sfx/hit.wav", ..)`, that
+/// is not a file under `assets/`. Paths built at run time are not checked.
+fn code_asset_diagnostics(root: &Path) -> Vec<Diagnostic> {
+    const CALLS: [&str; 4] = [
+        "load_text(\"",
+        "play_sound(\"",
+        "play_sound_looped(\"",
+        "play_sound_with(\"",
+    ];
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    files.sort();
+    let mut diagnostics = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (line, content) in text.lines().enumerate() {
+            for call in CALLS {
+                for (start, _) in content.match_indices(call) {
+                    let rest = &content[start + call.len()..];
+                    let Some(path) = rest.split('"').next() else {
+                        continue;
+                    };
+                    if root.join("assets").join(path).is_file() {
+                        continue;
+                    }
+                    diagnostics.push(Diagnostic {
+                        code: "CODE_MISSING_ASSET",
+                        severity: "warning",
+                        message: format!(
+                            "{}:{}: `{path}` is not a file under assets/",
+                            file.strip_prefix(root).unwrap_or(&file).display(),
+                            line + 1
+                        ),
+                        file: Some(file.clone()),
+                        ..Diagnostic::default()
+                    });
+                }
+            }
+        }
+    }
+    diagnostics
+}
+
+fn rust_files(folder: &Path, files: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_files(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
+    }
+}
+
+/// One error per scene key that loading ignores. A key within two edits of
+/// exactly one unset known key, written once in the file, gets a rename fix.
+fn dropped_field_diagnostics(
+    path: &Path,
+    document: &SceneDocument,
+) -> Vec<Diagnostic> {
+    let Some((text, raw)) =
+        std::fs::read_to_string(path).ok().and_then(|text| {
+            let raw = serde_json::from_str::<Value>(&text).ok()?;
+            Some((text, raw))
+        })
+    else {
+        return Vec::new();
+    };
+    crate::scene_patch::dropped_fields(&raw, document)
+        .into_iter()
+        .map(|field| {
+            let entity = field.entity.map(|index| &document.entities[index]);
+            let pointer = match field.entity {
+                Some(index) => format!("/entities/{index}{}", field.path),
+                None => field.path.clone(),
+            };
+            let key = field.path.rsplit('/').next().unwrap_or_default();
+            let key = key.replace("~1", "/").replace("~0", "~");
+            let fix = field
+                .suggestion
+                .as_ref()
+                .filter(|_| key_positions(&text, &key).len() == 1)
+                .map(|suggestion| {
+                    json!({"op": "rename_key", "path": pointer, "to": suggestion})
+                });
+            let hint = match &field.suggestion {
+                Some(suggestion) => format!("did you mean `{suggestion}`?"),
+                None => format!("known fields: {}", field.known.join(", ")),
+            };
+            Diagnostic {
+                code: "SCENE_UNKNOWN_FIELD",
+                severity: "error",
+                message: format!(
+                    "`{key}` is not a field here and loading ignores it; {hint}"
+                ),
+                file: Some(path.to_owned()),
+                scene_location: Some(pointer),
+                entity: entity.map(EntityRef::of),
+                fix,
+                ..Diagnostic::default()
+            }
         })
         .collect()
 }
@@ -208,6 +538,10 @@ fn determinism_diagnostics(
                 "/entities/{}/physics_body",
                 first_body[&offender.part]
             )),
+            entity: Some(EntityRef::of(
+                &document.entities[first_body[&offender.part]],
+            )),
+            ..Diagnostic::default()
         })
         .collect()
 }
@@ -296,6 +630,24 @@ pub fn query_scene(path: &Path, filter: &SceneFilter) -> CliResult {
         .filter(|entity| matches_filter(entity, filter))
         .collect();
     entities.sort_by_key(|entity| entity.id);
+    // Registered components are stored as JSON text; print them as objects.
+    let entities: Vec<Value> = entities
+        .iter()
+        .map(|entity| {
+            let mut value = json!(entity);
+            if let Some(map) = value["components"].as_object_mut() {
+                for component in map.values_mut() {
+                    if let Some(parsed) = component
+                        .as_str()
+                        .and_then(|text| serde_json::from_str(text).ok())
+                    {
+                        *component = parsed;
+                    }
+                }
+            }
+            value
+        })
+        .collect();
     let mut result = CliResult::success(
         json!({"path": path, "revision": file_revision(path), "count": entities.len(), "entities": entities}),
     );
@@ -325,12 +677,15 @@ pub fn patch_scene(path: &Path, patch_path: &Path, dry_run: bool) -> CliResult {
             )
         }
     };
-    apply_scene_patch(path, &patch, dry_run)
+    apply_scene_patch(path, &patch, Some(patch_path), dry_run)
 }
 
+/// `patch_file` is where the patch came from, if it is a file, so an
+/// operation error can point into it.
 fn apply_scene_patch(
     path: &Path,
     patch: &crate::scene_patch::ScenePatch,
+    patch_file: Option<&Path>,
     dry_run: bool,
 ) -> CliResult {
     match crate::scene_patch::patch_scene_file(path, patch, dry_run) {
@@ -348,17 +703,54 @@ fn apply_scene_patch(
                         "component `{name}` is not built in; the game validates it on load"
                     ),
                     file: Some(path.to_owned()),
-                    scene_location: None,
+                    ..Diagnostic::default()
                 })
                 .collect();
             result
         }
         Err(error) => {
+            use crate::scene_patch::PatchError;
             let mut result = CliResult::failure(
                 error.code(),
                 error.to_string(),
                 Some(path.to_owned()),
             );
+            let diagnostic = &mut result.diagnostics[0];
+            match &error {
+                PatchError::Operation { operation, .. }
+                | PatchError::Field { operation, .. } => {
+                    if let Some(patch_file) = patch_file {
+                        diagnostic.file = Some(patch_file.to_owned());
+                        diagnostic.scene_location =
+                            Some(format!("/operations/{operation}"));
+                    }
+                }
+                PatchError::Scene(error) => {
+                    locate_scene_error(error, path, diagnostic);
+                }
+                PatchError::InvalidObject { id, name, .. } => {
+                    diagnostic.entity = Some(EntityRef {
+                        id: *id,
+                        name: name.clone(),
+                    });
+                }
+                _ => {}
+            }
+            if let PatchError::Field { id, .. } = &error {
+                diagnostic.entity = read_scene_document(path)
+                    .ok()
+                    .and_then(|scene| {
+                        scene
+                            .entities
+                            .iter()
+                            .find(|e| e.id == *id)
+                            .map(EntityRef::of)
+                    })
+                    .or(Some(EntityRef {
+                        id: *id,
+                        name: None,
+                    }));
+            }
             result.data =
                 json!({"path": path, "revision": file_revision(path)});
             result
@@ -385,6 +777,10 @@ pub fn validate_project(root: &Path) -> CliResult {
             .filter(|d| d.severity == "error"),
     );
     diagnostics.extend(determinism_diagnostics(&project, &document));
+    diagnostics
+        .extend(dropped_field_diagnostics(&project.scene_path, &document));
+    diagnostics.extend(sound_clip_diagnostics(&project.root, &document));
+    diagnostics.extend(code_asset_diagnostics(&project.root));
     let valid = diagnostics.is_empty();
     CliResult {
         schema_version: 1,
@@ -398,6 +794,105 @@ pub fn validate_project(root: &Path) -> CliResult {
             })
             .collect(),
     }
+}
+
+/// Applies every certain fix `validate` finds to the main scene. Each fix
+/// renames one misspelled key in place in the file text, so nothing else in
+/// the file changes; validation then runs again, because a file that did not
+/// load can show its next problem only once the first is fixed. With
+/// `dry_run`, only the first round is reported and nothing is written.
+/// Problems without a certain fix stay in the diagnostics.
+pub fn fix_project(root: &Path, dry_run: bool) -> CliResult {
+    let mut applied = Vec::new();
+    if let Some(outdated) = outdated_agents(root) {
+        let path = root.join("AGENTS.md");
+        if !dry_run {
+            let refreshed = std::fs::copy(&path, root.join("AGENTS.md.old"))
+                .and_then(|_| std::fs::write(&path, PROJECT_AGENTS));
+            if let Err(error) = refreshed {
+                return CliResult::failure(
+                    "IO_ERROR",
+                    error.to_string(),
+                    Some(path),
+                );
+            }
+        }
+        applied.push(json!({
+            "message": "replaced AGENTS.md with this engine's copy; the old one is AGENTS.md.old",
+            "file": outdated.file,
+            "operation": "refresh_agents",
+        }));
+    }
+    // Each round renames at least one key, so this bounds a file with many.
+    for _ in 0..64 {
+        let mut validation = validate_project(root);
+        let (fixes, remaining): (Vec<_>, Vec<_>) = validation
+            .diagnostics
+            .drain(..)
+            .partition(|diagnostic| diagnostic.fix.is_some());
+        if fixes.is_empty() || dry_run {
+            applied.extend(fixes.iter().map(fix_summary));
+            return fix_result(validation, remaining, applied, dry_run);
+        }
+        for fix in &fixes {
+            let scene = fix.file.clone().unwrap_or_default();
+            if let Err(error) = apply_rename(&scene, fix.fix.as_ref()) {
+                return scene_error(error.into(), &scene);
+            }
+            applied.push(fix_summary(fix));
+        }
+    }
+    CliResult::failure(
+        "SCENE_INVALID",
+        "the scene still needs key renames after 64 rounds of `rusting fix`",
+        None,
+    )
+}
+
+fn fix_summary(fix: &Diagnostic) -> Value {
+    json!({"message": fix.message, "file": fix.file, "operation": fix.fix})
+}
+
+fn fix_result(
+    mut result: CliResult,
+    remaining: Vec<Diagnostic>,
+    fixes: Vec<Value>,
+    dry_run: bool,
+) -> CliResult {
+    if !result.data.is_object() {
+        result.data = json!({});
+    }
+    result.data["dry_run"] = json!(dry_run);
+    result.data["fixed"] = json!(fixes.len());
+    result.data["fixes"] = Value::Array(fixes);
+    result.ok = result.ok && remaining.iter().all(|d| d.severity != "error");
+    result.diagnostics.extend(remaining);
+    result
+}
+
+/// Renames the one key a `rename_key` fix names, in place in the file text.
+fn apply_rename(scene: &Path, fix: Option<&Value>) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(scene)?;
+    let fix = fix.cloned().unwrap_or_default();
+    let (Some(pointer), Some(to)) = (fix["path"].as_str(), fix["to"].as_str())
+    else {
+        return Err(std::io::Error::other("the fix is not a key rename"));
+    };
+    let key = pointer.rsplit('/').next().unwrap_or_default();
+    let key = key.replace("~1", "/").replace("~0", "~");
+    let [start] = key_positions(&text, &key)[..] else {
+        return Err(std::io::Error::other(format!(
+            "`{key}` is no longer a key exactly once in the file"
+        )));
+    };
+    let quoted_len = key.len() + 2;
+    let text = format!(
+        "{}{}{}",
+        &text[..start],
+        serde_json::to_string(to).unwrap_or_default(),
+        &text[start + quoted_len..]
+    );
+    crate::runtime::write_atomic(scene, text.as_bytes())
 }
 
 pub fn cook_project(root: &Path) -> CliResult {
@@ -442,7 +937,7 @@ fn asset_result(
                     severity: "warning",
                     message: warning.clone(),
                     file: Some(root.join(&report.path)),
-                    scene_location: None,
+                    ..Diagnostic::default()
                 })
                 .collect();
             CliResult {
@@ -559,9 +1054,133 @@ pub fn list_assets(root: &Path) -> CliResult {
                 severity: issue.severity,
                 message: issue.message,
                 file: Some(issue.file),
-                scene_location: None,
+                ..Diagnostic::default()
             })
             .collect(),
+    }
+}
+
+/// `rusting docs`: with no query the item list, else a search, one item, or
+/// the brief. `budget` is in tokens.
+pub fn docs(action: DocsAction<'_>) -> CliResult {
+    use crate::docs::{brief, find, items, search, tokens, within_budget};
+    match action {
+        DocsAction::List => {
+            let list: Vec<_> = items()
+                .iter()
+                .map(|item| json!({"id": item.id, "kind": item.kind, "title": item.title}))
+                .collect();
+            CliResult::success(json!({ "items": list }))
+        }
+        DocsAction::Search(query, limit) => {
+            let (matches, total) = search(query, limit);
+            let mut data = json!({
+                "query": query,
+                "matches": matches,
+                "shown": matches.len(),
+                "total": total,
+            });
+            if total == 0 {
+                data["verdict"] = json!(format!(
+                    "No matches for `{query}`. Every word must appear in an item; try fewer words."
+                ));
+            }
+            CliResult::success(data)
+        }
+        DocsAction::Show(id, budget) => match find(id) {
+            Some(item) => {
+                let (mut text, truncated) = within_budget(&item.text, budget);
+                // `tokens` counts the page text only, not the notice below.
+                let shown = tokens(&text);
+                if truncated {
+                    let more = item.text.lines().count() - text.lines().count();
+                    text += &format!(
+                        "\n... {more} more lines; pass `--budget {}` to see all\n",
+                        tokens(&item.text) + 50
+                    );
+                }
+                CliResult::success(json!({
+                    "id": item.id,
+                    "title": item.title,
+                    "text": text,
+                    "tokens": shown,
+                    "truncated": truncated,
+                    "total_tokens": tokens(&item.text),
+                }))
+            }
+            None => {
+                let (hits, _) = search(id, 5);
+                let near: Vec<_> =
+                    hits.iter().filter_map(|hit| hit["id"].as_str()).collect();
+                CliResult::failure(
+                    "CLI_USAGE",
+                    format!(
+                        "no docs item `{id}`; {}",
+                        if near.is_empty() {
+                            "run `rusting docs` to list them".to_owned()
+                        } else {
+                            format!("closest: {}", near.join(", "))
+                        }
+                    ),
+                    None,
+                )
+            }
+        },
+        DocsAction::Brief(budget) => {
+            let (text, listed, total) = brief(budget);
+            CliResult::success(json!({
+                "text": text,
+                "tokens": tokens(&text),
+                "listed": listed,
+                "total": total,
+            }))
+        }
+    }
+}
+
+/// What `rusting docs` was asked to do.
+pub enum DocsAction<'a> {
+    List,
+    /// Query and the most matches to return.
+    Search(&'a str, usize),
+    /// Item id and token budget.
+    Show(&'a str, usize),
+    /// Token budget.
+    Brief(usize),
+}
+
+/// Explains one diagnostic code, or lists every code when `code` is `None`.
+pub fn explain(code: Option<&str>) -> CliResult {
+    use crate::diagnostics::{lookup, to_json, CODES};
+    match code {
+        None => CliResult::success(
+            json!({ "codes": CODES.iter().map(to_json).collect::<Vec<_>>() }),
+        ),
+        Some(code) => match lookup(&code.to_ascii_uppercase()) {
+            Some(info) => CliResult::success(to_json(info)),
+            None => {
+                let prefix = code.split('_').next().unwrap_or(code);
+                let similar: Vec<_> = CODES
+                    .iter()
+                    .filter(|info| {
+                        info.code.starts_with(&prefix.to_ascii_uppercase())
+                    })
+                    .map(|info| info.code)
+                    .collect();
+                CliResult::failure(
+                    "CLI_USAGE",
+                    if similar.is_empty() {
+                        format!("no diagnostic code `{code}`; run `rusting explain` to list them")
+                    } else {
+                        format!(
+                            "no diagnostic code `{code}`; similar: {}",
+                            similar.join(", ")
+                        )
+                    },
+                    None,
+                )
+            }
+        },
     }
 }
 
@@ -570,7 +1189,24 @@ pub fn list_presets() -> CliResult {
 }
 
 /// Applies an art-direction preset to a scene as one scene patch.
-pub fn apply_preset(path: &Path, name: &str, dry_run: bool) -> CliResult {
+/// `only` limits it to some of `art_direction::PRESET_SCOPES`.
+pub fn apply_preset(
+    path: &Path,
+    name: &str,
+    only: &[&str],
+    dry_run: bool,
+) -> CliResult {
+    let scopes = crate::art_direction::PRESET_SCOPES;
+    if let Some(scope) = only.iter().find(|scope| !scopes.contains(scope)) {
+        return CliResult::failure(
+            "PRESET_SCOPE_UNKNOWN",
+            format!(
+                "no preset scope `{scope}`; choose from {}",
+                scopes.join(", ")
+            ),
+            None,
+        );
+    }
     let Some(preset) = crate::art_direction::preset(name) else {
         let names: Vec<_> = crate::art_direction::PRESETS
             .iter()
@@ -590,16 +1226,19 @@ pub fn apply_preset(path: &Path, name: &str, dry_run: bool) -> CliResult {
         Ok(document) => document,
         Err(result) => return result,
     };
-    let mut patch = crate::art_direction::preset_patch(&document, preset);
+    let mut patch = crate::art_direction::preset_patch(&document, preset, only);
     patch.expected_revision = Some(crate::runtime::scene_revision(&bytes));
-    apply_scene_patch(path, &patch, dry_run)
+    apply_scene_patch(path, &patch, None, dry_run)
 }
 
 fn tool_available(tool: &str) -> bool {
     Command::new(tool).arg("--version").output().is_ok()
 }
 
-pub fn doctor() -> CliResult {
+/// `probe` also opens the device a run would pick and runs a tiny GPU job on
+/// it, on a separate thread with a 15 s limit so a wedged driver cannot hang
+/// the CLI.
+pub fn doctor(probe: bool) -> CliResult {
     let mut devices = Vec::new();
     if let Ok(library) = vulkano::VulkanLibrary::new() {
         if let Ok(instance) =
@@ -617,7 +1256,22 @@ pub fn doctor() -> CliResult {
         "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
         "build_tools": {"cargo": tool_available("cargo"), "rustc": tool_available("rustc"), "glslc": tool_available("glslc")},
         "vulkan": {"available": !devices.is_empty(), "devices": devices},
+        "probe": probe.then(probe_gpu),
     }))
+}
+
+fn probe_gpu() -> Value {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(crate::rendering::probe_vulkan());
+    });
+    match receiver.recv_timeout(Duration::from_secs(15)) {
+        Ok(Ok(device)) => json!({"ok": true, "selected_device": device}),
+        Ok(Err(error)) => json!({"ok": false, "error": error}),
+        Err(_) => {
+            json!({"ok": false, "error": "the GPU probe did not finish in 15 s"})
+        }
+    }
 }
 
 /// Output of one child process run by the CLI.
@@ -716,9 +1370,70 @@ fn reload_diagnostics(root: &Path, output: &str) -> Vec<Diagnostic> {
             },
             message: diagnostic.message,
             file: diagnostic.file.map(|file| root.join(file)),
-            scene_location: diagnostic.line.map(|line| format!("line {line}")),
+            line: diagnostic.line,
+            ..Diagnostic::default()
         })
         .collect()
+}
+
+/// Engine patterns that fix common rustc errors in game code: a match is an
+/// error line containing every needle of a row.
+const ENGINE_HINTS: &[(&[&str], &str)] = &[
+    (
+        &["error[E0499]", "scene"],
+        "A `GameObject` or counter borrow keeps `scene` busy. Copy the values you need out (`let x = scene.object(\"A\").position();`), or finish each object chain in one statement before the next `scene` call.",
+    ),
+    (
+        &["error[E0502]", "scene"],
+        "A borrow from `scene` is still alive. Read into a local first, then write: `let p = scene.object(\"A\").position(); scene.object(\"B\").set_position(p);`.",
+    ),
+    (
+        &["error[E0599]", "GameScene"],
+        "`GameScene` has no such method. Run `rusting docs search <word>` to find the real name in the API index.",
+    ),
+    (
+        &["error[E0599]", "GameObject"],
+        "`GameObject` has no such method. Run `rusting docs search GameObject` to list its methods.",
+    ),
+    (
+        &["error[E0432]", "rusting_engine"],
+        "Import from the prelude: `use rusting_engine::prelude::*;`. Run `rusting docs show api/GameScene::object` for signatures.",
+    ),
+    (
+        &["error[E0308]", "f64"],
+        "Scene values are `f32`. Write `1.0_f32`, `x as f32`, or let inference pick `f32` by removing a `f64` annotation.",
+    ),
+    (
+        &["error[E0308]", "[f32; 3]"],
+        "Positions, rotations (radians) and scales are `[f32; 3]` arrays: `[x, y, z]`, not a tuple or a slice.",
+    ),
+];
+
+/// One `RUST_ENGINE_HINT` per distinct engine pattern seen in rustc output.
+fn engine_hints(root: &Path, output: &str) -> Vec<Diagnostic> {
+    let mut hints: Vec<Diagnostic> = Vec::new();
+    for line in output.lines() {
+        for (needles, hint) in ENGINE_HINTS {
+            if !needles.iter().all(|needle| line.contains(needle))
+                || hints.iter().any(|seen| seen.message == *hint)
+            {
+                continue;
+            }
+            let mut place =
+                line.split(": ").next().unwrap_or_default().split(':');
+            let file = place.next().filter(|f| f.ends_with(".rs"));
+            let number = place.next().and_then(|n| n.parse().ok());
+            hints.push(Diagnostic {
+                code: "RUST_ENGINE_HINT",
+                severity: "hint",
+                message: (*hint).to_owned(),
+                file: file.map(|file| root.join(file)),
+                line: number,
+                ..Diagnostic::default()
+            });
+        }
+    }
+    hints
 }
 
 fn cargo(
@@ -758,10 +1473,336 @@ fn cargo(
     result
         .diagnostics
         .extend(reload_diagnostics(&project.root, &run.stderr));
+    result
+        .diagnostics
+        .extend(engine_hints(&project.root, &run.stderr));
     Err(result)
 }
 
-/// Validates the project and type-checks its Rust code with `cargo check`.
+/// Writes a deliberately failing scenario for `name`. The check stays red
+/// until the agent names a real entity and value.
+fn scaffold_scenario(root: &Path, name: &str) -> Result<PathBuf, CliResult> {
+    let path = root.join("tests").join(format!("{name}.json"));
+    if path.exists() {
+        return Err(CliResult::failure(
+            "PROJECT_EXISTS",
+            format!("{} already exists", path.display()),
+            Some(path),
+        ));
+    }
+    let scenario = json!({
+        "name": format!("{name} works (edit this scenario)"),
+        "ticks": 10,
+        "steps": [{"tick": 1, "expect": {
+            "entity": "TODO entity name",
+            "path": "/transform/position",
+            "exists": true
+        }}]
+    });
+    let written = std::fs::create_dir_all(root.join("tests")).and_then(|()| {
+        std::fs::write(&path, serde_json::to_string_pretty(&scenario).unwrap())
+    });
+    match written {
+        Ok(()) => Ok(path),
+        Err(error) => Err(CliResult::failure(
+            "IO_ERROR",
+            error.to_string(),
+            Some(path),
+        )),
+    }
+}
+
+fn scaffold_name(name: &str) -> Result<(), CliResult> {
+    let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid {
+        return Ok(());
+    }
+    Err(CliResult::failure(
+        "CLI_USAGE",
+        format!("`{name}` is not a snake_case name like `spin_coins`"),
+        None,
+    ))
+}
+
+/// `rusting add scenario`: a failing scenario in `tests/`.
+pub fn add_scenario(root: &Path, name: &str) -> CliResult {
+    if let Err(result) = scaffold_name(name) {
+        return result;
+    }
+    match scaffold_scenario(root, name) {
+        Ok(path) => CliResult::success(json!({
+            "scenario": path,
+            "next": "Name a real entity and expected value in the scenario, then run `rusting test`.",
+        })),
+        Err(result) => result,
+    }
+}
+
+/// `rusting add system`: a documented stub in `src/main.rs` plus a failing
+/// scenario. The stub is not called until `update` calls it.
+pub fn add_system(root: &Path, name: &str) -> CliResult {
+    if let Err(result) = scaffold_name(name) {
+        return result;
+    }
+    let code_path = root.join("src/main.rs");
+    let source = match std::fs::read_to_string(&code_path) {
+        Ok(source) => source,
+        Err(error) => {
+            return CliResult::failure(
+                "PROJECT_MISSING_FILE",
+                error.to_string(),
+                Some(code_path),
+            )
+        }
+    };
+    if source.contains(&format!("fn {name}(")) {
+        return CliResult::failure(
+            "PROJECT_EXISTS",
+            format!("`fn {name}` already exists in src/main.rs"),
+            Some(code_path),
+        );
+    }
+    let scenario = match scaffold_scenario(root, name) {
+        Ok(path) => path,
+        Err(result) => return result,
+    };
+    let stub = format!(
+        "\n/// TODO: describe what `{name}` does each tick.\nfn {name}(_scene: &mut GameScene<'_>, _time: &FrameTime) {{\n    todo!(\"implement {name}\");\n}}\n"
+    );
+    if let Err(error) = std::fs::write(&code_path, source + &stub) {
+        return CliResult::failure(
+            "IO_ERROR",
+            error.to_string(),
+            Some(code_path),
+        );
+    }
+    CliResult::success(json!({
+        "function": code_path,
+        "scenario": scenario,
+        "next": format!("Call `{name}(scene, time)` from `update`, replace the `todo!`, and make the scenario check real values."),
+    }))
+}
+
+/// Every leaf of `value` keyed by its JSON pointer path.
+fn flatten_leaves(
+    value: &Value,
+    path: String,
+    out: &mut BTreeMap<String, Value>,
+) {
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            for (key, inner) in map {
+                flatten_leaves(inner, format!("{path}/{key}"), out);
+            }
+        }
+        Value::Array(items)
+            if !items.is_empty() && items.iter().any(|i| i.is_object()) =>
+        {
+            for (index, inner) in items.iter().enumerate() {
+                flatten_leaves(inner, format!("{path}/{index}"), out);
+            }
+        }
+        leaf => {
+            out.insert(path, leaf.clone());
+        }
+    }
+}
+
+fn leaf_changes(before: &Value, after: &Value) -> Vec<Value> {
+    let (mut a, mut b) = (BTreeMap::new(), BTreeMap::new());
+    flatten_leaves(before, String::new(), &mut a);
+    flatten_leaves(after, String::new(), &mut b);
+    let paths: BTreeSet<_> = a.keys().chain(b.keys()).cloned().collect();
+    paths
+        .into_iter()
+        .filter(|path| a.get(path) != b.get(path))
+        .map(|path| json!({"path": path, "before": a.get(&path), "after": b.get(&path)}))
+        .collect()
+}
+
+/// `rusting diff`: entities added, removed and changed (by ID) between two
+/// scenes, with the path, old value and new value of every changed field.
+pub fn diff_scenes(before: &Path, after: &Path) -> CliResult {
+    let mut documents = Vec::new();
+    for path in [before, after] {
+        match read_scene(path) {
+            Ok(document) => documents
+                .push(serde_json::to_value(document).unwrap_or(Value::Null)),
+            Err(result) => return result,
+        }
+    }
+    let by_id = |document: &Value| -> BTreeMap<String, Value> {
+        document["entities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|entity| {
+                (
+                    entity["id"].as_str().unwrap_or("").to_owned(),
+                    entity.clone(),
+                )
+            })
+            .collect()
+    };
+    let (old, new) = (by_id(&documents[0]), by_id(&documents[1]));
+    let brief =
+        |entity: &Value| json!({"id": entity["id"], "name": entity["name"]});
+    let added: Vec<_> = new
+        .iter()
+        .filter(|(id, _)| !old.contains_key(*id))
+        .map(|(_, e)| brief(e))
+        .collect();
+    let removed: Vec<_> = old
+        .iter()
+        .filter(|(id, _)| !new.contains_key(*id))
+        .map(|(_, e)| brief(e))
+        .collect();
+    let changed: Vec<_> = old
+        .iter()
+        .filter_map(|(id, entity)| {
+            let changes = leaf_changes(entity, new.get(id)?);
+            (!changes.is_empty()).then(|| json!({"id": id, "name": new[id]["name"], "changes": changes}))
+        })
+        .collect();
+    let mut scene_a = documents[0].clone();
+    let mut scene_b = documents[1].clone();
+    scene_a["entities"] = Value::Null;
+    scene_b["entities"] = Value::Null;
+    let scene = leaf_changes(&scene_a, &scene_b);
+    CliResult::success(json!({
+        "identical": added.is_empty() && removed.is_empty() && changed.is_empty() && scene.is_empty(),
+        "scene": scene,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    }))
+}
+
+/// `rusting scene map`: each tile map as a character grid with a legend.
+/// Other entities that sit over a map are drawn as letters, so a model
+/// without vision can check a 2D layout.
+pub fn map_scene(path: &Path) -> CliResult {
+    let document = match read_scene(path) {
+        Ok(document) => document,
+        Err(result) => return result,
+    };
+    let origin = |entity: &SceneEntity| {
+        entity
+            .transform
+            .map_or([0.0, 0.0], |t| [t.position[0], t.position[1]])
+    };
+    let mut maps = Vec::new();
+    for entity in &document.entities {
+        let Some(text) =
+            entity.components.get(crate::runtime::TILE_MAP_COMPONENT)
+        else {
+            continue;
+        };
+        let Ok(tile_map) =
+            serde_json::from_str::<crate::runtime::TileMap>(text)
+        else {
+            continue;
+        };
+        let mut grid: Vec<Vec<char>> = tile_map
+            .rows
+            .iter()
+            .map(|row| row.chars().collect())
+            .collect();
+        let mut legend: Vec<Value> = tile_map
+            .tiles
+            .iter()
+            .map(|(key, kind)| json!({"symbol": key, "meaning": if kind.solid { "solid tile" } else { "tile" }}))
+            .collect();
+        let mut markers = ('A'..='Z')
+            .filter(|c| !tile_map.tiles.contains_key(&c.to_string()));
+        let base = origin(entity);
+        for other in document
+            .entities
+            .iter()
+            .filter(|o| o.id != entity.id && o.transform.is_some())
+        {
+            let at = origin(other);
+            let column = ((at[0] - base[0]) / tile_map.tile_size).floor();
+            let row = (-(at[1] - base[1]) / tile_map.tile_size).floor();
+            let in_grid = column >= 0.0
+                && row >= 0.0
+                && grid
+                    .get(row as usize)
+                    .is_some_and(|r| (column as usize) < r.len());
+            let Some(marker) = in_grid.then(|| markers.next()).flatten() else {
+                continue;
+            };
+            grid[row as usize][column as usize] = marker;
+            legend.push(json!({"symbol": marker.to_string(), "entity": other.name, "id": other.id, "column": column as usize, "row": row as usize}));
+        }
+        maps.push(json!({
+            "entity": entity.name,
+            "id": entity.id,
+            "tile_size": tile_map.tile_size,
+            "rows": grid.iter().map(|row| row.iter().collect::<String>()).collect::<Vec<_>>(),
+            "legend": legend,
+        }));
+    }
+    CliResult::success(json!({"maps": maps}))
+}
+
+/// `rusting inspect --tick N`: runs the game without a window to tick `N`
+/// and reports the scene form of each named entity (all named entities of
+/// the main scene when `entities` is empty) after that tick's update.
+pub fn inspect_tick(root: &Path, tick: u32, entities: &[String]) -> CliResult {
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let names: Vec<String> = if entities.is_empty() {
+        match read_scene(&project.scene_path) {
+            Ok(document) => document
+                .entities
+                .iter()
+                .filter_map(|entity| entity.name.clone())
+                .collect(),
+            Err(result) => return result,
+        }
+    } else {
+        entities.to_vec()
+    };
+    let steps: Vec<_> = names
+        .iter()
+        .map(|name| json!({"tick": tick, "log": {"entity": name, "path": ""}}))
+        .collect();
+    let scenario = json!({"name": format!("inspect tick {tick}"), "ticks": tick, "steps": steps});
+    let file = project.root.join("build/inspect-tick.json");
+    let written = std::fs::create_dir_all(project.root.join("build"))
+        .and_then(|()| std::fs::write(&file, scenario.to_string()));
+    if let Err(error) = written {
+        return CliResult::failure("IO_ERROR", error.to_string(), Some(file));
+    }
+    let mut result = run_game_project(
+        root,
+        RunOptions {
+            scenario: Some(file),
+            ..RunOptions::default()
+        },
+    );
+    if result.ok {
+        let state: serde_json::Map<String, Value> = result.data["scenario"]
+            ["steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(&names)
+            .map(|(step, name)| (name.clone(), step["actual"].clone()))
+            .collect();
+        result.data = json!({"tick": tick, "entities": state});
+    }
+    result
+}
+
+/// Validates the project and compiles it with the debug build that `run`
+/// and `test` reuse.
 pub fn check_project(root: &Path) -> CliResult {
     let validation = validate_project(root);
     if !validation.ok {
@@ -771,12 +1812,125 @@ pub fn check_project(root: &Path) -> CliResult {
         Ok(project) => project,
         Err(error) => return project_error(error, root),
     };
-    match cargo(&project, "check", false, None) {
-        Ok(run) => CliResult::success(
-            json!({"root": project.root, "cargo": run.data()}),
-        ),
+    // `cargo build`, not `cargo check`: the debug build is the one `run` and
+    // `test` reuse, so checking first costs no second engine compile.
+    match cargo(&project, "build", false, None) {
+        Ok(run) => {
+            let mut result = CliResult::success(
+                json!({"root": project.root, "cargo": run.data()}),
+            );
+            result.diagnostics.extend(outdated_cli(&project.root));
+            result.diagnostics.extend(outdated_agents(&project.root));
+            result
+        }
         Err(result) => result,
     }
+}
+
+/// The AGENTS.md `rusting new` writes.
+const PROJECT_AGENTS: &str = include_str!("project_agents.md");
+
+/// An `AGENTS_OUTDATED` warning when the project's AGENTS.md is an engine
+/// copy (it opens like one) that differs from this engine's.
+fn outdated_agents(root: &Path) -> Option<Diagnostic> {
+    let path = root.join("AGENTS.md");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let opening = "# Agent guide\n\nThis is a Rusting game project";
+    (text.starts_with(opening) && text != PROJECT_AGENTS).then(|| Diagnostic {
+        code: "AGENTS_OUTDATED",
+        severity: "warning",
+        message: "AGENTS.md differs from this engine's copy, so it may miss \
+                  newer features; `rusting fix` replaces it and keeps yours \
+                  as AGENTS.md.old"
+            .into(),
+        file: Some(path),
+        ..Diagnostic::default()
+    })
+}
+
+/// A `CLI_OUTDATED` warning when the game's `rusting_engine` has another
+/// version than this CLI, or is a path dependency with source newer than
+/// this executable (an engine edited after `cargo install`).
+fn outdated_cli(root: &Path) -> Option<Diagnostic> {
+    // Cargo.lock lists `name`, then `version`, then `source` only for a
+    // registry or git package.
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).ok()?;
+    let package = lock
+        .split("[[package]]")
+        .find(|package| package.contains("name = \"rusting_engine\""))?;
+    let version = package
+        .lines()
+        .find_map(|line| line.strip_prefix("version = "))?
+        .trim_matches('"');
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    let engine_path = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("rusting_engine"))
+        .and_then(|line| line.split("path = \"").nth(1))
+        .and_then(|rest| rest.split('"').next())
+        .filter(|_| !package.contains("source = "));
+    let install = engine_path.map_or_else(
+        || "cargo install rusting_engine --locked".to_owned(),
+        |path| {
+            format!(
+                "cargo install --path {} --locked",
+                root.join(path).display()
+            )
+        },
+    );
+    let message = if version != env!("CARGO_PKG_VERSION") {
+        format!(
+            "this CLI is RustingEngine {}, the game builds against {version}",
+            env!("CARGO_PKG_VERSION")
+        )
+    } else {
+        let source = root.join(engine_path?).join("src");
+        let installed = std::env::current_exe()
+            .ok()?
+            .metadata()
+            .ok()?
+            .modified()
+            .ok()?;
+        let (newest, file) = newest_modified(&source)?;
+        let later = newest
+            .duration_since(installed)
+            .ok()
+            .filter(|later| !later.is_zero())?
+            .as_secs();
+        let later = match later {
+            0..3600 => format!("{} min", later / 60),
+            3600..86_400 => format!("{} h", later / 3600),
+            _ => format!("{} days", later / 86_400),
+        };
+        format!(
+            "the engine source changed after this CLI was built: {} is {later} newer",
+            file.display()
+        )
+    };
+    Some(Diagnostic {
+        code: "CLI_OUTDATED",
+        severity: "warning",
+        message: format!(
+            "{message}; docs and schema may be stale. Reinstall: {install}"
+        ),
+        ..Diagnostic::default()
+    })
+}
+
+/// The newest file under `folder` and when it changed.
+fn newest_modified(folder: &Path) -> Option<(std::time::SystemTime, PathBuf)> {
+    std::fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                newest_modified(&path)
+            } else {
+                Some((entry.metadata().ok()?.modified().ok()?, path))
+            }
+        })
+        .max()
 }
 
 /// How `rusting run` and `rusting test` start the game.
@@ -790,12 +1944,93 @@ pub struct RunOptions {
     pub timeout: Option<Duration>,
     /// Run this scenario file instead, and fail when it fails.
     pub scenario: Option<PathBuf>,
+    /// Record the windowed session's input to this replay file on exit.
+    pub record: Option<PathBuf>,
+    /// Play this replay file back headless, failing where a tick's state
+    /// hash differs from the recording.
+    pub replay: Option<PathBuf>,
+    /// Rewrite scenario `golden` images instead of comparing them.
+    pub update_golden: bool,
+    /// Run the scenario to its last tick after a failed check.
+    pub keep_going: bool,
+}
+
+/// Cooks the main scene, builds the game, and runs it as a debug session:
+/// the game's standard input and output carry the line protocol of
+/// [`crate::debug_session`]. Returns only a failure; on success the game
+/// ran until `quit` or end of input.
+pub fn debug_game_project(root: &Path) -> CliResult {
+    let cooked = cook_project(root);
+    if !cooked.ok {
+        return cooked;
+    }
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    if let Err(result) = cargo(&project, "build", false, None) {
+        return result;
+    }
+    let executable = match crate::project::built_executable(
+        &project.root,
+        &project.root.join("Cargo.toml"),
+        &project.manifest.binary_name,
+        None,
+        false,
+    ) {
+        Ok(executable) => executable,
+        Err(error) => return CliResult::failure("BUILD_FAILED", error, None),
+    };
+    match Command::new(&executable)
+        .current_dir(&project.root)
+        .env(crate::debug_session::DEBUG_SESSION_ENV, "1")
+        .status()
+    {
+        Ok(status) if status.success() => CliResult::success(json!({})),
+        Ok(status) => CliResult::failure(
+            "GAME_FAILED",
+            format!("the game exited with {status}"),
+            Some(executable),
+        ),
+        Err(error) => CliResult::failure(
+            "GAME_FAILED",
+            format!("could not start {}: {error}", executable.display()),
+            Some(executable),
+        ),
+    }
 }
 
 /// Cooks the main scene, builds the game, and runs it from the project
 /// folder, the same way the editor's Build and Run does.
 pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
     let start = Instant::now();
+    let headless =
+        options.headless_ticks.is_some() || options.scenario.is_some();
+    if options.record.is_some() && (headless || options.replay.is_some()) {
+        return CliResult::failure(
+            "CLI_USAGE",
+            "--record records a windowed session; it cannot be combined with \
+             --ticks, --scenario or --replay (a scenario file is already a \
+             recording)",
+            None,
+        );
+    }
+    if let Some(replay) = &options.replay {
+        if headless {
+            return CliResult::failure(
+                "CLI_USAGE",
+                "--replay runs headless on its own; drop --ticks and --scenario",
+                None,
+            );
+        }
+        if !replay.is_file() {
+            return CliResult::failure(
+                "FILE_NOT_FOUND",
+                format!("no replay file at {}", replay.display()),
+                Some(replay.clone()),
+            );
+        }
+    }
     let cooked = cook_project(root);
     if !cooked.ok {
         return cooked;
@@ -826,6 +2061,15 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
         game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
             .env(crate::project::FINAL_SCENE_OUT_ENV, &final_scene);
     }
+    for (path, variable) in [
+        (&options.record, crate::project::REPLAY_OUT_ENV),
+        (&options.replay, crate::project::REPLAY_PLAY_ENV),
+    ] {
+        if let Some(path) = path {
+            // The game runs in the project root, not the caller's folder.
+            game.env(variable, std::path::absolute(path).unwrap_or_default());
+        }
+    }
     let report_path = project.root.join("build/scenario-report.json");
     if let Some(scenario) = &options.scenario {
         let scenario = match std::path::absolute(scenario) {
@@ -839,11 +2083,35 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
             }
         };
         let _ = std::fs::remove_file(&report_path);
+        // Each scenario starts with an empty data folder of its own, so
+        // saves from one run never leak into the next.
+        let user_data = project
+            .root
+            .join("build/test-userdata")
+            .join(scenario.file_stem().unwrap_or_default());
+        let _ = std::fs::remove_dir_all(&user_data);
+        game.env(crate::project::USER_DATA_ENV, user_data);
         game.env(crate::scenario::TEST_SCENARIO_ENV, scenario)
             .env(crate::scenario::TEST_REPORT_ENV, &report_path);
+        if options.update_golden {
+            game.env(crate::scenario::UPDATE_GOLDEN_ENV, "1");
+        }
+        if options.keep_going {
+            game.env(crate::scenario::KEEP_GOING_ENV, "1");
+        }
+    }
+    // A recording game closes itself at the timeout so it can save; the
+    // kill comes later, for a game that hangs.
+    let mut timeout = options.timeout;
+    if let (Some(limit), Some(_)) = (timeout, &options.record) {
+        game.env(
+            crate::project::QUIT_AFTER_MS_ENV,
+            limit.as_millis().to_string(),
+        );
+        timeout = Some(limit + Duration::from_secs(10));
     }
     let launched_after = start.elapsed();
-    let run = match run_process(&mut game, options.timeout) {
+    let run = match run_process(&mut game, timeout) {
         Ok(run) => run,
         Err(error) => {
             return CliResult::failure(
@@ -898,14 +2166,18 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
             let Some(failure) = &report.first_failure else {
                 break 'result CliResult::success(data);
             };
-            let mut result = CliResult::failure(
-                "SCENARIO_FAILED",
-                format!(
-                    "tick {} step {}: {}",
-                    failure.tick, failure.step, failure.message
-                ),
-                Some(scenario),
+            let mut message = format!(
+                "tick {} step {}: {}",
+                failure.tick, failure.step, failure.message
             );
+            if !run.stderr.trim().is_empty() {
+                message += &format!(
+                    "\ngame stderr (last 20 lines):\n{}",
+                    tail(&run.stderr, 20)
+                );
+            }
+            let mut result =
+                CliResult::failure("SCENARIO_FAILED", message, Some(scenario));
             result.data = data;
             break 'result result;
         }
@@ -983,9 +2255,9 @@ pub fn test_game_folder(
             .into_iter()
             .flatten()
             .filter(|step| {
-                step["message"]
-                    .as_str()
-                    .is_some_and(|message| message.starts_with("log: "))
+                step["message"].as_str().is_some_and(|message| {
+                    message.starts_with("log: ") || message.contains("; warning: ")
+                })
             })
             .map(|step| json!({"tick": step["tick"], "message": step["message"]}))
             .collect();
@@ -1171,6 +2443,110 @@ pub fn check_game_determinism(root: &Path, ticks: u32) -> CliResult {
     CliResult::success(data)
 }
 
+/// Runs a scenario in a debug and then a release build and compares the
+/// CPU state hash of every tick, plus the GPU body hash of every tick both
+/// runs delivered. `gpu` requires GPU hashes. Same machine and driver only:
+/// it finds unseeded randomness and order-dependent code, not vendor
+/// differences.
+pub fn check_scenario_determinism(
+    root: &Path,
+    scenario: &Path,
+    gpu: bool,
+) -> CliResult {
+    let mut runs = Vec::new();
+    let mut scenario_passed = true;
+    for (name, release) in [("debug", false), ("release", true)] {
+        eprintln!("determinism: building and running the {name} build...");
+        let result = run_game_project(
+            root,
+            RunOptions {
+                release,
+                scenario: Some(scenario.to_path_buf()),
+                keep_going: true,
+                ..RunOptions::default()
+            },
+        );
+        // A failed expect step still leaves hashes worth comparing: a stale
+        // pinned hash is exactly what this check helps to re-pin.
+        let hashes = |key: &str| -> BTreeMap<u64, u64> {
+            serde_json::from_value::<Vec<(u64, u64)>>(
+                result.data["scenario"][key].clone(),
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+        };
+        let (cpu, gpu_hashes) =
+            (hashes("state_hashes"), hashes("gpu_state_hashes"));
+        if cpu.is_empty() && gpu_hashes.is_empty() && !result.ok {
+            return result;
+        }
+        scenario_passed &= result.ok;
+        if gpu && gpu_hashes.is_empty() {
+            return CliResult::failure(
+                "DETERMINISM_NO_GPU_STATE",
+                "the scenario recorded no GPU state hashes; set \"gpu\": true in it and give it GPU physics bodies",
+                Some(scenario.to_path_buf()),
+            );
+        }
+        runs.push((cpu, gpu_hashes));
+    }
+    let compare = |first: &BTreeMap<u64, u64>, second: &BTreeMap<u64, u64>| {
+        first
+            .iter()
+            .filter_map(|(tick, hash)| {
+                second.get(tick).map(|other| (*tick, *hash, *other))
+            })
+            .collect::<Vec<_>>()
+    };
+    let cpu = compare(&runs[0].0, &runs[1].0);
+    let gpu_compared = compare(&runs[0].1, &runs[1].1);
+    let mut data = json!({
+        "root": root,
+        "scenario": scenario,
+        "ticks_compared": cpu.len(),
+        "final_hash": cpu.last().map(|entry| entry.1),
+        "gpu_ticks_compared": gpu_compared.len(),
+        "gpu_final_hash": gpu_compared.last().map(|entry| entry.1),
+        "scenario_passed": scenario_passed,
+    });
+    let diverged = |hashes: &[(u64, u64, u64)]| {
+        hashes
+            .iter()
+            .find(|(_, first, second)| first != second)
+            .map(|entry| entry.0)
+    };
+    let divergence = diverged(&cpu)
+        .map(|tick| (tick, "CPU world state"))
+        .or_else(|| diverged(&gpu_compared).map(|tick| (tick, "GPU bodies")));
+    match divergence {
+        None => {
+            let run = runs[0].0.keys().last().copied().unwrap_or_default();
+            data["ticks_run"] = json!(run);
+            data["verdict"] = json!(format!(
+                "deterministic: debug == release on all {run} ticks (the hash at each tick covers the whole state){}{}",
+                cpu.last()
+                    .map(|entry| format!(", final hash {:#018x}", entry.1))
+                    .unwrap_or_default(),
+                if scenario_passed { "" } else { "; the scenario itself failed" }
+            ));
+            CliResult::success(data)
+        }
+        Some((tick, state)) => {
+            data["divergence"] = json!({"tick": tick, "state": state});
+            let mut result = CliResult::failure(
+                "DETERMINISM_DIVERGED",
+                format!(
+                    "the debug and release runs of the scenario diverge at tick {tick} ({state})"
+                ),
+                Some(scenario.to_path_buf()),
+            );
+            result.data = data;
+            result
+        }
+    }
+}
+
 /// Ticks the exported game runs headless to verify it.
 const EXPORT_VERIFY_TICKS: u32 = 60;
 
@@ -1234,7 +2610,7 @@ pub fn export_game_project(
             severity: "warning",
             message: "cross-target exports are not run on this machine".into(),
             file: Some(exported),
-            scene_location: None,
+            ..Diagnostic::default()
         });
         return result;
     }
@@ -1325,6 +2701,10 @@ pub struct CaptureOptions {
     pub output: PathBuf,
     /// Pixels, from the top-left corner, to map to scene objects.
     pub picks: Vec<[u32; 2]>,
+    /// Rectangles `[x, y, width, height]` whose covering objects are listed.
+    pub pick_rects: Vec<[u32; 4]>,
+    /// False leaves the HUD and other runtime UI out (`--no-hud`).
+    pub hud: bool,
 }
 
 /// Loads a scene, simulates `tick` fixed ticks, and renders one camera
@@ -1423,7 +2803,17 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
             );
         }
     }
-    let rgba = capture.as_ref().map(HeadlessCapture::rgba);
+    let rgba = match capture.as_mut() {
+        Some(capture) if !options.hud => {
+            match capture.view_rgba(app.world(), None) {
+                Ok(rgba) => Some(rgba),
+                Err(error) => {
+                    return CliResult::failure("CAPTURE_FAILED", error, None)
+                }
+            }
+        }
+        capture => capture.map(|capture| capture.rgba()),
+    };
     let render = capture
         .as_mut()
         .map_or(Value::Null, |capture| capture.metadata(&app));
@@ -1448,6 +2838,13 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
             pick
         })
         .collect();
+    let pick_rects: Vec<_> = options
+        .pick_rects
+        .iter()
+        .map(|&[x, y, w, h]| {
+            view.pick_rect(app.world_mut(), [x, y, x + w, y + h])
+        })
+        .collect();
     let mut data = json!({
         "scene": scene,
         "tick": options.tick,
@@ -1457,6 +2854,7 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
         "render": render,
         "pick_method": "mesh_bounds",
         "picks": picks,
+        "pick_rects": pick_rects,
     });
 
     let mut result = match (gpu_error, capture) {
@@ -1465,8 +2863,13 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
             result.data = data;
             result
         }
-        (None, Some(capture)) => {
-            if let Err(error) = capture.save(&options.output) {
+        (None, Some(_)) => {
+            let saved = crate::rendering::capture::save_rgba(
+                &options.output,
+                rgba.as_deref().unwrap_or_default(),
+                options.extent,
+            );
+            if let Err(error) = saved {
                 return CliResult::failure(
                     "CAPTURE_FAILED",
                     error,
@@ -1480,4 +2883,134 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
     };
     result.diagnostics.extend(warnings);
     result
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn an_old_engine_agents_md_is_flagged_and_refreshed() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-agents-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("AGENTS.md");
+        std::fs::write(
+            &path,
+            "# Agent guide\n\nThis is a Rusting game project. Old.",
+        )
+        .unwrap();
+        assert_eq!(outdated_agents(&root).unwrap().code, "AGENTS_OUTDATED");
+        let _ = fix_project(&root, false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PROJECT_AGENTS);
+        assert!(std::fs::read_to_string(root.join("AGENTS.md.old"))
+            .unwrap()
+            .ends_with("Old."));
+        assert!(outdated_agents(&root).is_none());
+        std::fs::write(&path, "# My own guide").unwrap();
+        assert!(outdated_agents(&root).is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn record_and_replay_mistakes_fail_before_the_build() {
+        let code = |options: RunOptions| {
+            let result = run_game_project(Path::new("/nonexistent"), options);
+            result.diagnostics[0].code
+        };
+        let ticks = Some(200);
+        let record = Some(PathBuf::from("r.rec"));
+        assert_eq!(
+            code(RunOptions {
+                headless_ticks: ticks,
+                record,
+                ..RunOptions::default()
+            }),
+            "CLI_USAGE"
+        );
+        let missing = Some(PathBuf::from("/nonexistent/missing.rec"));
+        assert_eq!(
+            code(RunOptions {
+                headless_ticks: ticks,
+                replay: missing.clone(),
+                ..RunOptions::default()
+            }),
+            "CLI_USAGE"
+        );
+        let result = run_game_project(
+            Path::new("/nonexistent"),
+            RunOptions {
+                replay: missing,
+                ..RunOptions::default()
+            },
+        );
+        assert_eq!(result.diagnostics[0].code, "FILE_NOT_FOUND");
+        assert!(result.diagnostics[0].message.contains("missing.rec"));
+    }
+
+    #[test]
+    fn shape_limits_projects_and_summarizes_listings() {
+        let data = || json!({"n": 1, "xs": [{"a": 1, "b": 2}, {"a": 3, "b": 4}, {"a": 5}]});
+        let mut limited = data();
+        Shape {
+            limit: Some(2),
+            fields: Some(vec!["a".into()]),
+            summary: false,
+        }
+        .apply(&mut limited);
+        assert_eq!(limited["xs"], json!([{"a": 1}, {"a": 3}]));
+        assert_eq!(limited["omitted"], json!({"xs": 1}));
+        assert_eq!(limited["n"], 1);
+        let mut counted = data();
+        Shape {
+            summary: true,
+            ..Shape::default()
+        }
+        .apply(&mut counted);
+        assert_eq!(counted["xs"], json!({"count": 3}));
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+
+    #[test]
+    fn rustc_errors_get_the_engine_pattern_that_fixes_them() {
+        let output = "src/main.rs:12:9: error[E0499]: cannot borrow `*scene` as mutable more than once at a time\n\
+src/main.rs:13:9: error[E0599]: no method named `teleport` found for struct `GameScene<'_>` in the current scope\n\
+src/main.rs:20:1: error[E0499]: cannot borrow `*scene` as mutable more than once at a time\n\
+src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
+        let hints = engine_hints(Path::new("/p"), output);
+        assert_eq!(hints.len(), 2, "one per pattern: {hints:?}");
+        assert_eq!(hints[0].code, "RUST_ENGINE_HINT");
+        assert_eq!(hints[0].line, Some(12));
+        assert_eq!(hints[0].file.as_deref(), Some(Path::new("/p/src/main.rs")));
+        assert!(hints[1].message.contains("rusting docs search"));
+    }
+
+    #[test]
+    fn literal_asset_paths_in_game_code_must_be_files() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-code-assets-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("assets/charts")).unwrap();
+        std::fs::write(root.join("assets/charts/easy.json"), "{}").unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "let a = scene.load_text(\"charts/easy.json\");\n\
+             let b = scene.load_text(\"charts/hard.json\");\n\
+             scene.play_sound(&clip, 1.0);\n",
+        )
+        .unwrap();
+        let found = code_asset_diagnostics(&root);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].message,
+            "src/main.rs:2: `charts/hard.json` is not a file under assets/"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

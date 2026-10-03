@@ -151,8 +151,9 @@ them is not deterministic until they are delivered at a fixed tick lag
 
 After every fixed step, `App::update` hashes the simulation state above
 and appends `(tick, hash)` to the `StateHashes` resource, which keeps the
-last `STATE_HASH_HISTORY` (1024) ticks. The tick is the number of steps
-completed. `world_state_hash` feeds raw `f32` bits in entity order,
+last `STATE_HASH_HISTORY` (1024) ticks. A scenario report copies them
+after every tick, so `rusting determinism --scenario` compares every tick
+of a run of any length. The tick is the number of steps completed. `world_state_hash` feeds raw `f32` bits in entity order,
 sorts `PhysicsWorld`'s sleep counters and warm-start impulses by entity,
 and writes small gameplay components through `Debug`, whose shortest
 round-trip float formatting tells every value apart. It stays on in

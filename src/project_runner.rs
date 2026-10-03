@@ -10,18 +10,21 @@ use std::time::Instant;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Mut, Resource, World};
 use vulkano::format::Format;
+use vulkano::image::ImageUsage;
 use vulkano::swapchain::Surface;
 use vulkano::VulkanError;
 use vulkano_util::context::VulkanoContext;
 use vulkano_util::window::{VulkanoWindows, WindowDescriptor};
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::PhysicalKey;
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::rendering::frame_pacer::{select_present_mode, FramePacer};
-use crate::rendering::scene_renderer::{SceneRenderOptions, SceneRenderer};
+use crate::rendering::render_scale::ScaledTarget;
+use crate::rendering::scene_renderer::SceneRenderer;
 use crate::runtime::{
     apply_gpu_state_samples, load_scene, load_scene_document,
     record_gpu_state_hashes, route_gpu_physics_events, scene_document,
@@ -49,6 +52,10 @@ pub struct GpuBodySettings {
     pub collider: crate::runtime::Collider,
     /// Collision groups used when collision solvers are connected.
     pub collision_layers: crate::runtime::CollisionLayers,
+    /// What the GPU sends back. `SelectedState` fills
+    /// [`GameScene::gpu_state`] every physics frame; the default sends only
+    /// events.
+    pub sync: crate::runtime::PhysicsSyncMode,
 }
 
 impl Default for GpuBodySettings {
@@ -59,6 +66,7 @@ impl Default for GpuBodySettings {
             rigid_body: crate::runtime::RigidBody::default(),
             collider: crate::runtime::Collider::default(),
             collision_layers: crate::runtime::CollisionLayers::default(),
+            sync: crate::runtime::PhysicsSyncMode::default(),
         }
     }
 }
@@ -133,7 +141,7 @@ struct StartingScene(SceneDocument);
 /// The folder holding the game's `project.json`, which
 /// [`GameScene::load_scene`] resolves scene paths against.
 #[derive(Resource)]
-struct ProjectFolder(PathBuf);
+pub(crate) struct ProjectFolder(pub(crate) PathBuf);
 
 /// A copy of the scene taken by [`GameScene::snapshot`], for
 /// [`GameScene::restore`].
@@ -149,9 +157,46 @@ pub struct GameSnapshot {
         Vec<(uuid::Uuid, Entity, Option<crate::runtime::SpawnOrder>, bool)>,
 }
 
+/// [`GameScene::restart`], for scenario `restart` steps.
+pub(crate) fn restart_scene(world: &mut World) -> bool {
+    let Some(start) = world.remove_resource::<StartingScene>() else {
+        return false;
+    };
+    let loaded = load_scene_document(world, &start.0, SceneLoadMode::Replace);
+    world.insert_resource(start);
+    if let Err(error) = loaded {
+        eprintln!("restart: the starting scene no longer loads: {error}");
+        return false;
+    }
+    forget_old_scene(world);
+    true
+}
+
+/// `key` inside the user data folder, refusing paths that leave it.
+fn user_data_path(key: &str) -> std::io::Result<PathBuf> {
+    let relative = Path::new(key);
+    let inside = relative
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if !inside || key.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("data key `{key}` must be a relative path without `..`"),
+        ));
+    }
+    Ok(crate::project::user_data_folder().join(relative))
+}
+
 /// Keys already executed through [`GameScene::once`].
 #[derive(Resource, Clone, Default)]
 struct GameOnceState(HashSet<String>);
+
+/// Window changes game code asked for. The window runner applies them.
+#[derive(Resource, Default)]
+struct WindowRequest {
+    fullscreen: bool,
+    size: Option<[u32; 2]>,
+}
 
 /// Convenient access to objects in the loaded scene.
 ///
@@ -159,7 +204,7 @@ struct GameOnceState(HashSet<String>);
 /// systems can still query the ECS world directly.
 pub struct GameScene<'world> {
     /// ECS world that owns all scene objects and components.
-    world: &'world mut World,
+    pub(crate) world: &'world mut World,
 }
 
 impl GameScene<'_> {
@@ -183,6 +228,141 @@ impl GameScene<'_> {
         }
     }
 
+    /// Reads a text file (a JSON level, a dialogue script) relative to the
+    /// project's `assets` folder, as sounds are: `"charts/easy.json"`. It
+    /// works from any working directory. `rusting check` reports a literal
+    /// path here that is not a file.
+    ///
+    /// # Errors
+    /// Returns the error from reading the file.
+    pub fn load_text(&self, path: &str) -> std::io::Result<String> {
+        let folder = self
+            .world
+            .get_resource::<ProjectFolder>()
+            .map(|folder| folder.0.join("assets"))
+            .unwrap_or_else(|| PathBuf::from("assets"));
+        std::fs::read_to_string(folder.join(path))
+    }
+
+    /// Plays a clip once. `clip` is relative to the project's `assets`
+    /// folder (`"sfx/hit.wav"`); WAV, Ogg, MP3 and FLAC load. Returns an ID
+    /// for [`Self::stop_sound`]. Headless runs have no audio device: the
+    /// request is counted by [`Self::sounds_requested`] and dropped.
+    pub fn play_sound(
+        &mut self,
+        clip: &str,
+        volume: f32,
+    ) -> crate::runtime::SoundId {
+        self.play_sound_with(
+            clip,
+            crate::runtime::Sound {
+                volume,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Plays a clip again and again until [`Self::stop_sound`].
+    pub fn play_sound_looped(
+        &mut self,
+        clip: &str,
+        volume: f32,
+    ) -> crate::runtime::SoundId {
+        self.play_sound_with(
+            clip,
+            crate::runtime::Sound {
+                volume,
+                looped: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Plays a clip with a pan, a bus, a start tick or a world position:
+    ///
+    /// ```ignore
+    /// scene.play_sound_with("music/bar.ogg", Sound {
+    ///     bus: "music".into(),
+    ///     at_tick: Some(next_bar_tick),
+    ///     ..Sound::default()
+    /// });
+    /// ```
+    ///
+    /// Every sound starts a fixed delay after the fixed tick it belongs to,
+    /// whatever the frame rate, so sounds keep in time with fixed ticks.
+    /// With `position`, the active camera is the listener: the sound pans
+    /// to its side and its volume falls as `2 / distance` past 2 m.
+    pub fn play_sound_with(
+        &mut self,
+        clip: &str,
+        mut sound: crate::runtime::Sound,
+    ) -> crate::runtime::SoundId {
+        if let Some(position) = sound.position {
+            if let Some((camera, _)) = self.active_camera() {
+                let matrix = world_matrix(self.world, camera);
+                let ear = matrix.transform_point(&nalgebra::Point3::origin());
+                let right = matrix
+                    .transform_vector(&nalgebra::Vector3::x())
+                    .normalize();
+                let offset = nalgebra::Point3::from(position) - ear;
+                let distance = offset.norm();
+                if distance > 1e-4 {
+                    sound.pan = offset.dot(&right) / distance;
+                }
+                sound.volume *= (2.0 / distance).min(1.0);
+            }
+        }
+        let tick = self
+            .world
+            .get_resource::<FrameTime>()
+            .map_or(0, |time| time.fixed_tick);
+        self.audio().play(clip, &sound, tick)
+    }
+
+    /// Moves a playing sound's volume to `volume` over `fade` seconds; 0 is
+    /// at once.
+    pub fn set_sound_volume(
+        &mut self,
+        id: crate::runtime::SoundId,
+        volume: f32,
+        fade: f32,
+    ) {
+        self.audio().set_volume(id, volume, fade);
+    }
+
+    /// Moves a bus's volume (see [`crate::runtime::Sound::bus`]) to
+    /// `volume` over `fade` seconds. Duck the music under an alarm with
+    /// `set_bus_volume("music", 0.3, 0.2)` while the alarm plays on `sfx`.
+    pub fn set_bus_volume(&mut self, bus: &str, volume: f32, fade: f32) {
+        self.audio().set_bus_volume(bus, volume, fade);
+    }
+
+    /// Stops one sound. An ID that already ended is ignored.
+    pub fn stop_sound(&mut self, id: crate::runtime::SoundId) {
+        self.audio().stop(id);
+    }
+
+    /// Stops every playing sound.
+    pub fn stop_all_sounds(&mut self) {
+        self.audio().stop_all();
+    }
+
+    /// Linear gain for every sound, 1 by default.
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.audio().set_master_volume(volume);
+    }
+
+    /// Sounds requested since the game started, whether or not a device
+    /// played them. Includes [`SoundCue`](crate::runtime::SoundCue)s.
+    pub fn sounds_requested(&mut self) -> u64 {
+        self.audio().requested()
+    }
+
+    fn audio(&mut self) -> Mut<'_, crate::runtime::AudioQueue> {
+        self.world
+            .get_resource_or_insert_with(crate::runtime::AudioQueue::default)
+    }
+
     /// Puts every scene object back as the game started: objects spawned
     /// since are removed, and moved, hidden or despawned ones return with
     /// their starting components. [`Self::once`] blocks run again. Time,
@@ -190,18 +370,7 @@ impl GameScene<'_> {
     /// started from a scene file, or when that file no longer loads (the
     /// error is logged and the scene stays as it was).
     pub fn restart(&mut self) -> bool {
-        let Some(start) = self.world.remove_resource::<StartingScene>() else {
-            return false;
-        };
-        let loaded =
-            load_scene_document(self.world, &start.0, SceneLoadMode::Replace);
-        self.world.insert_resource(start);
-        if let Err(error) = loaded {
-            eprintln!("restart: the starting scene no longer loads: {error}");
-            return false;
-        }
-        forget_old_scene(self.world);
-        true
+        restart_scene(self.world)
     }
 
     /// Replaces every scene object with the scene at `path`, relative to
@@ -398,6 +567,72 @@ impl GameScene<'_> {
         self.world.resource_mut::<RenderSettings>().reflections = enabled;
     }
 
+    /// Renders the 3D scene at `scale` of the window size, from 0.25 to 2.0,
+    /// and stretches it over the window. Below 1 trades sharpness for frame
+    /// rate; above 1 supersamples. UI stays at full resolution. Captures and
+    /// scenario screenshots use it too.
+    pub fn set_render_scale(&mut self, scale: f32) {
+        if scale.is_finite() {
+            let (low, high) =
+                crate::rendering::render_scale::RENDER_SCALE_RANGE;
+            self.world.resource_mut::<RenderSettings>().render_scale =
+                scale.clamp(low, high);
+        }
+    }
+
+    /// Stretches a [`Self::set_render_scale`] frame with nearest-neighbour
+    /// filtering (`true`) for square pixels, a retro or CCTV look, or with
+    /// smooth filtering (`false`, the default).
+    pub fn set_pixelated(&mut self, pixelated: bool) {
+        self.world.resource_mut::<RenderSettings>().pixelated = pixelated;
+    }
+
+    /// The scale from [`Self::set_render_scale`].
+    #[must_use]
+    pub fn render_scale(&self) -> f32 {
+        self.world.resource::<RenderSettings>().render_scale
+    }
+
+    /// Waits for the display refresh before showing each frame.
+    pub fn set_vsync(&mut self, enabled: bool) {
+        self.world.resource_mut::<RenderSettings>().vsync = enabled;
+    }
+
+    /// Caps the frame rate. `None` removes the cap.
+    pub fn set_max_fps(&mut self, fps: Option<u32>) {
+        let mut settings = self.world.resource_mut::<RenderSettings>();
+        settings.limit_fps = fps.is_some();
+        if let Some(fps) = fps {
+            settings.max_fps = fps.max(1);
+        }
+    }
+
+    /// Switches the window to borderless fullscreen on its current monitor,
+    /// or back to a window. Applied after this frame; headless runs ignore
+    /// it.
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.world
+            .get_resource_or_insert_with(WindowRequest::default)
+            .fullscreen = fullscreen;
+    }
+
+    /// The value from [`Self::set_fullscreen`].
+    #[must_use]
+    pub fn fullscreen(&self) -> bool {
+        self.world
+            .get_resource::<WindowRequest>()
+            .is_some_and(|request| request.fullscreen)
+    }
+
+    /// Asks for a window of `size` pixels after this frame. The platform may
+    /// pick another size, and fullscreen ignores it; read the result with
+    /// [`Self::viewport_size`] on a later frame.
+    pub fn set_window_size(&mut self, size: [u32; 2]) {
+        self.world
+            .get_resource_or_insert_with(WindowRequest::default)
+            .size = Some(size.map(|side| side.max(1)));
+    }
+
     /// Creates one visible procedural sphere with a unique object name.
     pub fn spawn_sphere(
         &mut self,
@@ -533,6 +768,7 @@ impl GameScene<'_> {
                 settings.rigid_body,
                 settings.collider,
                 settings.collision_layers,
+                settings.sync,
             ));
         }
         entities.len()
@@ -706,12 +942,18 @@ impl GameScene<'_> {
     /// Panics with a descriptive message if the object or its transform does
     /// not exist. Use [`Self::try_object`] when absence is expected.
     pub fn object(&mut self, name: &str) -> GameObject<'_> {
-        self.try_object(name).unwrap_or_else(|| {
-            panic!("scene object `{name}` does not exist or has no Transform")
-        })
+        if self.try_object(name).is_none() {
+            panic!(
+                "scene object `{name}` does not exist or has no Transform{}",
+                nearest_names_hint(self.world, name)
+            );
+        }
+        self.try_object(name).expect("checked above")
     }
 
     /// The ECS world, for anything this API does not cover.
+    ///
+    /// Preferred: the other `GameScene` methods; use this only when none fits.
     pub fn world(&mut self) -> &mut World {
         self.world
     }
@@ -719,6 +961,9 @@ impl GameScene<'_> {
     /// The `rusting.counter` called `name`, to read or change its `value`.
     /// With duplicate names, the one with the lowest scene ID wins, as for
     /// pickups and HUD text.
+    ///
+    /// Preferred: [`Self::counter_value`], [`Self::add_to_counter`] and
+    /// [`Self::set_counter`], which keep no borrow of the scene.
     pub fn counter(
         &mut self,
         name: &str,
@@ -730,27 +975,76 @@ impl GameScene<'_> {
         crate::runtime::find_counter(counters.iter_mut(self.world), name)
     }
 
-    /// The value of the counter called `name`, or 0 when there is none.
+    /// The value of the counter called `name` (counters are `i32`; store
+    /// fractions as thousandths), or 0 when there is none.
+    /// Reading a counter that does not exist prints a warning once per
+    /// name, because it is usually a typo or a missing scene object.
+    /// Takes `&self`, so read-only helpers need no `&mut GameScene`.
     #[must_use]
-    pub fn counter_value(&mut self, name: &str) -> i32 {
-        self.counter(name).map_or(0, |counter| counter.value)
+    pub fn counter_value(&self, name: &str) -> i32 {
+        self.read_counter(name, |counter| counter.value)
+            .unwrap_or_default()
+    }
+
+    /// Applies `read` to the counter called `name`, or warns once and gives
+    /// `None` when there is none.
+    fn read_counter<T>(
+        &self,
+        name: &str,
+        read: impl FnOnce(&crate::runtime::Counter) -> T,
+    ) -> Option<T> {
+        let found = self
+            .world
+            .try_query::<(
+                &crate::runtime::Counter,
+                Option<&crate::runtime::SceneId>,
+            )>()
+            .and_then(|mut counters| {
+                crate::runtime::find_counter(counters.iter(self.world), name)
+                    .map(read)
+            });
+        if found.is_none() {
+            warn_missing_counter(name);
+        }
+        found
     }
 
     /// Adds `amount` (which may be negative) to the counter called `name`
-    /// and returns its new value; 0 when there is no such counter.
+    /// and returns its new value. A missing counter is created at 0 first,
+    /// as for [`Self::set_counter`].
     pub fn add_to_counter(&mut self, name: &str, amount: i32) -> i32 {
-        self.counter(name).map_or(0, |mut counter| {
-            counter.value += amount;
-            counter.value
-        })
+        let mut counter = self.counter_or_create(name);
+        counter.value += amount;
+        counter.value
     }
 
-    /// Sets the counter called `name` to `value`; does nothing when there is
-    /// no such counter.
+    /// Sets the counter called `name` to `value`. A missing counter is
+    /// created: an object named `name` holding only a `rusting.counter`
+    /// with no target, so game state needs no scene object per value.
+    /// Scenarios reach it with `{"counter": "name", ...}`; `restart` drops
+    /// it with the rest of the round.
     pub fn set_counter(&mut self, name: &str, value: i32) {
-        if let Some(mut counter) = self.counter(name) {
-            counter.value = value;
+        self.counter_or_create(name).value = value;
+    }
+
+    fn counter_or_create(
+        &mut self,
+        name: &str,
+    ) -> Mut<'_, crate::runtime::Counter> {
+        if self.counter(name).is_none() {
+            let order = crate::runtime::next_spawn_order(self.world);
+            self.world.spawn((
+                Name(name.to_owned()),
+                crate::runtime::SceneId::new(),
+                order,
+                crate::runtime::Counter {
+                    name: name.to_owned(),
+                    value: 0,
+                    target: None,
+                },
+            ));
         }
+        self.counter(name).expect("created above")
     }
 
     /// A value in `[0, 1)` from the run's seed, the fixed tick and
@@ -770,10 +1064,13 @@ impl GameScene<'_> {
         seed.unit(tick, crate::runtime::RandomSeed::stream("game", stream))
     }
 
-    /// True when the counter called `name` has reached its target.
+    /// True when the counter called `name` has reached its target. A
+    /// missing counter is false and warns once, as for
+    /// [`Self::counter_value`].
     #[must_use]
-    pub fn counter_complete(&mut self, name: &str) -> bool {
-        self.counter(name).is_some_and(|counter| counter.complete())
+    pub fn counter_complete(&self, name: &str) -> bool {
+        self.read_counter(name, crate::runtime::Counter::complete)
+            .unwrap_or_default()
     }
 
     /// True on the frame `action` was pressed. Actions come from
@@ -786,6 +1083,25 @@ impl GameScene<'_> {
             .just_pressed(self.world.resource::<RuntimeInput>(), action)
     }
 
+    /// When `action` was pressed this frame, in fractional fixed ticks:
+    /// `121.4` is 40% of a tick after tick 121. A window records the key or
+    /// mouse event's own time, so a rhythm game can judge finer than a tick.
+    /// Scenario presses and gamepads give the frame's tick. `None` when the
+    /// action was not pressed this frame.
+    #[must_use]
+    pub fn press_tick(&self, action: &str) -> Option<f64> {
+        if !self.pressed(action) {
+            return None;
+        }
+        let actions = self.world.resource::<crate::runtime::ActionMap>();
+        actions
+            .press_tick(self.world.resource::<RuntimeInput>(), action)
+            .or_else(|| {
+                let time = self.world.get_resource::<FrameTime>()?;
+                Some(time.fixed_tick as f64)
+            })
+    }
+
     /// True while `action` is held down.
     #[must_use]
     pub fn held(&self, action: &str) -> bool {
@@ -794,9 +1110,172 @@ impl GameScene<'_> {
             .held(self.world.resource::<RuntimeInput>(), action)
     }
 
+    /// Cursor position in pixels from the top-left corner of the view, or
+    /// `None` before the cursor first enters it.
+    #[must_use]
+    pub fn cursor(&self) -> Option<[f32; 2]> {
+        self.world.resource::<RuntimeInput>().cursor_position()
+    }
+
+    /// View size in pixels. In `rusting test` it is the scenario's
+    /// `capture_size` from tick 0.
+    #[must_use]
+    pub fn viewport_size(&self) -> [f32; 2] {
+        self.world.resource::<RuntimeInput>().viewport_size()
+    }
+
+    /// Names of the keys and gamepad buttons pressed this frame (`KeyA`,
+    /// `Space`, `ArrowUp`, `PadSouth`), for a "press a key" rebinding
+    /// prompt; pass one to [`Self::rebind`].
+    #[must_use]
+    pub fn keys_pressed(&self) -> Vec<String> {
+        let input = self.world.resource::<RuntimeInput>();
+        input
+            .keys_pressed()
+            .map(|key| format!("{key:?}"))
+            .chain(input.pads_pressed().map(|button| format!("Pad{button:?}")))
+            .collect()
+    }
+
+    /// A gamepad stick's tilt, each axis -1..1 with `[0, 1]` fully up;
+    /// `[0, 0]` with no pad. For analog control; for digital actions bind
+    /// `PadLeftStickUp` and the other stick directions instead.
+    #[must_use]
+    pub fn stick(&self, stick: crate::runtime::Stick) -> [f32; 2] {
+        self.world.resource::<RuntimeInput>().stick(stick)
+    }
+
+    /// The inputs the scene's `rusting.input_action` binds to `action`,
+    /// as [`Self::rebind`] takes them; empty when there is none. Bindings
+    /// made in code with [`crate::runtime::ActionMap`] are left out.
+    #[must_use]
+    pub fn binding(&mut self, action: &str) -> Vec<String> {
+        let mut query = self.world.query::<&crate::runtime::InputAction>();
+        query
+            .iter(self.world)
+            .find(|found| found.action == action)
+            .map(|found| found.inputs.clone())
+            .unwrap_or_default()
+    }
+
+    /// Binds `action` to exactly `inputs` (key names as in
+    /// [`Self::keys_pressed`], or `MouseLeft`, `MouseRight`, `MouseMiddle`)
+    /// by editing the scene's `rusting.input_action` for it, or adding one.
+    /// Bindings made in code with [`crate::runtime::ActionMap`] stay. The
+    /// new binding is not saved; store it with [`Self::save_data`] and call
+    /// this again at start.
+    ///
+    /// # Errors
+    /// Returns an error naming the first unknown input; nothing changes.
+    pub fn rebind(
+        &mut self,
+        action: &str,
+        inputs: &[&str],
+    ) -> Result<(), String> {
+        for input in inputs {
+            crate::runtime::parse_input(input)?;
+        }
+        let inputs: Vec<String> =
+            inputs.iter().map(|&input| input.to_owned()).collect();
+        let mut query = self.world.query::<&mut crate::runtime::InputAction>();
+        if let Some(mut found) = query
+            .iter_mut(self.world)
+            .find(|found| found.action == action)
+        {
+            found.inputs = inputs;
+            return Ok(());
+        }
+        self.world.spawn((
+            Name(format!("input {action}")),
+            crate::runtime::SceneId::new(),
+            crate::runtime::InputAction {
+                action: action.to_owned(),
+                inputs,
+            },
+        ));
+        Ok(())
+    }
+
+    /// Writes `text` to the file `key` in the game's user data folder,
+    /// creating folders as needed. The folder is `RUSTING_USER_DATA` when
+    /// set, else `~/.local/share/<game>` on Linux,
+    /// `~/Library/Application Support/<game>` on macOS and
+    /// `%APPDATA%\<game>` on Windows, where `<game>` is the executable name.
+    /// `key` is a relative path such as `settings.txt` or `saves/1.json`.
+    /// `rusting test` gives each scenario its own empty folder; a
+    /// scenario's `files` field seeds it before tick 0.
+    ///
+    /// # Errors
+    /// Returns an error for an absolute `key` or one with `..`, or when
+    /// the file cannot be written.
+    pub fn save_data(&self, key: &str, text: &str) -> std::io::Result<()> {
+        let path = user_data_path(key)?;
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        std::fs::write(path, text)
+    }
+
+    /// The text [`Self::save_data`] stored under `key`, or `None` when
+    /// there is no such file.
+    #[must_use]
+    pub fn load_data(&self, key: &str) -> Option<String> {
+        std::fs::read_to_string(user_data_path(key).ok()?).ok()
+    }
+
+    /// Deletes the file [`Self::save_data`] stored under `key`. Returns
+    /// false when there was none.
+    pub fn delete_data(&self, key: &str) -> bool {
+        user_data_path(key).is_ok_and(|path| std::fs::remove_file(path).is_ok())
+    }
+
+    /// Ends the game after this frame: the window closes, a headless run
+    /// stops, and a scenario ends its run (check it with `expect_quit`).
+    pub fn quit(&mut self) {
+        self.world
+            .resource_mut::<crate::runtime::ExitState>()
+            .requested = true;
+    }
+
+    /// Stops fixed ticks while `paused`: physics, tweens, player
+    /// controllers, emitters and `rusting.counter` changes from pickups.
+    /// This update function still runs every frame, so a pause menu draws
+    /// and reads input. Scenario tick numbers count frames and keep going.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.world
+            .resource_mut::<crate::runtime::TimeControl>()
+            .paused = paused;
+    }
+
+    /// True while [`Self::set_paused`] holds fixed ticks.
+    #[must_use]
+    pub fn paused(&self) -> bool {
+        self.world.resource::<crate::runtime::TimeControl>().paused
+    }
+
+    /// Every counter's name and value, sorted by name, for saving game
+    /// state that lives in counters.
+    #[must_use]
+    pub fn counters(&self) -> Vec<(String, i32)> {
+        let mut counters: Vec<_> = self
+            .world
+            .try_query::<&crate::runtime::Counter>()
+            .map(|mut query| {
+                query
+                    .iter(self.world)
+                    .map(|counter| (counter.name.clone(), counter.value))
+                    .collect()
+            })
+            .unwrap_or_default();
+        counters.sort();
+        counters.dedup_by(|a, b| a.0 == b.0);
+        counters
+    }
+
     /// First collider on a ray from `origin` along `direction` within
     /// `max_distance` metres, sensors included. A ray starting inside a
-    /// collider passes through it.
+    /// collider passes through it. The hit holds the object's `name`, the
+    /// world `point`, the surface `normal` and the `distance` from `origin`.
     #[must_use]
     pub fn raycast(
         &self,
@@ -804,10 +1283,34 @@ impl GameScene<'_> {
         direction: [f32; 3],
         max_distance: f32,
     ) -> Option<RayHit> {
+        self.raycast_skipping(origin, direction, max_distance, &[])
+    }
+
+    /// [`Self::raycast`] that passes through objects in any of
+    /// `skip_classes`: `raycast_skipping(eye, dir, 20.0, &["glass"])`.
+    #[must_use]
+    pub fn raycast_skipping(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        skip_classes: &[&str],
+    ) -> Option<RayHit> {
+        let keep = |entity| {
+            skip_classes.is_empty()
+                || self
+                    .world
+                    .get::<crate::runtime::ObjectClasses>(entity)
+                    .is_none_or(|classes| {
+                        !skip_classes
+                            .iter()
+                            .any(|class| classes.contains(class))
+                    })
+        };
         let hit = self
             .world
             .get_resource::<crate::runtime::PhysicsWorld>()?
-            .raycast(origin, direction, max_distance, u32::MAX)?;
+            .raycast_where(origin, direction, max_distance, u32::MAX, keep)?;
         Some(RayHit {
             name: self
                 .world
@@ -827,6 +1330,23 @@ impl GameScene<'_> {
     pub fn aim(&mut self, max_distance: f32) -> Option<RayHit> {
         let (origin, forward) = self.camera_ray()?;
         self.raycast(origin, forward, max_distance)
+    }
+
+    /// The named object's world `[right, up, forward]` unit vectors, from
+    /// its transform and its parents' as they are now. Forward is -Z.
+    /// Rotations apply X first, then Y, then Z.
+    #[must_use]
+    pub fn basis(&mut self, name: &str) -> Option<[[f32; 3]; 3]> {
+        let entity = find_named_entity(self.world, name)?;
+        let matrix = world_matrix(self.world, entity);
+        let axis = |v: nalgebra::Vector3<f32>| -> [f32; 3] {
+            matrix.transform_vector(&v).normalize().into()
+        };
+        Some([
+            axis(nalgebra::Vector3::x()),
+            axis(nalgebra::Vector3::y()),
+            axis(-nalgebra::Vector3::z()),
+        ])
     }
 
     /// The active camera's world position and unit forward direction, from
@@ -865,7 +1385,52 @@ impl GameScene<'_> {
         Some((ray.origin.into(), ray.direction.into()))
     }
 
-    /// The highest-priority active camera.
+    /// Makes the named camera the only active one, so it renders and aims.
+    /// Returns false, changing nothing, when no camera has that name.
+    pub fn set_active_camera(&mut self, name: &str) -> bool {
+        let Some(chosen) =
+            find_named_entity(self.world, name).filter(|entity| {
+                self.world.get::<crate::runtime::Camera>(*entity).is_some()
+            })
+        else {
+            return false;
+        };
+        let mut cameras =
+            self.world.query::<(Entity, &mut crate::runtime::Camera)>();
+        for (entity, mut camera) in cameras.iter_mut(self.world) {
+            let active = entity == chosen;
+            if camera.active != active {
+                camera.active = active;
+            }
+        }
+        true
+    }
+
+    /// Turns the named camera on or off and sets the part of the window it
+    /// draws into (`[x, y, width, height]` fractions, `None` for all of
+    /// it), leaving other cameras alone; two active cameras with
+    /// viewports make split screen. Returns false when no camera has that
+    /// name.
+    pub fn set_camera(
+        &mut self,
+        name: &str,
+        active: bool,
+        viewport: Option<[f32; 4]>,
+    ) -> bool {
+        let Some(mut camera) =
+            find_named_entity(self.world, name).and_then(|entity| {
+                self.world.get_mut::<crate::runtime::Camera>(entity)
+            })
+        else {
+            return false;
+        };
+        camera.active = active;
+        camera.viewport = viewport;
+        true
+    }
+
+    /// The camera that aims: the highest-priority active one, preferring
+    /// one that fills the window.
     fn active_camera(&mut self) -> Option<(Entity, crate::runtime::Camera)> {
         let mut cameras =
             self.world.query::<(Entity, &crate::runtime::Camera)>();
@@ -874,7 +1439,11 @@ impl GameScene<'_> {
             .filter(|(_, camera)| camera.active)
             .max_by_key(|(entity, camera)| {
                 // Same tie-break as the renderer, so aim matches the screen.
-                (camera.priority, std::cmp::Reverse(entity.to_bits()))
+                (
+                    camera.viewport.is_none(),
+                    camera.priority,
+                    std::cmp::Reverse(entity.to_bits()),
+                )
             })
             .map(|(entity, camera)| (entity, *camera))
     }
@@ -925,6 +1494,21 @@ impl GameScene<'_> {
         Some(copy)
     }
 
+    /// The name of `entity`, such as [`crate::runtime::PlayerController`]'s
+    /// `wall` or `floor`; `None` when it is unnamed or gone.
+    #[must_use]
+    pub fn name_of(&self, entity: Entity) -> Option<String> {
+        self.world.get::<Name>(entity).map(|name| name.0.clone())
+    }
+
+    /// Whether `entity` is in `class`; `false` when it is gone.
+    #[must_use]
+    pub fn has_class(&self, entity: Entity, class: &str) -> bool {
+        self.world
+            .get::<crate::runtime::ObjectClasses>(entity)
+            .is_some_and(|classes| classes.contains(class))
+    }
+
     /// Names of the objects in `class`, sorted, so game code can loop over
     /// spawned copies. Unnamed objects are left out.
     #[must_use]
@@ -967,6 +1551,92 @@ impl GameScene<'_> {
             }
         }
         hasher.finish()
+    }
+
+    /// Moves the named object under `parent` (`None` makes it a root). Its
+    /// `Transform` is kept as is, so it is now relative to the new parent:
+    /// set its position after the call, such as a lantern's offset in a
+    /// hand. False when an object is missing or the move would make a loop.
+    pub fn reparent(&mut self, name: &str, parent: Option<&str>) -> bool {
+        let Some(child) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        match parent {
+            Some(parent) => {
+                find_named_entity(self.world, parent).is_some_and(|parent| {
+                    crate::runtime::hierarchy::set_parent(
+                        self.world, child, parent,
+                    )
+                    .is_ok()
+                })
+            }
+            None => crate::runtime::hierarchy::clear_parent(self.world, child)
+                .is_ok(),
+        }
+    }
+
+    /// Changes the point or spot light on the named object: its linear RGB
+    /// `color`, `intensity` and `range` in metres, each kept when `None`.
+    /// An intensity of 0 turns it off. False when it has no such light.
+    pub fn set_light(
+        &mut self,
+        name: &str,
+        color: Option<[f32; 3]>,
+        intensity: Option<f32>,
+        range: Option<f32>,
+    ) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        let apply = |light_color: &mut [f32; 3],
+                     light_intensity: &mut f32,
+                     light_range: &mut f32| {
+            *light_color = color.unwrap_or(*light_color);
+            *light_intensity = intensity.unwrap_or(*light_intensity);
+            *light_range = range.unwrap_or(*light_range);
+        };
+        if let Some(mut light) = entity.get_mut::<crate::runtime::PointLight>()
+        {
+            let light = &mut *light;
+            apply(&mut light.color, &mut light.intensity, &mut light.range);
+            true
+        } else if let Some(mut light) =
+            entity.get_mut::<crate::runtime::SpotLight>()
+        {
+            let light = &mut *light;
+            apply(&mut light.color, &mut light.intensity, &mut light.range);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Changes the named object's `rusting.hud` element: its text, size,
+    /// color, anchor or offset. Returns false when it has none.
+    ///
+    /// ```ignore
+    /// scene.set_hud("Judgement", |hud| {
+    ///     hud.text = "PERFECT".into();
+    ///     hud.color = [1.0, 0.8, 0.2, 1.0];
+    ///     hud.font_size = 40.0;
+    /// });
+    /// ```
+    pub fn set_hud(
+        &mut self,
+        name: &str,
+        edit: impl FnOnce(&mut crate::runtime::HudElement),
+    ) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let Some(mut hud) =
+            self.world.get_mut::<crate::runtime::HudElement>(entity)
+        else {
+            return false;
+        };
+        edit(&mut hud);
+        true
     }
 
     /// Shows or hides the named object. Hidden objects still collide.
@@ -1113,16 +1783,50 @@ impl GameScene<'_> {
         else {
             return Vec::new();
         };
-        physics
+        let mut others: Vec<Entity> = physics
             .contacts()
             .iter()
             .filter_map(|contact| match (contact.a, contact.b) {
                 (a, other) | (other, a) if a == entity => Some(other),
                 _ => None,
             })
+            .collect();
+        // A player controller stops a skin short of what it stands on or
+        // walks into, so the solver never lists those contacts.
+        if let Some(player) =
+            self.world.get::<crate::runtime::PlayerController>(entity)
+        {
+            for other in player
+                .floor
+                .map(|(floor, _)| floor)
+                .into_iter()
+                .chain(player.wall)
+            {
+                if !others.contains(&other) {
+                    others.push(other);
+                }
+            }
+        }
+        others
+            .into_iter()
             .filter_map(|other| self.world.get::<Name>(other))
             .map(|other| other.0.clone())
             .collect()
+    }
+
+    /// The player controller on a named object, with its live state:
+    /// `grounded`, `velocity` (what the body really moved per second last
+    /// step), `vertical_speed`, `yaw` and `pitch`. `None` when the object or
+    /// its controller does not exist.
+    #[must_use]
+    pub fn player(
+        &mut self,
+        name: &str,
+    ) -> Option<crate::runtime::PlayerController> {
+        let entity = find_named_entity(self.world, name)?;
+        self.world
+            .get::<crate::runtime::PlayerController>(entity)
+            .copied()
     }
 
     /// Tries to return a scene object by name.
@@ -1130,15 +1834,19 @@ impl GameScene<'_> {
         let entity = find_named_entity(self.world, name)?;
         self.world
             .get_mut::<Transform>(entity)
-            .map(|transform| GameObject { transform })
+            .map(|transform| GameObject { entity, transform })
     }
 
     /// Adds one GPU condition to a named object if it is not already present.
     ///
     /// This method is safe to call from the short update function every frame.
     pub fn watch_gpu_object(&mut self, name: &str, rule: GpuPhysicsRule) {
-        let entity = find_named_entity(self.world, name)
-            .unwrap_or_else(|| panic!("scene object `{name}` does not exist"));
+        let entity = find_named_entity(self.world, name).unwrap_or_else(|| {
+            panic!(
+                "scene object `{name}` does not exist{}",
+                nearest_names_hint(self.world, name)
+            )
+        });
         if let Some(mut watch) = self.world.get_mut::<GpuPhysicsWatch>(entity) {
             if !watch.rules.contains(&rule) {
                 watch.rules.push(rule);
@@ -1162,6 +1870,18 @@ impl GameScene<'_> {
             .add(class, rule);
     }
 
+    /// Replaces the custom GLSL that runs over every GPU body after each
+    /// fixed step; see `rusting docs show guide/gpu-condition-shaders`.
+    /// Calling it every frame with new `params` and the same `glsl` does not
+    /// recompile.
+    pub fn set_gpu_condition_shaders(
+        &mut self,
+        shaders: Vec<crate::runtime::GpuConditionShader>,
+    ) {
+        self.world
+            .insert_resource(crate::runtime::GpuConditionShaders(shaders));
+    }
+
     /// Returns GPU physics events with the requested registered name.
     #[must_use]
     pub fn gpu_events(&self, name: &str) -> Vec<GpuPhysicsEvent> {
@@ -1176,15 +1896,39 @@ impl GameScene<'_> {
             .copied()
             .collect()
     }
+
+    /// Where the GPU last put a GPU body, one to three frames late. The
+    /// object's `Transform` keeps its spawn pose. Filled every physics frame
+    /// for bodies with `sync: PhysicsSyncMode::SelectedState`, or once after
+    /// `request_gpu_class_snapshot(scene.world(), class)`; `None` before
+    /// that.
+    #[must_use]
+    pub fn gpu_state(
+        &mut self,
+        name: &str,
+    ) -> Option<crate::runtime::GpuStateMirror> {
+        let entity = find_named_entity(self.world, name)?;
+        self.world
+            .get::<crate::runtime::GpuStateMirror>(entity)
+            .copied()
+    }
 }
 
 /// Mutable high-level access to one scene object's transform.
 pub struct GameObject<'world> {
+    entity: Entity,
     /// Transform borrowed from the real ECS object.
     transform: Mut<'world, Transform>,
 }
 
 impl GameObject<'_> {
+    /// The ECS entity, for components this API does not wrap; reach them
+    /// through [`GameScene::world`] after this borrow ends.
+    #[must_use]
+    pub fn entity(&self) -> Entity {
+        self.entity
+    }
+
     /// Returns the current local X, Y, and Z position.
     #[must_use]
     pub fn position(&self) -> [f32; 3] {
@@ -1275,6 +2019,24 @@ impl GameObject<'_> {
     }
 }
 
+/// Counter names game code read without such a counter, warned once each
+/// per process. Only feeds warnings, never game state.
+static MISSING_COUNTERS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+fn warn_missing_counter(name: &str) {
+    let mut missing = MISSING_COUNTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if missing.insert(name.to_owned()) {
+        eprintln!(
+            "warning: game code read counter `{name}`, which does not exist; \
+             it reads as 0. Add a `rusting.counter` named `{name}` to the \
+             scene, or create it with `set_counter` or `add_to_counter`."
+        );
+    }
+}
+
 /// Connects object names to ECS IDs after the first lookup.
 ///
 /// This avoids searching every object again on later frames.
@@ -1314,18 +2076,61 @@ fn ensure_scene_name_index(world: &mut World) {
     });
 }
 
+/// `; did you mean `A`, `B`?` with the scene object names closest to `name`,
+/// or an empty string when none is close.
+fn nearest_names_hint(world: &mut World, name: &str) -> String {
+    let mut names = world.query::<&Name>();
+    let limit = (name.chars().count() / 2).max(2);
+    let mut close: Vec<(usize, &str)> = names
+        .iter(world)
+        .filter_map(|other| {
+            let distance = crate::scene_patch::edit_distance(
+                &name.to_lowercase(),
+                &other.0.to_lowercase(),
+            );
+            (distance <= limit).then_some((distance, other.0.as_str()))
+        })
+        .collect();
+    close.sort_unstable();
+    close.truncate(3);
+    if close.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = close
+        .iter()
+        .map(|(_, other)| format!("`{other}`"))
+        .collect();
+    format!("; did you mean {}?", list.join(", "))
+}
+
 /// Finds a named ECS object and saves the result for later calls.
 fn find_named_entity(world: &mut World, name: &str) -> Option<Entity> {
     ensure_scene_name_index(world);
-    let entity = world
+    let indexed = world
         .resource::<SceneNameIndex>()
         .entities
         .get(name)
-        .copied()?;
+        .copied()
+        .filter(|entity| {
+            world
+                .get::<Name>(*entity)
+                .is_some_and(|current| current.0 == name)
+        });
+    if indexed.is_some() {
+        return indexed;
+    }
+    // Spawned or renamed through `world()`, which the index does not see.
+    // ponytail: linear scan on a miss; track Name changes if misses get hot.
+    let mut names = world.query::<(Entity, &Name)>();
+    let entity = names
+        .iter(world)
+        .find(|(_, current)| current.0 == name)
+        .map(|(entity, _)| entity)?;
     world
-        .get::<Name>(entity)
-        .is_some_and(|current| current.0 == name)
-        .then_some(entity)
+        .resource_mut::<SceneNameIndex>()
+        .entities
+        .insert(name.to_owned(), entity);
+    Some(entity)
 }
 
 /// How an object was when the current scene loaded; see
@@ -1347,8 +2152,11 @@ pub struct InitialState {
 pub struct RayHit {
     /// Scene name of the object hit; empty for an unnamed one.
     pub name: String,
+    /// World position where the ray meets the surface.
     pub point: [f32; 3],
+    /// Unit surface normal at `point`, facing the ray.
     pub normal: [f32; 3],
+    /// Metres from the ray origin to `point`.
     pub distance: f32,
 }
 
@@ -1553,6 +2361,8 @@ struct RuntimeUiPainter {
 /// Images the game's swapchain asks for. [`probe_swapchain_images`] lowers it
 /// when the surface allows fewer.
 static SWAPCHAIN_IMAGES: AtomicU32 = AtomicU32::new(4);
+/// Whether swapchain images accept a blit, which render scale needs.
+static SWAPCHAIN_BLIT: AtomicBool = AtomicBool::new(false);
 
 /// Sets [`SWAPCHAIN_IMAGES`] to four, or to the surface's maximum when that is
 /// lower. Only a window has a surface, so a hidden one is made and dropped;
@@ -1580,6 +2390,12 @@ fn probe_swapchain_images(
     };
     let wanted = capabilities.max_image_count.map_or(4, |max| max.min(4));
     SWAPCHAIN_IMAGES.store(wanted, Ordering::Relaxed);
+    SWAPCHAIN_BLIT.store(
+        capabilities
+            .supported_usage_flags
+            .contains(ImageUsage::TRANSFER_DST),
+        Ordering::Relaxed,
+    );
 }
 
 /// Owns the operating-system window and all Vulkan presentation state.
@@ -1598,6 +2414,10 @@ struct WindowRunner {
     applied_vsync: Option<bool>,
     /// Cursor capture currently applied to the window.
     applied_cursor_capture: bool,
+    /// Fullscreen state currently applied to the window.
+    applied_fullscreen: bool,
+    /// Offscreen image for `RenderSettings::render_scale`.
+    scaled: Option<ScaledTarget>,
     #[cfg(feature = "ui")]
     ui: Option<RuntimeUiPainter>,
 }
@@ -1612,6 +2432,8 @@ impl WindowRunner {
             frame_pacer: FramePacer::default(),
             applied_vsync: None,
             applied_cursor_capture: false,
+            applied_fullscreen: false,
+            scaled: None,
             #[cfg(feature = "ui")]
             ui: None,
         }
@@ -1638,6 +2460,9 @@ impl WindowRunner {
                 create_info.min_image_count = create_info
                     .min_image_count
                     .max(SWAPCHAIN_IMAGES.load(Ordering::Relaxed));
+                if SWAPCHAIN_BLIT.load(Ordering::Relaxed) {
+                    create_info.image_usage |= ImageUsage::TRANSFER_DST;
+                }
             },
         );
         // Apply project render settings before the first presented frame.
@@ -1649,7 +2474,10 @@ impl WindowRunner {
             settings.vsync,
         );
         if std::env::var_os(PERF_ENV).is_some() {
-            eprintln!("[rusting] present mode {mode:?}");
+            eprintln!(
+                "[rusting] present mode {mode:?}, render scale blit {}",
+                SWAPCHAIN_BLIT.load(Ordering::Relaxed)
+            );
         }
         renderer.set_present_mode(mode);
         self.applied_vsync = Some(settings.vsync);
@@ -1670,6 +2498,9 @@ impl WindowRunner {
             )
             .expect("failed to create game scene renderer"),
         );
+        self.scaled = SWAPCHAIN_BLIT
+            .load(Ordering::Relaxed)
+            .then(|| ScaledTarget::new(self.vulkan.memory_allocator().clone()));
         #[cfg(feature = "ui")]
         if let Some(runtime_ui) =
             runtime.world().get_resource::<crate::runtime::RuntimeUi>()
@@ -1766,6 +2597,30 @@ impl WindowRunner {
         }
     }
 
+    /// Applies [`GameScene::set_fullscreen`] and
+    /// [`GameScene::set_window_size`].
+    fn apply_window_request(&mut self, world: &mut World) {
+        let Some(mut request) = world.get_resource_mut::<WindowRequest>()
+        else {
+            return;
+        };
+        let size = request.size.take();
+        let fullscreen = request.fullscreen;
+        let Some(renderer) = self.windows.get_primary_renderer() else {
+            return;
+        };
+        let window = renderer.window();
+        if self.applied_fullscreen != fullscreen {
+            window.set_fullscreen(
+                fullscreen.then_some(Fullscreen::Borderless(None)),
+            );
+            self.applied_fullscreen = fullscreen;
+        }
+        if let Some([width, height]) = size {
+            let _ = window.request_inner_size(PhysicalSize::new(width, height));
+        }
+    }
+
     /// Hides and locks the cursor while gameplay asks for mouse look.
     fn apply_cursor_capture(&mut self, captured: bool) {
         if self.applied_cursor_capture == captured {
@@ -1813,22 +2668,18 @@ impl WindowRunner {
         let acquired = renderer.acquire(None, |_| {});
         match acquired {
             Ok(future) => {
-                let extent = renderer.swapchain_image_size();
-                let future = self
-                    .scene_renderer
-                    .as_mut()
-                    .unwrap()
-                    .render(
-                        future,
-                        renderer.swapchain_image_view(),
-                        extent,
-                        SceneRenderOptions::game(extent),
-                        runtime.world().resource::<RenderWorld>(),
-                        runtime.world().resource::<AssetServer>(),
-                    )
-                    .map_err(|error| {
-                        format!("scene rendering failed: {error}")
-                    })?;
+                let world = runtime.world();
+                let future = crate::rendering::render_scale::render_game(
+                    self.scene_renderer.as_mut().unwrap(),
+                    self.scaled.as_mut(),
+                    future,
+                    renderer.swapchain_image_view(),
+                    world.resource::<RenderSettings>(),
+                    world.resource::<RenderWorld>(),
+                    world.resource::<AssetServer>(),
+                    |_, future, _| Ok(future),
+                )
+                .map_err(|error| format!("scene rendering failed: {error}"))?;
                 #[cfg(feature = "ui")]
                 let future = match self.ui.as_mut() {
                     Some(ui) => {
@@ -1867,6 +2718,7 @@ struct ProjectApplication {
     runtime: App,
     /// Time of the previous frame, used to calculate delta time.
     previous_frame: Instant,
+    gamepads: crate::runtime::Gamepads,
     /// State file and the flag the standard input reader sets when the
     /// editor asks for a code reload.
     code_reload: Option<(PathBuf, Arc<AtomicBool>)>,
@@ -1874,6 +2726,10 @@ struct ProjectApplication {
     perf: Option<(Instant, u32)>,
     /// Time spent in `runtime.update` and in `render` since the last line.
     perf_spent: [std::time::Duration; 2],
+    /// Plays the audio queue; `None` without the `audio` feature or a device.
+    audio: Option<crate::audio_output::AudioOutput>,
+    /// Set by [`crate::project::QUIT_AFTER_MS_ENV`]: close at this time.
+    quit_at: Option<Instant>,
 }
 
 /// Environment variable that makes a running game print, once a second, its
@@ -1891,9 +2747,71 @@ impl ProjectApplication {
             window: WindowRunner::new(title),
             runtime,
             previous_frame: Instant::now(),
+            gamepads: crate::runtime::Gamepads::new(),
             code_reload: None,
             perf: std::env::var_os(PERF_ENV).map(|_| (Instant::now(), 0)),
             perf_spent: [std::time::Duration::ZERO; 2],
+            audio: crate::audio_output::AudioOutput::open(),
+            quit_at: std::env::var(crate::project::QUIT_AFTER_MS_ENV)
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+                .map(|ms| {
+                    Instant::now() + std::time::Duration::from_millis(ms)
+                }),
+        }
+    }
+
+    /// The fractional fixed tick of an input event arriving now: the game
+    /// stood at `fixed_tick + accumulator` when the frame started.
+    fn event_tick(&self) -> f64 {
+        let world = self.runtime.world();
+        let control = world.resource::<crate::runtime::TimeControl>();
+        let step = control.fixed_delta.as_secs_f64();
+        let since = match control.paused {
+            true => 0.0,
+            false => {
+                (control.accumulator().as_secs_f64()
+                    + self.previous_frame.elapsed().as_secs_f64()
+                        * control.time_scale.max(0.0))
+                    / step
+            }
+        };
+        world.resource::<FrameTime>().fixed_tick as f64 + since
+    }
+
+    /// Hands this frame's sound requests to the audio device, or drops them.
+    fn play_audio(&mut self) {
+        let world = self.runtime.world_mut();
+        crate::runtime::route_sound_events(world);
+        let commands =
+            world.resource_mut::<crate::runtime::AudioQueue>().drain();
+        let Some(audio) = &mut self.audio else {
+            return;
+        };
+        let root = world
+            .get_resource::<ProjectFolder>()
+            .map(|folder| folder.0.join("assets"))
+            .unwrap_or_default();
+        // Real time now is `accumulator` plus the time since the frame
+        // started past tick `now`. A sound for tick T starts one fixed step
+        // after T's real time, so start jitter does not depend on the frame.
+        let control = world.resource::<crate::runtime::TimeControl>();
+        let (step, paused) = (control.fixed_delta, control.paused);
+        let past = control.accumulator().as_secs_f64()
+            / control.time_scale.max(1e-6)
+            + self.previous_frame.elapsed().as_secs_f64();
+        let now = world.resource::<FrameTime>().fixed_tick;
+        let delay = |tick: u64| {
+            let ahead = (tick as f64 - now as f64 + 1.0) * step.as_secs_f64();
+            match paused {
+                true => std::time::Duration::ZERO,
+                false => std::time::Duration::from_secs_f64(
+                    (ahead - past).clamp(0.0, 3600.0),
+                ),
+            }
+        };
+        for command in commands {
+            audio.run(&root, command, delay);
         }
     }
 
@@ -2002,17 +2920,29 @@ impl ApplicationHandler for ProjectApplication {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    self.runtime
-                        .world_mut()
-                        .resource_mut::<RuntimeInput>()
-                        .record_key(code, event.state.is_pressed());
+                    let tick = self.event_tick();
+                    let mut input =
+                        self.runtime.world_mut().resource_mut::<RuntimeInput>();
+                    input.record_key(code, event.state.is_pressed());
+                    if event.state.is_pressed() && !event.repeat {
+                        input.record_press_tick(
+                            crate::runtime::InputBinding::Key(code),
+                            tick,
+                        );
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                self.runtime
-                    .world_mut()
-                    .resource_mut::<RuntimeInput>()
-                    .record_mouse_button(button, state.is_pressed());
+                let tick = self.event_tick();
+                let mut input =
+                    self.runtime.world_mut().resource_mut::<RuntimeInput>();
+                if state.is_pressed() {
+                    input.record_press_tick(
+                        crate::runtime::InputBinding::Mouse(button),
+                        tick,
+                    );
+                }
+                input.record_mouse_button(button, state.is_pressed());
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.runtime
@@ -2053,6 +2983,12 @@ impl ApplicationHandler for ProjectApplication {
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
+                self.gamepads.poll(
+                    &mut self
+                        .runtime
+                        .world_mut()
+                        .resource_mut::<RuntimeInput>(),
+                );
                 self.window.begin_ui_frame(window_id, &mut self.runtime);
                 let update_start = Instant::now();
                 let updated = self.runtime.update(delta);
@@ -2063,6 +2999,13 @@ impl ApplicationHandler for ProjectApplication {
                     return;
                 }
                 self.window.finish_ui_frame(window_id, &mut self.runtime);
+                if self.runtime.exit_requested()
+                    || self.quit_at.is_some_and(|at| Instant::now() >= at)
+                {
+                    event_loop.exit();
+                    return;
+                }
+                self.play_audio();
                 if let Some(mut assets) =
                     self.runtime.world_mut().get_resource_mut::<AssetServer>()
                 {
@@ -2075,6 +3018,7 @@ impl ApplicationHandler for ProjectApplication {
                 input.clear_frame_edges();
                 let captured = input.cursor_captured();
                 self.window.apply_cursor_capture(captured);
+                self.window.apply_window_request(self.runtime.world_mut());
                 let render_start = Instant::now();
                 let rendered = self.window.render(window_id, &self.runtime);
                 self.perf_spent[1] += render_start.elapsed();
@@ -2210,6 +3154,15 @@ pub fn run_project<P: Plugin>(
     plugin: P,
 ) -> Result<(), Box<dyn Error>> {
     GAME_START.get_or_init(Instant::now);
+    if std::env::var_os(crate::debug_session::DEBUG_SESSION_ENV).is_some() {
+        let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
+        crate::debug_session::run_debug_session(
+            &mut runtime,
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        )?;
+        return Ok(());
+    }
     if let Some(scenario) = std::env::var_os(crate::scenario::TEST_SCENARIO_ENV)
     {
         let report = std::env::var_os(crate::scenario::TEST_REPORT_ENV);
@@ -2337,6 +3290,9 @@ fn simulate_timed<P: Plugin>(
     for _ in 0..ticks {
         runtime.update(delta)?;
         announce_first_frame();
+        if runtime.exit_requested() {
+            break;
+        }
         hashes.extend(
             runtime
                 .world()
@@ -2364,8 +3320,12 @@ pub fn run_project_scenario<P: Plugin>(
     scenario_path: PathBuf,
     report_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn Error>> {
-    let scenario: crate::scenario::Scenario =
+    let mut scenario: crate::scenario::Scenario =
         serde_json::from_str(&std::fs::read_to_string(&scenario_path)?)?;
+    scenario.update_golden =
+        std::env::var_os(crate::scenario::UPDATE_GOLDEN_ENV).is_some();
+    scenario.keep_going |=
+        std::env::var_os(crate::scenario::KEEP_GOING_ENV).is_some();
     let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
     let base = scenario_path.parent().unwrap_or(Path::new("."));
     let report = crate::scenario::run_scenario(&mut runtime, &scenario, base);
@@ -2664,6 +3624,48 @@ mod tests {
     }
 
     #[test]
+    fn press_tick_is_the_event_time_or_the_frame_tick() {
+        use crate::runtime::{ActionMap, InputBinding, KeyCode};
+        let mut world = World::new();
+        world.insert_resource(FrameTime {
+            fixed_tick: 122,
+            ..FrameTime::default()
+        });
+        let mut actions = ActionMap::default();
+        actions.bind("mine", InputBinding::Key(KeyCode::Space));
+        actions.bind("menu", InputBinding::Key(KeyCode::Escape));
+        world.insert_resource(actions);
+        let mut input = RuntimeInput::default();
+        input.record_key(KeyCode::Space, true);
+        input.record_press_tick(InputBinding::Key(KeyCode::Space), 121.4);
+        input.record_press_tick(InputBinding::Key(KeyCode::Space), 121.9);
+        input.record_key(KeyCode::Escape, true);
+        world.insert_resource(input);
+        let scene = GameScene { world: &mut world };
+        assert_eq!(scene.press_tick("mine"), Some(121.4));
+        assert_eq!(scene.press_tick("menu"), Some(122.0));
+        assert_eq!(scene.press_tick("jump"), None);
+    }
+
+    #[test]
+    fn sound_requests_are_queued_counted_and_drained() {
+        let mut world = World::new();
+        let mut scene = GameScene { world: &mut world };
+        let id = scene.play_sound("sfx/hit.wav", 0.5);
+        scene.play_sound_looped("sfx/hum.ogg", 1.0);
+        scene.stop_sound(id);
+        scene.set_master_volume(0.2);
+        assert_eq!(scene.sounds_requested(), 2);
+        let commands =
+            world.resource_mut::<crate::runtime::AudioQueue>().drain();
+        assert_eq!(commands.len(), 4);
+        assert!(matches!(
+            &commands[1],
+            crate::runtime::AudioCommand::Play { looped: true, .. }
+        ));
+    }
+
+    #[test]
     fn restart_puts_the_starting_scene_back_and_reruns_setup() {
         let directory = std::env::temp_dir()
             .join(format!("rusting-restart-{}", uuid::Uuid::new_v4()));
@@ -2720,6 +3722,85 @@ mod tests {
         let mut world = World::new();
         assert!(!GameScene { world: &mut world }.restart());
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn basis_forward_follows_the_rotation_order() {
+        let mut world = World::new();
+        let rotation = [0.3_f32, 1.0, 0.0];
+        world.spawn((
+            Name("Cam".into()),
+            Transform {
+                rotation,
+                ..Transform::default()
+            },
+        ));
+        let mut scene = GameScene { world: &mut world };
+        let [_, _, forward] = scene.basis("Cam").unwrap();
+        let (x, y) = (rotation[0], rotation[1]);
+        let expected = [-y.sin() * x.cos(), x.sin(), -y.cos() * x.cos()];
+        for (a, b) in forward.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-5, "{forward:?} {expected:?}");
+        }
+    }
+
+    #[test]
+    fn reparent_and_set_light_move_and_dim_a_lantern() {
+        use crate::runtime::{Parent, PointLight};
+        let mut world = World::new();
+        let lantern = world
+            .spawn((
+                Name("Lantern".into()),
+                Transform::default(),
+                PointLight {
+                    color: [1.0; 3],
+                    intensity: 5.0,
+                    range: 4.0,
+                },
+            ))
+            .id();
+        let hand = world
+            .spawn((Name("Hand".into()), Transform::default()))
+            .id();
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.reparent("Lantern", Some("Hand")));
+        assert_eq!(
+            scene.world().get::<Parent>(lantern).map(|p| p.0),
+            Some(hand)
+        );
+        assert!(!scene.reparent("Hand", Some("Lantern")), "a loop");
+        assert!(scene.reparent("Lantern", None));
+        assert!(scene.world().get::<Parent>(lantern).is_none());
+        assert!(scene.set_light("Lantern", None, Some(0.0), Some(2.0)));
+        assert!(!scene.set_light("Hand", None, Some(1.0), None));
+        let light = scene.world().get::<PointLight>(lantern).unwrap();
+        assert_eq!(
+            (light.color, light.intensity, light.range),
+            ([1.0; 3], 0.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn video_settings_write_render_settings_and_the_window_request() {
+        let mut world = World::new();
+        world.insert_resource(RenderSettings::default());
+        let mut scene = GameScene { world: &mut world };
+        scene.set_render_scale(0.1);
+        assert_eq!(scene.render_scale(), 0.25);
+        scene.set_render_scale(f32::NAN);
+        assert_eq!(scene.render_scale(), 0.25);
+        scene.set_vsync(true);
+        scene.set_max_fps(Some(0));
+        assert!(!scene.fullscreen());
+        scene.set_fullscreen(true);
+        scene.set_window_size([1280, 0]);
+        assert!(scene.fullscreen());
+        let settings = world.resource::<RenderSettings>();
+        assert!(settings.vsync && settings.limit_fps);
+        assert_eq!(settings.max_fps, 1);
+        assert_eq!(world.resource::<WindowRequest>().size, Some([1280, 1]));
+        GameScene { world: &mut world }.set_max_fps(None);
+        assert!(!world.resource::<RenderSettings>().limit_fps);
     }
 
     #[test]
@@ -3032,12 +4113,19 @@ mod tests {
         assert_eq!(scene.add_to_counter("gems", -1), 4);
         assert_eq!(scene.counter_value("gems"), 4);
         assert!(!scene.counter_complete("gems"));
-        assert_eq!(scene.add_to_counter("coins", 1), 0);
+        // Reading a missing counter is 0; writing one creates it.
+        assert_eq!(scene.counter_value("coins"), 0);
+        assert!(!scene.counter_complete("coins"));
+        assert!(scene.counter("coins").is_none(), "reads create nothing");
+        assert_eq!(scene.add_to_counter("coins", 1), 1);
         scene.set_counter("gems", 9);
         assert_eq!(scene.counter_value("gems"), 9);
         scene.set_counter("coins", 3);
-        assert_eq!(scene.counter_value("coins"), 0);
-        assert!(!scene.counter_complete("coins"));
+        assert_eq!(scene.counter_value("coins"), 3);
+        scene.set_counter("night", 2);
+        assert_eq!(scene.counter_value("night"), 2);
+        assert!(!scene.counter_complete("night"), "created with no target");
+        assert!(MISSING_COUNTERS.lock().unwrap().contains("coins"));
     }
 
     #[test]
@@ -3076,6 +4164,15 @@ mod tests {
         };
         assert_eq!(material(&mut scene, "A"), material(&mut scene, "B"));
         assert_eq!(count(scene.world), before + 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "did you mean `Crate`")]
+    fn a_missing_object_name_panic_lists_the_nearest_names() {
+        let mut world = World::new();
+        world.spawn((Name("Crate".into()), Transform::new([0.0; 3])));
+        world.spawn((Name("Ground".into()), Transform::new([0.0; 3])));
+        GameScene { world: &mut world }.object("crate_");
     }
 
     #[test]
@@ -3152,6 +4249,36 @@ mod tests {
         assert!(scene.despawn("Left"));
         assert!(!scene.despawn("Left"));
         assert!(scene.try_object("Left").is_none());
+
+        // Switching to a camera that faces +X aims at Right instead.
+        let back = scene
+            .world()
+            .spawn((
+                Name("Back Camera".into()),
+                Transform::new([0.0, 1.5, 0.0]).with_rotation(
+                    0.0,
+                    -std::f32::consts::FRAC_PI_2,
+                    0.0,
+                ),
+                crate::runtime::Camera::default(),
+            ))
+            .id();
+        assert!(!scene.set_active_camera("Right"), "not a camera");
+        assert!(scene.set_active_camera("Back Camera"));
+        assert_eq!(scene.object("Back Camera").entity(), back);
+        assert!(
+            !scene
+                .world()
+                .get::<crate::runtime::Camera>(camera)
+                .unwrap()
+                .active
+        );
+        let hit = scene.aim(20.0).expect("the back camera faces Right");
+        assert_eq!(
+            scene.world().get::<Name>(back).unwrap().as_str(),
+            "Back Camera"
+        );
+        assert_eq!(hit.name, "Right");
     }
 
     #[test]
@@ -3295,6 +4422,12 @@ mod tests {
         scene.set_visible("Ember 1", true);
         assert!(scene.spawn_copy("Missing", "Ember 2", [0.0; 3]).is_none());
         assert_eq!(scene.in_class("ember"), ["Ember", "Ember 1"]);
+        assert_eq!(scene.name_of(copy).as_deref(), Some("Ember 1"));
+        assert!(scene.has_class(copy, "ember"));
+        assert!(!scene.has_class(glow, "ember"));
+        assert!(scene.binding("jump").is_empty());
+        scene.rebind("jump", &["Space", "PadSouth"]).unwrap();
+        assert_eq!(scene.binding("jump"), ["Space", "PadSouth"]);
         assert_eq!(scene.object("Ember 1").position(), [3.0, 0.5, 0.0]);
         assert_eq!(scene.object("Ember").position(), [0.0, -50.0, 0.0]);
         let world = app.world();

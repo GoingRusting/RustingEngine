@@ -1,10 +1,12 @@
 # RustingEngine Roadmap
 
-RustingEngine is currently a functional Vulkan renderer prototype with a native Rust ECS runtime, an egui editor, and a GPU-accelerated hybrid physics bridge. The goal of this roadmap is to turn it into a complete, general-purpose Windows/Linux game engine in the same class as Godot — covering 3D and 2D rendering, animation, audio, UI, navigation, networking, a full editor, and export — whose defining strength is physics. RustingEngine should be the engine people pick *because* of its physics.
+RustingEngine is currently a functional Vulkan renderer prototype with a native Rust ECS runtime, an egui editor, and a GPU-accelerated hybrid physics bridge. The goal of this roadmap is to turn it into a complete, general-purpose Windows/Linux game engine in the same class as Godot — covering 3D and 2D rendering, animation, audio, UI, navigation, networking, a full editor, and export — whose defining strength is physics. RustingEngine should be the engine people pick *because* of its physics, and the best engine to build games with an LLM coding agent.
 
-The roadmap covers two products:
+The roadmap covers these tracks:
 
 - **The engine** (Milestones 0-23): Godot-class feature breadth, with physics as the flagship subsystem. Milestones 0-7 build the foundation and a vertical slice; Milestone 8 makes simulation deterministic; Milestones 9-23 reach feature parity with Godot while taking physics well beyond it.
+- **LLM-native development** (Milestones L1-L10): the engine as the best place for an LLM agent to write, run, observe, test, and ship a game, proven by a published agent benchmark.
+- **Engine expansion** (Milestones 30-35): gameplay framework, large worlds, cinematics, procedural content, modding, and XR, which a general-purpose engine needs beyond the Godot parity map.
 - ***Sundering*** (Milestones 24-29): a deterministic, networked, destructible 5v5 competitive game built on the engine. It is the engine's hardest physics customer and its proof that the physics claims are real.
 
 This document is the implementation source of truth. Tasks should be completed in dependency order, kept behind compiling intermediate states, and verified against the acceptance gates at the end of each milestone.
@@ -17,7 +19,7 @@ This roadmap lists outcomes, not tasks. Turning an outcome into a task is part o
 
 ### How to pick an item
 
-Pick the lowest-numbered unchecked item whose dependencies are satisfied. Milestones 2, 3, 4, and 5 are parallel tracks and may be interleaved. After Milestone 9, Milestones 10-22 are parallel tracks and may be interleaved, subject to the dependencies stated at the top of each milestone; physics milestones (10-12) take priority when two items are otherwise equally ready. If an item is too large for one session, split it, implement the first part, and record the split in this file as sub-items.
+Pick the lowest-numbered unchecked item whose dependencies are satisfied. Milestones 2, 3, 4, and 5 are parallel tracks and may be interleaved. After Milestone 9, Milestones 10-22 are parallel tracks and may be interleaved, subject to the dependencies stated at the top of each milestone; physics milestones (10-12) take priority when two items are otherwise equally ready. The LLM-native milestones (L1-L10) and the engine expansion milestones (30-35) are parallel tracks too; while the owner's current focus is agent-built games, LLM-native items take priority over every other track. If an item is too large for one session, split it, implement the first part, and record the split in this file as sub-items.
 
 ### What counts as verification
 
@@ -77,6 +79,8 @@ The engine's 1.0 release (Milestone 23) should provide everything a team expects
 - Export to Windows, Linux, and macOS, then Android.
 - Documentation, tutorials, templates, and demo projects for every major feature.
 - **Best-in-class physics** — see the next section.
+- **Best-in-class LLM development** — a versioned, budgeted, machine-readable engine surface; a generation-friendly Rust API; model-oriented observation, verification, and quality lints; a warm daemon and MCP adapter; and a published agent benchmark. See the LLM-native track.
+- A gameplay framework (saves, state machines, behaviour trees, dialogue, inventory), terrain and streaming large worlds, cinematics, and procedural content. See the engine expansion track.
 
 Primary platforms are Windows and Linux desktop. Native Rust systems are the gameplay API, and games remain normal Cargo projects that can use external libraries. A versioned custom physics-compute ABI is part of the hybrid milestone. Deferred rendering, web export, iOS, and consoles remain out of scope until after 1.0.
 
@@ -447,6 +451,7 @@ share one undoable command layer.
   the `GameScene` API, determinism rules for game code, the scenario format
   and its pitfalls, and a done checklist, taken from the twelve sample
   games.
+- [ ] Next: the LLM-native track. Milestone L1 diagnostic codes, `rusting explain`, diagnostic locations and `rusting fix` are done; every L1 item is done (its exit gate needs a fresh-agent trial, which is not verifiable here); continue with L2, then L3 annotated captures and the event trace, since those remove the most guesswork seen in the twelve samples.
 - [x] Gap: `rusting export` should copy every scene a game loads, not only
   the main one. Export now copies the project's `scenes/` folder; checked in `export_package_contains_executable_scene_assets_and_readme`.
 - [x] Gap: a misspelled field in a partial scene component is dropped and
@@ -498,11 +503,10 @@ share one undoable command layer.
   and let game code move one to a pose with zero velocity.
 - [ ] Gap (Same Shift): a camera that renders into a texture or a screen
   rectangle, for monitors and split screen.
-- [ ] Gap: `RenderSettings::render_scale` is declared and reflected but no
-  renderer code reads it, so setting it does nothing. The tone map is a
-  subpass that reads the HDR target as an input attachment, so a scaled scene
-  needs the tone map to become its own pass that samples the smaller target
-  (a resolution scale and an upscale filter).
+- [x] Gap: `RenderSettings::render_scale` is read by the window and headless
+  capture: the scene renders into an offscreen image of the scaled size and a
+  linear blit stretches it over the target (`rendering::render_scale`). See
+  Night Market F10.
 - [ ] Gap: `rusting capture` does not run game code.
 - [x] Gap: a scenario stops at its first failed check. `"keep_going": true` in the scenario file reports every failure; test `keep_going_reports_every_failed_check`.
 - [ ] Gap: a windowed `rusting run` shows no on-screen FPS or frame time.
@@ -2477,6 +2481,8 @@ Goal: provide Godot-equivalent audio, driven naturally by physics.
 
 Depends on: Milestone 1. Physics-driven audio depends on Milestones 5 and 10.
 
+First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`AudioQueue`, `AudioCommand`, `SoundId`; presentation only, not in snapshots) and `src/audio_output.rs` (kira playback, feature `audio`, on with `window`). `GameScene::play_sound`, `play_sound_looped`, `stop_sound`, `stop_all_sounds`, `set_master_volume`, `sounds_requested`; `SoundEvent`s from `rusting.sound_cue` become play requests. WAV, Ogg, MP3 and FLAC decode through kira. No device means silent, with one stderr line. Real speaker output is not verified here. Sound events are routed by the runner after each update (`route_sound_events`), not by a schedule system: adding a system changed replay hashes (`replays_reproduce_recorded_hashes_and_find_changed_input` diverged at tick 1). Headless runs keep the newest 1,024 commands and count only game-code requests. Tests: `requests_get_distinct_ids_and_drain_once`, `sound_requests_are_queued_counted_and_drained`, and the cue check in `landing_fires_one_sound_and_a_seeded_burst_that_expires`. Full check passed under lavapipe: fmt, clippy in three configurations, `cargo test --workspace` and with `--features gpu-tests` (exit 0, 16 result lines each). Not done: buses, effects, spatial, streaming, hot-plug, voice limits, offline render.
+
 - [ ] Audio device management with hot-plug, output selection, and a no-device fallback.
 - [ ] Mixer with buses, sends, volume/mute/solo, and bus effects (reverb, delay, EQ, compressor, limiter, filters).
 - [ ] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets.
@@ -2679,6 +2685,409 @@ Depends on: Milestones 9-22.
 
 - All reference games are playable from a clean checkout, editable in the editor, and exportable to every supported platform.
 - The comparative physics benchmark report shows where RustingEngine leads, and any area where it does not is documented with a follow-up item.
+
+## LLM-native track
+
+Milestones L1-L10 make RustingEngine the best engine to build games with an LLM coding agent. They run in parallel with Milestones 9-23 and have priority while the owner's current focus (agent-built games) holds.
+
+The starting point already exists: the window-free `rusting` CLI, the `schema_version` 1 result envelope, `rusting schema`, atomic `scene patch` batches with dry runs and revision checks, input-driven scenarios, offscreen `capture` with pixel picking, the generated project `AGENTS.md`, `skills/rusting-game/SKILL.md`, and twelve sample games whose gaps were logged and fixed. `missingFeatures.md` holds the earlier backlog; its open sections are absorbed below.
+
+### LLM-native pillars
+
+"Best for LLM coding" is defined by the following pillars. Like the physics pillars, each is owned by a milestone and proven by a test or by the agent benchmark (Milestone L9), not asserted.
+
+| Pillar | What it means | Owner |
+| --- | --- | --- |
+| Legibility | An agent learns the whole engine surface from the installed version, in budgeted text, with no web search and no guessing from training data | L1 |
+| Generation-friendly API | Game code an LLM writes compiles on the first or second try: no lifetime puzzles, no nested borrows, one obvious way to do each thing | L2 |
+| Observability | Every mutation has a way to see its effect as text, structured state, an annotated image, or an event trace | L3 |
+| Fast loop | Edit to verified result in seconds, through a warm daemon and a no-rebuild logic lane | L4, L8 |
+| Verifiability | Behaviour is proven by scenarios, invariants, fuzzing and bots, and a scenario's strength is itself checked | L5 |
+| Quality floor | A generated game looks, sounds, and feels finished by default; lints catch what a model cannot see | L6 |
+| Scale | Agents stay effective on a large project and several agents can work on one project at once | L10 |
+| Safety | Agent actions are scoped, journaled, reviewable and reversible by a human | L4, L8 |
+| Evidence | A published, repeatable agent benchmark compares RustingEngine against Godot and others on identical requests | L9 |
+
+### Design rules for the track
+
+- One truth, several interfaces: CLI, daemon, MCP adapter, editor, and Rust API call the same operations and validation code.
+- Small outputs by default: summaries, filters, pagination, and stable references; details on demand. Every command that can print a lot takes `--limit` and `--fields`.
+- Every error names the next command or edit that fixes it.
+- Text formats that diff well: sorted keys, stable ordering, one value per line where it matters for merges.
+- No model lock-in: projects and tools stay fully useful with no AI service, account, or network connection. Nothing in the engine calls a model.
+
+## Milestone L1: Machine-readable engine surface
+
+Goal: an agent can learn everything it needs about the installed engine version from the engine itself, within a stated text budget.
+
+Depends on: Milestone 7 agent loop (done).
+
+### Diagnostics
+
+- [x] Stable diagnostic codes for every validation, patch, scenario, import, and build error, kept in one registry with a uniqueness test. The existing symbolic codes (`SCENE_CONFLICT`, `ASSET_NO_LICENSE`) are kept rather than renumbered: they were already stable in the JSON envelope and a model reads a name more reliably than a number. Evidence: `src/diagnostics.rs` registers all 52 codes; `diagnostics::tests::every_emitted_code_is_registered_and_every_registered_code_is_emitted` scans `src/` for code literals and fails on an unregistered code or an entry nothing emits; `codes_are_sorted_unique_and_fully_documented`.
+- [x] `rusting explain <code>` prints the cause, the fix, and an example command or patch for each code; `rusting explain` lists every code; a mistyped code is a usage error that lists codes with the same prefix; every human-readable failure ends with `Run \`rusting explain CODE\` for the cause and a fix.` The project `AGENTS.md` and the skill file mention it. Evidence: `rusting::tests::explain_describes_a_code_and_suggests_similar_ones_for_a_typo`, `diagnostics::tests::json_patch_examples_parse_as_patches`; full check green (fmt, clippy default / no-default-features / gpu-tests, `cargo test --workspace` with and without gpu-tests, lib 541 with gpu-tests). Limit: command examples starting with `rusting` are not yet parsed by a test.
+- [x] Each diagnostic in `--json` output carries the file, the JSON pointer or line, the entity ID and name, and a severity. `Diagnostic` has `line`, `column`, `scene_location` (JSON pointer into `file`) and `entity` (`id`, `name`), filled wherever the tools know them: scene JSON errors give line and column; duplicate IDs and names, missing parents, parent cycles and component value errors point at `/entities/N` (or `/entities/N/components/NAME`) and the object, through the shared `runtime::error_object`; patch operation errors point at `/operations/N` of the patch file; a patch that breaks a scene rule (`PATCH_INVALID`) names the object; missing assets and determinism errors name the object; build errors give the line. The human output prints the same location. Evidence: `tests/cli.rs` `scene_and_patch_errors_point_at_the_line_object_and_operation` and `missing_asset_reference_fails_validation_with_location`; `reflect::tests` asserts `ReflectError::object` on a failed scene load; full check green (lib 541 with gpu-tests). Limit: `PATCH_INVALID` for a default or an unknown scene setting has only its message, and a patch's broken object has no pointer because it is not on disk yet.
+- [x] Machine-applicable fixes: when a fix is certain (a misspelled field, a missing default section, a wrong unit), the diagnostic carries a ready `scene patch` operation, and `rusting fix` applies all certain fixes with a dry-run diff first. Done for misspelled keys, the only certain case the tools detect today. `validate` now reports every scene key that loading drops as `SCENE_UNKNOWN_FIELD` (no hits on the 16 scenes in the repository); a misspelled required field (`SCENE_JSON` "missing field") is matched to the key that misspells it. A key within two edits of exactly one unset known key, written once in the file, gets `fix: {"op": "rename_key", "path", "to"}`. The fix is a rename in the file text rather than a `scene patch` operation, because a patch rewrites the whole scene and would delete the other unknown keys the user still has to look at; and a file whose required field is misspelled does not load, so a patch cannot apply to it. `rusting fix [root] [--dry-run]` applies fixes in rounds until none are left, since the next missing field shows only after the first is fixed; `--dry-run` lists the first round and writes nothing. Evidence: `tests/cli.rs` `fix_renames_misspelled_scene_keys_in_place_and_keeps_the_rest`, `scene_patch::tests::dropped_fields_suggest_only_one_close_unset_key`; full check green (lib 542 with gpu-tests). Not done: a missing section is already filled from defaults by `scene patch`; wrong units have no detector yet; registered component strings are checked on load (`SCENE_COMPONENT_FIELD`) and get no fix.
+
+### Version-matched reference
+
+- [x] `rusting docs` serves the manual, the Rust API index, the schema catalog, and sample snippets offline from the installed version, with `search <query>` and `show <item>`. Done for the manual, tutorials, both agent guides, every command (from the schema catalog) and every diagnostic code; pages are embedded with `include_str!`, so the text always matches the binary. `search` needs every word and ranks id and title hits first; `show` accepts `kind/name` or an unambiguous bare name and cuts at a line to fit `--budget`. Evidence: `docs::tests` (5: unique ids with title and summary, bare-name lookup, search ranking, budget cuts) and `tests/cli.rs` `docs_lists_searches_shows_and_briefs_within_a_token_budget`; full check green (lib 547 with gpu-tests). Not done: the Rust API index and sample snippets are not items yet (next two L1 items).
+- [x] `rusting docs --brief [--budget N]` prints a compact `llms.txt`-style overview sized to a token budget, with pointers to the detailed entries. The default budget is 2000 tokens (four characters each); items are listed in manual, tutorial, guide, command, code order and the tail is replaced by "N more items; `rusting docs` lists them all." Evidence: `docs::tests::budget_cuts_at_a_line_and_the_brief_fits_it` checks 300, 1000 and 4000 tokens and that a huge budget lists all; the CLI test above.
+- [x] A generated Rust API index for the gameplay surface: `rusting docs` lists an `api/Type::method` item for every public method of `GameScene`, `GameObject`, `CubeSpawn` and `SphereSpawn`, with signature and doc comment (units, `# Errors`), read from `project_runner.rs` at build time via `include_str!`, so it cannot drift. Evidence: `docs::tests::api_index_lists_documented_gameplay_methods` (more than 30 items, every one with a summary); full check green (lib 548 with gpu-tests; `headless_device` tests flake under parallel load and pass alone or on rerun). Not done: the prelude free items and registered components are not indexed, and examples in doc comments are not yet run (next-but-one L1 item).
+- [x] JSON Schema files (draft 2020-12) for scenes, patches, scenarios, `project.json` and `.rmeta`, emitted by `rusting schema --json-schema` (`schema::json_schemas`). Scene entity sections and registered components come from the catalog tables; patch operations list all seven ops with required fields. Evidence: `schema::tests::json_schemas_describe_every_key_the_engine_writes` (top-level keys match what serde writes for scene, patch, scenario and project), `json_schema_patch_operations_match_the_parser`, `json_schema_entity_lists_every_section_and_component`, `tests/cli.rs` `schema_json_schema_prints_a_schema_per_file_kind`; full check green (lib 551 with gpu-tests). Not done: `$schema` is not written into engine files (a scene with an unknown key reports `SCENE_UNKNOWN_FIELD`, and the cooked format is binary, so it needs a format decision); component and section values are not described below the top level (the catalog lists fields); `.rmeta` keys are not cross-checked against serde.
+- [x] (Partly) Every `rusting ...` command in the schema catalog, the manual, tutorials, the skill file and the project `AGENTS.md` is extracted and checked on every test run: it must name a real operation (longest match, so `scene patch` beats `scene`) and use only flags that operation's usage lists. A stale command fails the build. Evidence: `docs::tests::documented_commands_name_real_operations_and_flags` (over 40 commands; a mutation check with a misspelled command and flag in the skill file failed it with both named); full check green (lib 552 with gpu-tests). Not done: the commands are checked, not executed, because most need a project fixture; doc-comment Rust examples in the API index are not compiled; JSON patch examples in the code registry are already parsed by `diagnostics::tests::json_patch_examples_parse_as_patches`.
+
+### Budgeted output
+
+- [x] `--limit N`, `--fields a,b` and `--summary` on the listing commands (`project inspect`, `scene inspect`, `scene query`, `asset list`, `preset list`, `explain`; `docs` keeps its own `--budget`). They apply to every array directly under `data`: `--fields` keeps those keys of each object, `--limit` keeps the first N and reports the cut count under `data.omitted`, `--summary` replaces each array with `{"count": N}`. A bad value is a `CLI_USAGE` error. Evidence: `cli::shape_tests::shape_limits_projects_and_summarizes_listings` and `tests/cli.rs` `listing_flags_cut_output_and_every_json_result_reports_its_size`; full check green (lib 553 with gpu-tests). Limit: arrays nested deeper than `data.<key>` are not cut, and `docs search` results are not shaped because `data.matches` already has its own limit.
+- [x] Each `--json` result carries `size: {data_bytes, data_tokens}` (bytes of `data`, tokens at four characters), so an agent can decide whether to ask for more. Evidence: the CLI test above compares the size of a cut and a full result. The envelope field is additive; `schema_version` stays 1.
+
+### Exit gate
+
+- A fresh agent with no prior RustingEngine knowledge and no network access builds a sample-sized game using only `rusting docs`, `rusting schema`, and `rusting explain`.
+- Every error the engine can emit has a code, an explanation, and a tested example.
+
+## Milestone L2: Generation-friendly gameplay API
+
+Goal: gameplay code written by an LLM compiles and behaves as intended on the first or second attempt.
+
+Depends on: Milestone L1 for the API index; Milestone 9 for reflection and prefabs.
+
+- [ ] An API audit rule, enforced by a test over the public gameplay surface: no public gameplay function returns a borrow that blocks another `GameScene` call, and no gameplay type needs an explicit lifetime. Handles are `Copy` IDs. Partly done: `docs::tests::gameplay_methods_do_not_return_new_borrows` fails on any new public `GameScene`, `GameObject`, `CubeSpawn` or `SphereSpawn` method returning a borrow (the `&mut Self` chaining builder on `GameObject` is exempt), and fails when a known violation is fixed but left on the list, so the list only shrinks. Four violations remain and are listed in the test: `GameScene::object`, `try_object` (return `GameObject<'_>`), `counter` (returns `Mut<'_, Counter>`) and `world` (the ECS escape hatch). Left open: replacing `GameObject<'_>` with a `Copy` ID handle rewrites every sample and the skill file, so it needs the owner's go-ahead. Full check green (lib 554 with gpu-tests).
+- [ ] One obvious way per task: overlapping helpers are merged or deprecated, and the API index marks the preferred call. Partly done: a `Preferred:` paragraph in a doc comment names the call to use instead, and `docs::tests::preferred_calls_exist_in_the_index` fails when a named call is not in the API index. Marked so far: `GameScene::counter` (prefer `counter_value`, `add_to_counter`, `set_counter`) and `GameScene::world`. Left open: nothing is merged or deprecated, because choosing the winner among `move_x`/`move_by`, `object`/`try_object` and similar pairs changes the public API and every sample, which is the owner's call. Full check green (lib 555 with gpu-tests).
+- [ ] Typed, fallible lookups everywhere a generated name can be wrong (`try_object` style), with a diagnostic that lists the nearest existing names. Partly done: `GameScene::object` and `watch_gpu_object` panics now end with ``; did you mean `Crate`?`` listing up to three scene object names within a case-insensitive edit distance of half the name length (at least two). Evidence: `project_runner::tests::a_missing_object_name_panic_lists_the_nearest_names`; full check green (lib 556 with gpu-tests). Left open: the other name-taking methods (`counter`, `set_color`, `spawn_copy`'s template and so on) keep their current behaviour, most return `Option` or `bool` already and have no message to add to; the hint is a panic message, not a diagnostic code.
+- [x] Engine-aware compiler hints: when `cargo` fails, `rusting check` (and `run`, `test`, `export`, which share the build step) adds one `RUST_ENGINE_HINT` diagnostic (severity `hint`, with file and line) per pattern found in rustc's output: scene borrow conflicts (E0499, E0502), unknown `GameScene` or `GameObject` methods (E0599, points at `rusting docs search`), a bad `rusting_engine` import (E0432, points at the prelude), and `f64` or `[f32; 3]` mismatches (E0308). The table is `cli::ENGINE_HINTS`; add a row per new pattern. Evidence: `cli::hint_tests::rustc_errors_get_the_engine_pattern_that_fixes_them` (line and file taken from the error, one hint per pattern, unrelated errors ignored); the code is in the registry, so `diagnostics::tests` covers explain. Full check green (lib 557 with gpu-tests). Limit: matching is on rustc's short message text, so a rustc wording change silently drops a hint; the hints are not yet tried on a real failing project in a test.
+- [x] Scaffolding commands: `rusting add system <name>`, `rusting add component <name>`, and `rusting add scenario <name>` write a registered, documented stub plus a failing scenario that proves it runs.
+  (Partly.) `add scenario` and `add system` are done: `add system` appends a documented `todo!` stub to `src/main.rs` and writes a failing scenario; the stub is not called until `update` calls it. `add component` is not done: it needs a way for game code to register a scene component, which is an owner decision. Evidence: `add_scaffolds_a_stub_and_a_failing_scenario` in `tests/cli.rs` (stub, duplicate refusal, bad name, scenario shape); full AGENTS.md check passes (gpu-tests needed a rerun after a known stall). The scenario being red on `rusting test` is not run here.
+- [ ] (Blocked on owner: changes the public API and every sample.) Typed units at the API boundary (metres, seconds, radians, degrees) where a mix-up is a common generated bug, without making ordinary code verbose.
+- [ ] (Blocked: no deprecation exists yet to migrate; `rusting fix` already applies scene key renames.) Deprecations carry machine-applicable migrations, and `rusting migrate` upgrades scenes and game code across engine versions, because models are trained on older APIs.
+- [ ] Measure edit-to-diagnostic time for game code and keep it within a stated budget with a shared build cache across projects.
+
+### Exit gate
+
+- In the agent benchmark (Milestone L9), the median task needs at most one corrective build.
+- An engine upgrade across one minor version is applied to every sample by `rusting migrate` with no hand edits.
+
+## Milestone L3: Observability for models
+
+Goal: an agent can see what the game did, as text or as an image built for a vision model, without guessing.
+
+Depends on: Milestone 7 capture and scenarios; Milestone 8 replay for tick-exact inspection.
+
+### Structured state
+
+- [x] `rusting inspect <project> --tick N` pauses a headless run at a tick and reports selected entities, contacts, recent events, the active camera, the HUD/UI tree, and the freshness of every GPU-owned value.
+  (Partly.) `rusting inspect [root] --tick N [--entity NAME]...` builds the game, runs it headless to tick N (through a generated `build/inspect-tick.json` scenario of `log` steps) and reports each entity's full scene form after that tick; with no `--entity`, every named entity of the main scene. Evidence: ran it on a generated project (Cube at tick 5 returned its transform and mesh); `inspect_tick_reports_entity_state_after_that_tick` in `tests/cli.rs` is `#[ignore]` (real cargo build, 103 s) and passes with `--ignored`; full AGENTS.md check green. Left open: contacts, recent events, the active camera, the HUD tree and GPU-value freshness; it pauses by running to the tick, not by attaching to a live game (L4 debug protocol). Unnamed entities are not listed.
+- [x] A per-tick event trace (collisions, triggers, counter changes, spawns, despawns, inputs, scene loads, sounds, errors) written as JSON lines, with filters by entity, class, and event kind.
+  (Partly.) Every `ScenarioReport` (so `rusting test --json`) has a `trace`: `input`, `set` and `collision` entries with tick and detail (collisions by persistent ID), in tick order, capped at 1000. Evidence: `scenario::tests::the_trace_lists_inputs_sets_and_collisions_by_tick`; full AGENTS.md check green. Left open: triggers, counter changes, spawns, despawns, scene loads, sounds and errors; JSON-lines output; filters by entity, class and kind (use `--fields` or `jq` for now).
+- [x] `rusting diff <a> <b>` compares two scenes or two ticks semantically: entities added, removed, and changed, by ID and name, with field-level values.
+  (Partly.) Scene files only: `rusting diff <scene-a> <scene-b>` matches entities by ID and reports added, removed and changed entities (with JSON path, before and after for each field) and scene-level field changes. Comparing two ticks needs `rusting inspect --tick`, which is not built. Evidence: `diff_reports_added_removed_and_changed_entities_by_id` in `tests/cli.rs`; full AGENTS.md check green. Limit: a rename plus ID change shows as remove plus add.
+- [x] A text view of 2D, tile, and grid scenes (a character map with a legend) so a model without vision can check a layout.
+  (Partly.) `rusting scene map <scene>` prints every `rusting.tile_map` as character rows plus a legend, and draws other named entities that sit over a map's cells as letters with name, ID, column and row. Evidence: `scene_map_draws_tile_rows_and_places_entities_on_them` in `tests/cli.rs`; full AGENTS.md check green. Left open: sprite-only 2D scenes without a tile map, and scene state at a tick (needs `inspect --tick`). Entities placed over a map ignore rotation and size.
+
+### Images built for models
+
+- [x] Annotated captures: optional overlays with entity names, short IDs, bounding boxes, collider outlines, velocity arrows, and a legend, so a model can refer to what it sees by ID.
+  (Partly.) A scenario with `"annotate": true` makes every `capture` step also write `<name>.annotated.png` (a box and a 4-hex-digit short ID per mesh entity) and `<name>.annotated.json` (the legend: short ID, entity name, full ID, pixel box). Evidence: ran it on a generated project under lavapipe and opened the PNG (the Cube's box and `4033` label sit on the cube; the legend lists the same ID); `annotate::tests::annotations_box_a_visible_mesh_around_the_frame_center` (projection, no GPU) and `draw_outlines_the_box_and_writes_the_short_id`; full AGENTS.md check green. Left open: collider outlines, velocity arrows, names drawn on the image (the font has only hex digits, names are in the legend), occlusion (hidden entities still get a box), and a `rusting capture --annotate` flag for scene captures.
+- [x] Contact sheets: one image with frames from several ticks in a grid, labelled by tick, so one image shows motion.
+  A scenario with `"contact_sheet": "shots/sheet.png"` writes one grid image of every `capture` frame, each tile 320 px wide with its tick in a corner label (the frames are still saved on their own too). Evidence: ran a 3-capture scenario on a generated project under lavapipe and opened the PNG (tiles labelled 1, 3, 6, empty slot black); `annotate::tests::a_contact_sheet_tiles_frames_in_a_grid_with_tick_labels`; full AGENTS.md check green. The columns and tile width are fixed (square-ish grid, 320 px); a sheet is written only when at least one capture ran.
+- [x] Region picking: `--pick-rect` returns every entity ID that covers a rectangle and its pixel share.
+  (Partly.) `rusting capture ... --pick-rect X,Y,W,H` (repeatable) adds `pick_rects` to the result: per rectangle, every entity ID and name that is the nearest hit, with its share, plus the `none` share that hits nothing (`CameraView::pick_rect`). Evidence: `capture_without_vulkan_still_reports_camera_and_picks_per_tick` (rectangle over the cube lists it with a share above 0; sky rectangle lists nothing); full AGENTS.md check green. Open limits: shares are estimates from at most 64x64 sampled pixel centers using bounds picking (not silhouettes); only the nearest hit counts, so occluded entities are not listed.
+- [x] Scenario checks on screen presence: an entity is on screen, inside a screen rectangle, covers at least a pixel share, or is occluded. These replace most golden images in agent-written tests.
+  (Partly.) New scenario step `expect_screen` with `on_screen`, `occluded`, `inside` (box within fractions of the frame) and `min_share` (share of the frame the entity is the nearest hit for); works with `until`/`within`, needs no Vulkan, and failures report the box, `box_share` and `frame_share`. Evidence: `scenario::tests::screen_checks_see_a_mesh_in_front_of_a_camera_and_behind_a_wall` (visible wall passes on_screen/inside/min_share; a mesh behind the wall is occluded and not on_screen; an off-frame mesh is not on screen; wrong expectations fail with steps 3 and 4); schema and docs tests; full AGENTS.md check green. Open limits: bounds picking sampled at 64x64 (a tiny or thin visible sliver can read as occluded); `inside` uses the box clipped to the frame; only mesh entities count; not run in a real game process.
+
+### Budgets
+
+- [x] Performance reports in stable JSON (CPU/GPU time per phase, draws, dispatches, upload and readback bytes, asset memory), with budget assertions in scenarios and environment metadata in every result.
+  (Partly.) Every scenario report in `rusting test --json` now has `perf`: `tick_ms_mean`, `tick_ms_p95`, `tick_ms_max` (wall clock per whole tick), `render` (draws, triangles, visible instances of the last captured frame, null without a capture) and `environment` (engine version, OS, arch, debug or release, device and driver when a frame rendered). A scenario `budgets` object (`max_tick_ms`, `mean_tick_ms`, `p95_tick_ms`, `max_draws`, `max_triangles`) fails the run with a `budget:` step. Evidence: `scenario::tests::perf_is_reported_and_budgets_fail_the_run`; `a_capturing_run_reports_render_counters_and_draw_budgets` (`--features gpu-tests`, lavapipe: draws above 0, device named, `max_draws: 0` fails); schema test; full AGENTS.md check green. Open: CPU/GPU time per phase, dispatches, upload and readback bytes, asset memory, GPU timings; `environment` is only in scenario results, not every CLI result; timing budgets are machine-dependent so real-hardware numbers are unverified here.
+
+### Exit gate
+
+- Each benchmark task in Milestone L9 can be completed by a text-only model, using text views, traces and diffs instead of images.
+- A vision model identifies the entity behind any visible object in an annotated capture by ID.
+
+## Milestone L4: Live session and editor bridge
+
+Goal: an agent works against a warm, running engine instead of paying cold-start costs, and a human sees and controls what it does.
+
+Depends on: Milestone L1; Milestone 6 editor and snapshot undo.
+
+- [x] `rusting serve`: a local daemon that keeps a project loaded, the build warm, and shaders compiled, and speaks JSON-RPC over stdio. Every CLI operation is available through it with the same result envelope.
+  (Partly.) `rusting serve` reads one JSON-RPC 2.0 request per line on stdin (`method` is the command words, `params` the remaining arguments as strings) and writes one response per line whose `result` is the same envelope as `--json` (including `size`, `--limit`, `--fields`, `--summary`); `shutdown` or end of input stops it; standard error codes -32700, -32600, -32601, -32602, and -32603 (a panicking operation does not kill the daemon). Evidence: `serve_answers_json_rpc_lines_with_the_cli_envelope` in `tests/cli.rs` (matches the cold CLI result, unknown method, bad params, parse error, nothing answered after `shutdown`); schema/docs tests; full AGENTS.md check green. Open: the daemon does not yet keep a project loaded, the build warm or shaders compiled (each request does the same work as the CLI, minus the process start); the 10x speed gate was not measured; operations still use their own output paths, so a long-running one blocks the daemon.
+- [x] (Partly) Debug protocol over the daemon: attach to a running game, pause, step N ticks, set values, query, capture, and resume.
+  Evidence: `rusting debug [root]` cooks, builds and runs the game with `RUSTING_DEBUG_SESSION=1`; `src/debug_session.rs` reads JSON lines `{"id","cmd"}` (step, get, set, press, release, capture, tick, quit) and the game stays paused between commands, so `step` is resume. Tests: `the_game_is_paused_between_commands_and_steps_exactly`, ignored real-build `debug_session_steps_and_inspects_a_running_game` (passes with `--ignored`). Full check green: fmt, clippy x3, test plain and `--features gpu-tests`.
+  Open: `capture` in a session is not verified against a real game; `rusting serve` does not relay to `rusting debug`.
+- [x] (Partly) MCP adapter over the same daemon (stdio, project-root scoped, read-only and mutating tools marked), carried from `missingFeatures.md` section 9. It must give the same results as the CLI.
+  Evidence: `rusting mcp [root]` speaks MCP over stdio (`initialize`, `ping`, `tools/list`, `tools/call`); one tool per operation (underscored names, `serve`/`debug`/`mcp` excluded) with `readOnlyHint` from `schema::READ_ONLY`; `tools/call` runs through `serve_request`, so the text result is the `--json` envelope and `isError` mirrors `ok`. Scoped by `set_current_dir(root)`; absolute paths and `..` arguments are refused (-32602). Test: `mcp_lists_tools_and_calls_them_like_the_cli`. Full check green: fmt, clippy x3, test plain and `--features gpu-tests`.
+  Open: no CLI-versus-MCP identity test over many operations (gate at the L10 "identical results" item); root scoping is argument-checked, not a sandbox, so a spawned build can still read elsewhere.
+- [x] (Partly) Live editor bridge: agent edits to an open scene go through the editor's snapshot undo, show a diff, and highlight the affected entities. An external write never silently replaces unsaved GUI work; conflicts are reported.
+  Evidence: the editor watches the open scene file (`reload_external_scene_change`). A clean scene reloads behind one Undo snapshot; the status message now carries "N added, N changed, N removed" (`outside_change`) and the added and changed entities become the selection (`highlight_scene_ids`). A scene with unsaved edits keeps them, reports the conflict, and Save refuses once. Test: `outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits` (asserts the counts and one highlighted entity). Full check green: fmt, clippy x3, test plain and `--features gpu-tests`.
+  Open: file-watch only, no socket, so the editor learns of a write on its next poll; the diff is a count, not a per-field view (the Agent panel item adds that with accept and reject); highlight replaces the user's selection.
+- [ ] Editor Agent panel, in the Blender area style: the journal of agent operations, pending diffs with accept and reject, and the last scenario results. Add its design to `docs/editor-overhaul.md`.
+  Progress: design written (`docs/editor-overhaul.md`, "Agent panel design"). Journal slice built: `EditorPanel::Agent` area (`src/editor/agent_panel.rs`), an `AgentJournal` resource fed by `reload_external_scene_change` (path, summary, changed IDs), newest first, click selects the entry's entities, Clear button. Verified: unit test `outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits` asserts one journal entry holding the patched ID; `every_editor_panel_draws_even_when_optional_resources_are_missing` draws the new panel. 2026-10-01, lavapipe: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` exit 0, 16 result lines, 0 failed; same with `--features gpu-tests`. Not done: Pending tab with per-field Accept/Reject, Results tab, Pause toggle. Journal is session-only (not saved) and the panel is not checked visually. Item stays open.
+- [x] (Partly) Every result reports whether a change touched disk, the editor buffer, or the running game.
+  Evidence: the `--json` envelope (CLI, `serve`, `mcp`) carries `touched {disk, editor, game}` from `schema::touched`; `disk` is true only for `WRITES_PROJECT` commands that succeed and are not `--dry-run`. `rusting debug` replies carry it with `game` true after step, set, press, release, tick. Tests: `touched_reports_project_writes_but_not_reads_dry_runs_or_failures`, `the_game_is_paused_between_commands_and_steps_exactly`.
+  Open: `editor` is always false from the CLI (the open editor reloads on its next poll); no per-command list of which files changed.
+  Verification note: the checks recorded for the debug-protocol, MCP and editor-bridge items above counted partial output of runs that a `timeout` cut off, so they were not a full pass. Re-run on 2026-10-01 after fixing the `mcp` missing-root exit code (1, not 2): fmt, clippy default, `cargo test --workspace` and with `--features gpu-tests` all exit 0 with 16 `test result` lines and 0 failures. The real GPU driver was wedged, so both runs used lavapipe (`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`). Clippy `--no-default-features` and `--features gpu-tests` re-run clean after the change.
+
+### Exit gate
+
+- A patch, test, and capture round trip through the daemon is at least ten times faster than the cold CLI on the same machine (hardware gate).
+- An agent and a person edit the same open scene; every conflict is reported and every agent change is undoable from the editor.
+
+## Milestone L5: Behaviour verification toolkit
+
+Goal: an agent can prove a game works, and prove that its proof is strong enough.
+
+Depends on: Milestone 7 scenarios; Milestone 8 replay and state hashes.
+
+- [x] (Partly) Declared invariants: a `rusting.invariant` component or scenario section (the player is never below the floor, no NaN positions, a counter never exceeds its target) checked every tick in `run`, `test`, and fuzz runs.
+  Evidence: top-level `invariants` list in a scenario; each entry has the `expect` fields plus `finite` (no NaN or infinite number; JSON reads those back as `null`). Checked after every tick, reported as `invariant N: ...` at the first failing tick, once each with `keep_going`. A missing entity or path passes unless `exists` is set. `rusting schema scenario` and `rusting explain` list it. Test `invariants_are_checked_every_tick_and_report_the_first_bad_tick` covers holding, broken, despawned-entity, empty-invariant and null-number cases. 2026-10-01, lavapipe: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` exit 0, 16 result lines, 0 failed; same with `--features gpu-tests`. Open: checked in `rusting test` scenarios only, not in plain `rusting run`; no `rusting.invariant` component form; the scene document is rebuilt per invariant per tick (slow with many); fuzz runs do not exist yet, so the fuzz half of the item waits on the fuzz item.
+- [ ] Seeded input fuzzing: `rusting fuzz` presses random named actions for N ticks over many seeds and reports the first seed and tick that breaks an invariant, as a ready scenario file.
+- [ ] Explorer bot: a goal-seeking player that tries to reach pickups, sensors, and win conditions and reports unreachable goals and stuck states.
+- [ ] Scenario strength check: `rusting test --without <system|component>` runs a scenario with a named system or component switched off and expects it to fail. This turns the manual "fails with the code removed" evidence into a command.
+- [ ] Coverage: which systems, components, entities, and events a scenario exercised, so an agent sees untested mechanics.
+- [ ] Record a human play session in the editor or the game window as a scenario file, so a human can hand an agent a bug as a test.
+- [ ] Divergence bisect: given two builds or two scene revisions, report the first tick and entity where state hashes differ.
+
+### Exit gate
+
+- Every sample game has invariants, a fuzz run with no failures over 100 seeds, and scenarios that pass the strength check.
+- A seeded regression inserted into a sample is found by `rusting fuzz` or the explorer bot without a hand-written scenario.
+
+## Milestone L6: Quality floor and game feel
+
+Goal: a game made by an agent looks, sounds, and feels finished by default, and the engine reports what a model cannot perceive.
+
+Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-feel kit and art-direction presets.
+
+- [ ] `rusting lint`: presentation and design checks with diagnostic codes, including HUD text contrast and off-screen text, camera inside geometry, zero-intensity or clipped lighting, collider and mesh mismatch, scale sanity (a 40 m player), pickups or goals with no reachable path, events with no audio or visual feedback, and games with no win or lose state.
+- [ ] Controller feel metrics in physical units (jump apex height and time, time to top speed, stopping distance, air control), reported by `rusting inspect` and compared with documented genre ranges.
+- [ ] More data-driven juice: screen shake, hit-stop, squash and stretch, camera trauma, flashes, and particle and sound presets, each a registered component with schema entries.
+- [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
+- [ ] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency.
+- [ ] Accessibility checks from `missingFeatures.md` P2: contrast, text size, focus order, colour-only status, and missing captions, with locations and captures.
+
+### Exit gate
+
+- Every sample game passes `rusting lint` with no warnings.
+- In a blind review of benchmark outputs, games made with the defaults are rated as more finished than the same requests built without them.
+
+## Milestone L7: Recipes, templates, and knowledge
+
+Goal: common game shapes start from tested, editable recipes rather than from an empty scene.
+
+Depends on: Milestones L1 and L2.
+
+- [ ] `rusting recipe list` and `rusting recipe apply <name>`: named mechanics (double jump, dash, health and damage, checkpoints, inventory, wave spawner, turret, day timer, pause menu) that write ordinary components, systems, and scenarios into a project.
+- [ ] A template matrix for `rusting new --template`: platformer, top-down action, first-person, third-person, puzzle grid, racing, twin-stick shooter, tower defense, roguelike, card game, rhythm game, and physics sandbox. Each passes its scenarios in CI.
+- [ ] The skill file and project `AGENTS.md` are generated from the schema, the API index, and a pitfall catalog, and checked for staleness in CI.
+- [ ] A pitfall catalog grown from every logged gap in the "Current focus" list, each with its diagnostic code and fix.
+- [ ] A task cookbook of runnable snippets ("make an enemy follow the player", "add a level select"), each tested.
+
+### Exit gate
+
+- Every template and recipe passes its scenarios and `rusting lint` in CI.
+- Every closed gap in this roadmap either has a diagnostic that catches it or a pitfall entry.
+
+## Milestone L8: Fast logic lane and safe execution
+
+Goal: gameplay logic can change in under a second without a Cargo rebuild, inside a sandbox, and every agent action can be reviewed and reverted.
+
+Depends on: Milestone 9 WASM scripting host and Rust hot reload.
+
+- [ ] A script-first lane: gameplay systems written against the reflected ECS API in WASM (compiled from Rust) swap in a running game without restart, with the same `GameScene` surface as native code where the sandbox allows.
+- [ ] A promotion path from a WASM script to native Rust with no behaviour change, checked by state hashes.
+- [ ] Permission scopes for agent-facing commands: project-root confinement, a `--read-only` mode, `--confirm` for destructive operations, and no network access unless a generator hook asks for it.
+- [ ] An operation journal: every mutating command records the tool, the command, the diff, and the time. `rusting log` lists it and `rusting revert <op>` undoes one operation when later operations do not depend on it.
+- [ ] A portable provenance report: engine and plugin versions, asset hashes, generator metadata, seeds, and scenario versions (from `missingFeatures.md` P2).
+
+### Exit gate
+
+- A logic change in a running sample reaches the game in under one second (hardware gate).
+- Every agent change in a benchmark run is listed in the journal and revertible.
+
+## Milestone L9: Agent benchmark and evidence
+
+Goal: prove the "best engine for LLM coding" claim with a repeatable benchmark, the way Milestone 12 proves the physics claim.
+
+Depends on: Milestones L1-L5 for the tools it measures; can start earlier with the tools that exist.
+
+- [ ] `benchmarks/agent/`: a task suite of one-paragraph game requests with hidden acceptance scenarios, covering new games, feature additions to existing projects, bug fixes in seeded broken projects, and performance fixes.
+- [ ] A model-agnostic runner that drives any agent CLI through a command hook and records wall time, turns, output size, commands, failed edits, corrective builds, human interventions, and hidden-scenario pass rate.
+- [ ] Baselines for the same tasks in Godot and at least one other engine, run with the same agent and budget.
+- [ ] A scheduled job that runs the suite for every release and publishes a report; a regression opens an item in this file.
+- [ ] Every failed task is triaged into a gap item in the owning milestone, as the sample games were.
+
+### Exit gate
+
+- The published report shows RustingEngine ahead of the baselines on pass rate and time, and every task where it is not has a follow-up item.
+
+## Milestone L10: Large projects and multiple agents
+
+Goal: agents stay effective on a project with hundreds of scenes and systems, and several agents can work on one project at once.
+
+Depends on: Milestones L1, L3, and L4.
+
+- [ ] `rusting project summary [--budget N]`: a budgeted overview of scenes, systems, components, assets, and their dependencies.
+- [ ] A system access graph from ECS system parameters: which systems read and write which components and resources, queryable as "who writes `Health`?".
+- [ ] Scene files that merge well: stable key and entity order, and an optional folder form with one file per entity or prefab.
+- [ ] `rusting merge`: a semantic three-way merge driver for scenes, registered through `.gitattributes`, that reports real conflicts by entity and field.
+- [ ] Scoped leases: an agent can claim scenes, prefabs, or source files through the daemon; conflicting writes are refused with the holder named.
+- [ ] Impact reports: before a change to a prefab, component, or asset, list every scene and scenario it affects.
+
+### Exit gate
+
+- Two agents build separate features in one project at the same time, merge with no manual conflict resolution, and all scenarios pass.
+- An agent completes a benchmark bug-fix task in a project with at least 100 scenes and 50 systems.
+
+## Dogfood track: PLAYPLACE
+
+Goal: build a real game from `researches/game2/research` (PLAYPLACE, the pick in its VERDICT.md) at `RustingGames/playplace` using only `rusting` commands, and fix every engine gap it exposes. The friction log is `RustingGames/playplace/FRICTION.md`.
+
+- [x] Week 1 slice: pit room, 40,000 code-spawned GPU spheres, `ball_asleep` GPU rule feeding a `sleeping` counter, scenarios `w1_pool` (real hardware, 600 ticks) and `w1_pool_quick` (120 ticks).
+  Evidence (2026-10-01, lavapipe because the real GPU is wedged): `rusting check` passes; `rusting test tests/w1_pool.json` before the fix failed at the sleeping check with the counter at 0; with a capture step the same game reported 14,146 sleeping balls at tick 120 (1.2 s per tick in software). Real-GPU frame time, the 60 FPS kill criterion, is NOT measured.
+- [x] Fix: scenario `expect` on a game with code-spawned meshes failed with "mesh N has no asset path and cannot be saved". `reflected` now uses `scene_document_lenient`. Verification: the gpu-test `the_gpu_flag_opens_the_device_without_a_capture_step` and the playplace scenario above.
+- [x] Scenario `"gpu": true` opens the headless Vulkan device without a capture step and fails with `gpu: no Vulkan device` when none opens. Documented in `rusting schema`, `docs/concepts.md` and tutorial 4. Answers PLAYPLACE research gap #1 (GPU physics does run in `rusting test`).
+  Full check, 2026-10-01, lavapipe: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` exit 0, 16 result lines, 0 failed; same with `--features gpu-tests`.
+- [ ] A `--template empty` (no leftover `Ball`/`Box`/`Wall` names), or a clearer error when code-spawned names collide with the scene.
+- [ ] A bulk spawn for scenes (emitter component or a patch grid operation), so large uniform sets need no game code.
+- [ ] A built-in "bodies inside this box" count for GPU classes readable from a scenario, for `escaped` and zone-mass checks.
+- [ ] Week 2: noise-attraction force field as a custom GLSL solver; scenario `w2_flow`.
+- [ ] Measure 40,000 spheres on real hardware (60 FPS at 1080p, RTX 3060) once the GPU driver is healthy.
+
+## Dogfood track: 40,001
+
+Goal: fix every engine gap that `RustingGames/forty-thousand-and-one/FRICTION.md` (F1-F29) logs.
+
+- [x] F1, F3: `rusting new` writes `skills/rusting-game/SKILL.md`; the agent guide points at `rusting docs show sample/<name>`, not at a `samples/` folder. Verification: `tests/cli.rs` project tests.
+- [x] F2: `rusting doctor --probe` opens the device and round-trips a 64-word buffer fill (15 s timeout), reporting `probe.ok` with `selected_device` or `error`. Verification: the doctor CLI test.
+- [x] F4, F25, F26, F27: sound output (`play_sound`, `stop_sound`, `set_master_volume`, `sound_cue`), a scenario `audio:` entity with request counts, `sound_clip_diagnostics` in `rusting check`, one project-relative root for asset and clip paths, and the sound API in SKILL.md, the project guide and `rusting docs`. Verification: runtime and CLI unit tests.
+- [x] F5: `docs/gpu-condition-shaders.md` documents the hooks, the `PhysicsState` ABI, the free `custom_values`, `emit_event`, sleep and determinism.
+- [x] F6, F20: `GpuConditionShader::params` (uniform `vec4`s at binding 14, no recompile) and `events_per_body`; overflow is printed and sent as `GpuPhysicsEventsLost`. Verification: gpu-tests for condition params and event capacity.
+- [x] F7, F8, F9, F12: `docs search` reports the total past its limit; `Name::as_str` and `Deref`; `GameObject::entity()`; `scene.set_active_camera(name)`; point light intensity documented in its unit. Verification: unit tests.
+- [x] F10: render scale works (see Night Market F10). The post-process hook is still open: it needs the tone-map pass to read HDR from a sampled image instead of a subpass input.
+- [x] F11, F13, F14: the GPU contact pass takes the largest push and velocity change per direction instead of their sum, runs 4 rounds per tick (`CONTACT_ROUNDS`), ignores contacts closer than a 2 mm margin, and dynamic bodies sleep after 20 ticks under 0.05 m/s (`angular_velocity.w`; `GpuCondition::sleeping()`). Verification: gpu-test `a_deep_gpu_ball_pit_settles_and_its_walls_hold`: 3,600 balls in a 4 x 4 m pit with sideways gravity of 8 m/s^2, 3,045 at rest and 0 escaped. The old solver gave 646 at rest and 17 escaped through wall corners.
+- [x] F15, F16, F19, F22: reading a missing counter warns once, and `set_counter` / `add_to_counter` create it, so game state needs no scene entity per counter; the scenario docs give the order inside one tick; `expect` and invariants take `not_equals`. Verification: runtime and scenario unit tests.
+- [x] F17, F18, F21: `preset apply --only`, EPIPE exits quietly, `scene query` returns component values as JSON. Verification: CLI tests.
+- [ ] F23: 3D world-space text. Deferred; needs a text atlas in the scene renderer.
+- [x] F24: `rusting determinism <root> --gpu <scenario.json>` runs the scenario in a debug and a release build and compares the GPU state hashes of every tick both runs reached (`DETERMINISM_DIVERGED` with the tick, or `DETERMINISM_NO_GPU_STATE`). Scenario reports carry `gpu_state_hashes`; a failing expect step does not stop the comparison (`scenario_passed`). Evidence (2026-10-02, RTX 3060): `rusting determinism . --gpu tests/w6_seed_a.json` on 40,001 compared 29 ticks, all equal (its pinned `night_hash` is stale after the solver change, so `scenario_passed` is false).
+- [x] F28: HUD elements are placed from this frame's measured text, so a right or bottom anchor keeps its margin when a `{counter}` value grows; the offset direction is in the schema. Evidence: 40,001 `tests/w4_cctv.json` recapture shows "COUNT: 40000" ending 24 px from the right edge.
+- [x] F29: the project guide says a `path` dependency follows a live engine and how to pin a `rev` or `tag`.
+  Full check, 2026-10-02, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 0 failed; `--features gpu-tests` 573 lib tests passed, 0 failed. The grid test now counts overflow and oversized bodies once per contact round. `rusting check` on 40,001 passes.
+
+## Dogfood track: Lantern Keeper
+
+Goal: fix the engine gaps that `RustingGames/lantern-keeper/FRICTION.md` (F1-F26) logs.
+
+- [ ] F1: skeletal animation and skinned meshes. Deferred (milestone-sized); SKILL.md and the project AGENTS.md now say there is none and to animate child entities from game code.
+- [x] F2, F7: a walking player keeps pushing a dynamic body: `move_character` reports the `wall` it slid along and the controller raises the body's horizontal velocity along the push to the walking speed (mass is ignored). `PlayerController` carries runtime `wall` and `velocity`; `touching` includes the player's floor and wall; `scene.player(name)` returns a copy of the controller. Verification: `a_walking_player_keeps_pushing_a_crate_it_did_not_start_in` (crate past z -6 after 180 ticks, player grounded, velocity z about -4).
+- [x] F3: scenario `set` reaches `/visible` and the fields of `rigid_body`, `collider`, `physics_body`, `collision_layers` and the three lights. Verification: `set_reaches_built_in_components`.
+- [x] F4, F10: `rusting check` runs the debug `cargo build` that `run` and `test` reuse instead of `cargo check`, so no command compiles the engine twice. `rusting new` prints a `Next:` line saying the first build takes minutes. The cold build itself is unchanged.
+- [x] F5, F23: plain `rusting test` prints each `log` step as `tick N: <value>`, pass or fail, and a failed scenario message ends with the last 20 lines of game stderr. Verification: `plain_output_lists_scenario_log_values_even_on_failure`.
+- [x] F6: no new shape; a dynamic `ConvexMesh` body on the `Cylinder` mesh is the barrel. It slid instead of rolling: `mesh_manifold` picked the body with fewer vertices, so an 8-vertex floor box beat the cylinder hull and the floor's far corners became contact points. It now picks the smaller body by half-extent length. Verification: `a_barrel_with_a_convex_cylinder_collider_rolls` (fails before the fix: no spin, stuck at x 1.33).
+- [x] F8: a missing counter warns once (done for 40,001). `counter_value` and `counter_complete` now take `&self` (a read-only `try_query`); the warn-once set is a process-wide static that feeds only warnings.
+- [x] F9: SKILL.md puts `parent` inside `entity` of a `create` op.
+- [x] F11: `PlayerController::turn_speed` (rad/s, default 0) turns the body's non-`Camera` children toward the horizontal `velocity` in a fixed-step `player_face` system after `player_move`. Verification: `a_player_with_a_turn_speed_faces_its_rig_where_it_walks` (rig yaw -90° walking +X, body yaw unchanged).
+- [x] F13: `scene.reparent(name, parent)` keeps the local transform; `scene.set_light(name, color, intensity, range)` changes a point or spot light. Verification: `reparent_and_set_light_move_and_dim_a_lantern`.
+- [x] F14, F19: `rusting determinism <root> --scenario <file>` replays a scenario in a debug and then a release build and compares the CPU state hash of every tick, plus GPU hashes when present (`data.divergence.state`). Scenario reports carry `state_hashes`. Each build prints a progress line to stderr. Evidence (2026-10-02): Lantern Keeper `tests/w6_replay.json` compared 520 ticks, all equal, in 66 s.
+- [x] F15: `rusting run --record FILE` and `--replay FILE` expose the existing input replay (`RUSTING_REPLAY_OUT`, `RUSTING_REPLAY_PLAY`). Game-code input injection is not added; a recorded run covers the replay need.
+- [x] F16: `slide` first casts down from one `bottom` above the body, so a body sunk into a walkable top by less than that is lifted onto it. Verification: `a_player_teleported_into_a_platform_stands_on_top_of_it` (fails without the cast).
+- [x] F17: the scenario `log` step already exists; SKILL.md now points to it from the `inspect` note.
+- [x] F18: the `counter_value` doc says counters are `i32`.
+- [x] F20: `BurstEmitter` gains `rate` (particles/s, every fixed step, fractional carry in `pending`), `area` (world-aligned start box, seeded per tick from a `burst_area` stream) and `stretch` (Y scale factor). Verification: `an_emitter_with_a_rate_rains_streaks_over_its_area`.
+- [x] F22: `rusting docs show api/PlayerController` is generated from the struct and field doc comments in `player.rs`; the undocumented fields got docs. Verification: `api_index_lists_documented_gameplay_methods`.
+- [x] F24: scenario `tap` step presses and releases before the next tick; SKILL.md explains the `pressed` edge. Verification: the tap case in the scenario press test.
+- [x] F25: a `capture` path whose first folder repeats the scenario's folder (`tests/` inside `tests/`) adds a warning with the written path.
+- [x] F26: SKILL.md says bodies solve in entity order and scenarios should assert robust values.
+
+## Dogfood track: Night Market
+
+Goal: fix the engine gaps that `RustingGames/night-market/FRICTION.md` (F1-F16) logs.
+
+- [x] F1: a headless egui pass (`rusting test`, `debug`, `RUSTING_HEADLESS_TICKS`) builds its `RawInput` from `RuntimeInput`: screen from the viewport, cursor, mouse button edges and key edges. Verification: `a_headless_pass_clicks_a_button_from_runtime_input` (mouse click, then Tab and Enter click the focused button).
+- [x] F2, F14: new `guide/menus-and-ui` page (main menu, pause, quit, keyboard focus, saves, rebinding, menu scenarios); `GameScene::set_paused` and `paused` wrap `TimeControl`. SKILL.md and the project AGENTS.md point to it.
+- [x] F3: `docs search` with no match prints "No matches for `<query>`" and the hint to use fewer words.
+- [x] F4: `GameScene::cursor`, `viewport_size`, `keys_pressed` and `rebind(action, keys)`.
+- [x] F5: a scenario sets the viewport to `capture_size` at tick 0. Verification: `pointer_steps_place_the_cursor_in_the_capture_sized_view`.
+- [ ] F6: first build time. Unchanged; `rusting new` already prints the note.
+- [x] F7: `GameScene::save_data`, `load_data`, `delete_data` in a per-game user data folder (`project::user_data_folder`, `RUSTING_USER_DATA` override; keys reject absolute paths and `..`), and `GameScene::quit` (window closes, headless run stops).
+- [x] F8: scenario `restart` step and top-level `files` (copied into a per-scenario user data folder, `build/test-userdata/<scenario>/`, emptied before each run). A relaunch step is skipped: `restart` plus `files` cover save tests.
+- [x] F9: `determinism --scenario` prints a verdict line with the number of ticks compared (the last 1024 the hash history keeps) and the final hash.
+- [x] F10: video settings. `GameScene::set_render_scale` (0.25 to 2.0; the scene renders into an offscreen image of that size, then a linear blit stretches it over the window or capture, and UI is painted after at full resolution; skipped when the device or swapchain cannot blit), `set_vsync`, `set_max_fps`, `set_fullscreen` (borderless, current monitor) and `set_window_size`, applied by the window runner after the frame. Verification: `a_half_render_scale_still_fills_the_whole_target` (gpu-tests, lavapipe), `video_settings_write_render_settings_and_the_window_request`, `scaled_extent_rounds_clamps_and_never_reaches_zero`; a 20 s Night Market window run on an RTX 3060 at scale 0.5 with a `set_window_size` and a scale change showed no errors. Fullscreen is real-hardware only and was not run.
+- [x] F11: scenario `click` step finds the topmost on-screen text with that label (from egui's output shapes) and clicks it; a miss lists the texts on screen. `rusting inspect --ui` is skipped: the failure lists the labels. Verification: `click_steps_press_egui_buttons_by_label_and_quit_ends_the_run`.
+- [x] F12: a failed check names the inputs that ran on its tick. Verification: `a_failed_check_names_inputs_that_ran_on_its_tick`.
+- [x] F13: gamepad input through gilrs 0.11 (owner approved; `window` feature). Every pad feeds `RuntimeInput`: `PadButton` buttons, two sticks, and stick directions as buttons (press past 0.5, release below 0.3). `InputBinding::Pad` and `Pad*` input names in `rusting.input_action`; the player controller binds the left stick, d-pad, South (jump) and LeftStick (sprint), and the right stick looks at 3 rad/s. egui menus: the d-pad or left stick focuses and moves the focus, South clicks, East is Escape. `GameScene::stick`, pad names in `keys_pressed`, scenario `left_stick` / `right_stick` steps. Verification: `pad_buttons_and_stick_directions_drive_actions`, `a_headless_pass_clicks_a_button_from_runtime_input` (d-pad then South), `pad_presses_and_stick_steps_reach_runtime_input`, `player_look_needs_captured_cursor_and_clamps_pitch` (right stick). Reading a physical pad is real-hardware only.
+- [x] F15: `GameScene::counters()` lists every counter for saves. Bulk creation stays a `once` loop.
+- [x] F16: the exported README.txt documents the user data folder, `RUSTING_USER_DATA`, `RUSTING_HEADLESS_TICKS` and `std::env::args()`; `lib.rs` re-exports `serde_json`. `rusting test --build <export>` is deferred.
+- [x] Also: `rusting doctor --probe` prints the probe result in text output, not only in JSON.
+  Full check, 2026-10-02, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 498 lib tests passed, 0 failed; `--features gpu-tests` 577 lib tests passed, 0 failed. All 7 Lantern Keeper scenarios pass with the engine push.
+
+## Dogfood track: Metronome Mines
+
+Goal: fix the engine gaps that `RustingGames/metronome-mines/FRICTION.md` (F1-F19) logs.
+
+- [x] F1: `CLI_OUTDATED` names the newest changed engine file, how much newer it is than the CLI binary, and the command `cargo install --path <engine> --locked`.
+- [x] F2, F3, F4: sounds belong to a fixed tick and start one fixed step after it (`Sound::at_tick` for a later tick), so music restarted each bar with `at_tick` stays on the beat; `BeatClock` (`tick_of`, `beat_at`, `is_beat`, `ticks_to_next`, `phase`, `beats_between`). An audio-position query is skipped: the start tick gives it. Verification: `beat_clock_lands_on_whole_ticks`, `the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`.
+- [x] F5: SKILL.md says game code sees `time.fixed_tick == N` on scenario tick N.
+- [x] F6: `GameScene::press_tick(action)` gives the press time in fractional ticks from the window event time. Verification: `press_tick_is_the_event_time_or_the_frame_tick`.
+- [x] F7: scenarios mix every sound through kira's own mixer offline (`OfflineBackend`); `audio:` reports `/level` and `/playing`, and top-level `audio_out` writes the mix as a WAV. Verification: `the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`.
+- [x] F8, F9: `play_sound_with(clip, Sound { pan, bus, position, .. })`, `set_sound_volume`, `set_bus_volume` with fades; positional sound pans to the camera's side and falls off as `2 / distance` past 2 m. New `guide/audio` page. Hearing it on speakers is real-hardware only and was not done.
+- [x] F10, F11: the HUD draws in PostUpdate, so a capture shows the tick's own text, and it no longer fades in; `GameScene::set_hud`. Verification: `hud_text_shows_the_counters_game_code_set_on_the_same_tick`.
+- [x] F12: the GPU hybrid solver damps spin by `5 * dt` per tick while a body touches something, so a spun body sleeps. Verification: `gpu_bodies_rest_on_cpu_colliders_unless_filtered_or_no_collision` (gpu-tests) now spins the box and asserts it sleeps; it fails without the damping.
+- [x] F13: `GameScene::load_text`; `rusting validate` reports `CODE_MISSING_ASSET` for a literal `load_text` or `play_sound*` path that is not a file under `assets/`. Verification: `literal_asset_paths_in_game_code_must_be_files`.
+- [x] F14: `GpuBodySettings::sync` and `GameScene::gpu_state(name)`; scenarios read the GPU pose under `/gpu_state`. Verification: `gpu_bodies_report_the_gpu_pose_under_gpu_state`.
+- [x] F15: patch `upsert` operation replaces the entity with the same `id` or `name` and keeps its id. Verification: `a_patch_of_upserts_runs_twice_and_keeps_ids`.
+- [x] F16: scenario reports copy state hashes after every tick, so `determinism --scenario` compares all ticks. Verification: `hashes_are_kept_past_the_world_history`.
+- [x] F17: an unknown enum variant lists the valid ones. Verification: the reflect enum test.
+- [x] F18: `GpuCondition`, `GpuFieldCondition` and `GpuStateField` are in the API docs.
+- [x] F19: `rusting asset import` reports `channels` for a WAV. Verification: the WAV import test asserts `Some(1)`.
+  Full check, 2026-10-03, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 515 lib tests passed, 0 failed; `--features gpu-tests` 595 lib tests passed, 0 failed. `rusting validate` is clean for 40,001, Lantern Keeper, Metronome Mines and Night Market.
+
+## Dogfood track: Split Signal
+
+Goal: fix the engine gaps that `RustingGames/split-signal/FRICTION.md` (F1-F22) logs.
+
+- [x] F1: `Camera.viewport` (`[x, y, width, height]` fractions); viewport cameras draw over the full-window camera, lower priority first; `GameScene::set_camera(name, active, viewport)`. Verification: `viewport_cameras_split_the_frame`, `viewport_cameras_draw_over_the_full_window_one_in_priority_order` (gpu-tests).
+- [x] F2, F3: `PlayerController.mouse_look` (false leaves the mouse free) and `camera_offset` (over-the-shoulder). Verification: `player_look_needs_captured_cursor_and_clamps_pitch`.
+- [x] F4: patch errors for a too-short array name the operation and the field path. Verification: `a_bad_field_in_a_created_entity_is_named_by_its_path`.
+- [x] F5, F6: patch `delete` takes `missing_ok`; `upsert` takes `merge: true` to keep fields left out. Verification: `delete_can_skip_a_missing_entity_and_upsert_can_merge`.
+- [x] F9: render scale is set from game code (video settings) and is no longer listed as a scene resource. Verification: `video_settings_write_render_settings_and_the_window_request`, `a_half_render_scale_still_fills_the_whole_target` (gpu-tests).
+- [x] F10, F11: `expect_screen` and `capture` take `camera`; `capture` takes `hud: false` and `golden` with `tolerance`; `rusting test --update-golden`; new `expect_pixels` step (region mean and luma deviation bounds); `rusting capture --no-hud`. Verification: `pixel_checks_goldens_and_named_cameras` (gpu-tests), `capture_steps_take_a_path_or_options`, `region_stats_and_golden_differences`, `screen_checks_see_a_mesh_in_front_of_a_camera_and_behind_a_wall`.
+- [x] F12: the perf report has `gpu_ms` and, with viewport cameras, `render.cameras` per camera, without a capture step. Verification: `the_gpu_flag_opens_the_device_without_a_capture_step`, `a_render_budget_reports_render_counters_without_a_capture`.
+- [x] F13: does not reproduce. `tools/perf_feeds.py` on 2026-10-03, RTX 3060: 2.37 ms per feed in debug, 2.21 ms with `--release`. No change.
+- [x] F14, F15: rotation order, `basis(name)` and `RayHit` fields are documented; `raycast_skipping` passes through chosen classes. Verification: `basis_forward_follows_the_rotation_order`.
+- [x] F16: a scenario `set` creates a missing counter, like game code. Verification: `counter_shorthand_sets_checks_and_logs_a_counter_by_name`.
+- [x] F17: an unknown expect path suggests the nearest real paths. Verification: `a_missing_path_suggests_the_nearest_real_ones`.
+- [x] F18: `rusting docs show` prints whole pages. Verification: `docs_lists_searches_shows_and_briefs_within_a_token_budget`.
+- [x] F19: new `guide/cameras` page (viewports, split screen, HUD per camera, camera tests, limits).
+- [x] F20: `rusting.hud` element `camera` anchors to that camera's viewport and hides while it is inactive. Verification: `hud_elements_follow_their_camera_viewport`.
+- [x] F22: the game AGENTS.md sample uses `time.delta_seconds()`.
+- [ ] F7 (render to texture), F8 (per-camera post effects), F21 (reuse builds across commands): deferred. `guide/cameras` lists F7 and F8 under Limits.
+  Bug found on the way: `skip_serializing_if` on `SceneCamera.viewport` broke cooked (bincode) scenes; removed, and `source_and_compiled_scene_decode_to_same_document` now cooks a viewport camera.
+  Full check, 2026-10-03, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 524 lib tests passed, 0 failed; `--features gpu-tests` 606 lib tests passed, 0 failed.
+
+## Dogfood track: update pass
+
+Goal: fix the engine friction the six-game update pass (RustingGames, 2026-10-03) logs.
+
+- [x] Conditions combine with `&` and `|` (`GpuCondition`). Verification: `docs` and `gpu_condition` lib tests.
+- [x] Game code: `name_of`, `has_class`, `binding`, `set_pixelated`. Verification: the `in_class("ember")` test in `project_runner`.
+- [x] `RenderSettings.pixelated` upscales a low render scale with nearest filtering. Verification: `a_half_render_scale_still_fills_the_whole_target` checks 4x4 blocks at 0.25 (gpu-tests).
+- [x] Scenario `click` takes `{text | starts_with, index}`; `index` counts in reading order. Verification: `find_text_where_picks_by_prefix_and_reading_order`.
+- [x] New `expect_file` step for save data, evaluated even after the game quits. Verification: the quit test in `scenario`.
+- [x] `press`/`tap` take a fractional `at`, recorded as the press tick. Verification: `a_press_at_a_fraction_records_that_press_tick`.
+- [x] The `audio:` entity reports `peak` and `clipped`. Verification: the audio mix test asserts both.
+- [x] `log` on a missing entity or path says so and suggests near paths; a missing `/gpu_state` names the sync modes that make it.
+- [x] Patches accept RGB colors and add alpha 1. Verification: `scene_patch` tests.
+- [x] `rusting asset import --dry-run` shows WAV channels. Verification: `asset_import` tests.
+- [x] `RUSTING_KEEP_GOING`, and `rusting determinism --scenario` keeps going past failed checks (forty F30).
+- [x] `--record` with `--ticks`, `--scenario` or `--replay`, and `--replay` with headless runs, fail with `CLI_USAGE` before the build; `--record` honours `--timeout`. Verification: `record_and_replay_mistakes_fail_before_the_build`.
+- [x] `rusting test` and plain output print `log:` lines and step warnings for every scenario.
+- [x] `AGENTS_OUTDATED` warns when a project's engine-written AGENTS.md differs from this engine's; `rusting fix` refreshes it and keeps `AGENTS.md.old` (metronome F24, split F28). Verification: `an_old_engine_agents_md_is_flagged_and_refreshed`.
+- [x] split F23 (w6_perf slower): does not reproduce. A/B raycast bench, 3600 rays, best of runs: current 4.874/4.904/4.922 ms, HEAD 4.888/4.861/4.882 ms. Slowdown was machine load.
+- [ ] Deferred: `expect_pixels` `differs_from`, counters design (night F15), skeletal animation, bulk GPU spawn, GPU body control and waking piles, render to texture, per-camera post effects, build caching, audio limiter, kill plane, `click` `right_of`, per-kind rebinding.
+  Full check, 2026-10-03, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 528 lib tests passed, 0 failed; `--features gpu-tests` 610 lib tests passed, 0 failed (one earlier GPU run failed in the lib tests while the machine was loaded; a rerun and the full run passed).
 
 ## Sundering track
 
@@ -2921,6 +3330,112 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - The match replays identically from its recorded input stream.
 - Performance baselines are recorded and enforced in CI.
 
+## Engine expansion track
+
+Milestones 30-35 cover areas a general-purpose engine needs that the Godot parity map does not own. They are parallel tracks after Milestone 9, subject to the dependencies at the top of each. Every feature here follows the LLM-native design rules: data-driven components with schema entries, a Rust API in the index, and scenario-testable behaviour. Items that need a new dependency say so and wait for the owner's approval.
+
+## Milestone 30: Gameplay framework
+
+Goal: the systems almost every game rebuilds are built in, inspectable, and deterministic.
+
+Depends on: Milestones 8 and 9.
+
+- [ ] Save games: versioned save files for selected components and resources, save slots, autosave, and migration of old saves across game versions, with a round-trip test per registered component.
+- [ ] State machines as data: states, transitions, guards on counters and events, and enter and exit actions, editable in the editor and checked by scenarios.
+- [ ] Behaviour trees and utility AI as data assets, with a deterministic tick order and a debugger view of the active branch.
+- [ ] Health, damage, teams, and status effects as optional registered components, built on the typed event bridge.
+- [ ] Inventory, items, and loot tables as data resources with seeded rolls.
+- [ ] Dialogue and quest graphs as data assets, with localization keys and a runtime UI hookup.
+- [ ] Timers, cooldowns, and a game clock with pause and time scale that never affect the fixed simulation step's determinism.
+- [ ] Spawners and object pools with capacity reporting (no silent drops).
+- [ ] Gamepad input with dead zones, rumble, and hot plug. Needs a gamepad backend dependency approved by the owner.
+
+### Exit gate
+
+- A sample RPG slice uses saves, dialogue, a quest, an inventory, and AI enemies with no custom framework code, and its scenarios load a save made by the previous engine version.
+
+## Milestone 31: Terrain, large worlds, and streaming
+
+Goal: build outdoor and open-world games, not only arenas.
+
+Depends on: Milestones 2, 4, and 10; Milestone 13 for foliage rendering.
+
+- [ ] General heightmap terrain with LOD, holes, splat-map materials, and physics collision; sculpt and paint tools in the editor.
+- [ ] Foliage and detail scattering by rules (slope, height, mask), linked to the Milestone 13 instancing item.
+- [ ] World partition: cells that load and unload by distance, with async asset loading and no hitch above a stated budget.
+- [ ] Large coordinates: origin rebasing or 64-bit world positions, documented and tested at 100 km from the origin.
+- [ ] Hierarchical LOD and impostors for distant cells.
+- [ ] Oceans and rivers built on the existing `rusting.water` buoyancy and waves.
+- [ ] Time of day and weather as scene settings driving sun, sky, fog, and wind fields.
+- [ ] Splines and paths as a shared component for roads, rails, rivers, and camera tracks.
+
+### Exit gate
+
+- A 16 km² open-world sample streams with no loading screens, keeps frame-time spikes within budget, and stays stable at the far corner (hardware gate for timing).
+
+## Milestone 32: Cinematics and media
+
+Goal: tell stories in the engine with cutscenes, camera work, and video.
+
+Depends on: Milestones 14, 15, and 16.
+
+- [ ] A sequencer timeline asset with tracks for transforms, animation, cameras, audio, events, and properties, played deterministically by fixed tick.
+- [ ] Camera rails, look-at targets, blends between cameras, and letterboxing, on the Milestone 31 splines.
+- [ ] Subtitles and captions tied to audio cues and localization.
+- [ ] Video playback to a texture and to the screen. Needs a decoder dependency approved by the owner.
+- [ ] In-game photo mode and trailer capture (fixed-step offline rendering to an image sequence at any resolution).
+
+### Exit gate
+
+- A cutscene plays identically in the editor, the game, and an offline render, and a scenario can skip it and check the state after it.
+
+## Milestone 33: Procedural content
+
+Goal: generate levels and content from seeds, as ordinary engine data that tools and agents can inspect.
+
+Depends on: Milestones 8 and 9.
+
+- [ ] Seeded noise, sampling, and random streams on the Milestone 8 stream rules, with results identical across platforms.
+- [ ] Generators as data assets: a graph or Rust function whose output is a normal scene or prefab, cached by seed and inputs, and regenerated on change.
+- [ ] Tile and grid generators: wave function collapse, rooms and corridors, and cellular automata, for tile maps and 3D grids.
+- [ ] Mesh generation helpers: extrusion along splines, lofting, and simple constructive solid geometry, with colliders.
+- [ ] Validation hooks so a generated level can be checked by invariants and the Milestone L5 explorer bot for reachability.
+
+### Exit gate
+
+- A roguelike sample generates a new, fully reachable level per seed, and the same seed gives the same level on every machine.
+
+## Milestone 34: Modding and user-generated content
+
+Goal: players can extend a shipped game safely.
+
+Depends on: Milestones 9, 21, and L8.
+
+- [ ] Mod packages: data assets, scenes, and WASM scripts in a versioned archive with a manifest, dependencies, and a load order.
+- [ ] Capability-based sandbox for mod scripts: a game declares which APIs mods may call.
+- [ ] Mod conflict reporting by asset and component field.
+- [ ] Reusable in-game level editor built from the editor's widgets and command layer, with undo.
+- [ ] Workshop and storefront hooks through the Milestone 21 platform services abstraction.
+
+### Exit gate
+
+- A sample game ships a mod that adds a level, an item, and a scripted enemy, and a malicious mod script cannot read files or reach the network.
+
+## Milestone 35: XR and additional input
+
+Goal: record and, where justified, deliver VR and new input devices.
+
+Depends on: Milestones 3, 4, and 21.
+
+- [ ] OpenXR support through Vulkan: stereo rendering, head and hand tracking, and controller actions in the action map. Needs owner approval for the loader dependency; record it as a post-1.0 decision if deferred.
+- [ ] Physics-based hand interaction (grabbing, throwing, pushing) built on the typed bridge.
+- [ ] Touch and pen input with gestures, shared with the Milestone 21 Android work.
+- [ ] Comfort options: snap turning, vignette, and seated mode.
+
+### Exit gate
+
+- A physics sandbox runs in a headset with stable frame timing and hand interaction (hardware gate), or the decision to defer XR past 1.0 is recorded with its blocking reasons.
+
 ## Continuous test and CI plan
 
 ### Unit tests
@@ -3033,6 +3548,15 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - [ ] Fully blocking every route is reported rather than producing stuck agents.
 - [ ] One-hour destruction soak test holds frame time, memory, and debris count within budget.
 
+### Agent-surface tests
+
+- [ ] Every diagnostic code is unique, registered, and has an `explain` entry with a tested example.
+- [ ] Every example in the schema catalog, API index, skill file, and generated `AGENTS.md` runs and passes.
+- [ ] The generated skill file and `AGENTS.md` match the current schema and API index.
+- [ ] JSON Schema files validate every scene, patch, and scenario in the repository.
+- [ ] Every sample passes `rusting lint`, its invariants, a 100-seed fuzz run, and the scenario strength check.
+- [ ] CLI, daemon, and MCP adapter return identical results for the same operation.
+
 ### CI matrix
 
 - [ ] Linux software Vulkan runner (lavapipe) running the `gpu-tests` feature on every pull request. This is the primary GPU verification path; hardware runners confirm it, they do not replace it.
@@ -3046,6 +3570,7 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - [ ] macOS (MoltenVK) runner.
 - [ ] Android build job.
 - [ ] Scheduled comparative physics benchmark job publishing its report as an artifact.
+- [ ] Scheduled agent benchmark job (Milestone L9) publishing its report as an artifact.
 
 ## Cross-cutting engineering rules
 
@@ -3064,6 +3589,9 @@ Goal: prove the whole stack with the smallest piece of the real game. Each slice
 - Anything that moves things — animation, particles, characters, vehicles, navigation obstacles, audio occlusion — integrates with physics through the typed bridge rather than a parallel ad-hoc simulation.
 - Physics features are judged against the best standalone physics engines, with benchmark evidence. Other features are judged against Godot parity.
 - Every user-facing feature ships with documentation and a demo scene in the same change or the next one.
+- Every user-facing feature is agent-ready when it lands: a schema entry with defaults, units and an example; a Rust API index entry; diagnostic codes for its errors; and a way to observe it in a scenario, trace, or capture.
+- Every error tells the reader what to do next. An error that only says what went wrong is incomplete.
+- Nothing in the engine calls an AI model. Agent support is tools, formats, and documentation that work offline and without any account.
 
 ## Recommended implementation order
 
@@ -3091,6 +3619,14 @@ Physics leadership and Godot parity (Milestones 8-23):
 15. In parallel, reach parity in advanced rendering, animation, audio, runtime UI, 2D, and navigation, integrating each with physics as it lands.
 16. Add networking with prediction and deterministic rollback.
 17. Grow editor parity, platforms/export, and documentation continuously, closing them out at the 1.0 release gate.
+
+LLM-native development (Milestones L1-L10), in parallel with the above and first while the current focus holds:
+
+- Machine-readable surface and diagnostic codes (L1), then observability (L3) and verification (L5), since these remove guesswork from every later task.
+- Start the agent benchmark (L9) as soon as L1 lands, with the tools that exist, so later milestones are measured from their first commit.
+- Then the generation-friendly API (L2), the daemon and editor bridge (L4), quality lints and recipes (L6, L7), the fast logic lane (L8), and large-project support (L10).
+
+Engine expansion (Milestones 30-35), after Milestone 9: gameplay framework (30) first, since every sample needs it; then terrain and large worlds (31), procedural content (33), cinematics (32), modding (34), and XR (35).
 
 Sundering (Milestones 24-29):
 

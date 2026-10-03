@@ -7,11 +7,12 @@
 //! - [`Tween`] animates one `Transform` property between two values with an
 //!   [`Easing`] curve, once, looping, or ping-ponging.
 //! - [`SoundCue`] sends a [`SoundEvent`] when its body starts touching
-//!   something or when game code calls [`SoundCue::trigger`]. The engine has
-//!   no audio output yet; a game plays the clip from the event with its own
-//!   audio crate.
+//!   something or when game code calls [`SoundCue::trigger`]. The runner
+//!   turns the event into an [`AudioQueue`](super::AudioQueue) request and
+//!   plays it; see `GameScene::play_sound` for sounds from game code.
 //! - [`BurstEmitter`] spawns short-lived [`BurstParticle`] entities that fly
 //!   out, fall, and shrink. Particles copy the emitter's `MeshRenderer`.
+//!   With a `rate` it emits every fixed step, across an `area` box.
 //! - [`HudElement`] draws a text label or button over the game view (with the
 //!   `ui` feature) and sends [`HudButtonPressed`] when a button is clicked.
 //!   `{name}` in its text shows the value of the [`Counter`] called `name`.
@@ -258,6 +259,17 @@ pub struct BurstEmitter {
     pub gravity: f32,
     /// Fire when this body's collider starts touching another one.
     pub on_collision: bool,
+    /// Particles per second emitted every fixed step while above 0, with
+    /// no trigger: rain, smoke, sparks.
+    pub rate: f32,
+    /// Half extents in metres of a world-aligned box around the emitter
+    /// where particles start; 0 starts them all at its center.
+    pub area: [f32; 3],
+    /// Height factor of each particle, so 8 makes a falling streak.
+    pub stretch: f32,
+    /// Carries the fraction of a particle `rate` has not emitted yet.
+    #[serde(skip)]
+    pub pending: f32,
     /// Set by [`BurstEmitter::trigger`]; the next fixed step fires and
     /// clears it.
     #[serde(skip)]
@@ -275,6 +287,10 @@ impl Default for BurstEmitter {
             particle_scale: 0.15,
             gravity: 9.81,
             on_collision: true,
+            rate: 0.0,
+            area: [0.0; 3],
+            stretch: 1.0,
+            pending: 0.0,
             triggered: false,
             touching: false,
         }
@@ -328,6 +344,9 @@ pub struct HudElement {
     /// Name of a [`Counter`] that must reach its target before this element
     /// shows.
     pub requires: Option<String>,
+    /// Name of a camera: the element anchors to that camera's viewport and
+    /// shows only while the camera is active.
+    pub camera: Option<String>,
 }
 
 impl Default for HudElement {
@@ -340,6 +359,7 @@ impl Default for HudElement {
             color: [1.0; 4],
             button: false,
             requires: None,
+            camera: None,
         }
     }
 }
@@ -780,15 +800,27 @@ type EmitterParts = (
     Entity,
 );
 
-/// Per fixed step: spawns particles for every triggered emitter.
+/// Per fixed step: spawns particles for every triggered emitter and for
+/// every emitter with a `rate`.
 pub(super) fn fire_bursts(
     mut commands: Commands,
     time: Res<FrameTime>,
     seed: Res<RandomSeed>,
     mut emitters: Query<EmitterParts>,
 ) {
+    let dt = time.fixed_delta.as_secs_f32();
     for (mut emitter, transform, global, id, mesh, entity) in &mut emitters {
-        if !std::mem::take(&mut emitter.triggered) {
+        let mut count = 0;
+        if std::mem::take(&mut emitter.triggered) {
+            count += u64::from(emitter.count);
+        }
+        if emitter.rate > 0.0 {
+            emitter.pending += emitter.rate * dt;
+            let whole = emitter.pending.floor();
+            emitter.pending -= whole;
+            count += whole as u64;
+        }
+        if count == 0 {
             continue;
         }
         let origin = global.map_or(transform.position, |global| {
@@ -802,8 +834,11 @@ pub(super) fn fire_bursts(
             (bits as u64) ^ ((bits >> 64) as u64)
         });
         let stream = RandomSeed::stream("bursts", key);
-        let scale = transform.scale.map(|axis| axis * emitter.particle_scale);
-        for index in 0..u64::from(emitter.count) {
+        let area = RandomSeed::stream("burst_area", key);
+        let mut scale =
+            transform.scale.map(|axis| axis * emitter.particle_scale);
+        scale[1] *= emitter.stretch;
+        for index in 0..count {
             let up = seed.unit(time.fixed_tick, stream ^ (index << 1));
             let turn = seed.unit(time.fixed_tick, stream ^ (index << 1 | 1));
             let side = (1.0 - up * up).sqrt();
@@ -817,8 +852,13 @@ pub(super) fn fire_bursts(
                 lifetime: emitter.lifetime,
                 scale,
             };
+            let position = std::array::from_fn(|axis| {
+                let unit = seed
+                    .unit(time.fixed_tick, area ^ (index * 3 + axis as u64));
+                origin[axis] + (unit * 2.0 - 1.0) * emitter.area[axis]
+            });
             let transform = Transform {
-                position: origin,
+                position,
                 scale,
                 ..Transform::default()
             };
@@ -861,6 +901,7 @@ pub(super) fn draw_hud(
     counters: Query<(&Counter, Option<&SceneId>)>,
     visibility: Query<&super::Visibility>,
     parents: Query<&super::Parent>,
+    cameras: Query<(&super::Name, &super::Camera)>,
 ) {
     // Hidden like a mesh: by itself or by any parent.
     let visible = |entity: Entity| {
@@ -883,6 +924,25 @@ pub(super) fn draw_hud(
                 continue;
             }
         }
+        let screen = ui.context().screen_rect();
+        let area = match &element.camera {
+            None => screen,
+            Some(wanted) => {
+                let Some((_, camera)) = cameras
+                    .iter()
+                    .find(|(name, camera)| name.0 == *wanted && camera.active)
+                else {
+                    continue;
+                };
+                match camera.viewport {
+                    Some([x, y, w, h]) => egui::Rect::from_min_size(
+                        screen.min + egui::vec2(x, y) * screen.size(),
+                        egui::vec2(w, h) * screen.size(),
+                    ),
+                    None => screen,
+                }
+            }
+        };
         let (align, inward) = match element.anchor {
             HudAnchor::TopLeft => (egui::Align2::LEFT_TOP, [1.0, 1.0]),
             HudAnchor::Top => (egui::Align2::CENTER_TOP, [1.0, 1.0]),
@@ -898,15 +958,34 @@ pub(super) fn draw_hud(
             element.offset[0] * inward[0],
             element.offset[1] * inward[1],
         );
+        let [r, g, b, a] =
+            element.color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
+        let text =
+            egui::RichText::new(hud_text(&element.text, counters.iter()))
+                .size(element.font_size)
+                .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
+        // Measure this frame's text: an anchored egui area places itself by
+        // last frame's size, so a value that grew ran past the edge.
+        let context = ui.context();
+        let galley = egui::WidgetText::from(text.clone()).into_galley_impl(
+            context,
+            &context.style(),
+            egui::text::TextWrapping::no_max_width(),
+            egui::FontSelection::Default,
+            egui::Align::LEFT,
+        );
+        let padding = if element.button {
+            2.0 * context.style().spacing.button_padding
+        } else {
+            egui::Vec2::ZERO
+        };
+        let point = align.pos_in_rect(&area) + offset;
+        let position = align.anchor_size(point, galley.size() + padding).min;
+        // No fade-in: an element shown for a few ticks would stay faint.
         egui::Area::new(egui::Id::new(("rusting.hud", entity)))
-            .anchor(align, offset)
-            .show(ui.context(), |ui| {
-                let [r, g, b, a] =
-                    element.color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
-                let text = hud_text(&element.text, counters.iter());
-                let text = egui::RichText::new(text)
-                    .size(element.font_size)
-                    .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
+            .fixed_pos(position)
+            .fade_in(false)
+            .show(context, |ui| {
                 if element.button {
                     if ui.button(text).clicked() {
                         pressed.send(HudButtonPressed { entity });

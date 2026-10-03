@@ -335,9 +335,13 @@ so a game that uses actions is testable without a keyboard.
 - `rusting determinism <project>` checks that debug, release, and one-CPU
   builds produce the same simulation, tick by tick.
 
-GPU bodies do not move in headless runs, because no renderer runs their
-compute shaders. A headless run warns when the loaded scene has GPU bodies;
-bodies that game code moves to the GPU later are not counted.
+GPU bodies do not move in `rusting run --ticks`, because no renderer runs
+their compute shaders. A headless run warns when the loaded scene has GPU
+bodies; bodies that game code moves to the GPU later are not counted.
+`rusting test` runs them when the scenario sets `"gpu": true` or has a
+`capture` step, because either opens the headless Vulkan device; software
+Vulkan (lavapipe) works but is slow. Without both, a scenario's GPU bodies
+stay where they spawned.
 
 ## Determinism
 

@@ -29,12 +29,57 @@ fn help_for(command: &[String]) -> String {
         "project" => "project inspect",
         "scene" => "scene inspect",
         "asset" => "asset import",
+        "add" => "add scenario",
         "preset" => "preset apply",
         topic => topic,
     };
     match OPERATIONS.iter().find(|operation| operation.name == topic) {
         Some(operation) => format!("{}\n{}\n", help(), operation.summary),
         None => help(),
+    }
+}
+
+/// Matches `rusting docs search` shows when `--limit` is left out.
+const DOCS_SEARCH_LIMIT: usize = 10;
+
+/// Token budget `rusting docs` uses when `--budget` is left out.
+const DOCS_BUDGET: usize = 2000;
+
+fn docs_command(args: &[&str]) -> CliResult {
+    let mut words = Vec::new();
+    let mut budget = None;
+    let mut brief = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--brief" => brief = true,
+            "--budget" => match args.next().and_then(|n| n.parse().ok()) {
+                Some(tokens) if tokens > 0 => budget = Some(tokens),
+                _ => return usage("--budget takes a token count above 0"),
+            },
+            flag if flag.starts_with("--") => {
+                return usage(format!("unknown docs flag `{flag}`"))
+            }
+            word => words.push(word),
+        }
+    }
+    let budget_or = |default| budget.unwrap_or(default);
+    match words.as_slice() {
+        [] if brief => {
+            cli::docs(cli::DocsAction::Brief(budget_or(DOCS_BUDGET)))
+        }
+        [] if budget.is_some() => {
+            usage("--budget needs `--brief` or `show <id>`")
+        }
+        [] => cli::docs(cli::DocsAction::List),
+        ["search", query @ ..] if !query.is_empty() && !brief => {
+            cli::docs(cli::DocsAction::Search(&query.join(" "), usize::MAX))
+        }
+        ["show", id] if !brief => {
+            // Whole page unless `--budget` asks for less.
+            cli::docs(cli::DocsAction::Show(id, budget_or(usize::MAX)))
+        }
+        _ => usage("docs takes `--brief`, `search <words>` or `show <id>`"),
     }
 }
 
@@ -47,13 +92,17 @@ fn usage(message: impl Into<String>) -> CliResult {
 fn default_root(mut args: Vec<&str>) -> Vec<&str> {
     const COMMANDS: &[(&[&str], usize)] = &[
         (&["check"], 0),
+        (&["inspect"], 0),
         (&["validate"], 0),
         (&["cook"], 0),
+        (&["fix"], 0),
         (&["run"], 0),
         (&["determinism"], 0),
         (&["project", "inspect"], 0),
         (&["asset", "list"], 0),
         (&["test"], 1),
+        (&["add", "scenario"], 1),
+        (&["add", "system"], 1),
     ];
     for (command, extra) in COMMANDS {
         if !args.starts_with(command) {
@@ -87,7 +136,11 @@ fn execute(args: &[String]) -> CliResult {
             .collect(),
     );
     match positional.as_slice() {
-        ["doctor"] => cli::doctor(),
+        ["--version" | "-V" | "version"] => cli::CliResult::success(
+            serde_json::json!({"engine_version": env!("CARGO_PKG_VERSION")}),
+        ),
+        ["doctor"] => cli::doctor(false),
+        ["doctor", "--probe"] => cli::doctor(true),
         ["new", parent, name] => {
             cli::new_project(Path::new(parent), name, ProjectTemplate::Basic3d)
         }
@@ -103,6 +156,7 @@ fn execute(args: &[String]) -> CliResult {
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
         ["scene", "inspect", scene] => cli::inspect_scene(Path::new(scene)),
+        ["scene", "map", scene] => cli::map_scene(Path::new(scene)),
         ["scene", "query", scene] => {
             cli::query_scene(Path::new(scene), &SceneFilter::All)
         }
@@ -133,13 +187,59 @@ fn execute(args: &[String]) -> CliResult {
         ["determinism", root] => {
             cli::check_game_determinism(Path::new(root), 600)
         }
+        ["determinism", root, "--gpu", scenario] => {
+            cli::check_scenario_determinism(
+                Path::new(root),
+                Path::new(scenario),
+                true,
+            )
+        }
+        ["determinism", root, "--scenario", scenario] => {
+            cli::check_scenario_determinism(
+                Path::new(root),
+                Path::new(scenario),
+                false,
+            )
+        }
         ["determinism", root, "--ticks", ticks] => match ticks.parse() {
             Ok(ticks) => cli::check_game_determinism(Path::new(root), ticks),
             Err(_) => usage("--ticks requires a tick count"),
         },
         ["validate", root] => cli::validate_project(Path::new(root)),
         ["cook", root] => cli::cook_project(Path::new(root)),
+        ["add", "scenario", root, name] => {
+            cli::add_scenario(Path::new(root), name)
+        }
+        ["add", "system", root, name] => cli::add_system(Path::new(root), name),
+        ["diff", before, after] => {
+            cli::diff_scenes(Path::new(before), Path::new(after))
+        }
+        ["fix", root] => cli::fix_project(Path::new(root), false),
+        ["fix", root, "--dry-run"] | ["fix", "--dry-run", root] => {
+            cli::fix_project(Path::new(root), true)
+        }
+        ["docs", rest @ ..] => docs_command(rest),
+        ["explain"] => cli::explain(None),
+        ["explain", code] => cli::explain(Some(code)),
+        ["schema", "--json-schema"] => {
+            CliResult::success(rusting_engine::schema::json_schemas())
+        }
         ["schema"] => CliResult::success(rusting_engine::schema::catalog()),
+        ["inspect", root, flags @ ..] => {
+            let (mut tick, mut entities) = (None, Vec::new());
+            let mut flags = flags.iter();
+            while let Some(flag) = flags.next() {
+                match (*flag, flags.next()) {
+                    ("--tick", Some(value)) => tick = value.parse().ok(),
+                    ("--entity", Some(value)) => entities.push(value.to_string()),
+                    _ => return usage("inspect takes --tick N and --entity NAME"),
+                }
+            }
+            match tick {
+                Some(tick) => cli::inspect_tick(Path::new(root), tick, &entities),
+                None => usage("inspect requires --tick N"),
+            }
+        }
         ["check", root] => cli::check_project(Path::new(root)),
         ["run", root, flags @ ..] | ["test", root, _, flags @ ..] => {
             let mut options = cli::RunOptions::default();
@@ -156,6 +256,7 @@ fn execute(args: &[String]) -> CliResult {
             while let Some(flag) = flags.next() {
                 match *flag {
                     "--release" => options.release = true,
+                    "--update-golden" => options.update_golden = true,
                     "--ticks" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
                         _ => return usage("--ticks requires a tick count"),
@@ -166,6 +267,14 @@ fn execute(args: &[String]) -> CliResult {
                                 Some(Duration::from_secs_f64(seconds));
                         }
                         _ => return usage("--timeout requires seconds"),
+                    },
+                    "--record" => match flags.next() {
+                        Some(path) => options.record = Some(path.into()),
+                        _ => return usage("--record requires a file"),
+                    },
+                    "--replay" => match flags.next() {
+                        Some(path) => options.replay = Some(path.into()),
+                        _ => return usage("--replay requires a file"),
                     },
                     _ => return usage(format!("unknown run flag `{flag}`")),
                 }
@@ -189,11 +298,25 @@ fn execute(args: &[String]) -> CliResult {
             )
         }
         ["preset", "list"] => cli::list_presets(),
-        ["preset", "apply", scene, name] => {
-            cli::apply_preset(Path::new(scene), name, false)
-        }
-        ["preset", "apply", scene, name, "--dry-run"] => {
-            cli::apply_preset(Path::new(scene), name, true)
+        ["preset", "apply", scene, name, flags @ ..] => {
+            let mut only = Vec::new();
+            let mut dry_run = false;
+            let mut flags = flags.iter();
+            let mut bad = None;
+            while let Some(flag) = flags.next() {
+                match (*flag, flags.clone().next()) {
+                    ("--dry-run", _) => dry_run = true,
+                    ("--only", Some(scopes)) => {
+                        only.extend(scopes.split(','));
+                        flags.next();
+                    }
+                    _ => bad = Some(*flag),
+                }
+            }
+            match bad {
+                Some(flag) => usage(format!("unknown `preset apply` flag `{flag}`")),
+                None => cli::apply_preset(Path::new(scene), name, &only, dry_run),
+            }
         }
         ["asset", "list", root] => cli::list_assets(Path::new(root)),
         ["asset", action @ ("import" | "reimport"), root, target, flags @ ..] =>
@@ -276,6 +399,8 @@ fn execute(args: &[String]) -> CliResult {
                 extent: [1280, 720],
                 output: (*output).into(),
                 picks: Vec::new(),
+                pick_rects: Vec::new(),
+                hud: true,
             };
             let pair = |value: &str, separator| {
                 let (a, b) = value.split_once(separator)?;
@@ -283,6 +408,10 @@ fn execute(args: &[String]) -> CliResult {
             };
             let mut flags = flags.iter();
             while let Some(flag) = flags.next() {
+                if *flag == "--no-hud" {
+                    options.hud = false;
+                    continue;
+                }
                 let value = flags.next().copied();
                 match (*flag, value) {
                     ("--camera", Some(camera)) => {
@@ -302,6 +431,16 @@ fn execute(args: &[String]) -> CliResult {
                         Some(pixel) => options.picks.push(pixel),
                         None => return usage("--pick requires X,Y"),
                     },
+                    ("--pick-rect", Some(rect)) => {
+                        let parts: Vec<u32> =
+                            rect.split(',').filter_map(|v| v.parse().ok()).collect();
+                        match parts[..] {
+                            [x, y, w, h] if rect.split(',').count() == 4 => {
+                                options.pick_rects.push([x, y, w, h]);
+                            }
+                            _ => return usage("--pick-rect requires X,Y,W,H"),
+                        }
+                    }
                     _ => {
                         return usage(format!(
                             "unknown or incomplete capture flag `{flag}`"
@@ -331,9 +470,30 @@ fn render_human(result: &CliResult) -> String {
             run["message"].as_str().unwrap_or("")
         ));
     }
+    // Scenario `log` steps and step warnings, one line each, pass or fail.
+    for step in result.data["scenario"]["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(
+            result.data["scenarios"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|run| run["logs"].as_array())
+                .flatten(),
+        )
+    {
+        let message = step["message"].as_str().unwrap_or("");
+        if let Some(log) = message.strip_prefix("log: ") {
+            lines.push(format!("tick {}: {log}", step["tick"]));
+        } else if message.contains("; warning: ") {
+            lines.push(format!("tick {}: {message}", step["tick"]));
+        }
+    }
     if result.ok {
         let data = &result.data;
-        if let Some(version) = data.get("engine_version") {
+        if let Some(version) = data["engine_version"].as_str() {
             lines.push(format!("RustingEngine {version}"));
         }
         if let Some(root) = data.get("root").and_then(|v| v.as_str()) {
@@ -369,6 +529,22 @@ fn render_human(result: &CliResult) -> String {
                     "{} {}",
                     entity["id"].as_str().unwrap_or("?"),
                     entity["name"].as_str().unwrap_or("(unnamed)")
+                ));
+            }
+        }
+        if let Some(fixes) = data.get("fixes").and_then(|v| v.as_array()) {
+            let verb = if data["dry_run"] == true {
+                "Would fix"
+            } else {
+                "Fixed"
+            };
+            if fixes.is_empty() {
+                lines.push("No fixes needed.".to_owned());
+            }
+            for fix in fixes {
+                lines.push(format!(
+                    "{verb}: {}",
+                    fix["message"].as_str().unwrap_or("?")
                 ));
             }
         }
@@ -465,6 +641,12 @@ fn render_human(result: &CliResult) -> String {
         if let Some(output) = data.get("output").and_then(|v| v.as_str()) {
             lines.push(format!("Output: {output}"));
         }
+        if let Some(verdict) = data.get("verdict").and_then(|v| v.as_str()) {
+            lines.push(verdict.to_owned());
+        }
+        if let Some(next) = data.get("next").and_then(|v| v.as_str()) {
+            lines.push(format!("Next: {next}"));
+        }
         if let Some(vulkan) = data.get("vulkan") {
             lines.push(format!("Vulkan available: {}", vulkan["available"]));
             if let Some(devices) = vulkan["devices"].as_array() {
@@ -475,6 +657,18 @@ fn render_human(result: &CliResult) -> String {
                     ));
                 }
             }
+        }
+        if let Some(probe) = data.get("probe").filter(|probe| !probe.is_null())
+        {
+            lines.push(match probe["selected_device"].as_str() {
+                Some(device) if probe["ok"] == true => {
+                    format!("Probe: ok, a test buffer round-trips on {device}")
+                }
+                _ => format!(
+                    "Probe: FAILED: {}",
+                    probe["error"].as_str().unwrap_or("unknown error")
+                ),
+            });
         }
         if let Some(tools) = data.get("build_tools").and_then(|v| v.as_object())
         {
@@ -503,8 +697,20 @@ fn render_human(result: &CliResult) -> String {
             .flatten()
             .chain(data.get("asset"))
         {
+            // WAV only: sample rate, channels and length.
+            let sound = asset["channels"].as_u64().map_or(String::new(), |n| {
+                let channels = match n {
+                    1 => "mono".to_owned(),
+                    2 => "stereo".to_owned(),
+                    n => format!("{n} channels"),
+                };
+                format!(
+                    ", {} Hz, {channels}, {} ms",
+                    asset["size"][0], asset["size"][1]
+                )
+            });
             lines.push(format!(
-                "Asset: {} ({}, license {}){}",
+                "Asset: {} ({}, license {}{sound}){}",
                 asset["path"].as_str().unwrap_or("?"),
                 asset["id"].as_str().unwrap_or("?"),
                 asset["source"]["license"].as_str().unwrap_or("none"),
@@ -524,42 +730,421 @@ fn render_human(result: &CliResult) -> String {
                 ));
             }
         }
+        if let Some(code) = data.get("code").and_then(|v| v.as_str()) {
+            lines.push(format!(
+                "{code}: {}",
+                data["summary"].as_str().unwrap_or("")
+            ));
+            lines.push(format!("Fix: {}", data["fix"].as_str().unwrap_or("")));
+            lines.push(format!(
+                "Example: {}",
+                data["example"].as_str().unwrap_or("")
+            ));
+        }
+        if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
+            lines.push(text.trim_end().to_owned());
+        }
+        for item in data
+            .get("items")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            lines.push(format!(
+                "{}  {}",
+                item["id"].as_str().unwrap_or(""),
+                item["title"].as_str().unwrap_or("")
+            ));
+        }
+        for hit in data
+            .get("matches")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            lines.push(format!(
+                "{}  {}",
+                hit["id"].as_str().unwrap_or(""),
+                hit["snippet"].as_str().unwrap_or("")
+            ));
+        }
+        if let Some(more) = data["omitted"]["matches"].as_u64() {
+            lines.push(format!("... {more} more; add `--limit N` to see them"));
+        }
+        for info in data
+            .get("codes")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            lines.push(format!(
+                "{}  {}",
+                info["code"].as_str().unwrap_or(""),
+                info["summary"].as_str().unwrap_or("")
+            ));
+        }
         if lines.is_empty() {
             lines.push("OK".to_owned());
         }
     }
     for diagnostic in &result.diagnostics {
+        let mut place = diagnostic
+            .file
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        for number in [diagnostic.line, diagnostic.column].into_iter().flatten()
+        {
+            place = format!("{place}:{number}");
+        }
+        if let Some(pointer) = &diagnostic.scene_location {
+            place = format!("{place} at {pointer}");
+        }
+        if let Some(entity) = &diagnostic.entity {
+            place = match &entity.name {
+                Some(name) => format!("{place}, object `{name}` {}", entity.id),
+                None => format!("{place}, object {}", entity.id),
+            };
+        }
+        let place = place.trim_start_matches([',', ' ']);
         lines.push(format!(
             "{} [{}]: {}{}",
             diagnostic.severity,
             diagnostic.code,
             diagnostic.message,
-            diagnostic
-                .file
-                .as_ref()
-                .map(|path| format!(" ({})", path.display()))
-                .unwrap_or_default()
+            if place.is_empty() {
+                String::new()
+            } else {
+                format!(" ({place})")
+            }
+        ));
+    }
+    let fixable = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.fix.is_some())
+        .count();
+    if fixable > 0 {
+        lines.push(format!(
+            "Run `rusting fix --dry-run` to preview {fixable} certain fix(es), then `rusting fix` to apply them."
+        ));
+    }
+    if let Some(diagnostic) = result
+        .diagnostics
+        .iter()
+        .find(|d| d.severity == "error" && d.code != "CLI_USAGE")
+    {
+        lines.push(format!(
+            "Run `rusting explain {}` for the cause and a fix.",
+            diagnostic.code
         ));
     }
     lines.join("\n")
 }
 
+/// Removes `--limit N`, `--fields a,b` and `--summary` from the arguments.
+fn take_shape(args: Vec<String>) -> Result<(Vec<String>, cli::Shape), String> {
+    let mut shape = cli::Shape::default();
+    let mut rest = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--limit" => match args.next().and_then(|n| n.parse().ok()) {
+                Some(limit) => shape.limit = Some(limit),
+                None => return Err("--limit takes an item count".into()),
+            },
+            "--fields" => match args.next() {
+                Some(fields) => {
+                    shape.fields =
+                        Some(fields.split(',').map(str::to_owned).collect());
+                }
+                None => return Err("--fields takes a comma list".into()),
+            },
+            "--summary" => shape.summary = true,
+            _ => rest.push(arg),
+        }
+    }
+    // Search finds every match; show the best ten unless `--limit` says.
+    if rest.len() >= 2 && rest[0] == "docs" && rest[1] == "search" {
+        shape.limit.get_or_insert(DOCS_SEARCH_LIMIT);
+    }
+    Ok((rest, shape))
+}
+
+/// The `--json` form of a result: the envelope plus the size of `data`, so
+/// a caller can decide whether to ask for more.
+fn envelope(result: &CliResult, args: &[String]) -> serde_json::Value {
+    let mut value =
+        serde_json::to_value(result).expect("serializable CLI result");
+    let bytes = value["data"].to_string().len();
+    value["touched"] = rusting_engine::schema::touched(args, result.ok);
+    value["size"] = serde_json::json!({
+        "data_bytes": bytes,
+        "data_tokens": bytes.div_ceil(4),
+    });
+    value
+}
+
+/// One JSON-RPC request line: `method` is the command words and `params`
+/// (an array, or `{"args": [...]}`) the rest of its arguments, as on the
+/// command line. The result is the same envelope as `--json`.
+fn serve_request(line: &str) -> (serde_json::Value, bool) {
+    use serde_json::{json, Value};
+    let error = |id: Value, code: i32, message: &str| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}});
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return (error(Value::Null, -32700, "parse error"), false);
+    };
+    let id = request["id"].clone();
+    let Some(method) = request["method"].as_str() else {
+        return (
+            error(id, -32600, "invalid request: method is required"),
+            false,
+        );
+    };
+    if method == "shutdown" {
+        return (json!({"jsonrpc": "2.0", "id": id, "result": null}), true);
+    }
+    let params = match &request["params"] {
+        Value::Null => Some(&[][..]),
+        Value::Array(items) => Some(items.as_slice()),
+        other => other["args"].as_array().map(Vec::as_slice),
+    };
+    let strings: Option<Vec<String>> = params.and_then(|items| {
+        items
+            .iter()
+            .map(|v| v.as_str().map(str::to_owned))
+            .collect()
+    });
+    let Some(strings) = strings else {
+        return (
+            error(id, -32602, "params must be an array of strings"),
+            false,
+        );
+    };
+    let mut args: Vec<String> =
+        method.split_whitespace().map(str::to_owned).collect();
+    args.extend(strings);
+    if args.first().is_none_or(|first| first == "serve") {
+        return (error(id, -32601, "method not found"), false);
+    }
+    let outcome = std::panic::catch_unwind(|| {
+        let (args, shape) = take_shape(args)?;
+        let mut result = execute(&args);
+        shape.apply(&mut result.data);
+        Ok::<_, String>(envelope(&result, &args))
+    });
+    let reply = match outcome {
+        Ok(Ok(result)) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Ok(Err(message)) => error(id, -32602, &message),
+        Err(_) => error(id, -32603, "the operation panicked"),
+    };
+    (reply, false)
+}
+
+/// `rusting serve`: reads one JSON-RPC request per line from stdin and
+/// writes one response per line to stdout until `shutdown` or end of input.
+fn serve() {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (reply, stop) = serve_request(&line);
+        if writeln!(stdout, "{reply}")
+            .and_then(|()| stdout.flush())
+            .is_err()
+            || stop
+        {
+            break;
+        }
+    }
+}
+
+/// One MCP request line. Notifications (no `id`) get no reply. `tools/call`
+/// runs through `serve_request`, so a tool gives the CLI's envelope.
+fn mcp_request(line: &str) -> Option<serde_json::Value> {
+    use serde_json::{json, Value};
+    let reply = |id: &Value, result: Value| {
+        Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+    };
+    let fail = |id: &Value, code: i32, message: &str| {
+        Some(
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
+        )
+    };
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return fail(&Value::Null, -32700, "parse error");
+    };
+    let id = &request["id"];
+    if id.is_null() {
+        return None;
+    }
+    match request["method"].as_str() {
+        Some("initialize") => reply(
+            id,
+            json!({
+                "protocolVersion": request["params"]["protocolVersion"]
+                    .as_str()
+                    .unwrap_or("2024-11-05"),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "rusting", "version": env!("CARGO_PKG_VERSION")},
+            }),
+        ),
+        Some("ping") => reply(id, json!({})),
+        Some("tools/list") => {
+            let tools: Vec<Value> = OPERATIONS
+                .iter()
+                .filter(|op| !matches!(op.name, "serve" | "debug" | "mcp"))
+                .map(|op| {
+                    json!({
+                        "name": op.name.replace(' ', "_"),
+                        "description": format!("rusting {}\n{}", op.usage, op.summary),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"args": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Arguments after the command words, as on the command line. Paths are relative to the project root.",
+                            }},
+                        },
+                        "annotations": {
+                            "readOnlyHint": rusting_engine::schema::READ_ONLY.contains(&op.name),
+                        },
+                    })
+                })
+                .collect();
+            reply(id, json!({"tools": tools}))
+        }
+        Some("tools/call") => {
+            let params = &request["params"];
+            let name = params["name"].as_str().unwrap_or_default();
+            let Some(op) = OPERATIONS
+                .iter()
+                .find(|op| op.name.replace(' ', "_") == name)
+                .filter(|op| !matches!(op.name, "serve" | "debug" | "mcp"))
+            else {
+                return fail(id, -32602, "unknown tool");
+            };
+            let args = params["arguments"]["args"].clone();
+            let escapes = args.as_array().is_some_and(|items| {
+                items.iter().filter_map(Value::as_str).any(|arg| {
+                    let path = Path::new(arg);
+                    path.is_absolute()
+                        || path.components().any(|c| {
+                            matches!(c, std::path::Component::ParentDir)
+                        })
+                })
+            });
+            if escapes {
+                return fail(
+                    id,
+                    -32602,
+                    "paths must stay inside the project root",
+                );
+            }
+            let call = json!({"id": 1, "method": op.name, "params": if args.is_null() { json!([]) } else { args }});
+            let (inner, _) = serve_request(&call.to_string());
+            match inner.get("result") {
+                Some(result) => reply(
+                    id,
+                    json!({
+                        "content": [{"type": "text", "text": result.to_string()}],
+                        "isError": !result["ok"].as_bool().unwrap_or(false),
+                    }),
+                ),
+                None => Some(
+                    json!({"jsonrpc": "2.0", "id": id, "error": inner["error"]}),
+                ),
+            }
+        }
+        _ => fail(id, -32601, "method not found"),
+    }
+}
+
+/// `rusting mcp [root]`: Model Context Protocol over stdio, scoped to the
+/// project root (the working directory becomes `root`).
+fn mcp(root: &str) {
+    use std::io::{BufRead, Write};
+    if std::env::set_current_dir(root).is_err() {
+        eprintln!("cannot enter {root}");
+        std::process::exit(1);
+    }
+    let mut stdout = std::io::stdout();
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(reply) = mcp_request(&line) {
+            if writeln!(stdout, "{reply}")
+                .and_then(|()| stdout.flush())
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+}
+
+/// Writes a line to standard output. A closed pipe (`rusting ... | head`)
+/// ends the output quietly instead of panicking like `println!`.
+fn print_line(text: impl std::fmt::Display) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{text}");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "mcp")
+        && !args.iter().any(|arg| arg == "--help" || arg == "-h")
+    {
+        mcp(args.get(1).map_or(".", String::as_str));
+        return;
+    }
+    if args == ["serve"] {
+        serve();
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "debug")
+        && !args.iter().any(|arg| arg == "--help" || arg == "-h")
+    {
+        // Standard output belongs to the game's line protocol.
+        let root = args.get(1).map_or(".", String::as_str);
+        let result = cli::debug_game_project(Path::new(root));
+        if !result.ok {
+            eprintln!("{}", envelope(&result, &args));
+        }
+        std::process::exit(result.exit_code());
+    }
     if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h")
     {
-        print!("{}", help_for(&args));
+        print_line(help_for(&args).trim_end());
         return;
     }
     let json = args.iter().any(|arg| arg == "--json");
-    let result = execute(&args);
+    let (args, shape) = match take_shape(args) {
+        Ok(taken) => taken,
+        Err(message) => {
+            let result = usage(message);
+            if json {
+                print_line(
+                    serde_json::to_string(&result).expect("serializable"),
+                );
+            } else {
+                eprintln!("{}", render_human(&result));
+            }
+            std::process::exit(result.exit_code());
+        }
+    };
+    let mut result = execute(&args);
+    shape.apply(&mut result.data);
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&result).expect("serializable CLI result")
-        );
+        print_line(envelope(&result, &args));
     } else if result.ok {
-        println!("{}", render_human(&result));
+        print_line(render_human(&result));
     } else {
         eprintln!("{}", render_human(&result));
     }
@@ -569,6 +1154,45 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_lists_tools_and_calls_them_like_the_cli() {
+        use serde_json::{json, Value};
+        let init = mcp_request(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(init["result"]["serverInfo"]["name"], "rusting");
+        assert!(mcp_request(
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        )
+        .is_none());
+        let list =
+            mcp_request(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+                .unwrap();
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let tool =
+            |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(tool("scene_query")["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool("scene_patch")["annotations"]["readOnlyHint"], false);
+        assert!(tools.iter().all(|t| !matches!(
+            t["name"].as_str(),
+            Some("serve" | "debug" | "mcp")
+        )));
+        let call = |args: Value| {
+            let line = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{"args":args}}});
+            mcp_request(&line.to_string()).unwrap()
+        };
+        let ok = call(json!(["--json"]));
+        let text: Value = serde_json::from_str(
+            ok["result"]["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(text["ok"], true);
+        assert_eq!(ok["result"]["isError"], false);
+        assert_eq!(call(json!(["../x"]))["error"]["code"], -32602);
+        assert_eq!(call(json!(["/etc"]))["error"]["code"], -32602);
+    }
 
     #[test]
     fn usage_has_json_error_and_exit_code() {
@@ -584,6 +1208,42 @@ mod tests {
         let value = serde_json::to_value(&result).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["diagnostics"][0]["code"], "CLI_USAGE");
+    }
+
+    #[test]
+    fn explain_describes_a_code_and_suggests_similar_ones_for_a_typo() {
+        let args = |list: &[&str]| -> Vec<String> {
+            list.iter().map(|arg| (*arg).to_owned()).collect()
+        };
+        let known = execute(&args(&["explain", "scene_conflict"]));
+        assert!(known.ok);
+        assert_eq!(known.data["code"], "SCENE_CONFLICT");
+        assert!(render_human(&known).contains("Fix: "));
+        let listed = execute(&args(&["explain"]));
+        assert_eq!(
+            listed.data["codes"].as_array().unwrap().len(),
+            rusting_engine::diagnostics::CODES.len()
+        );
+        let typo = execute(&args(&["explain", "scene_conflicts"]));
+        assert_eq!(typo.exit_code(), 2);
+        assert!(typo.diagnostics[0].message.contains("SCENE_CONFLICT,"));
+        // A failed command points at `explain` for its first error.
+        let failed = CliResult::failure("SCENE_IO", "missing", None);
+        assert!(render_human(&failed).ends_with(
+            "Run `rusting explain SCENE_IO` for the cause and a fix."
+        ));
+    }
+
+    #[test]
+    fn plain_output_lists_scenario_log_values_even_on_failure() {
+        let mut failed = CliResult::failure("SCENARIO_FAILED", "tick 9", None);
+        failed.data = serde_json::json!({"scenario": {"steps": [
+            {"tick": 3, "message": "log: Player /transform is [1, 2, 3]"},
+            {"tick": 4, "message": "pressed jump"},
+        ]}});
+        let text = render_human(&failed);
+        assert!(text.starts_with("tick 3: Player /transform is [1, 2, 3]\n"));
+        assert!(!text.contains("pressed jump"), "{text}");
     }
 
     #[test]

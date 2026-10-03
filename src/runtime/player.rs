@@ -33,8 +33,8 @@ use super::cpu_physics::world_position;
 use super::sim_math;
 use super::{
     ActionMap, Camera, CharacterMove, Children, Collider, ColliderShape,
-    FrameTime, GlobalTransform, InputBinding, KeyCode, MouseButton, Parent,
-    PhysicsWorld, RuntimeInput,
+    FrameTime, GlobalTransform, InputBinding, KeyCode, MouseButton, PadButton,
+    Parent, PhysicsWorld, RigidBody, RigidBodyKind, RuntimeInput, Stick,
 };
 use crate::Transform;
 
@@ -69,11 +69,20 @@ pub const DEFAULT_PLAYER_SHAPE: ColliderShape = ColliderShape::Capsule {
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlayerController {
+    /// Walking speed in metres per second.
     pub walk_speed: f32,
+    /// Speed factor while sprint is held.
     pub sprint_multiplier: f32,
+    /// Upward speed in metres per second when a jump starts.
     pub jump_speed: f32,
+    /// Downward acceleration in metres per second squared.
     pub gravity: f32,
+    /// Radians of turn per pixel of mouse motion.
     pub look_sensitivity: f32,
+    /// Whether a left click captures the cursor for mouse look. Off, the
+    /// mouse stays free (for a second player or a UI) and only the right
+    /// stick or game code (`set_look`) turns the view.
+    pub mouse_look: bool,
     /// Collision layers the body stops against.
     pub collision_mask: u32,
     /// Heading in radians around +Y; 0 looks toward -Z.
@@ -81,8 +90,14 @@ pub struct PlayerController {
     /// Up/down look in radians, kept within ±89°.
     pub pitch: f32,
     /// 0 is first person. Above 0, the `Camera` children orbit behind the
-    /// body at this distance in metres.
+    /// body at this distance in metres. The controller owns the transform
+    /// of its direct `Camera` children: it sets their rotation to the pitch
+    /// and, in third person, their position. Put a camera under an empty
+    /// child to place it yourself.
     pub camera_distance: f32,
+    /// Added to the camera position, in the body's frame: `[0.6, 0, 0]` is
+    /// an over-the-shoulder camera 0.6 m to the right.
+    pub camera_offset: [f32; 3],
     /// Height of the third-person orbit center above the body center.
     pub camera_height: f32,
     /// Steepest ground in radians the body stands on and walks up.
@@ -92,8 +107,13 @@ pub struct PlayerController {
     /// Whether the body pushes dynamic bodies it walks into. Off, they
     /// still block it but never move.
     pub push_bodies: bool,
+    /// Radians per second the body's non-camera children (the visible rig)
+    /// turn toward the walking direction. 0 leaves them alone.
+    pub turn_speed: f32,
+    /// Current up/down speed in metres per second; negative while falling.
     #[serde(skip)]
     pub vertical_speed: f32,
+    /// Whether the body stood on ground after the last fixed step.
     #[serde(skip)]
     pub grounded: bool,
     /// Set when jump is pressed; the next grounded fixed step consumes it.
@@ -103,6 +123,14 @@ pub struct PlayerController {
     /// it was, so a moving platform carries the controller.
     #[serde(skip)]
     pub floor: Option<(Entity, [f32; 3])>,
+    /// The body the last step walked into, if any (not the floor). A
+    /// pushed crate shows here too.
+    #[serde(skip)]
+    pub wall: Option<Entity>,
+    /// How far the body moved in the last fixed step, per second: the
+    /// walking speed it really reached, including slides and platforms.
+    #[serde(skip)]
+    pub velocity: [f32; 3],
 }
 
 impl Default for PlayerController {
@@ -113,18 +141,23 @@ impl Default for PlayerController {
             jump_speed: 5.0,
             gravity: 9.81,
             look_sensitivity: 0.002,
+            mouse_look: true,
             collision_mask: u32::MAX,
             yaw: 0.0,
             pitch: 0.0,
             camera_distance: 0.0,
             camera_height: 0.6,
+            camera_offset: [0.0; 3],
             max_slope: 45.0_f32.to_radians(),
             max_step_height: 0.3,
             push_bodies: true,
+            turn_speed: 0.0,
             vertical_speed: 0.0,
             grounded: false,
             jump_requested: false,
             floor: None,
+            wall: None,
+            velocity: [0.0; 3],
         }
     }
 }
@@ -145,13 +178,41 @@ pub(super) fn bind_default_actions(map: &mut ActionMap) {
             map.bind(action, InputBinding::Key(*key));
         }
     }
+    let pads: [(&str, &[PadButton]); 6] = [
+        (PLAYER_FORWARD, &[PadButton::LeftStickUp, PadButton::DpadUp]),
+        (
+            PLAYER_BACK,
+            &[PadButton::LeftStickDown, PadButton::DpadDown],
+        ),
+        (
+            PLAYER_LEFT,
+            &[PadButton::LeftStickLeft, PadButton::DpadLeft],
+        ),
+        (
+            PLAYER_RIGHT,
+            &[PadButton::LeftStickRight, PadButton::DpadRight],
+        ),
+        (PLAYER_JUMP, &[PadButton::South]),
+        (PLAYER_SPRINT, &[PadButton::LeftStick]),
+    ];
+    for (action, buttons) in pads {
+        for button in buttons {
+            map.bind(action, InputBinding::Pad(*button));
+        }
+    }
 }
+
+/// Right-stick look speed at full tilt, in radians per second.
+const PAD_LOOK_SPEED: f32 = 3.0;
+/// Stick tilt below this is ignored, so a worn stick does not drift.
+const PAD_DEAD_ZONE: f32 = 0.15;
 
 /// Per rendered frame: cursor capture, mouse look, and jump requests.
 pub(super) fn player_look(
     mut input: ResMut<RuntimeInput>,
     actions: Res<ActionMap>,
     physics: Res<PhysicsWorld>,
+    time: Res<FrameTime>,
     mut players: Query<(
         Entity,
         &mut PlayerController,
@@ -163,23 +224,41 @@ pub(super) fn player_look(
         (With<Camera>, Without<PlayerController>),
     >,
 ) {
-    if players.is_empty() {
+    let Some(mouse_look) = players
+        .iter()
+        .map(|(_, player, ..)| player.mouse_look)
+        .reduce(|a, b| a || b)
+    else {
         return;
-    }
-    if input.key_just_pressed(KeyCode::Escape) {
-        input.set_cursor_captured(false);
+    };
+    if input.key_just_pressed(KeyCode::Escape) || !mouse_look {
+        if input.cursor_captured() {
+            input.set_cursor_captured(false);
+        }
     } else if input.mouse_just_pressed(MouseButton::Left) {
         input.set_cursor_captured(true);
     }
     let motion = input.mouse_motion();
+    let stick = input.stick(Stick::Right).map(|axis| {
+        if axis.abs() < PAD_DEAD_ZONE {
+            0.0
+        } else {
+            axis
+        }
+    });
+    let pad_turn = PAD_LOOK_SPEED * time.real_delta.as_secs_f32();
     let jump = actions.just_pressed(&input, PLAYER_JUMP);
     for (entity, mut player, mut transform, children) in &mut players {
-        if input.cursor_captured() {
+        if input.cursor_captured() && player.mouse_look {
             let sensitivity = player.look_sensitivity;
             player.yaw -= motion[0] * sensitivity;
             player.pitch = (player.pitch - motion[1] * sensitivity)
                 .clamp(-MAX_PITCH, MAX_PITCH);
         }
+        // Stick up looks up; it needs no captured cursor.
+        player.yaw -= stick[0] * pad_turn;
+        player.pitch =
+            (player.pitch + stick[1] * pad_turn).clamp(-MAX_PITCH, MAX_PITCH);
         player.jump_requested |= jump;
         transform.rotation = [0.0, player.yaw, 0.0];
         // Behind the orbit center along the view direction, which is -Z
@@ -209,15 +288,48 @@ pub(super) fn player_look(
         for child in children.into_iter().flat_map(|children| &children.0) {
             if let Ok(mut camera) = cameras.get_mut(*child) {
                 camera.rotation = [player.pitch, 0.0, 0.0];
+                let [x, y, z] = player.camera_offset;
                 if orbit {
                     camera.position = [
-                        0.0,
-                        player.camera_height - sin * distance,
-                        cos * distance,
+                        x,
+                        y + player.camera_height - sin * distance,
+                        z + cos * distance,
                     ];
+                } else if player.camera_offset != [0.0; 3] {
+                    camera.position = player.camera_offset;
                 }
             }
         }
+    }
+}
+
+/// Gives a dynamic body the walker ran into at least the walker's speed into
+/// it, along the contact normal. The slide stops the walker a skin short of
+/// the body, so without this the solver never sees them overlap.
+// ponytail: ignores the body's mass, so a heavy crate moves as fast as a
+// light one; scale by mass if games need heavy things to resist.
+fn push(
+    bodies: &mut Query<&mut RigidBody, Without<PlayerController>>,
+    wall: Entity,
+    normal: [f32; 3],
+    motion: [f32; 3],
+    dt: f32,
+) {
+    let Ok(mut body) = bodies.get_mut(wall) else {
+        return;
+    };
+    let length = normal[0].hypot(normal[2]);
+    if body.kind != RigidBodyKind::Dynamic || length < 1e-3 || dt <= 0.0 {
+        return;
+    }
+    // Horizontal direction into the body.
+    let into = [-normal[0] / length, -normal[2] / length];
+    let speed = (motion[0] * into[0] + motion[2] * into[1]) / dt;
+    let velocity = &mut body.linear_velocity;
+    let current = velocity[0] * into[0] + velocity[2] * into[1];
+    if speed > current {
+        velocity[0] += into[0] * (speed - current);
+        velocity[2] += into[1] * (speed - current);
     }
 }
 
@@ -238,6 +350,7 @@ pub(super) fn player_move(
         (&Transform, Option<&Parent>, Option<&GlobalTransform>),
         Without<PlayerController>,
     >,
+    mut pushed: Query<&mut RigidBody, Without<PlayerController>>,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
     let axis = |positive, negative| {
@@ -298,6 +411,10 @@ pub(super) fn player_move(
             player.max_slope,
             player.max_step_height,
         );
+        if let Some((wall, normal)) = moved.wall.filter(|_| player.push_bodies)
+        {
+            push(&mut pushed, wall, normal, motion, dt);
+        }
         player.grounded = moved.grounded;
         if (moved.grounded && player.vertical_speed < 0.0)
             || (moved.ceiling && player.vertical_speed > 0.0)
@@ -308,6 +425,42 @@ pub(super) fn player_move(
             let (t, parent, global) = floors.get(floor).ok()?;
             Some((floor, world_position(t, parent, global)))
         });
+        player.wall = moved.wall.map(|(wall, _)| wall);
+        if dt > 0.0 {
+            player.velocity = std::array::from_fn(|axis| {
+                (moved.position[axis] - transform.position[axis]) / dt
+            });
+        }
         transform.position = moved.position;
+    }
+}
+
+/// Per fixed step: turns the non-camera children of a walking player toward
+/// its horizontal velocity at `turn_speed`, in the body's local yaw.
+pub(super) fn player_face(
+    time: Res<FrameTime>,
+    players: Query<(&PlayerController, Option<&Children>)>,
+    mut rigs: Query<
+        &mut Transform,
+        (Without<Camera>, Without<PlayerController>),
+    >,
+) {
+    use std::f32::consts::{PI, TAU};
+    let dt = time.fixed_delta.as_secs_f32();
+    for (player, children) in &players {
+        let [vx, _, vz] = player.velocity;
+        if player.turn_speed <= 0.0 || vx.hypot(vz) < 0.1 {
+            continue;
+        }
+        // Model forward is -Z, as for yaw.
+        let heading = sim_math::atan2(-vx, -vz) - player.yaw;
+        for child in children.into_iter().flat_map(|children| &children.0) {
+            if let Ok(mut rig) = rigs.get_mut(*child) {
+                let turn =
+                    (heading - rig.rotation[1] + PI).rem_euclid(TAU) - PI;
+                let step = player.turn_speed * dt;
+                rig.rotation[1] += turn.clamp(-step, step);
+            }
+        }
     }
 }

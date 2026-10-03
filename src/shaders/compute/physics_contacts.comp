@@ -13,6 +13,7 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Bodies per hash cell before the rest spill into the fallback list.
 const uint CELL_SLOTS = 8u;
+const float CONTACT_MARGIN = 0.002;
 
 // Cell counts; the length is a power of two.
 layout(set = 0, binding = 8) buffer GridCounts { uint data[]; } grid_counts;
@@ -85,25 +86,17 @@ BodyShape own_shape;
 mat3 own_rotation;
 uint own_index;
 float own_inverse_mass;
-// Sums in fixed point: integer addition gives the same result in any
-// order, and the order differs between runs because the grid and fallback
-// lists fill in atomic order.
-ivec3 push;
-ivec3 velocity_change;
+// Per axis, the largest push and velocity change each way. Max and min give
+// the same result in any order (the grid and fallback lists fill in atomic
+// order), and four supports under a ball lift it once, not four times: a
+// sum would bounce a resting ball and make a deep pile boil.
+vec3 push_up;
+vec3 push_down;
+vec3 change_up;
+vec3 change_down;
 bool touched;
 uint hash_collisions;
 uint fallback_tests;
-
-// 1/65536 m (or m/s) steps; a contribution is clamped to 256 so 128 of
-// them cannot overflow.
-const float FIXED_SCALE = 65536.0;
-const float FIXED_STEP = 1.0 / FIXED_SCALE;
-
-ivec3 to_fixed(vec3 value) {
-    // roundEven: GLSL leaves the direction of round() at .5 to the device.
-    precise vec3 scaled = clamp(value, -256.0, 256.0) * FIXED_SCALE;
-    return sim_to_int(roundEven(scaled));
-}
 
 // Moves `own` out of `other_index` by its share of the overlap and removes
 // its share of the closing velocity, like a collider contact without torque.
@@ -123,8 +116,11 @@ void touch(uint other_index) {
     float distance;
     shape_distance(other_shape.shape, rotation_of(other.model), other.model[3].xyz, own.model[3].xyz, normal, distance);
     precise float depth = support(own_shape.shape, own_rotation, normal) - distance;
-    if (depth <= 0.0) return;
+    // A body within CONTACT_MARGIN counts as touching, so a sleeping body
+    // that was pushed exactly clear of its support stays asleep.
+    if (depth <= -CONTACT_MARGIN) return;
     touched = true;
+    if (depth <= 0.0) return;
     precise float total = own_inverse_mass + inverse_mass(other);
     if (total <= 0.0) return;
     float share = sim_div(own_inverse_mass, total);
@@ -139,7 +135,8 @@ void touch(uint other_index) {
         else if (up < -0.7 && own.velocity.w > 0.5) share = 0.0;
     }
     precise vec3 correction = normal * depth * share;
-    push += to_fixed(correction);
+    push_up = max(push_up, correction);
+    push_down = min(push_down, correction);
     precise vec3 other_velocity = other.velocity.xyz;
     // A supporting body sinks only because this pass lags a step; matching
     // that sink would add g * dt of fall per level of a stack.
@@ -158,7 +155,8 @@ void touch(uint other_index) {
         change -= sim_div(tangent, tangent_speed) * min(tangent_speed, -friction * closing);
     }
     precise vec3 shared_change = change * share;
-    velocity_change += to_fixed(shared_change);
+    change_up = max(change_up, shared_change);
+    change_down = min(change_down, shared_change);
 }
 
 void touch_in_cell(uint other_index, ivec3 cell) {
@@ -179,8 +177,10 @@ void main() {
     touched = false;
     hash_collisions = 0u;
     fallback_tests = 0u;
-    push = ivec3(0);
-    velocity_change = ivec3(0);
+    push_up = vec3(0.0);
+    push_down = vec3(0.0);
+    change_up = vec3(0.0);
+    change_down = vec3(0.0);
     if (takes_part(own, own_shape)) {
         own_rotation = rotation_of(own.model);
         own_inverse_mass = inverse_mass(own);
@@ -214,8 +214,8 @@ void main() {
     if (fallback_tests > 0u) atomicAdd(event_header.contacts.w, fallback_tests);
     // Every body is written so the contact flag starts each step fresh; the
     // main pass adds collider contacts to it.
-    precise vec3 position = own.model[3].xyz + vec3(push) * FIXED_STEP;
-    precise vec3 velocity = own.velocity.xyz + vec3(velocity_change) * FIXED_STEP;
+    precise vec3 position = own.model[3].xyz + push_up + push_down;
+    precise vec3 velocity = own.velocity.xyz + change_up + change_down;
     bodies.data[own_index].model[3].xyz = position;
     bodies.data[own_index].velocity = vec4(velocity, touched ? 1.0 : 0.0);
 }

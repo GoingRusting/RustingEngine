@@ -43,11 +43,64 @@ pub struct Operation {
 
 const NO_GPU: &str = "none";
 
+/// Operations that change nothing on disk; every other one is marked
+/// mutating for tool clients (`rusting mcp`).
+pub const READ_ONLY: &[&str] = &[
+    "doctor",
+    "project inspect",
+    "scene inspect",
+    "scene map",
+    "scene query",
+    "validate",
+    "check",
+    "inspect",
+    "determinism",
+    "asset list",
+    "diff",
+    "preset list",
+    "docs",
+    "explain",
+    "schema",
+];
+
+/// Operations that write project files (scenes, assets, sources, the
+/// manifest). Build outputs and captures do not count.
+pub const WRITES_PROJECT: &[&str] = &[
+    "new",
+    "scene patch",
+    "fix",
+    "asset import",
+    "asset reimport",
+    "asset generate",
+    "add scenario",
+    "add system",
+    "preset apply",
+    "cook",
+];
+
+/// What a finished command changed: `disk` for project files, `editor` and
+/// `game` for a live editor buffer or running game. A command line tool
+/// never writes either of those itself: an open editor picks up a disk
+/// change on its next scene poll, and `rusting debug` reports `game`.
+pub fn touched(args: &[String], ok: bool) -> serde_json::Value {
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with("--"))
+        .collect();
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let writes = WRITES_PROJECT.iter().any(|name| {
+        let name: Vec<&str> = name.split(' ').collect();
+        words.starts_with(&name)
+    });
+    serde_json::json!({"disk": ok && writes && !dry_run, "editor": false, "game": false})
+}
+
 pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "doctor",
-        usage: "doctor [--json]",
-        summary: "Report engine, platform, build tools, and Vulkan device capability. No GPU is a valid result.",
+        usage: "doctor [--probe] [--json]",
+        summary: "Report engine, platform, build tools, and Vulkan device capability. No GPU is a valid result. --probe also opens the device a run would pick, runs a tiny GPU job on it and reports probe.selected_device, or probe.ok false with the error (15 s limit).",
         gpu: "optional: lists devices when a driver is present",
         defaults: &[],
         example: "doctor --json",
@@ -62,7 +115,7 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "project inspect",
-        usage: "project inspect [project-root] [--json]",
+        usage: "project inspect [project-root] [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect and validate project.json, Cargo.toml, the main scene path, and src/main.rs.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder")],
@@ -70,15 +123,23 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "scene inspect",
-        usage: "scene inspect <scene-path> [--json]",
+        usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: entities, cameras, classes, assets, and reference warnings.",
         gpu: NO_GPU,
         defaults: &[],
         example: "scene inspect my_game/scenes/main.rscene --json",
     },
     Operation {
+        name: "scene map",
+        usage: "scene map <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "Draw every tile map as rows of characters with a legend. Entities that sit over a map's cells appear as letters, with their name, ID, column and row. A text view of a 2D layout for a model without vision.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "scene map my_game/scenes/main.rscene --json",
+    },
+    Operation {
         name: "scene query",
-        usage: "scene query <scene-path> [--id ID | --name NAME | --class CLASS | --component COMPONENT] [--json]",
+        usage: "scene query <scene-path> [--id ID | --name NAME | --class CLASS | --component COMPONENT] [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Find entities by one filter. Results are ordered by persistent UUID and include full component data.",
         gpu: NO_GPU,
         defaults: &[("filter", "all entities")],
@@ -109,33 +170,73 @@ pub const OPERATIONS: &[Operation] = &[
         example: "cook my_game --json",
     },
     Operation {
+        name: "fix",
+        usage: "fix [project-root] [--dry-run] [--json]",
+        summary: "Apply every certain fix `validate` finds to the main scene: a misspelled key is renamed in place, so nothing else in the file changes. --dry-run lists the fixes without writing. Problems without a certain fix stay as diagnostics.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "fix my_game --dry-run --json",
+    },
+    Operation {
         name: "check",
         usage: "check [project-root] [--json]",
-        summary: "Validate the project, then type-check its Rust code with `cargo check`.",
+        summary: "Validate the project, then compile its Rust code with a debug `cargo build`, the same build `run` and `test` reuse. The first build of a new project compiles the engine and takes minutes; later ones take seconds.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder")],
         example: "check my_game --json",
     },
     Operation {
         name: "run",
-        usage: "run [project-root] [--release] [--ticks N] [--timeout SECONDS] [--json]",
-        summary: "Cook, build, and run the game from the project folder. --ticks N runs N fixed ticks without a window, saves the end state to build/final.rscene for `scene query`, and exits. --timeout stops a game still running; reaching it is not a failure.",
+        usage: "run [project-root] [--release] [--ticks N] [--timeout SECONDS] [--record FILE | --replay FILE] [--json]",
+        summary: "Cook, build, and run the game from the project folder. --ticks N runs N fixed ticks without a window, saves the end state to build/final.rscene for `scene query`, and exits. --timeout stops a game still running; reaching it is not a failure. --record FILE saves the windowed session's input, frame times and per-tick state hashes to FILE when the window closes; --replay FILE plays such a file back without a window and fails at the first tick whose state differs, so a recorded run is a regression test.",
         gpu: "required for a window; none with --ticks",
         defaults: &[("--release", "off (debug build)"), ("--ticks", "off (opens a window)"), ("--timeout", "none"), ("project-root", "the current folder")],
         example: "run my_game --ticks 120 --json",
     },
     Operation {
         name: "test",
-        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--json]",
-        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. The scenario format is under `scenario` in `rusting schema`.",
-        gpu: "optional: only capture steps render, and they are skipped without Vulkan; one frame readback per capture",
+        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--update-golden] [--json]",
+        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. --update-golden rewrites capture `golden` images instead of comparing them. The scenario format is under `scenario` in `rusting schema`.",
+        gpu: "optional: only capture, expect_pixels and render-budget runs render; captures are skipped without Vulkan; one frame readback per capture or pixel check",
         defaults: &[("--release", "off (debug build)"), ("--timeout", "none"), ("project-root", "the current folder"), ("scenario", "every file in tests/")],
         example: "test my_game my_game/tests/falls.json --json",
     },
     Operation {
+        name: "debug",
+        usage: "debug [project-root]",
+        summary: "Cook and build the game, then run it without a window as a debug session: the game's standard input and output carry one JSON request and one JSON reply per line. The game is paused between commands. Commands: `{\"cmd\": \"step\", \"ticks\": N}` (the only way time passes), `get` (`entity`, `path`), `set` (`entity`, `path`, `value`), `press` / `release` (`action`), `capture` (`path`, optional `size` [w, h]; needs Vulkan), `tick`, `quit`. A reply is `{\"id\", \"ok\", \"tick\", \"result\" or \"error\"}`. Build failures go to standard error as the usual result envelope.",
+        gpu: "capture needs Vulkan; every other command does not",
+        defaults: &[("project-root", "the current folder")],
+        example: "debug my_game",
+    },
+    Operation {
+        name: "serve",
+        usage: "serve",
+        summary: "Run as a local daemon: read one JSON-RPC 2.0 request per line from stdin and write one response per line to stdout, until `shutdown` or end of input. `method` is the command words (`scene query`), `params` the remaining arguments as an array of strings (or `{\"args\": [...]}`), and `result` the same envelope as `--json`. Every command is available except `serve`. Errors use the JSON-RPC codes -32700 (parse), -32600 (invalid request), -32601 (unknown method), -32602 (bad params) and -32603 (the operation panicked). Each request runs in the daemon process, so it costs no process start; builds, shaders and loaded scenes are not cached between requests yet.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "serve",
+    },
+    Operation {
+        name: "mcp",
+        usage: "mcp [root]",
+        summary: "Run as a Model Context Protocol server over stdio (newline-delimited JSON-RPC), scoped to the project `root` (default: the current folder). Every command except `serve`, `debug` and `mcp` is a tool named with underscores (`scene_query`) taking `{\"args\": [...]}`, the arguments after the command words. Tools that change nothing carry `readOnlyHint: true`; the rest are mutating. A result is the `--json` envelope as text, with `isError` set when `ok` is false, so it matches the CLI. Arguments with an absolute path or `..` are refused.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "mcp my_game",
+    },
+    Operation {
+        name: "inspect",
+        usage: "inspect [project-root] --tick N [--entity NAME]... [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "Cook and build the game, run it without a window to tick N, and report the scene form of each named entity after that tick's update: transform, components and counters. With no `--entity`, reports every named entity of the main scene. Entities that do not exist at that tick are null.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder"), ("--entity", "every named entity")],
+        example: "inspect my_game --tick 120 --entity Player --json",
+    },
+    Operation {
         name: "determinism",
-        usage: "determinism [project-root] [--ticks N] [--json]",
-        summary: "Build the game in debug and release, run each headless for N ticks (release also pinned to one CPU when `taskset` exists), and compare every tick's world-state hash. Fails with DETERMINISM_DIVERGED naming the first divergent tick and entity. Hash reports go to build/determinism/<configuration>-<ticks>.json. GPU physics bodies do not simulate headless.",
+        usage: "determinism [project-root] [--ticks N | --scenario scenario.json | --gpu scenario.json] [--json]",
+        summary: "Build the game in debug and release, run each headless for N ticks (release also pinned to one CPU when `taskset` exists), and compare every tick's world-state hash. Fails with DETERMINISM_DIVERGED naming the first divergent tick and entity. Hash reports go to build/determinism/<configuration>-<ticks>.json. With --scenario, it replays a scenario (its scripted input) in a debug and then a release build and compares the CPU world-state hash of every tick, and the GPU body hash of every tick both runs delivered (DETERMINISM_DIVERGED names the tick and data.divergence.state says CPU or GPU). GPU physics bodies do not simulate headless; for them use --gpu, which is --scenario that also fails with DETERMINISM_NO_GPU_STATE when the scenario hashed no GPU bodies (set \"gpu\": true in it). A failing expect step in the scenario does not stop the comparison; data.scenario_passed reports it. It catches order-dependent GPU code, not vendor differences.",
         gpu: NO_GPU,
         defaults: &[("--ticks", "600"), ("project-root", "the current folder")],
         example: "determinism my_game --ticks 300 --json",
@@ -150,8 +251,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "capture",
-        usage: "capture <scene-path> <output.png> [--camera ID|NAME] [--tick N] [--size WxH] [--pick X,Y]... [--json]",
-        summary: "Render one camera of a scene offscreen to a PNG after N fixed ticks. Each --pick maps a pixel to the persistent ID of the object under it. Game code is not run. Without Vulkan, camera data and picks are still reported with a VULKAN_UNAVAILABLE error.",
+        usage: "capture <scene-path> <output.png> [--camera ID|NAME] [--tick N] [--size WxH] [--pick X,Y]... [--pick-rect X,Y,W,H]... [--no-hud] [--json]",
+        summary: "Render one camera of a scene offscreen to a PNG after N fixed ticks. --no-hud leaves the HUD out. Each --pick maps a pixel to the persistent ID of the object under it. Each --pick-rect lists every object covering a rectangle with its share of the rectangle (sampled, at most 64x64 points). Game code is not run. Without Vulkan, camera data and picks are still reported with a VULKAN_UNAVAILABLE error.",
         gpu: "required for the PNG: renders every tick through N and reads back one frame (width x height x 4 bytes)",
         defaults: &[("--camera", "the scene's active camera"), ("--tick", "0"), ("--size", "1280x720")],
         example: "capture my_game/scenes/main.rscene shot.png --tick 60 --pick 640,360 --json",
@@ -159,7 +260,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "asset import",
         usage: "asset import <project-root> <source-file> [--to FOLDER] [--author A] [--license L] [--url U] [--generator G] [--notes N] [--max-size PIXELS] [--dry-run] [--json]",
-        summary: "Copy a png, jpeg, bmp, tga, gltf, glb, wav or ogg file (and a glTF's external buffers and images) into assets/FOLDER after loading it as the runtime would, and write <file>.rmeta with a new stable ID, settings, dependencies, content hash, and source/license provenance. Scenes reference it by the returned `reference` path. Warns when no license is given. --dry-run runs every check on a staged copy and writes nothing (`dry_run: true` in the report).",
+        summary: "Copy a png, jpeg, bmp, tga, gltf, glb, wav or ogg file (and a glTF's external buffers and images) into assets/FOLDER after loading it as the runtime would, and write <file>.rmeta with a new stable ID, settings, dependencies, content hash, and source/license provenance. Scenes reference it by the returned `reference` path (relative to the scene); sound clips (`rusting.sound_cue.clip`, `play_sound`) are relative to assets/ instead, e.g. `sounds/hit.wav`. Warns when no license is given. --dry-run runs every check on a staged copy and writes nothing (`dry_run: true` in the report).",
         gpu: NO_GPU,
         defaults: &[("--to", "assets/ itself"), ("--max-size", "none (images keep their size)")],
         example: "asset import my_game art/crate.png --to props --license CC0-1.0 --json",
@@ -182,15 +283,39 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "asset list",
-        usage: "asset list [project-root] [--json]",
+        usage: "asset list [project-root] [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "List imported assets with ID, dependencies, provenance, settings, and referencing scenes. Fails on missing files or dependencies, invalid or duplicate metadata; warns on files changed since import, files without .rmeta, and assets without a license.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder")],
         example: "asset list my_game --json",
     },
     Operation {
+        name: "add scenario",
+        usage: "add scenario [project-root] <name> [--json]",
+        summary: "Write tests/<name>.json with a check that fails until you name a real entity and value. Red scenario first, then make it pass.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "add scenario my_game door_opens --json",
+    },
+    Operation {
+        name: "add system",
+        usage: "add system [project-root] <name> [--json]",
+        summary: "Append a documented stub `fn <name>(_scene, _time)` to src/main.rs and write a failing scenario <name>.json. Call the function from `update`, replace the `todo!`, then make the scenario pass.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "add system my_game spin_coins --json",
+    },
+    Operation {
+        name: "diff",
+        usage: "diff <scene-a> <scene-b> [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "Compare two scene files by entity ID: entities added, removed and changed, with the JSON path, old value and new value of every changed field, plus changes to scene-level fields.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "diff old.rscene my_game/scenes/main.rscene --json",
+    },
+    Operation {
         name: "preset list",
-        usage: "preset list [--json]",
+        usage: "preset list [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "List the starter art-direction presets and every value each one writes.",
         gpu: NO_GPU,
         defaults: &[],
@@ -198,19 +323,35 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "preset apply",
-        usage: "preset apply <scene-path> <preset> [--dry-run] [--json]",
-        summary: "Apply an art-direction preset as one scene patch: sun, ambient and sky light, tone mapping, background color, perspective camera field of view, and HUD text size and color. Creates a Sun entity when the scene has no directional light. The values stay ordinary, editable scene data; reapplying edits the same entities.",
+        usage: "preset apply <scene-path> <preset> [--only lighting,camera,text] [--dry-run] [--json]",
+        summary: "Apply an art-direction preset as one scene patch: sun, ambient and sky light, tone mapping, background color (scope `lighting`), perspective camera field of view (`camera`), and HUD text size and color (`text`). `--only` limits it to the named scopes; the result lists every changed field in `patch.changes`, so `--dry-run` previews them. Creates a Sun entity when the scene has no directional light. The values stay ordinary, editable scene data; reapplying edits the same entities.",
         gpu: NO_GPU,
-        defaults: &[("--dry-run", "false")],
-        example: "preset apply my_game/scenes/main.rscene golden_hour --dry-run --json",
+        defaults: &[("--dry-run", "false"), ("--only", "every scope")],
+        example: "preset apply my_game/scenes/main.rscene night --only lighting --dry-run --json",
+    },
+    Operation {
+        name: "docs",
+        usage: "docs [--brief] [--budget TOKENS] | docs search <words> [--limit N] | docs show <id> [--budget TOKENS] [--json]",
+        summary: "Read the manual, tutorials, agent guides, every command and every diagnostic code offline, from the installed version. With no arguments, list the items. `--brief` prints a compact overview sized to `--budget` tokens. `search` needs every word, ranks title hits first, shows the best 10 (`--limit N` for more) and reports `total` and `omitted`. `api/GameScene` (and `api/GameObject`, ...) lists every method of a type; `sample/<name>` prints a sample game's README and code. `show` prints one item, cut at a line to fit `--budget`, and reports whether it was cut.",
+        gpu: NO_GPU,
+        defaults: &[("--budget", "2000 tokens (about four characters each)"), ("--limit", "10 search matches")],
+        example: "docs search scene patch --json",
+    },
+    Operation {
+        name: "explain",
+        usage: "explain [CODE] [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "Explain a diagnostic code: what it means, how to fix it, and an example. With no code, list every code the tools can emit.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "explain SCENE_CONFLICT --json",
     },
     Operation {
         name: "schema",
-        usage: "schema [--json]",
-        summary: "Print this catalog: operations, scene sections and components with defaults, examples, units, ranges, and GPU cost.",
+        usage: "schema [--json-schema] [--json]",
+        summary: "Print this catalog: operations, scene sections and components with defaults, examples, units, ranges, and GPU cost. With --json-schema, print JSON Schema (draft 2020-12) for scene, scene_patch, scenario, project and asset_meta files instead.",
         gpu: NO_GPU,
         defaults: &[],
-        example: "schema --json",
+        example: "schema --json-schema",
     },
 ];
 
@@ -303,7 +444,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         example: || json!({"position": [2.0, 0.5, -1.0], "rotation": [0.0, 0.785, 0.0], "scale": [1.0, 1.0, 1.0]}),
         fields: &[
             field("/position", METRES, "", "[x, y, z]; +Y is up and -Z is forward"),
-            field("/rotation", RADIANS, "", "Euler angles around X, Y, and Z"),
+            field("/rotation", RADIANS, "", "Euler angles around X, Y, and Z, applied X first, then Y, then Z (R = Rz·Ry·Rx); forward is -Z: (-sin y·cos x, sin x, -cos y·cos x) for z = 0"),
             field("/scale", "factor", "> 0 on each axis", ""),
         ],
     },
@@ -350,15 +491,16 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "camera",
-        summary: "A view. The active camera with the highest priority renders.",
-        gpu: "one view; inactive cameras cost nothing",
-        example: || json!({"projection": {"Perspective": {"vertical_fov_radians": 1.0, "near": 0.1, "far": 500.0}}, "active": true, "priority": 1}),
+        summary: "A view. Among active cameras without a viewport the highest priority fills the window; on a tie the one spawned first wins. Every active camera with a viewport then draws into its part of the window, lower priority first, so split screen is two active cameras with viewports. Game code switches with `scene.set_active_camera(name)`, which makes that camera the only active one, or `scene.set_camera(name, active, viewport)`.",
+        gpu: "one scene render per drawn camera; inactive cameras cost nothing",
+        example: || json!({"projection": {"Perspective": {"vertical_fov_radians": 1.0, "near": 0.1, "far": 500.0}}, "active": true, "priority": 1, "viewport": [0.0, 0.0, 0.5, 1.0]}),
         fields: &[
             field("/projection/Perspective/vertical_fov_radians", RADIANS, "0 < fov < 3.14", "other variant: {\"Orthographic\": {\"vertical_size\" (m), \"near\", \"far\"}}"),
             field("/projection/Perspective/near", METRES, "> 0", ""),
             field("/projection/Perspective/far", METRES, "> near", ""),
             field("/active", "", "", ""),
             field("/priority", "", "i32", "higher wins among active cameras"),
+            field("/viewport", "fractions", "[x, y, width, height], each 0..1", "optional; part of the window from the top-left corner, e.g. [0, 0, 0.5, 1] is the left half"),
         ],
     },
     Section {
@@ -369,7 +511,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         fields: &[
             field("/simulation", "", "None | Static | Cpu | Gpu", "Cpu bodies are readable by gameplay every tick"),
             field("/solver", "", "Full | Simplified | NoCollision | Custom | Space", "GPU compute profile; Custom needs custom_shader"),
-            field("/custom_shader", "project path", "", "a compute shader; null unless solver is Custom"),
+            field("/custom_shader", "project path", "", "GLSL defining `void solve(inout PhysicsState body)`; null unless solver is Custom. See `rusting docs show guide/gpu-condition-shaders`, which also covers game-code condition shaders"),
         ],
     },
     Section {
@@ -432,7 +574,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         example: || json!({"color": [1.0, 0.8, 0.6], "intensity": 800.0, "range": 8.0}),
         fields: &[
             field("/color", RGB, "0..1", ""),
-            field("/intensity", "renderer units", ">= 0", ""),
+            field("/intensity", "renderer units, not lumens", ">= 0", "1000 lights a white surface facing it, up close, as brightly as the 100000 lux sun; brightness falls off as (1 - distance/range)^2. A desk lamp in a dark room: 400-1500; a bright party light: 3000-8000"),
             field("/range", METRES, "> 0", "light reaches zero here"),
         ],
     },
@@ -443,8 +585,8 @@ const ENTITY_SECTIONS: &[Section] = &[
         example: || json!({"color": [1.0, 1.0, 1.0], "intensity": 1200.0, "range": 12.0, "inner_angle": 0.3, "outer_angle": 0.5}),
         fields: &[
             field("/color", RGB, "0..1", ""),
-            field("/intensity", "renderer units", ">= 0", ""),
-            field("/range", METRES, "> 0", ""),
+            field("/intensity", "renderer units, not lumens", ">= 0", "as point_light: 1000 matches the 100000 lux sun up close"),
+            field("/range", METRES, "> 0", "light reaches zero here"),
             field("/inner_angle", RADIANS, "0..outer_angle", "fully lit cone"),
             field("/outer_angle", RADIANS, "inner_angle..1.57", "light reaches zero here"),
         ],
@@ -526,9 +668,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction.",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6, "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0}),
     },
     ComponentSection {
         key: "rusting.tween",
@@ -538,15 +680,15 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.sound_cue",
-        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The game plays the clip; the engine has no audio output.",
+        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`).",
         gpu: NO_GPU,
         example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true}),
     },
     ComponentSection {
         key: "rusting.burst_emitter",
-        summary: "Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger(). Particles copy the emitter's mesh.",
+        summary: "Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger(). rate above 0 emits that many particles per second with no trigger, starting anywhere in the area box (half extents); stretch makes particles taller, for rain. Particles copy the emitter's mesh.",
         gpu: NO_GPU,
-        example: || json!({"count": 20, "speed": 4.0, "lifetime": 0.8, "particle_scale": 0.1, "gravity": 9.81, "on_collision": false}),
+        example: || json!({"count": 20, "speed": 4.0, "lifetime": 0.8, "particle_scale": 0.1, "gravity": 9.81, "on_collision": false, "rate": 0.0, "area": [0.0, 0.0, 0.0], "stretch": 1.0}),
     },
     ComponentSection {
         key: "rusting.fluid_block",
@@ -562,9 +704,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.hud",
-        summary: "Text label or button drawn over the game view. A clicked button sends HudButtonPressed.",
+        summary: "Text label or button drawn over the game view. offset points inward from the anchor, in logical pixels, and the text is measured after {counter} values are filled in, so right and bottom anchors keep their margin. A clicked button sends HudButtonPressed.",
         gpu: "a few egui triangles",
-        example: || json!({"text": "Score: 0", "anchor": "TopRight", "offset": [24.0, 24.0], "font_size": 24.0, "color": [1.0, 0.9, 0.4, 1.0], "button": false, "requires": null}),
+        example: || json!({"text": "Score: 0", "anchor": "TopRight", "offset": [24.0, 24.0], "font_size": 24.0, "color": [1.0, 0.9, 0.4, 1.0], "button": false, "requires": null, "camera": null}),
     },
     ComponentSection {
         key: "rusting.input_action",
@@ -833,6 +975,152 @@ fn reflected_types<'a>(
         .collect()
 }
 
+/// JSON Schema (draft 2020-12) for the files the engine reads, keyed by
+/// `scene`, `scene_patch`, `scenario`, `project` and `asset_meta`, so generic
+/// editors and validators can check them. Entity sections and registered
+/// components come from the catalog tables; their values are not described
+/// further (the catalog lists the fields).
+#[must_use]
+pub fn json_schemas() -> Value {
+    let registry = SceneComponentRegistry::default();
+    let mut entity: Map<String, Value> = ENTITY_SECTIONS
+        .iter()
+        .map(|section| {
+            (
+                section.key.to_owned(),
+                json!({"description": section.summary}),
+            )
+        })
+        .collect();
+    let components: Map<String, Value> = COMPONENT_SECTIONS
+        .iter()
+        .filter_map(|section| {
+            registry.info(section.key).map(|_| {
+                (
+                    section.key.to_owned(),
+                    json!({"type": "string", "description": "component value as a JSON string"}),
+                )
+            })
+        })
+        .collect();
+    entity.insert(
+        "components".into(),
+        json!({"type": "object", "properties": components}),
+    );
+    let entity_ref =
+        json!({"type": "string", "description": "entity UUID or unique name"});
+    let operation = |name: &str, required: &[&str], props: Value| {
+        let mut properties = props;
+        properties["op"] = json!({"const": name});
+        let mut required = required.to_vec();
+        required.push("op");
+        json!({"type": "object", "properties": properties,
+               "required": required, "additionalProperties": false})
+    };
+    let value = json!({"description": "any JSON value"});
+    let path = json!({"type": "string", "description": "JSON pointer"});
+    json!({
+        "scene": {
+            "$schema": JSON_SCHEMA_DRAFT,
+            "title": "RustingEngine scene",
+            "type": "object",
+            "properties": {
+                "format_version": {"type": "integer"},
+                "name": {"type": "string"},
+                "entities": {"type": "array", "items": {
+                    "type": "object", "properties": entity}},
+                "render": {"type": "object"},
+                "simulation": {"type": "object"},
+            },
+            "required": ["name", "entities"],
+        },
+        "scene_patch": {
+            "$schema": JSON_SCHEMA_DRAFT,
+            "title": "RustingEngine scene patch",
+            "type": "object",
+            "properties": {
+                "expected_revision": {"type": ["string", "null"]},
+                "operations": {"type": "array", "items": {"oneOf": [
+                    operation("create", &["entity"], json!({"entity": {"type": "object"}})),
+                    operation("upsert", &["entity"], json!({"entity": {"type": "object"}, "merge": {"type": "boolean"}})),
+                    operation("set", &["id", "path", "value"], json!({"id": entity_ref, "path": path, "value": value, "expected": value})),
+                    operation("remove", &["id", "path"], json!({"id": entity_ref, "path": path, "expected": value})),
+                    operation("reparent", &["id", "parent"], json!({"id": entity_ref, "parent": {"type": ["string", "null"]}})),
+                    operation("duplicate", &["id"], json!({"id": entity_ref, "new_id": {"type": "string"}, "name": {"type": "string"}})),
+                    operation("delete", &["id"], json!({"id": entity_ref, "missing_ok": {"type": "boolean"}})),
+                    operation("set_scene", &["path", "value"], json!({"path": path, "value": value, "expected": value})),
+                ]}},
+            },
+            "required": ["operations"],
+            "additionalProperties": false,
+        },
+        "scenario": {
+            "$schema": JSON_SCHEMA_DRAFT,
+            "title": "RustingEngine scenario",
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "seed": {"type": "integer", "minimum": 0},
+                "ticks": {"type": "integer", "minimum": 0},
+                "capture_size": {"type": "array", "items": {"type": "integer", "minimum": 1},
+                                 "minItems": 2, "maxItems": 2},
+                "steps": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"tick": {"type": "integer", "minimum": 0}},
+                    "required": ["tick"]}},
+                "keep_going": {"type": "boolean"},
+                "annotate": {"type": "boolean"},
+                "contact_sheet": {"type": "string"},
+                "audio_out": {"type": "string"},
+                "files": {"type": "object", "additionalProperties": {"type": "string"}},
+                "gpu": {"type": "boolean"},
+                "invariants": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"entity": {"type": "string"}, "counter": {"type": "string"}}}},
+                "budgets": {"type": "object", "properties": {
+                    "max_tick_ms": {"type": "number"},
+                    "mean_tick_ms": {"type": "number"},
+                    "p95_tick_ms": {"type": "number"},
+                    "max_draws": {"type": "integer", "minimum": 0},
+                    "max_triangles": {"type": "integer", "minimum": 0}}},
+            },
+            "required": ["name", "ticks"],
+        },
+        "project": {
+            "$schema": JSON_SCHEMA_DRAFT,
+            "title": "RustingEngine project.json",
+            "type": "object",
+            "properties": {
+                "format_version": {"type": "integer"},
+                "name": {"type": "string"},
+                "main_scene": {"type": "string"},
+                "cooked_scene": {"type": "string"},
+                "binary_name": {"type": "string"},
+                "generators": {"type": "object"},
+                "determinism": {"type": "string"},
+            },
+            "required": ["name", "main_scene", "cooked_scene"],
+        },
+        "asset_meta": {
+            "$schema": JSON_SCHEMA_DRAFT,
+            "title": "RustingEngine .rmeta asset sidecar",
+            "type": "object",
+            "properties": {
+                "format_version": {"type": "integer"},
+                "id": {"type": "string"},
+                "kind": {"type": ["string", "object"]},
+                "settings": {"type": "object"},
+                "dependencies": {"type": "array", "items": {"type": "string"}},
+                "content_hash": {"type": "string"},
+                "source": {"type": "object"},
+            },
+            "required": ["format_version", "id", "kind", "content_hash"],
+        },
+    })
+}
+
+const JSON_SCHEMA_DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
+
 /// The full catalog as JSON.
 #[must_use]
 pub fn catalog() -> Value {
@@ -867,6 +1155,7 @@ pub fn catalog() -> Value {
                 })
                 .collect::<Vec<_>>(),
         },
+        "resources_note": "Resources are runtime state that game code sets (for example `scene.set_render_scale`). A scene file cannot set them: scene settings are `render` and `simulation` (set_scene `/render/...`).",
         "resources": reflected_types(types.resources()),
         "asset_types": reflected_types(types.assets()),
         "physics_sync_readback_bytes": PhysicsSyncMode::STATE_READBACK_BYTES,
@@ -876,26 +1165,43 @@ pub fn catalog() -> Value {
             "paths": "JSON pointers into the entity's scene form with registered components parsed, as in scenario expect paths; /id cannot change",
             "operations": {
                 "create": "{\"op\": \"create\", \"entity\": {\"name\": \"Crate\", \"parent\": null}}: a missing id gets a new UUID; fields left out of built-in sections take their defaults",
+                "upsert": "{\"op\": \"upsert\", \"entity\": {\"name\": \"Crate\"}}: create, or replace the entity with the same id (else name) and keep its id; a patch of upserts can run again; \"merge\": true keeps fields left out (null removes one)",
                 "set": "{\"op\": \"set\", \"id\": UUID, \"path\": \"/transform/position/1\", \"value\": 2.0, \"expected\": 1.0}: expected is optional",
                 "remove": "{\"op\": \"remove\", \"id\": UUID, \"path\": \"/collider\"}",
                 "reparent": "{\"op\": \"reparent\", \"id\": UUID, \"parent\": UUID or null}",
                 "duplicate": "{\"op\": \"duplicate\", \"id\": UUID, \"new_id\": UUID, \"name\": \"Copy\"}: one entity, no children; unnamed unless name is given",
-                "delete": "{\"op\": \"delete\", \"id\": UUID}: also deletes descendants",
+                "delete": "{\"op\": \"delete\", \"id\": UUID, \"missing_ok\": true}: also deletes descendants; missing_ok skips a missing entity",
                 "set_scene": "{\"op\": \"set_scene\", \"path\": \"/render/quality\", \"value\": \"High\"}: scene fields (name, render, simulation); expected is optional",
             },
             "errors": "SCENE_CONFLICT (revision or expected value differs), PATCH_OPERATION, PATCH_INVALID",
         },
         "scenario": {
-            "file": "JSON object: name, seed (u64, default 0), ticks (last tick run), capture_size ([w, h], default [1280, 720]), steps",
+            "file": "JSON object: name, seed (u64, default 0), ticks (last tick run), capture_size ([w, h], default [1280, 720]; the headless screen size from tick 0), files, steps",
+            "files": "{\"files\": {\"saves/1.json\": \"fixtures/save.json\"}}: top-level; copies fixtures (relative to the scenario file) into the run's empty user data folder, build/test-userdata/<scenario>/, before tick 0",
+            "tick_order": "Scenario tick N is the game's fixed tick N: game code sees time.fixed_tick == N in that tick's update. Within one tick: set, press, release and pointer steps apply first; then the game's update and the fixed physics step run; then expect, expect_events, expect_screen, log and capture steps and the invariants see the result. So an expect on the same tick as a set sees the value after that tick's update, not the value before the set; check the old value one tick earlier.",
+            "audio": "\"entity\": \"audio:\" in expect, log and invariants reads {\"requested\": n, \"clips\": {\"<clip path>\": n}}: every sound game code and sound cues asked for, played or not (headless runs have no device). Escape `/` in a clip path as `~1`: /clips/sfx~1hit.wav. From an offline mix of those sounds it also reads level [l, r] (RMS over the last tick), peak [l, r] (largest sample that tick; 1.0 is full scale), clipped (samples at or over full scale since tick 0; expect it to equal 0 to catch clipping) and playing.",
+            "counter": "In expect, set, log and invariants, {\"counter\": \"score\"} replaces entity and path: it names the entity holding the `rusting.counter` called `score` and defaults the path to /components/rusting.counter/value. Counters made by game code (`set_counter` or `add_to_counter` on a new name) work too.",
             "steps": {
-                "press": "{\"tick\": 5, \"press\": \"player.jump\"}: press every input bound to the action before the tick's update",
+                "press": "{\"tick\": 5, \"press\": \"player.jump\"}: press every input bound to the action before the tick's update; \"at\": 0.4 (press and tap) lands the press 40% into the tick, so scene.press_tick gives 5.4",
                 "release": "{\"tick\": 6, \"release\": \"player.jump\"}",
+                "tap": "{\"tick\": 5, \"tap\": \"pause\"}: presses the action and releases it before the next tick; egui sees the keys too, so Tab and Enter navigate menus",
+                "left_stick": "{\"tick\": 5, \"left_stick\": [0.0, 1.0]}: tilts the gamepad's left stick (each axis -1..1, [0, 1] fully up) until another step moves it; past half tilt it also presses PadLeftStickUp and the other directions. right_stick works the same",
+                "click": "{\"tick\": 2, \"click\": \"New Game\"}: moves the cursor to the topmost text the last frame drew with this exact label (egui widgets, HUD buttons, painted text) and clicks the left mouse button; fails listing the texts on screen when none matches. Object form {\"click\": {\"text\": \"-\", \"index\": 2}} or {\"click\": {\"starts_with\": \"Slot 1\"}}: starts_with matches a prefix; index (0-based) picks the nth match in reading order, top to bottom then left to right",
+                "restart": "{\"tick\": 20, \"restart\": true}: reloads the starting scene; the user data folder keeps its files",
+                "expect_quit": "{\"tick\": 31, \"expect_quit\": true}: the game called scene.quit() by this tick; the run ends after the tick that quits and steps at later ticks fail",
+                "expect_file": "{\"tick\": 41, \"expect_file\": {\"path\": \"settings.cfg\", \"contains\": \"volume=60\"}}: a file in the user data folder; exists (default true) false checks it is absent; unlike other checks it also runs after the game quits",
                 "pointer": "{\"tick\": 10, \"pointer\": [0.5, 0.5]}: moves the mouse cursor to this point of the view, as fractions of its width and height from the top-left corner",
-                "expect": "{\"tick\": 30, \"until\": 60, \"expect\": {\"entity\": \"Cube\", \"path\": \"/transform/position/1\", \"less_than\": 0.0}}: JSON pointer into the entity's scene form; equals (with tolerance), greater_than, less_than, or exists (false once an entity is despawned; empty path means the whole entity); until: an absolute tick; the check must hold every tick from `tick` through it; within: an absolute tick; passes on the first tick from `tick` through it that holds",
+                "expect": "{\"tick\": 30, \"until\": 60, \"expect\": {\"entity\": \"Cube\", \"path\": \"/transform/position/1\", \"less_than\": 0.0}}: JSON pointer into the entity's scene form; equals (with tolerance), not_equals (fails when equal within tolerance), greater_than, less_than, or exists (false once an entity is despawned; empty path means the whole entity); until: an absolute tick; the check must hold every tick from `tick` through it; within: an absolute tick; passes on the first tick from `tick` through it that holds",
                 "expect_events": "{\"tick\": 60, \"expect_events\": {\"kind\": \"collision\", \"entity\": \"Cube\", \"at_least\": 1}}: events gameplay saw from tick 0",
-                "capture": "{\"tick\": 30, \"capture\": \"shots/tick30.png\"}: path relative to the scenario file; skipped without Vulkan",
-                "set": "{\"tick\": 0, \"set\": {\"entity\": \"Player\", \"path\": \"/transform/position\", \"value\": [0.0, 1.0, -12.0]}}: writes before the tick runs; path under /transform or /components/<name>, for example /components/rusting.counter/value",
+                "expect_screen": "{\"tick\": 30, \"expect_screen\": {\"entity\": \"Coin\", \"on_screen\": true, \"inside\": [0.0, 0.0, 0.5, 1.0], \"min_share\": 0.01}}: where a mesh entity is in the active camera's frame (capture_size): on_screen, occluded (all of its box is behind other objects), inside (its box within the fractions [left, top, right, bottom]), min_share (share of the frame it is the nearest hit for); bounds picking; until and within work too. \"camera\": \"Cam 2\" projects through that camera instead, and inside and min_share are then fractions of its viewport",
+                "expect_pixels": "{\"tick\": 30, \"expect_pixels\": {\"region\": [0.5, 0.0, 1.0, 1.0], \"mean_min\": [0, 0, 80], \"mean_max\": [60, 60, 255], \"stddev_min\": 2.0}}: mean sRGB [r, g, b] (0..255) and brightness standard deviation of a region of the frame (HUD included); region is [left, top, right, bottom] fractions, the whole frame by default; \"camera\" makes region relative to that camera's viewport; until and within work too; fails without Vulkan",
+                "capture": "{\"tick\": 30, \"capture\": \"shots/tick30.png\"} or {\"capture\": {\"path\": \"shots/a.png\", \"camera\": \"Cam 2\", \"hud\": false, \"golden\": \"golden/a.png\", \"tolerance\": 1.0}}: path relative to the scenario file; camera renders that camera over the whole frame without the HUD; golden compares with that image: it fails when the largest of the R, G and B mean differences (0..255) is over tolerance (default 1.0), and `rusting test --update-golden` rewrites it; skipped without Vulkan",
+                "log": "{\"tick\": 10, \"until\": 40, \"log\": {\"counter\": \"score\"}}: records the value (entity and path, or counter) in the report every tick through until; never fails",
+                "set": "{\"tick\": 0, \"set\": {\"entity\": \"Player\", \"path\": \"/transform/position\", \"value\": [0.0, 1.0, -12.0]}}: writes before the tick runs; path under /transform, /visible, /rigid_body, /collider, /physics_body, /collision_layers, /point_light, /spot_light, /directional_light (the entity must already have it) or /components/<name>, for example /components/rusting.counter/value or /collider/friction",
             },
+            "gpu": "{\"gpu\": true}: top-level; opens the headless Vulkan device so GPU bodies simulate and GPU events arrive in `rusting test`. A scenario with a `capture` step does this too, but without either the GPU bodies stay where they spawned and GPU rules never fire. Fails with `gpu: no Vulkan device` when none opens; software Vulkan (lavapipe) works but is slow",
+            "invariants": "{\"invariants\": [{\"entity\": \"Player\", \"path\": \"/transform/position\", \"finite\": true}, {\"entity\": \"Player\", \"path\": \"/transform/position/1\", \"greater_than\": -5.0}]}: top-level; same fields as `expect` plus `finite` (no NaN or infinite number). Checked after every tick; the first tick one fails is reported as `invariant N:`. A missing entity or path passes unless `exists` is set",
+            "budgets": "{\"budgets\": {\"p95_tick_ms\": 8.0, \"max_draws\": 200}}: top-level; each limit exceeded fails the run with a `budget:` step. Timing is wall-clock and machine-dependent: set headroom and read `perf.environment` (engine version, OS, arch, debug or release, device) in `rusting test --json`. Draw and triangle limits need a capture step and Vulkan",
             "tick_length_seconds": 1.0 / 60.0,
         },
     })
@@ -903,6 +1209,28 @@ pub fn catalog() -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn touched_reports_project_writes_but_not_reads_dry_runs_or_failures() {
+        let words = |line: &str| -> Vec<String> {
+            line.split(' ').map(str::to_owned).collect()
+        };
+        let disk =
+            |line: &str, ok| super::touched(&words(line), ok)["disk"].as_bool();
+        assert_eq!(disk("scene patch a.json p.json", true), Some(true));
+        assert_eq!(
+            disk("scene patch a.json --dry-run p.json", true),
+            Some(false)
+        );
+        assert_eq!(disk("scene patch a.json p.json", false), Some(false));
+        assert_eq!(disk("scene query a.json", true), Some(false));
+        assert_eq!(disk("fix . --json", true), Some(true));
+        let all = super::touched(&words("test ."), true);
+        assert_eq!(
+            (all["editor"].as_bool(), all["game"].as_bool()),
+            (Some(false), Some(false))
+        );
+    }
+
     use std::collections::BTreeSet;
 
     use super::*;
@@ -910,6 +1238,97 @@ mod tests {
         load_scene_document, set_registered_component, SceneDocument,
         SceneLoadMode, CONNECTIONS_COMPONENT, SCENE_INSTANCE_COMPONENT,
     };
+
+    fn schema_keys(schema: &Value) -> BTreeSet<String> {
+        schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn written_keys(value: &impl serde::Serialize) -> BTreeSet<String> {
+        serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn json_schemas_describe_every_key_the_engine_writes() {
+        let schemas = json_schemas();
+        // Every schema key must be known to serde; every written key must be
+        // in the schema.
+        let scene = SceneDocument {
+            format_version: 0,
+            name: String::new(),
+            entities: Vec::new(),
+            render: Default::default(),
+            simulation: Default::default(),
+        };
+        assert_eq!(written_keys(&scene), schema_keys(&schemas["scene"]));
+        let scenario: crate::scenario::Scenario =
+            serde_json::from_value(json!({"name": "n", "ticks": 1})).unwrap();
+        assert_eq!(written_keys(&scenario), schema_keys(&schemas["scenario"]));
+        let patch = crate::scene_patch::ScenePatch::default();
+        assert_eq!(written_keys(&patch), schema_keys(&schemas["scene_patch"]));
+        let project = crate::project::ProjectManifest {
+            format_version: 1,
+            name: "n".into(),
+            main_scene: "a".into(),
+            cooked_scene: "b".into(),
+            binary_name: String::new(),
+            generators: Default::default(),
+            determinism: Default::default(),
+        };
+        let mut keys = written_keys(&project);
+        keys.extend(["generators".to_owned(), "determinism".to_owned()]);
+        assert_eq!(keys, schema_keys(&schemas["project"]));
+        for name in
+            ["scene", "scene_patch", "scenario", "project", "asset_meta"]
+        {
+            assert_eq!(schemas[name]["$schema"], JSON_SCHEMA_DRAFT, "{name}");
+        }
+    }
+
+    #[test]
+    fn json_schema_patch_operations_match_the_parser() {
+        let schemas = json_schemas();
+        let ops = schemas["scene_patch"]["properties"]["operations"]["items"]
+            ["oneOf"]
+            .as_array()
+            .unwrap();
+        for op in ops {
+            let name = op["properties"]["op"]["const"].as_str().unwrap();
+            // A patch naming only `op` must fail for a missing field, not for
+            // an unknown operation.
+            let error = serde_json::from_value::<
+                crate::scene_patch::PatchOperation,
+            >(json!({"op": name}))
+            .unwrap_err()
+            .to_string();
+            assert!(!error.contains("unknown variant"), "{name}: {error}");
+        }
+        assert_eq!(ops.len(), 8);
+    }
+
+    #[test]
+    fn json_schema_entity_lists_every_section_and_component() {
+        let schemas = json_schemas();
+        let entity = &schemas["scene"]["properties"]["entities"]["items"];
+        let keys = schema_keys(entity);
+        for section in ENTITY_SECTIONS {
+            assert!(keys.contains(section.key), "{}", section.key);
+        }
+        let components = schema_keys(&entity["properties"]["components"]);
+        for section in COMPONENT_SECTIONS {
+            assert!(components.contains(section.key), "{}", section.key);
+        }
+    }
 
     /// JSON pointers of every leaf. Arrays are leaves.
     fn leaves(value: &Value, prefix: String, out: &mut BTreeSet<String>) {

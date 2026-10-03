@@ -1780,6 +1780,19 @@ fn outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits() {
             .0,
         id
     );
+    assert!(state
+        .scene_message
+        .as_deref()
+        .unwrap()
+        .contains("0 added, 1 changed, 0 removed"));
+    assert_eq!(
+        state.selection.len(),
+        1,
+        "the changed entity is highlighted"
+    );
+    let journal = world.resource::<agent_panel::AgentJournal>();
+    assert_eq!(journal.entries.len(), 1, "the outside write is journaled");
+    assert_eq!(journal.entries[0].ids, vec![id]);
     let before = history.undo.back().unwrap().clone();
     crate::runtime::load_scene_document(world, &before, SceneLoadMode::Replace)
         .unwrap();

@@ -17,9 +17,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::runtime::{
-    parse_scene_document, scene_revision, set_registered_component,
-    validate_scene_structure, write_atomic, App, SceneComponentRegistry,
-    SceneDocument, SceneIoError,
+    error_object, parse_scene_document, scene_revision,
+    set_registered_component, validate_scene_structure, write_atomic, App,
+    SceneComponentRegistry, SceneDocument, SceneIoError,
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -37,6 +37,16 @@ pub struct ScenePatch {
 pub enum PatchOperation {
     /// Adds an entity in scene form. A missing `id` gets a new random one.
     Create { entity: Value },
+    /// Like `create`, but replaces the entity with the same `id`, or else
+    /// the same `name`, when one exists. The replacement keeps the old ID,
+    /// so children stay attached. A patch of upserts can run again. With
+    /// `merge`, the given fields merge into the old entity (objects key by
+    /// key, `null` removes a key) and fields left out keep their values.
+    Upsert {
+        entity: Value,
+        #[serde(default)]
+        merge: bool,
+    },
     /// Replaces or inserts the value at `path`. With `expected`, the current
     /// value must equal it first.
     Set {
@@ -68,8 +78,13 @@ pub enum PatchOperation {
         #[serde(default)]
         name: Option<String>,
     },
-    /// Deletes an entity and all of its descendants.
-    Delete { id: EntityRef },
+    /// Deletes an entity and all of its descendants. With `missing_ok`, a
+    /// missing entity is skipped, so a patch can run again.
+    Delete {
+        id: EntityRef,
+        #[serde(default)]
+        missing_ok: bool,
+    },
     /// Like `set`, on the scene itself: `/name`, `/render/...` or
     /// `/simulation/...`. Entities and the format version are off limits.
     SetScene {
@@ -154,6 +169,12 @@ pub enum PatchError {
         message: String,
     },
     Invalid(String),
+    /// The patched scene breaks a scene rule at one object.
+    InvalidObject {
+        id: Uuid,
+        name: Option<String>,
+        message: String,
+    },
     Scene(SceneIoError),
 }
 
@@ -182,6 +203,12 @@ impl Display for PatchError {
             Self::Invalid(message) => {
                 write!(formatter, "patched scene is invalid: {message}")
             }
+            Self::InvalidObject { id, name, message } => write!(
+                formatter,
+                "patched scene is invalid at object {id}{}: {message}",
+                name.as_ref()
+                    .map_or(String::new(), |name| format!(" (`{name}`)"))
+            ),
             Self::Scene(error) => Display::fmt(error, formatter),
         }
     }
@@ -196,7 +223,7 @@ impl PatchError {
         match self {
             Self::Revision { .. } | Self::Field { .. } => "SCENE_CONFLICT",
             Self::Operation { .. } => "PATCH_OPERATION",
-            Self::Invalid(_) => "PATCH_INVALID",
+            Self::Invalid(_) | Self::InvalidObject { .. } => "PATCH_INVALID",
             Self::Scene(_) => "SCENE_INVALID",
         }
     }
@@ -215,6 +242,26 @@ fn entity_form(entity: &crate::runtime::SceneEntity) -> Value {
         }
     }
     value
+}
+
+/// JSON merge patch (RFC 7386): objects merge key by key, `null` removes a
+/// key, anything else replaces.
+fn merge_into(target: &mut Value, patch: Value) {
+    let (Value::Object(target), Value::Object(patch)) = (&mut *target, &patch)
+    else {
+        *target = patch;
+        return;
+    };
+    for (key, value) in patch {
+        if value.is_null() {
+            target.remove(key);
+        } else {
+            merge_into(
+                target.entry(key.clone()).or_insert(Value::Null),
+                value.clone(),
+            );
+        }
+    }
 }
 
 fn entity_id(entity: &Value) -> Option<Uuid> {
@@ -336,7 +383,8 @@ fn apply_operation(
             .ok_or_else(|| fail(format!("entity {id} does not exist")))
     };
     match operation {
-        PatchOperation::Create { entity } => {
+        PatchOperation::Create { entity }
+        | PatchOperation::Upsert { entity, .. } => {
             let Value::Object(object) = entity else {
                 return Err(fail("`entity` must be an object".into()));
             };
@@ -348,6 +396,31 @@ fn apply_operation(
                         .map_err(fail)?;
                     object.insert("parent".into(), id.to_string().into());
                 }
+            }
+            let existing = matches!(operation, PatchOperation::Upsert { .. })
+                .then(|| {
+                    entities.iter().position(|old| match object.get("id") {
+                        Some(id) => old.get("id") == Some(id),
+                        None => object.get("name").is_some_and(|name| {
+                            !name.is_null() && old.get("name") == Some(name)
+                        }),
+                    })
+                })
+                .flatten();
+            if let Some(position) = existing {
+                object
+                    .entry("id")
+                    .or_insert_with(|| entities[position]["id"].clone());
+                let new = Value::Object(object);
+                if matches!(
+                    operation,
+                    PatchOperation::Upsert { merge: true, .. }
+                ) {
+                    merge_into(&mut entities[position], new);
+                } else {
+                    entities[position] = new;
+                }
+                return Ok(());
             }
             object
                 .entry("id")
@@ -395,9 +468,15 @@ fn apply_operation(
         PatchOperation::SetScene { .. } => {
             unreachable!("apply_patch handles scene operations")
         }
-        PatchOperation::Delete { id } => {
-            let id = id.resolve(entities).map_err(fail)?;
-            find(entities, id)?;
+        PatchOperation::Delete { id, missing_ok } => {
+            let found = id
+                .resolve(entities)
+                .map_err(fail)
+                .and_then(|id| find(entities, id).map(|_| id));
+            let id = match found {
+                Err(_) if *missing_ok => return Ok(()),
+                found => found?,
+            };
             let removed = descendants(entities, id);
             entities.retain(|entity| {
                 entity_id(entity).is_none_or(|id| !removed.contains(&id))
@@ -407,7 +486,7 @@ fn apply_operation(
     Ok(())
 }
 
-fn escape(key: &str) -> String {
+pub(crate) fn escape(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
@@ -474,6 +553,16 @@ fn fill_defaults(
     }
     for (key, default) in default {
         match value.get_mut(key) {
+            // An RGB color where the scene stores RGBA gets alpha 1.
+            Some(Value::Array(rgb))
+                if key.ends_with("color")
+                    && rgb.len() == 3
+                    && default
+                        .as_array()
+                        .is_some_and(|rgba| rgba.len() == 4) =>
+            {
+                rgb.push(1.0.into());
+            }
             Some(value) => {
                 fill_defaults(
                     value,
@@ -502,6 +591,127 @@ fn dropped_key(wanted: &Value, kept: &Value, path: &str) -> Option<String> {
             None => Some(path),
         }
     })
+}
+
+/// A key in a scene file that loading ignores, usually a misspelling.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DroppedField {
+    /// Index in `entities`, or `None` for a scene setting.
+    pub entity: Option<usize>,
+    /// JSON pointer inside the entity or the scene, such as
+    /// `/directional_light/intensity`.
+    pub path: String,
+    /// Keys the object does have.
+    pub known: Vec<String>,
+    /// The one known key within two edits of the dropped one, if exactly one
+    /// is, and the scene file does not set it already.
+    pub suggestion: Option<String>,
+}
+
+/// Every key in `raw` (the scene file's JSON) that decoding into `document`
+/// dropped. Registered component strings are checked on load instead.
+#[must_use]
+pub fn dropped_fields(
+    raw: &Value,
+    document: &SceneDocument,
+) -> Vec<DroppedField> {
+    let mut found = Vec::new();
+    let Ok(Value::Object(mut kept)) = serde_json::to_value(document) else {
+        return found;
+    };
+    let kept_entities = kept.remove("entities");
+    let mut settings = raw.clone();
+    if let Value::Object(settings) = &mut settings {
+        settings.remove("entities");
+    }
+    collect_dropped(&settings, &Value::Object(kept), "", None, &mut found);
+    let raw_entities = raw.get("entities").and_then(Value::as_array);
+    let kept_entities = kept_entities.as_ref().and_then(Value::as_array);
+    for (index, (raw, kept)) in raw_entities
+        .into_iter()
+        .flatten()
+        .zip(kept_entities.into_iter().flatten())
+        .enumerate()
+    {
+        let (mut raw, mut kept) = (raw.clone(), kept.clone());
+        for value in [&mut raw, &mut kept] {
+            if let Value::Object(object) = value {
+                object.remove("components");
+            }
+        }
+        collect_dropped(&raw, &kept, "", Some(index), &mut found);
+    }
+    found
+}
+
+fn collect_dropped(
+    raw: &Value,
+    kept: &Value,
+    path: &str,
+    entity: Option<usize>,
+    found: &mut Vec<DroppedField>,
+) {
+    match (raw, kept) {
+        (Value::Object(raw), Value::Object(kept)) => {
+            for (key, value) in raw {
+                let path = format!("{path}/{}", escape(key));
+                if let Some(kept) = kept.get(key) {
+                    collect_dropped(value, kept, &path, entity, found);
+                    continue;
+                }
+                // `null` is how an absent optional section is written.
+                if value.is_null() {
+                    continue;
+                }
+                let unset =
+                    kept.keys().filter(|known| !raw.contains_key(*known));
+                let mut close =
+                    unset.filter(|known| edit_distance(key, known) <= 2);
+                let suggestion = match (close.next(), close.next()) {
+                    (Some(only), None) => Some(only.clone()),
+                    _ => None,
+                };
+                found.push(DroppedField {
+                    entity,
+                    path,
+                    known: kept.keys().cloned().collect(),
+                    suggestion,
+                });
+            }
+        }
+        (Value::Array(raw), Value::Array(kept)) => {
+            for (index, (raw, kept)) in raw.iter().zip(kept).enumerate() {
+                collect_dropped(
+                    raw,
+                    kept,
+                    &format!("{path}/{index}"),
+                    entity,
+                    found,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Levenshtein distance over characters.
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if ca == *cb {
+                diagonal
+            } else {
+                1 + diagonal.min(above).min(row[j])
+            };
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 /// Applies `patch` to a parsed scene. Nothing changes on error.
@@ -590,8 +800,15 @@ pub fn apply_patch(
     }
     let mut scene = settings.clone();
     scene["entities"] = Value::Array(stored);
-    let patched: SceneDocument = serde_json::from_value(scene)
-        .map_err(|error| PatchError::Invalid(error.to_string()))?;
+    let patched: SceneDocument = serde::Deserialize::deserialize(&scene)
+        .map_err(|error| {
+            scene["entities"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(locate_invalid)
+                .unwrap_or_else(|| PatchError::Invalid(error.to_string()))
+        })?;
     // serde drops a key it does not know, so a mistyped scene setting would
     // report success and change nothing.
     if let Ok(Value::Object(mut kept)) = serde_json::to_value(&patched) {
@@ -602,8 +819,12 @@ pub fn apply_patch(
             )));
         }
     }
-    validate_scene_structure(&patched)
-        .map_err(|error| PatchError::Invalid(error.to_string()))?;
+    validate_scene_structure(&patched).map_err(|error| {
+        match error_object(&patched, &error) {
+            Some(index) => invalid_object(&patched.entities[index], &error),
+            None => PatchError::Invalid(error.to_string()),
+        }
+    })?;
     let unvalidated_components = validate_components(&patched)?;
 
     let by_id = |values: &[Value]| -> BTreeMap<Uuid, Value> {
@@ -612,7 +833,11 @@ pub fn apply_patch(
             .filter_map(|entity| Some((entity_id(entity)?, entity.clone())))
             .collect()
     };
-    let (old, new) = (by_id(&before), by_id(&entities));
+    // Diff the parsed result, not the patch input: both sides then hold the
+    // same f32-rounded values and filled-in defaults, so a rerun reports no
+    // changes.
+    let after: Vec<Value> = patched.entities.iter().map(entity_form).collect();
+    let (old, new) = (by_id(&before), by_id(&after));
     let mut outcome = PatchOutcome {
         revision_before: String::new(),
         revision_after: String::new(),
@@ -630,8 +855,17 @@ pub fn apply_patch(
         unvalidated_components,
         written: false,
     };
+    let mut settings_after = serde_json::to_value(&patched).unwrap_or_default();
+    if let Value::Object(fields) = &mut settings_after {
+        fields.remove("entities");
+    }
     let mut leaves = Vec::new();
-    diff_values(String::new(), &settings_before, &settings, &mut leaves);
+    diff_values(
+        String::new(),
+        &settings_before,
+        &settings_after,
+        &mut leaves,
+    );
     outcome
         .changes
         .extend(leaves.into_iter().map(|(path, before, after)| FieldChange {
@@ -659,6 +893,60 @@ pub fn apply_patch(
     Ok((patched, outcome))
 }
 
+/// For an entity that does not parse, the JSON pointer of the field at
+/// fault and serde's message: the deepest key whose removal makes it parse.
+fn locate_invalid(entity: &Value) -> Option<PatchError> {
+    let parses = |value: &Value| {
+        serde_json::from_value::<crate::runtime::SceneEntity>(value.clone())
+    };
+    let error = parses(entity).err()?;
+    let defaults = &crate::schema::defaults().0;
+    let mut path = String::new();
+    'narrow: while let Some(Value::Object(fields)) = entity.pointer(&path) {
+        for key in fields.keys() {
+            let child =
+                format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+            // Put the default back where there is one; else drop the key.
+            let section = child[1..].split('/').next().unwrap_or_default();
+            let default = defaults
+                .get(section)
+                .and_then(|value| value.pointer(&child[1 + section.len()..]));
+            let mut trial = entity.clone();
+            match (default, trial.pointer_mut(&path)) {
+                (Some(default), Some(Value::Object(parent))) => {
+                    parent.insert(key.clone(), default.clone());
+                }
+                (None, Some(Value::Object(parent))) => {
+                    parent.remove(key);
+                }
+                _ => {}
+            }
+            // A one-key object is an enum tag: removing it never parses.
+            if parses(&trial).is_ok() || fields.len() == 1 {
+                path = child;
+                continue 'narrow;
+            }
+        }
+        break;
+    }
+    Some(PatchError::InvalidObject {
+        id: entity_id(entity).unwrap_or_default(),
+        name: entity["name"].as_str().map(str::to_owned),
+        message: format!("{path}: {error}"),
+    })
+}
+
+fn invalid_object(
+    entity: &crate::runtime::SceneEntity,
+    error: &SceneIoError,
+) -> PatchError {
+    PatchError::InvalidObject {
+        id: entity.id,
+        name: entity.name.clone(),
+        message: error.to_string(),
+    }
+}
+
 /// Restores each built-in component through the registry so bad values fail
 /// here, not when the game loads the scene. Returns unknown component names.
 fn validate_components(
@@ -681,14 +969,8 @@ fn validate_components(
                 unknown.insert(name.clone());
                 continue;
             }
-            set_registered_component(world, scratch, name, text).map_err(
-                |error| {
-                    PatchError::Invalid(format!(
-                        "entity {}: {error}",
-                        entity.id
-                    ))
-                },
-            )?;
+            set_registered_component(world, scratch, name, text)
+                .map_err(|error| invalid_object(entity, &error))?;
         }
     }
     Ok(unknown.into_iter().collect())
@@ -742,6 +1024,31 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn dropped_fields_suggest_only_one_close_unset_key() {
+        assert_eq!(edit_distance("qualty", "quality"), 1);
+        assert_eq!(edit_distance("", "abc"), 3);
+        let raw = json!({
+            "format_version": 6, "name": "Main", "entities": [
+                {"id": CUBE, "parent": null, "name": "Cube", "visble": false,
+                 "nam": "x", "components": {"game.anything": "{}"}}],
+            "render": {"quality": "High", "culling": "Auto", "qualty": "Low"}
+        });
+        let document: SceneDocument =
+            serde_json::from_value(raw.clone()).unwrap();
+        let found = dropped_fields(&raw, &document);
+        let at =
+            |path: &str| found.iter().find(|field| field.path == path).unwrap();
+        // `quality` is already set, so `qualty` is not certainly it.
+        assert_eq!(at("/render/qualty").suggestion, None);
+        assert_eq!(at("/render/qualty").entity, None);
+        assert_eq!(at("/visble").suggestion.as_deref(), Some("visible"));
+        assert_eq!(at("/visble").entity, Some(0));
+        // `name` is set by the file; nothing else is within two edits.
+        assert_eq!(at("/nam").suggestion, None);
+        assert_eq!(found.len(), 3, "components are checked on load: {found:?}");
+    }
 
     const CUBE: &str = "00000000-0000-0000-0000-000000000001";
     const LAMP: &str = "00000000-0000-0000-0000-000000000002";
@@ -912,6 +1219,92 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("no entity is named `Nobody`"));
+    }
+
+    #[test]
+    fn a_bad_field_in_a_created_entity_is_named_by_its_path() {
+        let path = scene_file("bad_field");
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "create", "entity": {"name": "Floor",
+                    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+                        "material": {"Inline": {"base_color": [1, 0]}}}}}
+            ]})),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("(`Floor`): /mesh_renderer/material/Inline/base_color: invalid length 2"),
+            "{error}"
+        );
+        // RGB is fine: alpha defaults to 1.
+        patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "create", "entity": {"name": "Floor",
+                    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+                        "material": {"Inline": {"base_color": [1, 0, 0]}}}}}
+            ]})),
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn delete_can_skip_a_missing_entity_and_upsert_can_merge() {
+        let path = scene_file("merge");
+        let run = patch(json!({"operations": [
+            {"op": "delete", "id": "Gone", "missing_ok": true},
+            {"op": "upsert", "merge": true,
+             "entity": {"name": "Cube", "transform": {"position": [0, 5, 0]}, "visible": null}},
+        ]}));
+        let before =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        patch_scene_file(&path, &run, false).unwrap();
+        patch_scene_file(&path, &run, false).unwrap();
+        let after =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let cube = |document: &SceneDocument| {
+            document
+                .entities
+                .iter()
+                .find(|entity| entity.name.as_deref() == Some("Cube"))
+                .unwrap()
+                .clone()
+        };
+        let (old, new) = (cube(&before), cube(&after));
+        let (old_t, new_t) = (old.transform.unwrap(), new.transform.unwrap());
+        assert_eq!(new_t.position, [0.0, 5.0, 0.0]);
+        assert_eq!(new_t.scale, old_t.scale);
+        assert_eq!(new.mesh_renderer, old.mesh_renderer, "kept");
+        let strict =
+            patch(json!({"operations": [{"op": "delete", "id": "Gone"}]}));
+        assert!(patch_scene_file(&path, &strict, false).is_err());
+    }
+
+    #[test]
+    fn a_patch_of_upserts_runs_twice_and_keeps_ids() {
+        let path = scene_file("upsert");
+        let layout = patch(json!({"operations": [
+            {"op": "upsert", "entity": {"name": "Shelf", "parent": "Cube", "visible": false,
+             "transform": {"position": [13.0, 0.85, -17.0]},
+             "point_light": {"color": [0.9, 0.8, 0.7], "intensity": 0.3, "range": 2.0}}},
+            {"op": "reparent", "id": "Lamp", "parent": "Shelf"},
+        ]}));
+        patch_scene_file(&path, &layout, false).unwrap();
+        let first =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let rerun = patch_scene_file(&path, &layout, false).unwrap();
+        assert!(rerun.changes.is_empty(), "{:?}", rerun.changes);
+        assert_eq!(rerun.revision_before, rerun.revision_after);
+        let second =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(second.entities.len(), 3);
+        assert_eq!(second.entities[2].id, first.entities[2].id);
+        assert_eq!(second.entities[2].visible, Some(false));
+        assert_eq!(second.entities[1].parent, Some(first.entities[2].id));
     }
 
     #[test]

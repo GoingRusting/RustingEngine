@@ -488,6 +488,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<EventQueue<GpuPhysicsEventsLost>>();
     types.register::<EventQueue<HudButtonPressed>>();
     types.register::<EventQueue<SoundEvent>>();
+    types.register::<AudioQueue>();
     types.register::<ExitState>();
     types.register::<FrameTime>();
     types.register::<GpuConditionShaders>();

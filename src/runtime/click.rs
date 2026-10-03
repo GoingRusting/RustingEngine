@@ -47,6 +47,7 @@ pub(super) fn route_click_events(world: &mut World) {
         projection: active_camera.projection,
         active: true,
         priority: active_camera.priority,
+        viewport: None,
     };
     let Some(ray) = scene_ray(
         cursor,

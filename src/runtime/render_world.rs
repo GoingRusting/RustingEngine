@@ -74,6 +74,26 @@ pub struct ExtractionReport {
     pub total: usize,
 }
 
+/// One [`super::GpuConditionShader`] as the renderer needs it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExtractedConditionShader {
+    /// GLSL after [`super::GpuConditionShader::resolve`].
+    pub source: String,
+    pub params: Vec<[f32; 4]>,
+    /// At least 1.
+    pub events_per_body: u32,
+}
+
+impl From<String> for ExtractedConditionShader {
+    fn from(source: String) -> Self {
+        Self {
+            source,
+            params: Vec::new(),
+            events_per_body: 1,
+        }
+    }
+}
+
 /// Data consumed by the renderer, separate from the gameplay world.
 #[derive(Resource, Default, Clone)]
 pub struct RenderWorld {
@@ -82,6 +102,11 @@ pub struct RenderWorld {
     /// changes. The renderer uses this instead of comparing every object.
     pub renderables_revision: u64,
     pub active_camera: Option<ExtractedCamera>,
+    /// Active cameras with a viewport (`[x, y, width, height]` fractions
+    /// of the target), lowest priority first. They draw over the active
+    /// camera, which is one of them when no active camera fills the
+    /// window. Empty while a tool overrides the camera.
+    pub views: Vec<(ExtractedCamera, [f32; 4])>,
     pub directional_lights: Vec<ExtractedDirectionalLight>,
     pub point_lights: Vec<ExtractedPointLight>,
     pub spot_lights: Vec<ExtractedSpotLight>,
@@ -124,8 +149,8 @@ pub struct RenderWorld {
     /// Solid CPU and static colliders from the last CPU physics step, for
     /// GPU bodies to collide against.
     pub gpu_colliders: Vec<super::GpuCollider>,
-    /// Resolved [`super::GpuConditionShader`] sources, in dispatch order.
-    pub gpu_condition_shaders: Vec<String>,
+    /// Resolved [`super::GpuConditionShader`]s, in dispatch order.
+    pub gpu_condition_shaders: Vec<ExtractedConditionShader>,
     /// Wrapped `PhysicsSolver::Custom` hook files, one per distinct path,
     /// dispatched before the condition shaders. Refreshed only when the GPU
     /// bodies are re-extracted.
@@ -176,6 +201,7 @@ pub fn extract_render_world(world: &mut World) {
     let renderables = (previous_renderables_signature != renderables_signature)
         .then(|| collect_renderables(world));
     let active_camera = collect_active_camera(world);
+    let views = collect_views(world);
     let directional_lights = collect_directional_lights(world);
     let point_lights = collect_point_lights(world);
     let spot_lights = collect_spot_lights(world);
@@ -231,7 +257,11 @@ pub fn extract_render_world(world: &mut World) {
         match world.get_resource_mut::<super::GpuEventRegistry>() {
             Some(mut registry) => condition_shaders
                 .iter()
-                .map(|shader| shader.resolve(&mut registry))
+                .map(|shader| ExtractedConditionShader {
+                    source: shader.resolve(&mut registry),
+                    params: shader.params.clone(),
+                    events_per_body: shader.events_per_body.max(1),
+                })
                 .collect(),
             None => Vec::new(),
         };
@@ -331,6 +361,7 @@ pub fn extract_render_world(world: &mut World) {
     }
     render_world.renderables_signature = renderables_signature;
     render_world.active_camera = active_camera;
+    render_world.views = views;
     render_world.tone_mapping = tone_mapping;
     render_world.fog = fog;
     render_world.bloom = bloom;
@@ -541,15 +572,43 @@ fn collect_active_camera(world: &mut World) -> Option<ExtractedCamera> {
     query
         .iter(world)
         .filter(|(_, _, camera)| camera.active)
+        .max_by_key(|(entity, _, camera)| {
+            (
+                camera.viewport.is_none(),
+                camera.priority,
+                std::cmp::Reverse(entity.to_bits()),
+            )
+        })
         .map(|(entity, transform, camera)| ExtractedCamera {
             entity,
             transform: *transform,
             projection: camera.projection,
             priority: camera.priority,
         })
-        .max_by_key(|camera| {
-            (camera.priority, std::cmp::Reverse(camera.entity.to_bits()))
+}
+
+fn collect_views(world: &mut World) -> Vec<(ExtractedCamera, [f32; 4])> {
+    if world.resource::<RenderCameraOverride>().entity.is_some() {
+        return Vec::new();
+    }
+    let mut query = world.query::<(Entity, &GlobalTransform, &Camera)>();
+    let mut views: Vec<_> = query
+        .iter(world)
+        .filter(|(_, _, camera)| camera.active)
+        .filter_map(|(entity, transform, camera)| {
+            let view = ExtractedCamera {
+                entity,
+                transform: *transform,
+                projection: camera.projection,
+                priority: camera.priority,
+            };
+            Some((view, camera.viewport?))
         })
+        .collect();
+    views.sort_by_key(|(camera, _)| {
+        (camera.priority, std::cmp::Reverse(camera.entity.to_bits()))
+    });
+    views
 }
 
 fn collect_directional_lights(
@@ -711,6 +770,35 @@ mod tests {
                 .map(|camera| camera.entity),
             Some(expected)
         );
+    }
+
+    #[test]
+    fn viewport_cameras_draw_over_the_full_window_one_in_priority_order() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let camera = |priority, viewport| Camera {
+            active: true,
+            priority,
+            viewport,
+            ..Camera::default()
+        };
+        let left = [0.0, 0.0, 0.5, 1.0];
+        let right = [0.5, 0.0, 0.5, 1.0];
+        let top = app.spawn((Transform::default(), camera(9, Some(right))));
+        let low = app.spawn((Transform::default(), camera(2, Some(left))));
+        app.update(Duration::ZERO).unwrap();
+        let world = app.world().resource::<RenderWorld>();
+        let order: Vec<_> =
+            world.views.iter().map(|(c, v)| (c.entity, *v)).collect();
+        assert_eq!(order, [(low, left), (top, right)]);
+        // No camera fills the window: the highest view aims.
+        assert_eq!(world.active_camera.map(|c| c.entity), Some(top));
+
+        let full = app.spawn((Transform::default(), camera(0, None)));
+        app.update(Duration::ZERO).unwrap();
+        let world = app.world().resource::<RenderWorld>();
+        assert_eq!(world.active_camera.map(|c| c.entity), Some(full));
+        assert_eq!(world.views.len(), 2);
     }
 
     #[test]

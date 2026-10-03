@@ -6,6 +6,7 @@
 //! play. The same seed gives the same run: the scenario sets
 //! [`RandomSeed`], and every tick advances by exactly one fixed step.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -16,16 +17,23 @@ use uuid::Uuid;
 
 use crate::rendering::capture::HeadlessCapture;
 use crate::runtime::{
-    picking, scene_document, set_registered_component,
+    picking, scene_document_lenient, set_registered_component,
     set_registered_component_field, ActionMap, Camera, CollisionEvent,
-    EventQueue, FrameTime, GlobalTransform, InputBinding, MeshRenderer, Name,
-    RandomSeed, RenderWorld, RuntimeInput, SceneId, SceneTransform,
+    EventQueue, FrameTime, GlobalTransform, InputBinding, MeshRenderer,
+    MouseButton, Name, RandomSeed, RenderWorld, RuntimeInput, SceneId,
+    SceneTransform, Stick,
 };
 use crate::{App, AssetServer, Transform};
 
 /// Environment variable naming the scenario file a game build runs instead
 /// of opening a window.
 pub const TEST_SCENARIO_ENV: &str = "RUSTING_TEST_SCENARIO";
+/// Set by `rusting test --update-golden`: `golden` images are rewritten
+/// from this run's captures instead of compared.
+pub const UPDATE_GOLDEN_ENV: &str = "RUSTING_UPDATE_GOLDEN";
+/// Set by `rusting determinism --scenario`: run every tick, as with
+/// `keep_going`, so a failed check does not cut the hash comparison short.
+pub const KEEP_GOING_ENV: &str = "RUSTING_KEEP_GOING";
 /// Environment variable naming where the game writes its
 /// [`ScenarioReport`] as JSON.
 pub const TEST_REPORT_ENV: &str = "RUSTING_TEST_REPORT";
@@ -41,13 +49,131 @@ pub fn tick_delta(app: &App, tick: u32) -> Duration {
     }
 }
 
-/// Finds an entity by persistent ID or by name. With several matches, the
-/// lowest persistent ID wins, so the choice does not depend on spawn order.
+/// `counter:<name>` in place of an entity name means the entity holding the
+/// `rusting.counter` called `<name>`.
+pub const COUNTER_PREFIX: &str = "counter:";
+
+/// In place of an entity name: the sounds game code and sound cues asked
+/// for, as `{"requested": n, "clips": {"<clip path>": n}, "level": [l, r],
+/// "playing": [...]}`. A `/` in a clip path is `~1` in a JSON pointer:
+/// `/clips/sfx~1hit.wav`. `level` is the RMS of the mix during the last
+/// tick per speaker, `peak` the largest sample magnitude that tick (1.0 is
+/// full scale), `clipped` the samples at or over full scale since tick 0,
+/// and `playing` lists the sounds that have not ended, all from an offline
+/// kira mix of what the game asked for.
+pub const AUDIO_ENTITY: &str = "audio:";
+
+/// The offline mix as `audio:` reports it after the last tick.
+#[derive(bevy_ecs::prelude::Resource, Clone, Default)]
+struct AudioMix {
+    level: [f32; 2],
+    peak: [f32; 2],
+    clipped: u64,
+    playing: Vec<crate::audio_output::PlayingSound>,
+}
+
+/// Appends the state hashes recorded since the last call, so the report
+/// keeps every tick, not only the `STATE_HASH_HISTORY` the world holds.
+fn collect_hashes(world: &World, report: &mut ScenarioReport) {
+    let Some(hashes) = world.get_resource::<crate::runtime::StateHashes>()
+    else {
+        return;
+    };
+    for (history, kept) in [
+        (&hashes.recent, &mut report.state_hashes),
+        (&hashes.gpu, &mut report.gpu_state_hashes),
+    ] {
+        let last = kept.last().map(|entry| entry.0);
+        kept.extend(
+            history
+                .iter()
+                .filter(|entry| last.is_none_or(|last| entry.0 > last)),
+        );
+    }
+}
+
+/// Plays this tick's sound requests into the offline mix and renders one
+/// fixed step of audio, appended to `samples`.
+fn mix_tick(
+    app: &mut App,
+    mixer: &mut crate::audio_output::OfflineMixer,
+    samples: &mut Vec<f32>,
+) {
+    let world = app.world_mut();
+    let commands = world
+        .get_resource_mut::<crate::runtime::AudioQueue>()
+        .map(|mut queue| queue.drain())
+        .unwrap_or_default();
+    let assets = world
+        .get_resource::<crate::project_runner::ProjectFolder>()
+        .map(|folder| folder.0.join("assets"))
+        .unwrap_or_default();
+    let time = *world.resource::<FrameTime>();
+    let step = time.fixed_delta.as_secs_f64();
+    let delay = |tick: u64| {
+        Duration::from_secs_f64(
+            tick.saturating_sub(time.fixed_tick) as f64 * step,
+        )
+    };
+    for command in commands {
+        mixer.run(&assets, command, delay);
+    }
+    let frames =
+        (step * f64::from(crate::audio_output::MIX_RATE)).round() as usize;
+    let block = mixer.render(frames);
+    let rms = |channel: usize| {
+        let sum: f32 =
+            block.iter().skip(channel).step_by(2).map(|s| s * s).sum();
+        (sum / frames.max(1) as f32).sqrt()
+    };
+    let peak = |channel: usize| {
+        block
+            .iter()
+            .skip(channel)
+            .step_by(2)
+            .fold(0.0_f32, |peak, s| peak.max(s.abs()))
+    };
+    let clipped = world
+        .get_resource::<AudioMix>()
+        .map_or(0, |mix| mix.clipped)
+        + block.iter().filter(|s| s.abs() >= 1.0).count() as u64;
+    let mix = AudioMix {
+        level: [rms(0), rms(1)],
+        peak: [peak(0), peak(1)],
+        clipped,
+        playing: mixer.playing(),
+    };
+    world.insert_resource(mix);
+    samples.extend_from_slice(&block);
+}
+
+/// Path of a counter's value in its entity's scene form.
+const COUNTER_VALUE: &str = "/components/rusting.counter/value";
+
+/// Finds an entity by persistent ID, by name, or by counter name
+/// (`counter:<name>`). With several matches, the lowest persistent ID wins,
+/// so the choice does not depend on spawn order.
 pub fn find_entity(
     world: &mut World,
     wanted: &str,
     accept: impl Fn(&World, Entity) -> bool,
 ) -> Option<Entity> {
+    if let Some(counter) = wanted.strip_prefix(COUNTER_PREFIX) {
+        let mut query =
+            world
+                .query::<(Entity, &crate::runtime::Counter, Option<&SceneId>)>(
+                );
+        let mut matches: Vec<_> = query
+            .iter(world)
+            .filter(|(_, found, _)| found.name == counter)
+            .map(|(entity, _, scene_id)| (scene_id.map(|id| id.0), entity))
+            .collect();
+        matches.sort();
+        return matches
+            .into_iter()
+            .map(|(_, entity)| entity)
+            .find(|&entity| accept(world, entity));
+    }
     let id = Uuid::parse_str(wanted).ok();
     let mut query = world.query::<(Entity, Option<&SceneId>, Option<&Name>)>();
     let mut matches: Vec<_> = query
@@ -93,6 +219,46 @@ impl CameraView {
         })
     }
 
+    /// A named camera's view at its own viewport's pixel size within
+    /// `extent`, whether or not it is active.
+    #[must_use]
+    pub fn of(world: &World, entity: Entity, extent: [u32; 2]) -> Option<Self> {
+        let camera = *world.get::<Camera>(entity)?;
+        let extent = match camera.viewport {
+            Some(viewport) => {
+                crate::rendering::render_scale::viewport_pixels(
+                    viewport, extent,
+                )
+                .extent
+            }
+            None => extent,
+        };
+        Some(Self {
+            entity,
+            camera,
+            transform: *world.get::<GlobalTransform>(entity)?,
+            extent,
+        })
+    }
+
+    #[must_use]
+    pub fn extent(&self) -> [u32; 2] {
+        self.extent
+    }
+
+    /// Projects a world point to a pixel of the image; `None` behind the
+    /// camera.
+    #[must_use]
+    pub fn project(&self, point: [f32; 3]) -> Option<[f32; 2]> {
+        picking::project_point(
+            nalgebra::Vector3::from(point),
+            self.camera,
+            self.transform,
+            [0.0, 0.0],
+            [self.extent[0] as f32, self.extent[1] as f32],
+        )
+    }
+
     /// The object under `pixel`, found by casting a ray against mesh bounds.
     /// Returns its persistent ID, name, distance and world position, or a
     /// null `id` when the ray hits nothing.
@@ -136,6 +302,46 @@ impl CameraView {
         }
     }
 
+    /// Every object that covers part of `rect` (`[x0, y0, x1, y1]`, end
+    /// exclusive, clamped to the image), with the share of the rectangle it
+    /// is the nearest hit for. Ordered by share, then ID; `none` is the
+    /// share that hits nothing.
+    // ponytail: samples at most 64x64 pixel centers with bounds picking, so
+    // shares are estimates; a rendered ID buffer would make them exact.
+    pub fn pick_rect(&self, world: &mut World, rect: [u32; 4]) -> Value {
+        let x1 = rect[2].min(self.extent[0]);
+        let y1 = rect[3].min(self.extent[1]);
+        let (x0, y0) = (rect[0].min(x1), rect[1].min(y1));
+        let step = |len: u32| len.div_ceil(64).max(1) as usize;
+        let mut counts: BTreeMap<Option<Uuid>, (u32, Value)> = BTreeMap::new();
+        let mut samples = 0_u32;
+        for y in (y0..y1).step_by(step(y1 - y0)) {
+            for x in (x0..x1).step_by(step(x1 - x0)) {
+                let hit = self.pick(world, [x, y]);
+                let id = hit["id"].as_str().and_then(|id| id.parse().ok());
+                let entry = counts.entry(id).or_insert((0, hit));
+                entry.0 += 1;
+                samples += 1;
+            }
+        }
+        let share = |count: u32| f64::from(count) / f64::from(samples.max(1));
+        let mut hits: Vec<_> = counts
+            .iter()
+            .filter(|(id, _)| id.is_some())
+            .map(|(_, (count, hit))| {
+                json!({"id": hit["id"], "name": hit["name"], "share": share(*count)})
+            })
+            .collect();
+        hits.sort_by(|a, b| {
+            b["share"]
+                .as_f64()
+                .partial_cmp(&a["share"].as_f64())
+                .unwrap()
+        });
+        let none = counts.get(&None).map_or(0, |(count, _)| *count);
+        json!({"rect": [x0, y0, x1, y1], "samples": samples, "none": share(none), "entities": hits})
+    }
+
     /// Persistent ID, name, projection and transforms of the camera.
     #[must_use]
     pub fn data(&self, world: &World) -> Value {
@@ -155,6 +361,10 @@ impl CameraView {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Scenario {
     pub name: String,
+    /// Rewrites `golden` images from this run instead of comparing; set
+    /// by `rusting test --update-golden`.
+    #[serde(skip)]
+    pub update_golden: bool,
     /// Written to [`RandomSeed`] before the first tick.
     #[serde(default)]
     pub seed: u64,
@@ -169,6 +379,73 @@ pub struct Scenario {
     /// check that failed is not repeated on later ticks.
     #[serde(default)]
     pub keep_going: bool,
+    /// Every capture also writes `<name>.annotated.png`, with a box and
+    /// short ID over each mesh entity, and `<name>.annotated.json`, which
+    /// maps each short ID to the entity's name, ID and pixel box.
+    #[serde(default)]
+    pub annotate: bool,
+    /// Writes one image with every `capture` frame in a grid, each labelled
+    /// with its tick, so a single image shows motion. Path relative to the
+    /// scenario file.
+    #[serde(default)]
+    pub contact_sheet: Option<PathBuf>,
+    /// Writes everything the game played as a stereo 48 kHz WAV file. Path
+    /// relative to the scenario file.
+    #[serde(default)]
+    pub audio_out: Option<PathBuf>,
+    /// Limits on the run's cost; each one exceeded fails the run. Timing
+    /// limits depend on the machine, so set them with headroom and read
+    /// `perf.environment` before comparing runs.
+    #[serde(default)]
+    pub budgets: Option<Budgets>,
+    /// Checked after every tick. The first tick one fails ends the run, or,
+    /// with `keep_going`, is reported once. A missing entity or path passes,
+    /// so a despawned object does not break an invariant about it; set
+    /// `exists` to require it.
+    #[serde(default)]
+    pub invariants: Vec<Expectation>,
+    /// Opens the headless Vulkan device even with no `capture` step, so GPU
+    /// bodies simulate and GPU events arrive. Without it (or a capture) GPU
+    /// bodies stay where they spawned. Fails the run when there is no
+    /// Vulkan device; software Vulkan such as lavapipe works but is slow.
+    #[serde(default)]
+    pub gpu: bool,
+    /// Files copied into the game's user data folder before tick 0, as
+    /// `{"saves/1.txt": "fixtures/old_save.txt"}`: the key is the path
+    /// `GameScene::load_data` reads, the value a file relative to the
+    /// scenario file.
+    #[serde(default)]
+    pub files: BTreeMap<String, PathBuf>,
+}
+
+/// Limits on [`PerfReport`] values. Draw and triangle limits apply to the
+/// last rendered frame; setting one renders every tick, and without Vulkan
+/// they are ignored.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Budgets {
+    pub max_tick_ms: Option<f64>,
+    pub mean_tick_ms: Option<f64>,
+    pub p95_tick_ms: Option<f64>,
+    pub max_draws: Option<u32>,
+    pub max_triangles: Option<u64>,
+}
+
+/// What a run cost, in a stable JSON shape.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct PerfReport {
+    /// Engine version, OS, architecture, build profile and, when a frame was
+    /// rendered, the device and driver.
+    pub environment: Value,
+    /// Wall-clock milliseconds of each whole tick (simulation, and rendering
+    /// when the scenario captures).
+    pub tick_ms_mean: f64,
+    pub tick_ms_p95: f64,
+    pub tick_ms_max: f64,
+    /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
+    /// of the last rendered frame, and with viewport cameras `cameras`:
+    /// `[{name, gpu_ms, draws, triangles}]`, one per drawn camera. Null
+    /// without a renderer (no capture step, `gpu`, or render budget).
+    pub render: Value,
 }
 
 fn default_capture_size() -> [u32; 2] {
@@ -189,6 +466,10 @@ pub struct ScenarioStep {
     /// a test need not know the exact tick something happens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub within: Option<u32>,
+    /// For `press` and `tap`: the fraction of the tick (0 to 1) the press
+    /// lands at, so `GameScene::press_tick` gives `tick + at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
     #[serde(flatten)]
     pub action: StepAction,
 }
@@ -200,30 +481,222 @@ pub enum StepAction {
     Press(String),
     /// Releases every input bound to a named action.
     Release(String),
+    /// Presses a named action and releases it before the next tick, so
+    /// each tap gives `pressed` one edge.
+    Tap(String),
     /// Checks one value of an entity's reflected scene state.
     Expect(Expectation),
     /// Counts events seen by gameplay from tick 0 through this tick.
     ExpectEvents(EventExpectation),
-    /// Writes the frame to this path, relative to the scenario file.
-    Capture(PathBuf),
+    /// Writes the frame to a path relative to the scenario file: either
+    /// the path alone or `{"path", "camera", "hud", "golden", "tolerance"}`.
+    Capture(CaptureStep),
     /// Changes one value before the tick's update, to set up a test: move
     /// the player, fill a counter.
     Set(Assignment),
+    /// Clicks the topmost UI text that equals this label (an egui button,
+    /// a HUD button, or text game code drew): moves the cursor to its
+    /// center, presses the left mouse button, and releases it before the
+    /// next tick. Fails listing the texts on screen when none matches.
+    /// The object form `{"text" or "starts_with", "index"}` matches a
+    /// prefix and picks the nth match in reading order.
+    Click(ClickTarget),
+    /// Puts the scene back as the game started, as `GameScene::restart`
+    /// does, before this tick's update. Files in the user data folder stay,
+    /// so a save made earlier can be loaded after it.
+    Restart(bool),
+    /// Checks that game code called `GameScene::quit` (true) or did not
+    /// (false). A quit ends the run after that tick's checks; steps at
+    /// later ticks then fail.
+    ExpectQuit(bool),
+    /// Checks a file in the user data folder, such as a save the game
+    /// wrote. Unlike other checks it may run after the game quits.
+    ExpectFile(FileExpectation),
     /// Moves the mouse cursor to this point of the view, as fractions of
     /// its width and height from the top-left corner: `[0.5, 0.5]` is the
     /// center.
     Pointer([f32; 2]),
+    /// Tilts the gamepad's left stick, each axis -1..1 (`[0, 1]` is fully
+    /// up), until another step moves it. Past half tilt it also presses the
+    /// stick's direction (`PadLeftStickUp`, ...).
+    LeftStick([f32; 2]),
+    /// Tilts the gamepad's right stick, as `left_stick` does.
+    RightStick([f32; 2]),
+    /// Checks where an entity is in the frame: on screen, inside a screen
+    /// rectangle, covering a share of the frame, or hidden behind others.
+    ExpectScreen(ScreenExpectation),
+    /// Checks the mean color and spread of a region of the frame.
+    ExpectPixels(PixelExpectation),
     /// Records one value of an entity's scene form in the report, on every
     /// tick through `until`. Never fails; use it to debug a scenario.
     Log(LoggedValue),
+}
+
+/// A `click` target: a label, or `{"text": "-", "index": 2}` /
+/// `{"starts_with": "Slot 1"}`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ClickTarget {
+    Label(String),
+    Find {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        starts_with: Option<String>,
+        /// 0-based, in reading order (top to bottom, then left to right).
+        /// Without it the topmost drawn match wins.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+}
+
+/// A `capture` step: `"shots/a.png"` or the object form.
+#[derive(Clone, Debug, Serialize)]
+pub struct CaptureStep {
+    pub path: PathBuf,
+    /// Renders through this camera (ID or name), full frame, in place of
+    /// the game's own view. Such a capture has no HUD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    /// False leaves the HUD and other runtime UI out.
+    #[serde(default = "yes")]
+    pub hud: bool,
+    /// Compares the capture with this image, relative to the scenario file.
+    /// `rusting test --update-golden` writes it instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub golden: Option<PathBuf>,
+    /// Largest of the three per-channel mean differences, 0 to 255, that still
+    /// matches the golden image.
+    #[serde(default = "default_tolerance")]
+    pub tolerance: f64,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_tolerance() -> f64 {
+    1.0
+}
+
+impl<'de> Deserialize<'de> for CaptureStep {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Full {
+            path: PathBuf,
+            #[serde(default)]
+            camera: Option<String>,
+            #[serde(default = "yes")]
+            hud: bool,
+            #[serde(default)]
+            golden: Option<PathBuf>,
+            #[serde(default = "default_tolerance")]
+            tolerance: f64,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            Path(PathBuf),
+            Full(Full),
+        }
+        Ok(match Form::deserialize(deserializer)? {
+            Form::Path(path) => CaptureStep {
+                path,
+                camera: None,
+                hud: true,
+                golden: None,
+                tolerance: default_tolerance(),
+            },
+            Form::Full(f) => CaptureStep {
+                path: f.path,
+                camera: f.camera,
+                hud: f.hud,
+                golden: f.golden,
+                tolerance: f.tolerance,
+            },
+        })
+    }
+}
+
+/// An `expect_pixels` step. Colors are sRGB, 0 to 255.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PixelExpectation {
+    /// `[left, top, right, bottom]` as fractions of the frame, or of the
+    /// viewport of `camera` when it is set. The whole frame by default.
+    #[serde(default = "whole_frame")]
+    pub region: [f32; 4],
+    /// Makes `region` relative to this camera's viewport (ID or name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    /// Lowest mean `[r, g, b]` of the region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_min: Option<[f64; 3]>,
+    /// Highest mean `[r, g, b]` of the region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_max: Option<[f64; 3]>,
+    /// Lowest standard deviation of the region's brightness: above 0 the
+    /// region is not one flat color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stddev_min: Option<f64>,
+    /// Highest standard deviation of the region's brightness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stddev_max: Option<f64>,
+}
+
+fn whole_frame() -> [f32; 4] {
+    [0.0, 0.0, 1.0, 1.0]
+}
+
+/// An `expect_file` step: `{"path": "settings.cfg", "contains": "volume=60"}`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileExpectation {
+    /// Relative to the user data folder.
+    pub path: String,
+    /// `false` checks that the file does not exist.
+    #[serde(default = "yes")]
+    pub exists: bool,
+    /// Text the file must contain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains: Option<String>,
+}
+
+fn check_file(expect: &FileExpectation) -> Check {
+    let path = crate::project::user_data_folder().join(&expect.path);
+    let text = std::fs::read_to_string(&path).ok();
+    let shown = path.display();
+    match (&text, expect.exists, &expect.contains) {
+        (None, true, _) => {
+            Err((format!("{shown} does not exist"), Value::Null))
+        }
+        (Some(_), false, _) => {
+            Err((format!("{shown} exists"), Value::Bool(true)))
+        }
+        (None, false, _) => Ok(format!("{shown} does not exist")),
+        (Some(text), true, Some(wanted)) if !text.contains(wanted.as_str()) => {
+            Err((
+                format!("{shown} does not contain `{wanted}`"),
+                Value::String(text.chars().take(400).collect()),
+            ))
+        }
+        (Some(_), true, _) => Ok(format!("{shown} is as expected")),
+    }
 }
 
 /// The value a `log` step records.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LoggedValue {
     /// Entity name or scene ID.
+    #[serde(default)]
     pub entity: String,
+    /// Counter name, in place of `entity` and `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<String>,
     /// JSON pointer into the entity's scene form, as for `expect`.
+    #[serde(default)]
     pub path: String,
 }
 
@@ -232,7 +705,12 @@ pub struct LoggedValue {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Assignment {
     /// Persistent ID or name.
+    #[serde(default)]
     pub entity: String,
+    /// Counter name, in place of `entity` and `path`: sets its value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<String>,
+    #[serde(default)]
     pub path: String,
     pub value: Value,
 }
@@ -243,7 +721,11 @@ pub struct Assignment {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Expectation {
     /// Persistent ID or name.
+    #[serde(default)]
     pub entity: String,
+    /// Counter name, in place of `entity` and `path`: checks its value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<String>,
     /// JSON pointer, for example `/transform/position/1`. Empty for the
     /// whole entity.
     #[serde(default)]
@@ -254,6 +736,9 @@ pub struct Expectation {
     pub exists: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<Value>,
+    /// Fails when the value equals this (with `tolerance` for numbers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_equals: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greater_than: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +747,36 @@ pub struct Expectation {
     /// inside an array or object such as a position.
     #[serde(default)]
     pub tolerance: f64,
+    /// No number at the path is NaN or infinite; JSON reads those back as
+    /// `null`, so a `null` inside a vector fails.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finite: bool,
+}
+
+/// A check on where a mesh entity appears in the frame of the active
+/// camera, at `capture_size`. Uses bounds picking like `capture --pick`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ScreenExpectation {
+    /// Persistent ID or name.
+    pub entity: String,
+    /// Some of the entity is visible: its projected box touches the frame
+    /// and at least one point of the box shows it in front of others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_screen: Option<bool>,
+    /// Its box touches the frame but all of it is behind other objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occluded: Option<bool>,
+    /// Its clipped box lies inside this rectangle, as fractions of the frame
+    /// `[left, top, right, bottom]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inside: Option<[f32; 4]>,
+    /// The share of the whole frame the entity is the nearest hit for, 0 to 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_share: Option<f64>,
+    /// Projects through this camera (ID or name) instead of the active
+    /// one. `inside` and `min_share` are then fractions of its viewport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -283,7 +798,57 @@ pub enum EventKind {
     Collision,
 }
 
+/// Turns a `counter` shorthand into the entity and path it stands for.
+fn resolve_counter(
+    entity: &mut String,
+    path: &mut String,
+    counter: Option<&String>,
+) {
+    if let Some(counter) = counter {
+        *entity = format!("{COUNTER_PREFIX}{counter}");
+        if path.is_empty() {
+            COUNTER_VALUE.clone_into(path);
+        }
+    }
+}
+
 impl Scenario {
+    /// A copy where every `counter` shorthand names its entity and path.
+    #[must_use]
+    pub fn with_counters_resolved(&self) -> Self {
+        let mut scenario = self.clone();
+        for step in &mut scenario.steps {
+            match &mut step.action {
+                StepAction::Expect(e) => {
+                    resolve_counter(
+                        &mut e.entity,
+                        &mut e.path,
+                        e.counter.as_ref(),
+                    );
+                }
+                StepAction::Set(e) => {
+                    resolve_counter(
+                        &mut e.entity,
+                        &mut e.path,
+                        e.counter.as_ref(),
+                    );
+                }
+                StepAction::Log(e) => {
+                    resolve_counter(
+                        &mut e.entity,
+                        &mut e.path,
+                        e.counter.as_ref(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for e in &mut scenario.invariants {
+            resolve_counter(&mut e.entity, &mut e.path, e.counter.as_ref());
+        }
+        scenario
+    }
+
     /// Rejects steps that could never run or never fail.
     pub fn validate(&self) -> Result<(), String> {
         for (index, step) in self.steps.iter().enumerate() {
@@ -294,7 +859,10 @@ impl Scenario {
             }
             let repeatable = matches!(
                 step.action,
-                StepAction::Expect(_) | StepAction::ExpectEvents(_)
+                StepAction::Expect(_)
+                    | StepAction::ExpectEvents(_)
+                    | StepAction::ExpectScreen(_)
+                    | StepAction::ExpectPixels(_)
             );
             if step.within.is_some() && !repeatable
                 || step.until.is_some()
@@ -308,15 +876,47 @@ impl Scenario {
             if step.until.is_some() && step.within.is_some() {
                 return fail("until and within cannot both be set");
             }
+            let target = match &step.action {
+                StepAction::Expect(e) => Some((&e.entity, &e.counter)),
+                StepAction::Set(e) => Some((&e.entity, &e.counter)),
+                StepAction::Log(e) => Some((&e.entity, &e.counter)),
+                _ => None,
+            };
+            if let Some((entity, counter)) = target {
+                if entity.is_empty() == counter.is_none() {
+                    return fail("give either entity or counter");
+                }
+            }
             match &step.action {
                 StepAction::Expect(expect)
                     if expect.equals.is_none()
+                        && expect.not_equals.is_none()
                         && expect.greater_than.is_none()
                         && expect.less_than.is_none()
                         && expect.exists.is_none() =>
                 {
                     return fail(
-                        "expect needs equals, greater_than, less_than or exists",
+                        "expect needs equals, not_equals, greater_than, less_than or exists",
+                    )
+                }
+                StepAction::ExpectScreen(expect)
+                    if expect.on_screen.is_none()
+                        && expect.occluded.is_none()
+                        && expect.inside.is_none()
+                        && expect.min_share.is_none() =>
+                {
+                    return fail(
+                        "expect_screen needs on_screen, occluded, inside or min_share",
+                    )
+                }
+                StepAction::ExpectPixels(expect)
+                    if expect.mean_min.is_none()
+                        && expect.mean_max.is_none()
+                        && expect.stddev_min.is_none()
+                        && expect.stddev_max.is_none() =>
+                {
+                    return fail(
+                        "expect_pixels needs mean_min, mean_max, stddev_min or stddev_max",
                     )
                 }
                 StepAction::ExpectEvents(expect)
@@ -326,6 +926,25 @@ impl Scenario {
                     return fail("expect_events needs at_least or at_most")
                 }
                 _ => {}
+            }
+        }
+        for (index, invariant) in self.invariants.iter().enumerate() {
+            if invariant.entity.is_empty() == invariant.counter.is_none() {
+                return Err(format!(
+                    "invariant {index}: give either entity or counter"
+                ));
+            }
+            if invariant.equals.is_none()
+                && invariant.not_equals.is_none()
+                && invariant.greater_than.is_none()
+                && invariant.less_than.is_none()
+                && invariant.exists.is_none()
+                && !invariant.finite
+            {
+                return Err(format!(
+                    "invariant {index}: needs equals, not_equals, \
+                     greater_than, less_than, exists or finite"
+                ));
             }
         }
         if self.capture_size.contains(&0) {
@@ -362,12 +981,238 @@ pub struct ScenarioReport {
     /// checks appear once, at their last passing tick or their failure.
     pub steps: Vec<StepResult>,
     pub captures: Vec<PathBuf>,
+    /// What happened, in tick order: inputs pressed or released, values set
+    /// by steps and collisions between entities. At most `TRACE_LIMIT`
+    /// entries; later events are dropped.
+    #[serde(default)]
+    pub trace: Vec<TraceEvent>,
+    /// Timing and render counters of the run.
+    #[serde(default)]
+    pub perf: PerfReport,
+    /// `(tick, hash)` of the GPU body buffers, hashed on the GPU after each
+    /// tick, for `gpu` runs. Readback lags one to three frames, so the last
+    /// ticks may be missing.
+    #[serde(default)]
+    pub gpu_state_hashes: Vec<(u64, u64)>,
+    /// `(tick, hash)` of the CPU-visible world state after each tick.
+    #[serde(default)]
+    pub state_hashes: Vec<(u64, u64)>,
+}
+
+/// Most trace entries one report keeps.
+pub const TRACE_LIMIT: usize = 1000;
+
+/// One entry of a scenario's event trace.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct TraceEvent {
+    pub tick: u32,
+    /// `input`, `set` or `collision`.
+    pub kind: String,
+    pub detail: Value,
 }
 
 /// One collision seen by gameplay, with persistent IDs.
 struct SeenEvent {
     a: Option<Uuid>,
     b: Option<Uuid>,
+}
+
+/// Saves the frame, and with `annotate` its annotated copy and legend.
+fn save_capture(
+    pixels: &[u8],
+    world: &mut World,
+    scenario: &Scenario,
+    path: &Path,
+    saved: &mut Vec<PathBuf>,
+) -> Check {
+    crate::rendering::capture::save_rgba(path, pixels, scenario.capture_size)
+        .map_err(|error| (error, Value::Null))?;
+    saved.push(path.to_path_buf());
+    if scenario.annotate {
+        let extent = scenario.capture_size;
+        let notes = crate::annotate::annotations(world, extent);
+        let mut pixels = pixels.to_vec();
+        crate::annotate::draw(&mut pixels, extent, &notes);
+        let image = path.with_extension("annotated.png");
+        let legend = path.with_extension("annotated.json");
+        let wrote = image::save_buffer(
+            &image,
+            &pixels,
+            extent[0],
+            extent[1],
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            let data: Vec<_> = notes.iter().map(|n| n.data()).collect();
+            std::fs::write(
+                &legend,
+                serde_json::to_string_pretty(&data).unwrap(),
+            )
+            .map_err(|error| error.to_string())
+        });
+        wrote.map_err(|error| (error, Value::Null))?;
+        saved.extend([image, legend]);
+    }
+    Ok(format!("captured {}", path.display()))
+}
+
+/// Compares a capture with its golden image by the mean difference of each
+/// color channel, or writes the golden image when `update` is set.
+fn compare_golden(
+    pixels: &[u8],
+    extent: [u32; 2],
+    golden: &Path,
+    tolerance: f64,
+    update: bool,
+) -> Check {
+    if update {
+        crate::rendering::capture::save_rgba(golden, pixels, extent)
+            .map_err(|error| (error, Value::Null))?;
+        return Ok(format!("; wrote golden {}", golden.display()));
+    }
+    let image = image::open(golden)
+        .map_err(|error| {
+            (
+                format!(
+                    "cannot read golden {}: {error}; `rusting test \
+                     --update-golden` writes it",
+                    golden.display()
+                ),
+                Value::Null,
+            )
+        })?
+        .into_rgba8();
+    if image.dimensions() != (extent[0], extent[1]) {
+        return Err((
+            format!(
+                "golden {} is {:?}, the capture is {extent:?}",
+                golden.display(),
+                image.dimensions()
+            ),
+            Value::Null,
+        ));
+    }
+    let mut sums = [0.0_f64; 3];
+    let mut max = 0_u8;
+    for (a, b) in pixels.chunks_exact(4).zip(image.as_raw().chunks_exact(4)) {
+        for channel in 0..3 {
+            let difference = a[channel].abs_diff(b[channel]);
+            sums[channel] += f64::from(difference);
+            max = max.max(difference);
+        }
+    }
+    let count = f64::from(extent[0] * extent[1]).max(1.0);
+    let mean = sums.map(|sum| sum / count);
+    let worst = mean.iter().copied().fold(0.0, f64::max);
+    let actual = json!({"mean_difference": mean, "max_difference": max});
+    if worst > tolerance {
+        return Err((
+            format!(
+                "capture differs from golden {}: largest channel mean \
+                 difference {worst:.3} (R {:.3}, G {:.3}, B {:.3}), \
+                 tolerance {tolerance}",
+                golden.display(),
+                mean[0],
+                mean[1],
+                mean[2]
+            ),
+            actual,
+        ));
+    }
+    Ok(format!(
+        "; matches golden {} (mean difference {worst:.3})",
+        golden.display()
+    ))
+}
+
+/// Mean `[r, g, b]` and brightness standard deviation of a pixel
+/// rectangle `[x0, y0, x1, y1]`, end exclusive.
+fn region_stats(pixels: &[u8], width: u32, rect: [u32; 4]) -> ([f64; 3], f64) {
+    let mut sums = [0.0_f64; 3];
+    let mut luma = Vec::new();
+    for y in rect[1]..rect[3] {
+        for x in rect[0]..rect[2] {
+            let at = ((y * width + x) * 4) as usize;
+            let rgb = [0, 1, 2].map(|c| f64::from(pixels[at + c]));
+            for c in 0..3 {
+                sums[c] += rgb[c];
+            }
+            luma.push(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+        }
+    }
+    let count = luma.len().max(1) as f64;
+    let mean_luma = luma.iter().sum::<f64>() / count;
+    let variance = luma
+        .iter()
+        .map(|value| (value - mean_luma).powi(2))
+        .sum::<f64>()
+        / count;
+    (sums.map(|sum| sum / count), variance.sqrt())
+}
+
+fn check_pixels(
+    world: &mut World,
+    expect: &PixelExpectation,
+    pixels: &[u8],
+    extent: [u32; 2],
+) -> Check {
+    // The region is a fraction of the camera's viewport, or of the frame.
+    let mut frame = [0.0, 0.0, 1.0, 1.0];
+    if let Some(name) = &expect.camera {
+        let camera = find_camera(world, name).ok_or_else(|| {
+            (
+                format!("no camera has the ID or name `{name}`"),
+                Value::Null,
+            )
+        })?;
+        if let Some(viewport) =
+            world.get::<Camera>(camera).and_then(|c| c.viewport)
+        {
+            frame = viewport;
+        }
+    }
+    let [l, t, r, b] = expect.region;
+    let pixel = |fraction: f32, start: f32, size: f32, side: u32| {
+        (((start + fraction * size) * side as f32).round() as u32).min(side)
+    };
+    let rect = [
+        pixel(l, frame[0], frame[2], extent[0]),
+        pixel(t, frame[1], frame[3], extent[1]),
+        pixel(r, frame[0], frame[2], extent[0]),
+        pixel(b, frame[1], frame[3], extent[1]),
+    ];
+    if rect[0] >= rect[2] || rect[1] >= rect[3] {
+        return Err((
+            format!("region {:?} covers no pixels", expect.region),
+            Value::Null,
+        ));
+    }
+    let (mean, stddev) = region_stats(pixels, extent[0], rect);
+    let actual = json!({"rect": rect, "mean": mean, "stddev": stddev});
+    let fail = |wanted: String| {
+        Err((
+            format!("pixels are {actual}, expected {wanted}"),
+            actual.clone(),
+        ))
+    };
+    if let Some(min) = expect.mean_min {
+        if (0..3).any(|c| mean[c] < min[c]) {
+            return fail(format!("mean_min {min:?}"));
+        }
+    }
+    if let Some(max) = expect.mean_max {
+        if (0..3).any(|c| mean[c] > max[c]) {
+            return fail(format!("mean_max {max:?}"));
+        }
+    }
+    if expect.stddev_min.is_some_and(|min| stddev < min) {
+        return fail(format!("stddev_min {:?}", expect.stddev_min));
+    }
+    if expect.stddev_max.is_some_and(|max| stddev > max) {
+        return fail(format!("stddev_max {:?}", expect.stddev_max));
+    }
+    Ok(format!("pixels are {actual} as expected"))
 }
 
 /// Runs `scenario` on a loaded game. Relative capture paths resolve against
@@ -385,6 +1230,10 @@ pub fn run_scenario(
         first_failure: None,
         steps: Vec::new(),
         captures: Vec::new(),
+        trace: Vec::new(),
+        perf: PerfReport::default(),
+        gpu_state_hashes: Vec::new(),
+        state_hashes: Vec::new(),
     };
     if let Err(message) = scenario.validate() {
         report.first_failure = Some(StepResult {
@@ -396,40 +1245,135 @@ pub fn run_scenario(
         });
         return report;
     }
+    let scenario = &scenario.with_counters_resolved();
     app.world_mut().insert_resource(RandomSeed(scenario.seed));
-    let wants_capture = scenario
-        .steps
-        .iter()
-        .any(|step| matches!(step.action, StepAction::Capture(_)));
+    // A headless view is the capture size from tick 0, for layout, the UI
+    // pass and pointer steps alike.
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_viewport_size(scenario.capture_size.map(|side| side as f32));
+    if let Err(message) = seed_files(scenario, base) {
+        report.first_failure = Some(StepResult {
+            tick: 0,
+            step: 0,
+            ok: false,
+            message,
+            actual: Value::Null,
+        });
+        return report;
+    }
+    let render_budget = scenario.budgets.as_ref().is_some_and(|budgets| {
+        budgets.max_draws.is_some() || budgets.max_triangles.is_some()
+    });
+    let wants_capture = scenario.gpu
+        || render_budget
+        || scenario.steps.iter().any(|step| {
+            matches!(
+                step.action,
+                StepAction::Capture(_) | StepAction::ExpectPixels(_)
+            )
+        });
     let mut capture =
         wants_capture.then(|| HeadlessCapture::new(scenario.capture_size));
+    let mut mixer = crate::audio_output::OfflineMixer::offline();
+    let mut mixed = Vec::new();
+    if let (true, Some(Err(error))) = (scenario.gpu, capture.as_ref()) {
+        report.steps.push(StepResult {
+            tick: 0,
+            step: 0,
+            ok: false,
+            message: format!("gpu: no Vulkan device: {error}"),
+            actual: Value::Null,
+        });
+        report.first_failure = report.steps.first().cloned();
+        return report;
+    }
     let mut events = Vec::new();
+    let mut frames: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut tick_ms: Vec<f64> = Vec::new();
     // Repeated checks report once; this holds their last passing result.
     let mut pending: Vec<Option<StepResult>> = vec![None; scenario.steps.len()];
     // `within` checks that already passed.
     let mut passed = vec![false; scenario.steps.len()];
+    // Invariants that already failed.
+    let mut broken = vec![false; scenario.invariants.len()];
 
     'ticks: for tick in 0..=scenario.ticks {
         for (index, step) in scenario.steps.iter().enumerate() {
+            if step.tick + 1 == tick {
+                // The press already reported any unbound action.
+                if let StepAction::Tap(action) = &step.action {
+                    let _ = press(app.world_mut(), action, false, None);
+                }
+                if let StepAction::Click(_) = &step.action {
+                    app.world_mut()
+                        .resource_mut::<RuntimeInput>()
+                        .record_mouse_button(MouseButton::Left, false);
+                }
+            }
             if step.tick != tick {
                 continue;
             }
             let result = match &step.action {
-                StepAction::Press(action) => {
-                    press(app.world_mut(), action, true)
+                StepAction::Press(action) | StepAction::Tap(action) => {
+                    match step.at {
+                        Some(at) if !(0.0..1.0).contains(&at) => Err(format!(
+                            "at is {at}; it must be from 0 up to 1"
+                        )),
+                        at => press(
+                            app.world_mut(),
+                            action,
+                            true,
+                            at.map(|at| f64::from(tick) + at),
+                        ),
+                    }
                 }
                 StepAction::Release(action) => {
-                    press(app.world_mut(), action, false)
+                    press(app.world_mut(), action, false, None)
                 }
                 StepAction::Set(assignment) => {
                     assign(app.world_mut(), assignment)
                 }
-                StepAction::Pointer(point) => {
-                    point_at(app.world_mut(), *point, scenario.capture_size)
+                StepAction::Pointer(point) => point_at(app.world_mut(), *point),
+                StepAction::LeftStick(tilt) => {
+                    tilt_stick(app.world_mut(), Stick::Left, *tilt)
                 }
+                StepAction::RightStick(tilt) => {
+                    tilt_stick(app.world_mut(), Stick::Right, *tilt)
+                }
+                StepAction::Click(label) => click(app.world_mut(), label),
+                StepAction::Restart(true) => restart(app.world_mut()),
                 _ => continue,
             };
             let failed = result.is_err();
+            if !failed && report.trace.len() < TRACE_LIMIT {
+                let (kind, detail) = match &step.action {
+                    StepAction::Press(action) => {
+                        ("input", serde_json::json!({"press": action}))
+                    }
+                    StepAction::Release(action) => {
+                        ("input", serde_json::json!({"release": action}))
+                    }
+                    StepAction::Tap(action) => {
+                        ("input", serde_json::json!({"tap": action}))
+                    }
+                    StepAction::Set(assignment) => {
+                        ("set", serde_json::json!(assignment))
+                    }
+                    StepAction::Click(label) => {
+                        ("input", serde_json::json!({"click": label}))
+                    }
+                    StepAction::Restart(_) => {
+                        ("restart", serde_json::json!({"restart": true}))
+                    }
+                    _ => ("input", Value::Null),
+                };
+                report.trace.push(TraceEvent {
+                    tick,
+                    kind: kind.into(),
+                    detail,
+                });
+            }
             report.steps.push(StepResult {
                 tick,
                 step: index,
@@ -443,6 +1387,7 @@ pub fn run_scenario(
         }
 
         let delta = tick_delta(app, tick);
+        let started = std::time::Instant::now();
         let updated = match capture.as_mut() {
             Some(Ok(capture)) => capture.frame(app, delta),
             _ => app
@@ -450,6 +1395,13 @@ pub fn run_scenario(
                 .map(drop)
                 .map_err(|error| error.to_string()),
         };
+        // Sound cues become requests here as in the windowed runner, so
+        // `audio:` sees them.
+        crate::runtime::route_sound_events(app.world_mut());
+        if let Some(mixer) = &mut mixer {
+            mix_tick(app, mixer, &mut mixed);
+        }
+        collect_hashes(app.world(), &mut report);
         if let Err(error) = updated {
             report.steps.push(StepResult {
                 tick,
@@ -460,6 +1412,7 @@ pub fn run_scenario(
             });
             break;
         }
+        tick_ms.push(started.elapsed().as_secs_f64() * 1000.0);
         report.ticks_run = app.world().resource::<FrameTime>().fixed_tick;
         let world = app.world_mut();
         let collisions: Vec<_> = world
@@ -467,11 +1420,57 @@ pub fn run_scenario(
             .iter()
             .map(|event| (event.a, event.b))
             .collect();
-        events.extend(collisions.into_iter().map(|(a, b)| SeenEvent {
-            a: world.get::<SceneId>(a).map(|id| id.0),
-            b: world.get::<SceneId>(b).map(|id| id.0),
-        }));
+        let seen: Vec<_> = collisions
+            .into_iter()
+            .map(|(a, b)| SeenEvent {
+                a: world.get::<SceneId>(a).map(|id| id.0),
+                b: world.get::<SceneId>(b).map(|id| id.0),
+            })
+            .collect();
+        for event in &seen {
+            if report.trace.len() < TRACE_LIMIT {
+                report.trace.push(TraceEvent {
+                    tick,
+                    kind: "collision".into(),
+                    detail: serde_json::json!({"a": event.a, "b": event.b}),
+                });
+            }
+        }
+        events.extend(seen);
 
+        for (index, invariant) in scenario.invariants.iter().enumerate() {
+            if broken[index] {
+                continue;
+            }
+            // ponytail: rebuilds the scene document per invariant per tick;
+            // cache one snapshot per tick if a run with many is too slow.
+            let missing = if invariant.entity != AUDIO_ENTITY
+                && find_entity(world, &invariant.entity, |_, _| true).is_none()
+            {
+                true
+            } else {
+                // An entity that exists but cannot be read is a failure,
+                // which `check_value` reports.
+                reflected(world, &invariant.entity)
+                    .is_ok_and(|state| state.pointer(&invariant.path).is_none())
+            };
+            if missing && invariant.exists.is_none() {
+                continue;
+            }
+            if let Err((message, actual)) = check_value(world, invariant) {
+                broken[index] = true;
+                report.steps.push(StepResult {
+                    tick,
+                    step: 0,
+                    ok: false,
+                    message: format!("invariant {index}: {message}"),
+                    actual,
+                });
+                if !scenario.keep_going {
+                    break 'ticks;
+                }
+            }
+        }
         for (index, step) in scenario.steps.iter().enumerate() {
             let last = step.until.or(step.within).unwrap_or(step.tick);
             if !(step.tick..=last).contains(&tick) || passed[index] {
@@ -482,46 +1481,145 @@ pub fn run_scenario(
                 StepAction::ExpectEvents(expect) => {
                     check_events(world, expect, &events)
                 }
-                StepAction::Capture(path) => {
-                    let path = base.join(path);
-                    match capture.as_ref() {
-                        Some(Ok(capture)) => match capture.save(&path) {
-                            Ok(()) => {
-                                report.captures.push(path.clone());
-                                Ok(format!("captured {}", path.display()))
+                StepAction::ExpectScreen(expect) => {
+                    check_screen(world, expect, scenario.capture_size)
+                }
+                StepAction::ExpectFile(expect) => check_file(expect),
+                StepAction::ExpectQuit(wanted) => {
+                    let quit =
+                        world.resource::<crate::runtime::ExitState>().requested;
+                    if quit == *wanted {
+                        Ok(format!("quit is {quit}"))
+                    } else {
+                        Err((
+                            format!("quit is {quit}, expected {wanted}"),
+                            Value::Bool(quit),
+                        ))
+                    }
+                }
+                StepAction::Capture(step) => {
+                    let relative = &step.path;
+                    let path = base.join(relative);
+                    // `tests/x.png` in a scenario under `tests/` is the
+                    // common slip; paths start at the scenario's folder.
+                    let doubled = base.file_name() == relative.iter().next();
+                    let warning = if doubled {
+                        format!(
+                            "; warning: capture paths are relative to {}, \
+                             so this wrote {}",
+                            base.display(),
+                            path.display()
+                        )
+                    } else {
+                        String::new()
+                    };
+                    match capture.as_mut() {
+                        Some(Ok(capture)) => (|| {
+                            let camera = match &step.camera {
+                                Some(name) => Some(
+                                    find_camera(world, name).ok_or_else(|| {
+                                        (
+                                            format!("no camera has the ID or name `{name}`"),
+                                            Value::Null,
+                                        )
+                                    })?,
+                                ),
+                                None => None,
+                            };
+                            let pixels = if camera.is_some() || !step.hud {
+                                capture
+                                    .view_rgba(world, camera)
+                                    .map_err(|error| (error, Value::Null))?
+                            } else {
+                                capture.rgba()
+                            };
+                            if scenario.contact_sheet.is_some() {
+                                frames.push((tick, pixels.clone()));
                             }
-                            Err(error) => Err((error, Value::Null)),
-                        },
+                            let mut message = save_capture(
+                                &pixels,
+                                world,
+                                scenario,
+                                &path,
+                                &mut report.captures,
+                            )?;
+                            if let Some(golden) = &step.golden {
+                                message += &compare_golden(
+                                    &pixels,
+                                    scenario.capture_size,
+                                    &base.join(golden),
+                                    step.tolerance,
+                                    scenario.update_golden,
+                                )?;
+                            }
+                            Ok(message + &warning)
+                        })(),
                         Some(Err(error)) => {
                             Ok(format!("capture skipped: {error}"))
                         }
                         None => unreachable!("captures open a renderer"),
                     }
                 }
+                StepAction::ExpectPixels(expect) => match capture.as_ref() {
+                    Some(Ok(capture)) => check_pixels(
+                        world,
+                        expect,
+                        &capture.rgba(),
+                        scenario.capture_size,
+                    ),
+                    Some(Err(error)) => Err((
+                        format!("expect_pixels needs a renderer: {error}"),
+                        Value::Null,
+                    )),
+                    None => unreachable!("pixel checks open a renderer"),
+                },
                 StepAction::Log(logged) => {
                     let subject =
                         format!("`{}` {}", logged.entity, logged.path);
-                    let actual = reflected(world, &logged.entity)
-                        .ok()
-                        .and_then(|state| state.pointer(&logged.path).cloned())
-                        .unwrap_or(Value::Null);
+                    let (actual, message) =
+                        match reflected(world, &logged.entity) {
+                            Err(error) => (
+                                Value::Null,
+                                format!("log: {subject}: {error}"),
+                            ),
+                            Ok(state) => match state.pointer(&logged.path) {
+                                Some(value) => (
+                                    value.clone(),
+                                    format!("log: {subject} is {value}"),
+                                ),
+                                None => (
+                                    Value::Null,
+                                    format!(
+                                        "log: {subject} does not exist{}",
+                                        near_paths(&state, &logged.path)
+                                    ),
+                                ),
+                            },
+                        };
                     report.steps.push(StepResult {
                         tick,
                         step: index,
                         ok: true,
-                        message: format!("log: {subject} is {actual}"),
+                        message,
                         actual,
                     });
                     continue;
                 }
                 StepAction::Press(_)
                 | StepAction::Release(_)
+                | StepAction::Tap(_)
                 | StepAction::Set(_)
-                | StepAction::Pointer(_) => continue,
+                | StepAction::Click(_)
+                | StepAction::Restart(_)
+                | StepAction::Pointer(_)
+                | StepAction::LeftStick(_)
+                | StepAction::RightStick(_) => continue,
             };
             let (ok, message, actual) = match outcome {
                 Ok(message) => (true, message, Value::Null),
-                Err((message, actual)) => (false, message, actual),
+                Err((message, actual)) => {
+                    (false, message + &inputs_at(scenario, tick), actual)
+                }
             };
             let result = StepResult {
                 tick,
@@ -550,16 +1648,178 @@ pub fn run_scenario(
         app.world_mut()
             .resource_mut::<RuntimeInput>()
             .clear_frame_edges();
+        if app.exit_requested() {
+            for (index, step) in scenario.steps.iter().enumerate() {
+                if step.tick <= tick {
+                    continue;
+                }
+                if let StepAction::ExpectFile(expect) = &step.action {
+                    let (ok, (message, actual)) = match check_file(expect) {
+                        Ok(message) => (true, (message, Value::Null)),
+                        Err(failed) => (false, failed),
+                    };
+                    report.steps.push(StepResult {
+                        tick: step.tick,
+                        step: index,
+                        ok,
+                        message,
+                        actual,
+                    });
+                } else if is_check(&step.action) {
+                    report.steps.push(StepResult {
+                        tick: step.tick,
+                        step: index,
+                        ok: false,
+                        message: format!(
+                            "the game quit at tick {tick}, before this step"
+                        ),
+                        actual: Value::Null,
+                    });
+                }
+            }
+            break;
+        }
+    }
+    if let (Some(sheet), false) = (&scenario.contact_sheet, frames.is_empty()) {
+        let extent = scenario.capture_size;
+        let (pixels, size) =
+            crate::annotate::contact_sheet(&frames, extent, 320);
+        let path = base.join(sheet);
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                image::save_buffer(
+                    &path,
+                    &pixels,
+                    size[0],
+                    size[1],
+                    image::ExtendedColorType::Rgba8,
+                )
+                .map_err(|error| error.to_string())
+            });
+        match written {
+            Ok(()) => report.captures.push(path),
+            Err(error) => report.steps.push(StepResult {
+                tick: report.ticks_run as u32,
+                step: 0,
+                ok: false,
+                message: format!("contact sheet: {error}"),
+                actual: Value::Null,
+            }),
+        }
+    }
+    if let Some(out) = &scenario.audio_out {
+        let path = base.join(out);
+        match crate::audio_output::write_wav(&path, &mixed) {
+            Ok(()) => report.captures.push(path),
+            Err(error) => report.steps.push(StepResult {
+                tick: report.ticks_run as u32,
+                step: 0,
+                ok: false,
+                message: format!("audio_out: {error}"),
+                actual: Value::Null,
+            }),
+        }
+    }
+    let render = match capture.as_mut() {
+        Some(Ok(capture)) => Some(capture.metadata(app)),
+        _ => None,
+    };
+    report.perf = perf_report(&tick_ms, render);
+    collect_hashes(app.world(), &mut report);
+    if let Some(budgets) = &scenario.budgets {
+        for message in over_budget(budgets, &report.perf) {
+            report.steps.push(StepResult {
+                tick: report.ticks_run as u32,
+                step: 0,
+                ok: false,
+                message: format!("budget: {message}"),
+                actual: serde_json::to_value(&report.perf).unwrap_or_default(),
+            });
+        }
     }
     report.first_failure = report.steps.iter().find(|step| !step.ok).cloned();
     report.passed = report.first_failure.is_none();
     report
 }
 
-fn press(
+fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
+    let mut sorted = tick_ms.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let at = |fraction: f64| {
+        sorted
+            .get(
+                ((sorted.len() as f64 * fraction).ceil() as usize)
+                    .saturating_sub(1),
+            )
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let mut environment = json!({
+        "engine_version": env!("CARGO_PKG_VERSION"),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+    });
+    let mut counters = Value::Null;
+    if let Some(meta) = render {
+        environment["device"] = meta["device"].clone();
+        environment["driver"] = meta["driver"].clone();
+        counters = json!({
+            "draws": meta["draws"],
+            "triangles": meta["triangles"],
+            "visible_instances": meta["visible_instances"],
+            "gpu_ms": meta["gpu_ms"],
+            "cameras": meta["cameras"],
+        });
+    }
+    PerfReport {
+        environment,
+        tick_ms_mean: sorted.iter().sum::<f64>() / sorted.len().max(1) as f64,
+        tick_ms_p95: at(0.95),
+        tick_ms_max: at(1.0),
+        render: counters,
+    }
+}
+
+fn over_budget(budgets: &Budgets, perf: &PerfReport) -> Vec<String> {
+    let mut over = Vec::new();
+    let mut ms = |name: &str, limit: Option<f64>, value: f64| {
+        if let Some(limit) = limit.filter(|limit| value > *limit) {
+            over.push(format!(
+                "{name} is {value:.3} ms, over the {limit} ms limit"
+            ));
+        }
+    };
+    ms("max_tick_ms", budgets.max_tick_ms, perf.tick_ms_max);
+    ms("mean_tick_ms", budgets.mean_tick_ms, perf.tick_ms_mean);
+    ms("p95_tick_ms", budgets.p95_tick_ms, perf.tick_ms_p95);
+    if let (Some(limit), Some(draws)) =
+        (budgets.max_draws, perf.render["draws"].as_u64())
+    {
+        if draws > u64::from(limit) {
+            over.push(format!(
+                "max_draws: {draws} draws, over the limit of {limit}"
+            ));
+        }
+    }
+    if let (Some(limit), Some(triangles)) =
+        (budgets.max_triangles, perf.render["triangles"].as_u64())
+    {
+        if triangles > limit {
+            over.push(format!("max_triangles: {triangles} triangles, over the limit of {limit}"));
+        }
+    }
+    over
+}
+
+pub(crate) fn press(
     world: &mut World,
     action: &str,
     pressed: bool,
+    press_tick: Option<f64>,
 ) -> Result<String, String> {
     // Scene bindings are added by the first update; tick 0 comes before it.
     crate::runtime::bind_input_actions(world);
@@ -569,8 +1829,14 @@ fn press(
     }
     let mut input = world.resource_mut::<RuntimeInput>();
     for binding in bindings {
+        if let Some(tick) = press_tick {
+            input.record_press_tick(binding, tick);
+        }
         match binding {
             InputBinding::Key(key) => input.record_key(key, pressed),
+            InputBinding::Pad(button) => {
+                input.record_pad_button(button, pressed);
+            }
             InputBinding::Mouse(button) => {
                 input.record_mouse_button(button, pressed);
             }
@@ -580,35 +1846,171 @@ fn press(
     Ok(format!("{verb} `{action}`"))
 }
 
-/// Places the cursor at `point`, a fraction of the view. A headless run
-/// has no window, so the view takes the capture size.
-fn point_at(
+fn tilt_stick(
     world: &mut World,
-    point: [f32; 2],
-    capture_size: [u32; 2],
+    stick: Stick,
+    tilt: [f32; 2],
 ) -> Result<String, String> {
+    world
+        .resource_mut::<RuntimeInput>()
+        .record_stick(stick, tilt);
+    Ok(format!("{stick:?} stick at {tilt:?}"))
+}
+
+/// Places the cursor at `point`, a fraction of the view.
+fn point_at(world: &mut World, point: [f32; 2]) -> Result<String, String> {
     let mut input = world.resource_mut::<RuntimeInput>();
-    let mut size = input.viewport_size();
-    if size.contains(&0.0) {
-        size = capture_size.map(|side| side as f32);
-        input.record_viewport_size(size);
-    }
+    let size = input.viewport_size();
     input.record_cursor_position([point[0] * size[0], point[1] * size[1]]);
     Ok(format!("pointer at {point:?}"))
+}
+
+/// Points at the UI text `label` drawn last frame and presses the left
+/// mouse button; the run loop releases it next tick.
+fn click(world: &mut World, target: &ClickTarget) -> Result<String, String> {
+    #[cfg(feature = "ui")]
+    {
+        let (label, prefix, index) = match target {
+            ClickTarget::Label(label) => (label.as_str(), false, None),
+            ClickTarget::Find {
+                text: Some(text),
+                starts_with: None,
+                index,
+            } => (text.as_str(), false, *index),
+            ClickTarget::Find {
+                text: None,
+                starts_with: Some(prefix),
+                index,
+            } => (prefix.as_str(), true, *index),
+            ClickTarget::Find { .. } => {
+                return Err(
+                    "click needs exactly one of `text` and `starts_with`"
+                        .into(),
+                )
+            }
+        };
+        let at = world
+            .get_resource::<crate::runtime::RuntimeUi>()
+            .ok_or("this build has no runtime UI")?
+            .find_text_where(label, prefix, index)?;
+        let mut input = world.resource_mut::<RuntimeInput>();
+        input.record_cursor_position(at);
+        input.record_mouse_button(MouseButton::Left, true);
+        Ok(format!("clicked `{label}` at {at:?}"))
+    }
+    #[cfg(not(feature = "ui"))]
+    {
+        let _ = (world, target);
+        Err("click needs the engine's `ui` feature".into())
+    }
+}
+
+fn restart(world: &mut World) -> Result<String, String> {
+    #[cfg(feature = "window")]
+    if crate::project_runner::restart_scene(world) {
+        return Ok("restarted the scene".into());
+    }
+    let _ = world;
+    Err("restart needs a game started from a scene file".into())
+}
+
+/// Copies the scenario's `files` into the user data folder.
+fn seed_files(scenario: &Scenario, base: &Path) -> Result<(), String> {
+    let folder = crate::project::user_data_folder();
+    for (key, source) in &scenario.files {
+        let relative = Path::new(key);
+        if !relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(format!("files: `{key}` must be a relative path"));
+        }
+        let target = folder.join(relative);
+        let source = base.join(source);
+        target
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(&source, &target))
+            .map_err(|error| {
+                format!(
+                    "files: copying {} to {}: {error}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn is_check(action: &StepAction) -> bool {
+    matches!(
+        action,
+        StepAction::Expect(_)
+            | StepAction::ExpectEvents(_)
+            | StepAction::ExpectScreen(_)
+            | StepAction::ExpectQuit(_)
+            | StepAction::ExpectFile(_)
+            | StepAction::ExpectPixels(_)
+            | StepAction::Capture(_)
+    )
+}
+
+/// Names the inputs that ran before the checks of `tick`, because a check
+/// on the same tick as a click sees the click's effect.
+fn inputs_at(scenario: &Scenario, tick: u32) -> String {
+    let inputs: Vec<_> = scenario
+        .steps
+        .iter()
+        .filter(|step| step.tick == tick && !is_check(&step.action))
+        .filter(|step| !matches!(step.action, StepAction::Log(_)))
+        .filter_map(|step| serde_json::to_value(&step.action).ok())
+        .map(|action| action.to_string())
+        .collect();
+    if inputs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (inputs at this tick ran before the check: {})",
+            inputs.join(", ")
+        )
+    }
 }
 
 type Check = Result<String, (String, Value)>;
 
 /// The entity's scene form, with registered components parsed.
-fn reflected(world: &mut World, wanted: &str) -> Result<Value, String> {
+pub(crate) fn reflected(
+    world: &mut World,
+    wanted: &str,
+) -> Result<Value, String> {
+    if wanted == AUDIO_ENTITY {
+        let queue = world
+            .get_resource::<crate::runtime::AudioQueue>()
+            .cloned()
+            .unwrap_or_default();
+        let mix = world
+            .get_resource::<AudioMix>()
+            .cloned()
+            .unwrap_or_default();
+        return Ok(serde_json::json!({
+            "requested": queue.requested(),
+            "clips": queue.requested_clips(),
+            "level": mix.level,
+            "peak": mix.peak,
+            "clipped": mix.clipped,
+            "playing": mix.playing,
+        }));
+    }
     let entity = find_entity(world, wanted, |_, _| true)
         .ok_or_else(|| format!("no entity has the ID or name `{wanted}`"))?;
     let id = world
         .get::<SceneId>(entity)
         .ok_or_else(|| format!("`{wanted}` has no persistent ID"))?
         .0;
+    let gpu_state =
+        world.get::<crate::runtime::GpuStateMirror>(entity).copied();
     let document =
-        scene_document(world, "").map_err(|error| error.to_string())?;
+        scene_document_lenient(world, "").map_err(|error| error.to_string())?;
     let entity = document
         .entities
         .into_iter()
@@ -616,6 +2018,15 @@ fn reflected(world: &mut World, wanted: &str) -> Result<Value, String> {
         .ok_or_else(|| format!("`{wanted}` is not part of the scene"))?;
     let mut value =
         serde_json::to_value(entity).map_err(|error| error.to_string())?;
+    if let Some(state) = gpu_state {
+        value["gpu_state"] = serde_json::json!({
+            "tick": state.tick,
+            "position": state.transform.position,
+            "rotation": state.transform.rotation,
+            "linear_velocity": state.linear_velocity,
+            "angular_velocity": state.angular_velocity,
+        });
+    }
     if let Some(Value::Object(components)) = value.get_mut("components") {
         for component in components.values_mut() {
             if let Some(parsed) = component
@@ -629,10 +2040,28 @@ fn reflected(world: &mut World, wanted: &str) -> Result<Value, String> {
     Ok(value)
 }
 
-fn assign(world: &mut World, set: &Assignment) -> Result<String, String> {
+pub(crate) fn assign(
+    world: &mut World,
+    set: &Assignment,
+) -> Result<String, String> {
+    let counter = set.entity.strip_prefix(COUNTER_PREFIX);
+    if let (Some(name), COUNTER_VALUE) = (counter, set.path.as_str()) {
+        // Same rule as game code: setting a missing counter creates it.
+        let value = set.value.as_i64().ok_or_else(|| {
+            format!("counter `{name}`: expected a whole number")
+        })?;
+        crate::project_runner::GameScene { world }
+            .set_counter(name, value as i32);
+        return Ok(format!("`{}` {} set to {value}", set.entity, set.path));
+    }
     let entity =
         find_entity(world, &set.entity, |_, _| true).ok_or_else(|| {
-            format!("no entity has the ID or name `{}`", set.entity)
+            match counter {
+                Some(name) => format!("no counter is named `{name}`"),
+                None => {
+                    format!("no entity has the ID or name `{}`", set.entity)
+                }
+            }
         })?;
     let subject = format!("`{}` {}", set.entity, set.path);
     if let Some(rest) = set.path.strip_prefix("/components/") {
@@ -667,12 +2096,221 @@ fn assign(world: &mut World, set: &Assignment) -> Result<String, String> {
         let transform: SceneTransform = serde_json::from_value(value)
             .map_err(|error| format!("{subject}: {error}"))?;
         world.entity_mut(entity).insert(Transform::from(transform));
+    } else if let Some(field) = set.path.strip_prefix("/visible") {
+        if !field.is_empty() {
+            return Err(format!("{subject} does not exist"));
+        }
+        let visible = set
+            .value
+            .as_bool()
+            .ok_or_else(|| format!("{subject}: expected true or false"))?;
+        world
+            .entity_mut(entity)
+            .insert(crate::runtime::Visibility { visible });
     } else {
-        return Err(format!(
-            "{subject}: set reaches /transform/... and /components/... only"
-        ));
+        use crate::runtime::{
+            Collider, CollisionLayers, DirectionalLight, PhysicsBody,
+            PointLight, RigidBody, SpotLight,
+        };
+        let (key, field) = set.path[1..]
+            .split_once('/')
+            .map_or((&set.path[1..], ""), |(key, field)| (key, field));
+        let field = if field.is_empty() {
+            String::new()
+        } else {
+            format!("/{field}")
+        };
+        let edit = |world: &mut World| -> Result<(), String> {
+            match key {
+                "rigid_body" => {
+                    set_part::<RigidBody>(world, entity, &field, set)
+                }
+                "collider" => set_part::<Collider>(world, entity, &field, set),
+                "physics_body" => {
+                    set_part::<PhysicsBody>(world, entity, &field, set)
+                }
+                "collision_layers" => {
+                    set_part::<CollisionLayers>(world, entity, &field, set)
+                }
+                "point_light" => {
+                    set_part::<PointLight>(world, entity, &field, set)
+                }
+                "spot_light" => {
+                    set_part::<SpotLight>(world, entity, &field, set)
+                }
+                "directional_light" => {
+                    set_part::<DirectionalLight>(world, entity, &field, set)
+                }
+                _ => Err("set reaches /transform, /visible, /rigid_body, \
+                     /collider, /physics_body, /collision_layers, the light \
+                     fields and /components/... only"
+                    .to_owned()),
+            }
+        };
+        edit(world).map_err(|error| format!("{subject}: {error}"))?;
     }
     Ok(format!("{subject} set to {}", set.value))
+}
+
+/// Replaces the field at `pointer` (or all of it, when empty) of a built-in
+/// component the entity already has.
+fn set_part<T>(
+    world: &mut World,
+    entity: Entity,
+    pointer: &str,
+    set: &Assignment,
+) -> Result<(), String>
+where
+    T: bevy_ecs::component::Component<
+            Mutability = bevy_ecs::component::Mutable,
+        > + Serialize
+        + serde::de::DeserializeOwned,
+{
+    let mut part = world
+        .get_mut::<T>(entity)
+        .ok_or_else(|| "the entity does not have that component".to_owned())?;
+    let mut value =
+        serde_json::to_value(&*part).map_err(|error| error.to_string())?;
+    let slot = value
+        .pointer_mut(pointer)
+        .ok_or_else(|| "that field does not exist".to_owned())?;
+    *slot = set.value.clone();
+    *part = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn check_screen(
+    world: &mut World,
+    expect: &ScreenExpectation,
+    extent: [u32; 2],
+) -> Check {
+    let subject = format!("`{}`", expect.entity);
+    let entity =
+        find_entity(world, &expect.entity, |_, _| true).ok_or_else(|| {
+            (
+                format!("no entity has the ID or name `{}`", expect.entity),
+                Value::Null,
+            )
+        })?;
+    let id = world.get::<SceneId>(entity).map(|id| id.0);
+    let view = match &expect.camera {
+        Some(name) => find_camera(world, name)
+            .and_then(|camera| CameraView::of(world, camera, extent))
+            .ok_or_else(|| {
+                (
+                    format!("no camera has the ID or name `{name}`"),
+                    Value::Null,
+                )
+            })?,
+        None => CameraView::active(world, extent).ok_or_else(|| {
+            ("the scene has no active camera".to_owned(), Value::Null)
+        })?,
+    };
+    let extent = view.extent();
+    let note = crate::annotate::annotations_from(world, &view)
+        .into_iter()
+        .find(|note| Some(note.id) == id);
+    let share_of = |world: &mut World, rect: [u32; 4]| {
+        view.pick_rect(world, rect)["entities"]
+            .as_array()
+            .and_then(|hits| hits.iter().find(|hit| hit["id"] == json!(id)))
+            .map_or(0.0, |hit| hit["share"].as_f64().unwrap_or(0.0))
+    };
+    let (box_share, frame_share) = match &note {
+        Some(note) => {
+            let [l, t, r, b] = note.rect.map(|v| v.max(0) as u32);
+            (
+                share_of(world, [l, t, r + 1, b + 1]),
+                share_of(world, [0, 0, extent[0], extent[1]]),
+            )
+        }
+        None => (0.0, 0.0),
+    };
+    let visible = box_share > 0.0;
+    let actual = json!({
+        "rect": note.as_ref().map(|note| note.rect),
+        "visible": visible,
+        "box_share": box_share,
+        "frame_share": frame_share,
+    });
+    let fail = |wanted: String| {
+        Err((
+            format!("{subject} is {actual}, expected {wanted}"),
+            actual.clone(),
+        ))
+    };
+    if let Some(wanted) = expect.on_screen {
+        if visible != wanted {
+            return fail(format!("on_screen {wanted}"));
+        }
+    }
+    if let Some(wanted) = expect.occluded {
+        if (note.is_some() && !visible) != wanted {
+            return fail(format!("occluded {wanted}"));
+        }
+    }
+    if let Some([left, top, right, bottom]) = expect.inside {
+        let (w, h) = (extent[0] as f32, extent[1] as f32);
+        let inside = note.as_ref().is_some_and(|note| {
+            let [l, t, r, b] = note.rect.map(|v| v as f32);
+            l >= left * w && t >= top * h && r <= right * w && b <= bottom * h
+        });
+        if !inside {
+            return fail(format!("inside {:?}", expect.inside));
+        }
+    }
+    if let Some(min) = expect.min_share {
+        if frame_share < min {
+            return fail(format!("frame share of at least {min}"));
+        }
+    }
+    Ok(format!("{subject} is on the screen as expected"))
+}
+
+/// "; did you mean ..." with the three paths in `state` closest to `path`,
+/// those ending in the same key first.
+fn near_paths(state: &Value, path: &str) -> String {
+    if path.starts_with("/gpu_state") && state.get("gpu_state").is_none() {
+        return "; /gpu_state exists only on a GPU body with \
+                `sync: PhysicsSyncMode::SelectedState` or `FullState`, \
+                after its first readback"
+            .into();
+    }
+    fn walk(value: &Value, at: String, out: &mut Vec<String>) {
+        let children: Vec<(String, &Value)> = match value {
+            Value::Object(map) => map
+                .iter()
+                .map(|(key, child)| {
+                    (key.replace('~', "~0").replace('/', "~1"), child)
+                })
+                .collect(),
+            Value::Array(items) => items
+                .iter()
+                .take(4)
+                .enumerate()
+                .map(|(index, child)| (index.to_string(), child))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for (key, child) in children {
+            let child_path = format!("{at}/{key}");
+            out.push(child_path.clone());
+            walk(child, child_path, out);
+        }
+    }
+    let mut paths = Vec::new();
+    walk(state, String::new(), &mut paths);
+    let last = |path: &str| path.rsplit('/').next().unwrap_or("").to_owned();
+    paths.sort_by_key(|candidate| {
+        (
+            last(candidate) != last(path),
+            crate::scene_patch::edit_distance(candidate, path),
+        )
+    });
+    if paths.is_empty() {
+        return String::new();
+    }
+    format!("; did you mean {}", paths[..paths.len().min(3)].join(", "))
 }
 
 fn check_value(world: &mut World, expect: &Expectation) -> Check {
@@ -695,11 +2333,22 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
         }
     }
     let state = state.map_err(|error| (error, Value::Null))?;
-    let actual = state
-        .pointer(&expect.path)
-        .cloned()
-        .ok_or_else(|| (format!("{subject} does not exist"), Value::Null))?;
+    let actual = state.pointer(&expect.path).cloned().ok_or_else(|| {
+        (
+            format!(
+                "{subject} does not exist{}",
+                near_paths(&state, &expect.path)
+            ),
+            Value::Null,
+        )
+    })?;
     let number = actual.as_f64();
+    if expect.finite && has_null_number(&actual) {
+        return Err((
+            format!("{subject} is {actual}, expected finite numbers"),
+            actual,
+        ));
+    }
     let fail = |wanted: String| {
         Err((
             format!("{subject} is {actual}, expected {wanted}"),
@@ -709,6 +2358,11 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
     if let Some(equals) = &expect.equals {
         if !close(&actual, equals, expect.tolerance) {
             return fail(format!("{equals} ± {}", expect.tolerance));
+        }
+    }
+    if let Some(differs) = &expect.not_equals {
+        if close(&actual, differs, expect.tolerance) {
+            return fail(format!("not {differs} ± {}", expect.tolerance));
         }
     }
     if let Some(bound) = expect.greater_than {
@@ -722,6 +2376,16 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
         }
     }
     Ok(format!("{subject} is {actual}"))
+}
+
+/// Whether a value is `null` or holds a `null` array element or field.
+fn has_null_number(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.iter().any(has_null_number),
+        Value::Object(fields) => fields.values().any(has_null_number),
+        _ => false,
+    }
 }
 
 /// Whether `actual` equals `wanted`, with numbers, including those inside
@@ -812,6 +2476,40 @@ mod tests {
     };
 
     #[test]
+    fn set_reaches_built_in_components() {
+        let mut world = World::new();
+        let entity = world
+            .spawn((
+                Name("Crate".into()),
+                RigidBody::default(),
+                Collider::default(),
+            ))
+            .id();
+        let set = |path: &str, value: Value| Assignment {
+            entity: "Crate".into(),
+            counter: None,
+            path: path.into(),
+            value,
+        };
+        assign(&mut world, &set("/collider/friction", json!(0.0))).unwrap();
+        assign(&mut world, &set("/rigid_body/mass", json!(0.2))).unwrap();
+        assign(&mut world, &set("/visible", json!(false))).unwrap();
+        assert_eq!(world.get::<Collider>(entity).unwrap().friction, 0.0);
+        assert_eq!(world.get::<RigidBody>(entity).unwrap().mass, 0.2);
+        assert!(
+            !world
+                .get::<crate::runtime::Visibility>(entity)
+                .unwrap()
+                .visible
+        );
+        let missing =
+            assign(&mut world, &set("/point_light/range", json!(3.0)));
+        assert!(missing.unwrap_err().contains("does not have"));
+        let typo = assign(&mut world, &set("/collider/frction", json!(1.0)));
+        assert!(typo.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
     fn a_press_before_the_first_update_leaves_no_stale_binding() {
         use crate::runtime::InputAction;
         let mut app = App::new();
@@ -822,7 +2520,7 @@ mod tests {
                 inputs: vec!["KeyF".into()],
             })
             .id();
-        press(app.world_mut(), "fire", true).unwrap();
+        press(app.world_mut(), "fire", true, None).unwrap();
         app.update(std::time::Duration::from_millis(16)).unwrap();
         app.world_mut().despawn(owner);
         app.update(std::time::Duration::from_millis(16)).unwrap();
@@ -831,6 +2529,22 @@ mod tests {
             .resource::<ActionMap>()
             .bindings("fire")
             .is_empty());
+    }
+
+    #[test]
+    fn a_press_at_a_fraction_records_that_press_tick() {
+        use crate::runtime::InputAction;
+        let mut app = App::new();
+        app.world_mut().spawn(InputAction {
+            action: "fire".into(),
+            inputs: vec!["KeyF".into()],
+        });
+        press(app.world_mut(), "fire", true, Some(121.4)).unwrap();
+        let world = app.world();
+        let tick = world
+            .resource::<ActionMap>()
+            .press_tick(world.resource::<RuntimeInput>(), "fire");
+        assert_eq!(tick, Some(121.4));
     }
 
     #[test]
@@ -875,6 +2589,24 @@ mod tests {
             &serde_json::json!({"r": 0.5, "name": "blue"}),
             1.0
         ));
+    }
+
+    #[test]
+    fn pad_presses_and_stick_steps_reach_runtime_input() {
+        let mut world = World::new();
+        world.insert_resource(RuntimeInput::default());
+        world.insert_resource(ActionMap::default());
+        let pad = crate::runtime::parse_input("PadSouth").unwrap();
+        assert!(crate::runtime::parse_input("PadSouthh")
+            .unwrap_err()
+            .contains("PadDpadUp"));
+        world.resource_mut::<ActionMap>().bind("jump", pad);
+        press(&mut world, "jump", true, None).unwrap();
+        tilt_stick(&mut world, Stick::Left, [0.0, 1.0]).unwrap();
+        let input = world.resource::<RuntimeInput>();
+        assert!(input.pad_held(crate::runtime::PadButton::South));
+        assert!(input.pad_held(crate::runtime::PadButton::LeftStickUp));
+        assert_eq!(input.stick(Stick::Left), [0.0, 1.0]);
     }
 
     /// A cube falling onto fixed ground, and a game system that lifts the
@@ -959,6 +2691,344 @@ mod tests {
     }
 
     #[test]
+    fn screen_checks_see_a_mesh_in_front_of_a_camera_and_behind_a_wall() {
+        use crate::runtime::{Camera, MeshRenderer, Projection};
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        app.spawn((
+            Transform::new([0.0, 0.0, 5.0]),
+            Camera {
+                projection: Projection::Perspective {
+                    vertical_fov_radians: 1.0,
+                    near: 0.1,
+                    far: 100.0,
+                },
+                active: true,
+                priority: 0,
+                viewport: None,
+            },
+        ));
+        // `Near` at the origin, `Wall` big and closer, `Far` hidden behind
+        // it, `Side` far off to the right of the frame.
+        for (name, at, scale) in [
+            ("Near", [0.0, 0.0, 0.0], 1.0),
+            ("Wall", [0.0, 0.0, 2.0], 6.0),
+            ("Far", [0.0, 0.0, -3.0], 1.0),
+            ("Side", [40.0, 0.0, 0.0], 1.0),
+        ] {
+            app.spawn((
+                SceneId(Uuid::new_v4()),
+                Name(name.into()),
+                Transform::new(at).with_scale(scale, scale, scale),
+                MeshRenderer {
+                    mesh,
+                    material,
+                    cast_shadows: true,
+                    receive_shadows: true,
+                },
+            ));
+        }
+        let mut scenario = scenario(
+            1,
+            json!([
+                {"tick": 1, "expect_screen": {"entity": "Wall", "on_screen": true,
+                    "inside": [0.0, 0.0, 1.0, 1.0], "min_share": 0.2}},
+                {"tick": 1, "expect_screen": {"entity": "Far", "occluded": true}},
+                {"tick": 1, "expect_screen": {"entity": "Side", "on_screen": false}},
+                {"tick": 1, "expect_screen": {"entity": "Far", "on_screen": true}},
+                {"tick": 1, "expect_screen": {"entity": "Near", "min_share": 0.01}},
+            ]),
+        );
+        scenario.keep_going = true;
+        let report = run_scenario(&mut app, &scenario, Path::new("."));
+        let failed: Vec<_> = report
+            .steps
+            .iter()
+            .filter(|s| !s.ok)
+            .map(|s| s.step)
+            .collect();
+        assert_eq!(failed, [3, 4], "{:?}", report.steps);
+    }
+
+    #[test]
+    fn invariants_are_checked_every_tick_and_report_the_first_bad_tick() {
+        let mut holds = scenario(4, json!([]));
+        holds.invariants = serde_json::from_value(json!([
+            {"entity": "Cube", "path": "/transform/position", "finite": true},
+            {"entity": "Cube", "path": "/transform/position/1", "greater_than": -1000.0},
+            {"entity": "Gone", "path": "/transform", "finite": true},
+        ]))
+        .unwrap();
+        let report = run(&holds);
+        assert!(report.passed, "{:?}", report.steps);
+
+        let mut broken = scenario(4, json!([]));
+        broken.invariants = serde_json::from_value(json!([
+            {"entity": "Cube", "path": "/transform/position/1", "less_than": -1000.0},
+        ]))
+        .unwrap();
+        let failure = run(&broken).first_failure.unwrap();
+        assert_eq!(failure.tick, 0, "checked after the first tick");
+        assert!(failure.message.starts_with("invariant 0:"), "{failure:?}");
+
+        assert!(has_null_number(&json!([0.0, null, 1.0])));
+        assert!(!has_null_number(&json!([0.0, 2.0])));
+
+        let mut empty = scenario(1, json!([]));
+        empty.invariants =
+            serde_json::from_value(json!([{"entity": "Cube"}])).unwrap();
+        assert!(run(&empty)
+            .first_failure
+            .unwrap()
+            .message
+            .contains("invariant 0"));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn the_gpu_flag_opens_the_device_without_a_capture_step() {
+        let mut scenario = scenario(2, json!([]));
+        scenario.gpu = true;
+        let report = run(&scenario);
+        assert!(report.passed, "{:?}", report.steps);
+        assert!(!report.perf.render.is_null(), "a renderer was opened");
+    }
+
+    #[test]
+    fn perf_is_reported_and_budgets_fail_the_run() {
+        let mut passing = scenario(3, json!([]));
+        passing.budgets = Some(Budgets {
+            max_tick_ms: Some(60_000.0),
+            ..Budgets::default()
+        });
+        let report = run(&passing);
+        assert!(report.passed, "{:?}", report.steps);
+        assert!(report.perf.tick_ms_max >= report.perf.tick_ms_mean);
+        assert!(report.perf.tick_ms_p95 > 0.0);
+        assert_eq!(report.perf.environment["os"], std::env::consts::OS);
+        assert!(report.perf.render.is_null());
+
+        let mut failing = scenario(3, json!([]));
+        failing.budgets = Some(Budgets {
+            max_tick_ms: Some(0.0),
+            ..Budgets::default()
+        });
+        let report = run(&failing);
+        assert!(!report.passed);
+        assert!(report
+            .first_failure
+            .unwrap()
+            .message
+            .starts_with("budget: max_tick_ms"));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_render_budget_reports_render_counters_without_a_capture() {
+        use crate::runtime::{Camera, MeshRenderer, Projection};
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        app.spawn((
+            Transform::new([0.0, 0.0, 5.0]),
+            Camera {
+                projection: Projection::Perspective {
+                    vertical_fov_radians: 1.0,
+                    near: 0.1,
+                    far: 100.0,
+                },
+                active: true,
+                priority: 0,
+                viewport: None,
+            },
+        ));
+        app.spawn((
+            SceneId(Uuid::new_v4()),
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ));
+        // A render budget renders without a capture step.
+        let mut scenario = scenario(2, json!([]));
+        scenario.capture_size = [160, 90];
+        scenario.budgets = Some(Budgets {
+            max_draws: Some(0),
+            ..Budgets::default()
+        });
+        let report = run_scenario(&mut app, &scenario, &std::env::temp_dir());
+        assert!(report.perf.render["draws"].as_u64().unwrap() > 0);
+        assert!(report.perf.render["gpu_ms"].is_number());
+        assert!(report.perf.environment["device"].is_string());
+        assert!(!report.passed);
+        assert!(report
+            .first_failure
+            .unwrap()
+            .message
+            .starts_with("budget: max_draws"));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn pixel_checks_goldens_and_named_cameras() {
+        use crate::runtime::{Camera, MeshRenderer, Projection};
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        let camera = |active| Camera {
+            projection: Projection::Perspective {
+                vertical_fov_radians: 1.0,
+                near: 0.1,
+                far: 100.0,
+            },
+            active,
+            priority: 0,
+            viewport: None,
+        };
+        app.spawn((
+            Name("Main".into()),
+            Transform::new([0.0, 0.0, 3.0]),
+            camera(true),
+        ));
+        let mut away = Transform::new([0.0, 0.0, 3.0]);
+        away.rotation = [0.0, std::f32::consts::PI, 0.0];
+        app.spawn((Name("Away".into()), away, camera(false)));
+        app.spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Cube".into()),
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: true,
+                receive_shadows: true,
+            },
+        ));
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-golden-{}", std::process::id()));
+        let mut run = scenario(
+            1,
+            json!([
+                {"tick": 1, "expect_pixels": {"stddev_min": 1.0}},
+                {"tick": 1, "expect_screen": {"entity": "Cube", "on_screen": true}},
+                {"tick": 1, "expect_screen": {"entity": "Cube", "camera": "Away",
+                    "on_screen": false}},
+                {"tick": 1, "capture": {"path": "main.png", "golden": "main.golden.png"}},
+                {"tick": 1, "capture": {"path": "away.png", "camera": "Away",
+                    "golden": "away.golden.png"}},
+            ]),
+        );
+        run.capture_size = [64, 48];
+        run.update_golden = true;
+        let report = run_scenario(&mut app, &run, &directory);
+        assert!(report.passed, "{:?}", report.first_failure);
+        assert!(directory.join("away.golden.png").is_file());
+
+        // The second run compares; the away view must not match the main one.
+        run.update_golden = false;
+        let report = run_scenario(&mut app, &run, &directory);
+        assert!(report.passed, "{:?}", report.first_failure);
+        std::fs::copy(
+            directory.join("main.golden.png"),
+            directory.join("away.golden.png"),
+        )
+        .unwrap();
+        let report = run_scenario(&mut app, &run, &directory);
+        let failure = report.first_failure.unwrap();
+        assert!(
+            failure.message.contains("differs from golden"),
+            "{failure:?}"
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn capture_steps_take_a_path_or_options() {
+        let run = scenario(
+            1,
+            json!([
+                {"tick": 1, "capture": "a.png"},
+                {"tick": 1, "capture": {"path": "b.png", "hud": false,
+                    "golden": "g.png", "tolerance": 2.0}},
+            ]),
+        );
+        let StepAction::Capture(plain) = &run.steps[0].action else {
+            panic!()
+        };
+        assert!(plain.hud && plain.golden.is_none() && plain.tolerance == 1.0);
+        let StepAction::Capture(full) = &run.steps[1].action else {
+            panic!()
+        };
+        assert!(!full.hud && full.tolerance == 2.0);
+        assert_eq!(full.golden.as_deref(), Some(Path::new("g.png")));
+    }
+
+    #[test]
+    fn region_stats_and_golden_differences() {
+        // 2x1: black and white.
+        let pixels = [0, 0, 0, 255, 255, 255, 255, 255];
+        let (mean, stddev) = region_stats(&pixels, 2, [0, 0, 2, 1]);
+        assert_eq!(mean, [127.5; 3]);
+        assert!((stddev - 127.5).abs() < 1e-6);
+        let golden = std::env::temp_dir()
+            .join(format!("rusting-golden-unit-{}.png", std::process::id()));
+        assert!(compare_golden(&pixels, [2, 1], &golden, 0.0, true).is_ok());
+        assert!(compare_golden(&pixels, [2, 1], &golden, 0.0, false).is_ok());
+        let shifted = [4, 4, 4, 255, 255, 255, 255, 255];
+        let (message, actual) =
+            compare_golden(&shifted, [2, 1], &golden, 1.0, false).unwrap_err();
+        assert!(message.contains("mean difference 2.000"), "{message}");
+        assert_eq!(actual["max_difference"], 4);
+        let _ = std::fs::remove_file(golden);
+    }
+
+    #[test]
+    fn the_trace_lists_inputs_sets_and_collisions_by_tick() {
+        let report = run(&scenario(
+            90,
+            json!([
+                {"tick": 5, "press": "jump"},
+                {"tick": 6, "release": "jump"},
+                {"tick": 7, "set": {"entity": "Ground",
+                    "path": "/transform/position", "value": [0.0, -0.5, 0.0]}},
+            ]),
+        ));
+        let kinds: Vec<_> = report
+            .trace
+            .iter()
+            .map(|event| (event.tick, event.kind.as_str()))
+            .collect();
+        assert_eq!(&kinds[..3], [(5, "input"), (6, "input"), (7, "set")]);
+        assert!(kinds.iter().any(|(_, kind)| *kind == "collision"));
+        assert!(kinds.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    }
+
+    #[test]
     fn set_steps_move_entities_before_the_tick_runs() {
         let report = run(&scenario(
             20,
@@ -973,7 +3043,159 @@ mod tests {
         ));
         assert!(report.steps[0].ok && report.steps[1].ok, "{report:#?}");
         assert!(!report.passed);
-        assert!(report.steps[2].message.contains("/transform/... and"));
+        assert!(report.steps[2].message.contains("set reaches /transform"));
+    }
+
+    #[test]
+    fn counter_shorthand_sets_checks_and_logs_a_counter_by_name() {
+        let mut app = game();
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Score Counter".into()),
+            crate::runtime::Counter {
+                name: "score".into(),
+                value: 0,
+                target: None,
+            },
+        ));
+        let scenario = scenario(
+            4,
+            json!([
+                {"tick": 2, "set": {"counter": "score", "value": 5}},
+                {"tick": 2, "expect": {"counter": "score", "equals": 5}},
+                {"tick": 3, "expect": {"counter": "score", "not_equals": 4}},
+                {"tick": 3, "log": {"counter": "score"}},
+                {"tick": 3, "set": {"counter": "fresh", "value": 2}},
+                {"tick": 3, "expect": {"counter": "fresh", "equals": 2}},
+                {"tick": 4, "expect": {"counter": "score", "not_equals": 5}},
+            ]),
+        );
+        let report = run_scenario(&mut app, &scenario, Path::new("."));
+        assert!(report.steps[..6].iter().all(|s| s.ok), "{report:#?}");
+        let log = report.steps.iter().find(|s| s.step == 3).unwrap();
+        assert_eq!(log.actual, json!(5));
+        let last = report.first_failure.expect("not_equals 5 fails");
+        assert!(last.message.contains("expected not 5"), "{}", last.message);
+
+        let both = scenario_from(json!({"tick": 1, "expect": {
+            "counter": "score", "entity": "Cube", "equals": 1}}));
+        assert!(both.validate().unwrap_err().contains("either entity"));
+        let neither =
+            scenario_from(json!({"tick": 1, "expect": {"equals": 1}}));
+        assert!(neither.validate().is_err());
+    }
+
+    #[test]
+    fn the_audio_entity_counts_sound_cue_requests_per_clip() {
+        let mut app = game();
+        let mut cue = crate::runtime::SoundCue {
+            clip: "sfx/hit.wav".into(),
+            ..Default::default()
+        };
+        cue.trigger();
+        app.world_mut().spawn(cue);
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                4,
+                json!([
+                    {"tick": 0, "expect": {"entity": "audio:",
+                        "path": "/requested", "equals": 0}},
+                    {"tick": 3, "expect": {"entity": "audio:",
+                        "path": "/clips/sfx~1hit.wav", "equals": 1}},
+                    {"tick": 4, "expect": {"entity": "audio:",
+                        "path": "/requested", "equals": 1}},
+                ]),
+            ),
+            Path::new("."),
+        );
+        assert!(report.passed, "{report:#?}");
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_offline_mix_reports_levels_pan_buses_and_scheduled_starts() {
+        use crate::runtime::{AudioQueue, Sound};
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-mix-{}", Uuid::new_v4()));
+        let tone: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let s = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0)
+                    .sin()
+                    * 0.5;
+                [s, s]
+            })
+            .collect();
+        crate::audio_output::write_wav(
+            &directory.join("assets/tone.wav"),
+            &tone,
+        )
+        .unwrap();
+        let mut app = game();
+        app.world_mut()
+            .insert_resource(crate::project_runner::ProjectFolder(
+                directory.clone(),
+            ));
+        app.add_system(ScheduleStage::Update, |world: &mut World| {
+            let tick = world.resource::<FrameTime>().fixed_tick;
+            let mut queue =
+                world.get_resource_or_insert_with(AudioQueue::default);
+            match tick {
+                2 => {
+                    let left = Sound {
+                        pan: -1.0,
+                        bus: "music".into(),
+                        ..Sound::default()
+                    };
+                    queue.play("tone.wav", &left, tick);
+                }
+                10 => queue.set_bus_volume("music", 0.0, 0.0),
+                14 => {
+                    let later = Sound {
+                        at_tick: Some(20),
+                        ..Sound::default()
+                    };
+                    queue.play("tone.wav", &later, tick);
+                }
+                _ => {}
+            }
+        });
+        let mut run = scenario(
+            20,
+            json!([
+                {"tick": 1, "expect": {"entity": "audio:", "path": "/level/0",
+                    "equals": 0.0}},
+                {"tick": 3, "expect": {"entity": "audio:", "path": "/level/0",
+                    "greater_than": 0.1}},
+                {"tick": 3, "expect": {"entity": "audio:", "path": "/level/1",
+                    "less_than": 0.001}},
+                {"tick": 3, "expect": {"entity": "audio:", "path": "/peak/0",
+                    "greater_than": 0.1}},
+                {"tick": 3, "expect": {"entity": "audio:", "path": "/peak/0",
+                    "less_than": 1.0}},
+                {"tick": 3, "expect": {"entity": "audio:", "path": "/clipped",
+                    "equals": 0}},
+                {"tick": 3, "expect": {"entity": "audio:",
+                    "path": "/playing/0/bus", "equals": "music"}},
+                {"tick": 12, "expect": {"entity": "audio:", "path": "/level/0",
+                    "less_than": 0.001}},
+                {"tick": 18, "expect": {"entity": "audio:", "path": "/level/1",
+                    "less_than": 0.001}},
+                {"tick": 20, "expect": {"entity": "audio:", "path": "/level/1",
+                    "greater_than": 0.1}},
+            ]),
+        );
+        run.audio_out = Some("mix.wav".into());
+        let report = run_scenario(&mut app, &run, &directory);
+        assert!(report.passed, "{report:#?}");
+        // 21 ticks of 800 stereo frames, 16-bit, after a 44-byte header.
+        let written = std::fs::metadata(directory.join("mix.wav")).unwrap();
+        assert_eq!(written.len(), 44 + 21 * 800 * 4);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    fn scenario_from(step: Value) -> Scenario {
+        scenario(2, json!([step]))
     }
 
     #[test]
@@ -1013,20 +3235,203 @@ mod tests {
         ));
         assert!(report.passed, "{report:#?}");
         assert_eq!(report.ticks_run, 90);
+
+        // A tap is a press that releases itself before the next tick.
+        let report = run(&scenario(
+            10,
+            json!([
+                {"tick": 5, "tap": "jump"},
+                {"tick": 5, "expect": {"entity": "Ground",
+                    "path": "/transform/position/1", "equals": 1.0}},
+                {"tick": 6, "expect": {"entity": "Ground",
+                    "path": "/transform/position/1", "equals": -0.5}},
+            ]),
+        ));
+        assert!(report.passed, "{report:#?}");
     }
 
     #[test]
     fn pointer_steps_place_the_cursor_in_the_capture_sized_view() {
-        let mut world = World::new();
-        world.insert_resource(RuntimeInput::default());
-        point_at(&mut world, [0.25, 0.5], [800, 600]).unwrap();
-        let input = world.resource::<RuntimeInput>();
+        let mut app = game();
+        let mut run = scenario(3, json!([{"tick": 2, "pointer": [0.25, 0.5]}]));
+        run.capture_size = [800, 600];
+        assert!(run_scenario(&mut app, &run, Path::new(".")).passed);
+        let input = app.world().resource::<RuntimeInput>();
         assert_eq!(input.viewport_size(), [800.0, 600.0]);
         assert_eq!(input.cursor_position(), Some([200.0, 300.0]));
         let step: ScenarioStep =
             serde_json::from_value(json!({"tick": 3, "pointer": [0.5, 0.5]}))
                 .unwrap();
         assert!(matches!(step.action, StepAction::Pointer([0.5, 0.5])));
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn click_steps_press_egui_buttons_by_label_and_quit_ends_the_run() {
+        let mut app = game();
+        app.add_system(ScheduleStage::Update, |world: &mut World| {
+            let context = world
+                .resource::<crate::runtime::RuntimeUi>()
+                .context()
+                .clone();
+            egui::CentralPanel::default().show(&context, |ui| {
+                if ui.button("Settings").clicked() {
+                    world.spawn((
+                        Name("opened".into()),
+                        SceneId(Uuid::new_v4()),
+                    ));
+                }
+                if ui.button("Quit").clicked() {
+                    world
+                        .resource_mut::<crate::runtime::ExitState>()
+                        .requested = true;
+                }
+            });
+        });
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                30,
+                json!([
+                    {"tick": 1, "click": "Settings"},
+                    {"tick": 3, "expect": {"entity": "opened", "path": "/name", "equals": "opened"}},
+                    {"tick": 3, "expect_quit": false},
+                    {"tick": 4, "click": "Quit"},
+                    {"tick": 5, "expect_quit": true},
+                    {"tick": 6, "expect_file": {"path": "no-such-save.cfg", "exists": false}},
+                    {"tick": 20, "expect_quit": true},
+                ]),
+            ),
+            Path::new("."),
+        );
+        let failure =
+            report.first_failure.as_ref().expect("tick 20 never runs");
+        assert_eq!(failure.tick, 20, "{report:#?}");
+        assert!(failure.message.contains("quit at tick 5"), "{failure:?}");
+        assert!(report.steps.iter().filter(|step| step.ok).count() >= 5);
+        assert!(
+            report.steps.iter().any(|step| step.tick == 6 && step.ok),
+            "expect_file runs after the quit: {report:#?}"
+        );
+
+        let missing = run(&scenario(3, json!([{"tick": 1, "click": "Load"}])));
+        let message = &missing.first_failure.unwrap().message;
+        assert!(message.contains("no UI text `Load`"), "{message}");
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn hud_text_shows_the_counters_game_code_set_on_the_same_tick() {
+        let mut app = game();
+        app.world_mut().spawn((
+            crate::runtime::Counter {
+                name: "beat".into(),
+                ..Default::default()
+            },
+            crate::runtime::HudElement {
+                text: "BEAT {beat}".into(),
+                ..Default::default()
+            },
+        ));
+        app.add_system(ScheduleStage::Update, |world: &mut World| {
+            let tick = world.resource::<FrameTime>().fixed_tick as i32;
+            let mut counters = world.query::<&mut crate::runtime::Counter>();
+            for mut counter in counters.iter_mut(world) {
+                counter.value = tick;
+            }
+        });
+        // A click finds the text the previous tick drew.
+        let report = run_scenario(
+            &mut app,
+            &scenario(6, json!([{"tick": 6, "click": "BEAT 5"}])),
+            Path::new("."),
+        );
+        assert!(report.passed, "{report:#?}");
+    }
+
+    #[test]
+    fn a_missing_path_suggests_the_nearest_real_ones() {
+        let state = json!({"components": {"rusting.fog": {"density": 0.1, "color": [0, 0, 0]}},
+            "mesh_renderer": {"material": {"Inline": {"transmission": 0.5}}}});
+        let hint = near_paths(&state, "/scene/fog/density");
+        assert!(
+            hint.starts_with("; did you mean /components/rusting.fog/density"),
+            "{hint}"
+        );
+        let hint = near_paths(&state, "/mesh_renderer/material/transmission");
+        assert!(
+            hint.contains("/mesh_renderer/material/Inline/transmission"),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn hashes_are_kept_past_the_world_history() {
+        let mut world = World::new();
+        world.insert_resource(crate::runtime::StateHashes::default());
+        let mut report = ScenarioReport {
+            name: String::new(),
+            seed: 0,
+            passed: false,
+            ticks_run: 0,
+            first_failure: None,
+            steps: Vec::new(),
+            captures: Vec::new(),
+            trace: Vec::new(),
+            perf: PerfReport::default(),
+            gpu_state_hashes: Vec::new(),
+            state_hashes: Vec::new(),
+        };
+        for tick in 0..3000_u64 {
+            let mut hashes =
+                world.resource_mut::<crate::runtime::StateHashes>();
+            hashes.recent.push_back((tick, tick * 7));
+            if hashes.recent.len() > 1024 {
+                hashes.recent.pop_front();
+            }
+            collect_hashes(&world, &mut report);
+            collect_hashes(&world, &mut report);
+        }
+        assert_eq!(report.state_hashes.len(), 3000);
+        assert_eq!(report.state_hashes[2999], (2999, 2999 * 7));
+    }
+
+    #[test]
+    fn gpu_bodies_report_the_gpu_pose_under_gpu_state() {
+        let mut app = game();
+        let world = app.world_mut();
+        let ground = find_entity(world, "Ground", |_, _| true).unwrap();
+        world
+            .entity_mut(ground)
+            .insert(crate::runtime::GpuStateMirror {
+                tick: 4,
+                transform: Transform::new([1.0, 2.0, 3.0]),
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                custom_values: None,
+            });
+        let state = reflected(world, "Ground").unwrap();
+        assert_eq!(state["gpu_state"]["position"], json!([1.0, 2.0, 3.0]));
+        assert_eq!(state["gpu_state"]["tick"], 4);
+    }
+
+    #[test]
+    fn a_failed_check_names_inputs_that_ran_on_its_tick() {
+        let report = run(&scenario(
+            5,
+            json!([
+                {"tick": 2, "press": "jump"},
+                {"tick": 2, "expect": {"entity": "Ground",
+                    "path": "/transform/position/1", "equals": -0.5}},
+            ]),
+        ));
+        let message = report.first_failure.unwrap().message;
+        assert!(
+            message.contains(
+                r#"inputs at this tick ran before the check: {"press":"jump"}"#
+            ),
+            "{message}"
+        );
     }
 
     #[test]
@@ -1084,6 +3489,8 @@ mod tests {
         assert_eq!(ticks, [1, 2, 3, 4, 5]);
         assert!(report.steps[3].actual.as_f64().unwrap() < 3.0, "falling");
         assert_eq!(report.steps[4].actual, Value::Null);
+        assert!(report.steps[4].message.contains("Ghost"), "{report:#?}");
+        assert!(!report.steps[4].message.contains(" is null"));
     }
 
     #[test]

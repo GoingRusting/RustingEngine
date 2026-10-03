@@ -12,6 +12,7 @@ command takes `--json` for output a program can read.
 - `src/main.rs`: game code. `update` runs once per frame.
 - `assets/`: imported models, textures and sounds.
 - `tests/`: scenario files for `rusting test` (create the folder when needed).
+- `rusting add scenario <name>` and `rusting add system <name>` scaffold a failing scenario (and a stub function in `src/main.rs`) to fill in.
 
 ## Workflow
 
@@ -41,6 +42,26 @@ command takes `--json` for output a program can read.
    saves the end state to `build/final.rscene`; inspect it with
    `rusting scene query build/final.rscene --json`. Game output (`eprintln!`)
    is in the `--json` result under `game.stderr`.
+8. Every error has a code such as `SCENE_CONFLICT`.
+   `rusting explain SCENE_CONFLICT` prints what it means, how to fix it and
+   an example; `rusting explain` lists every code. A `--json` diagnostic
+   also names where the problem is: `file`, `line` and `column` for text
+   that did not parse, `scene_location` (a JSON pointer into `file`, such as
+   `/entities/3` or `/operations/1` of a patch) and `entity` (`id`, `name`).
+   `rusting docs search <words>` and `rusting docs show <id>` read the
+   manual and every command offline, for this engine version.
+   `skills/rusting-game/SKILL.md` (also `rusting docs show guide/agent-skill`)
+   is the full guide for building a game; read it first.
+   `rusting docs show sample/<name>` prints a sample game's README and code.
+   A diagnostic with a `fix` (a misspelled scene key) is certain:
+   `rusting fix --dry-run` lists the fixes and `rusting fix` applies them.
+
+9. A project that points `rusting_engine` at a local `path` builds against
+   whatever is in that folder now. If the engine is being edited while you
+   work, a build can fail inside the engine or a GPU state hash can change
+   between two runs. Run `rusting --version` and rerun before you report a
+   failure as a game bug. To hold one engine version, depend on a git `rev`
+   or `tag` instead of a `path`.
 
 ## Scene basics
 
@@ -58,13 +79,31 @@ command takes `--json` for output a program can read.
   disappears. Animate 2D sprites with a `Scale` tween instead.
 - Player and platformer controllers ride moving platforms (kinematic bodies
   moved by `rusting.tween` or game code).
-- The player controller is kinematic: moving bodies do not push it. Handle
-  hazards in game code with `touching`, as below.
+- The player controller is kinematic: moving bodies do not push it, but it
+  pushes dynamic bodies it walks into (`push_bodies`). Handle hazards in game
+  code with `touching`, as below; it includes the floor and the wall the
+  player stands on or pushes.
 - Input actions for the player controller: `player.forward`, `player.back`,
   `player.left`, `player.right`, `player.jump`, `player.sprint`.
 - Add your own actions with `rusting.input_action`, for example
   `{"action": "fire", "inputs": ["MouseLeft", "KeyF"]}`. Key names are winit
-  `KeyCode` names. Scenarios press the action by name.
+  `KeyCode` names; gamepad inputs are `PadSouth` (A), `PadEast`, `PadStart`,
+  `PadDpadUp`, `PadLeftStickUp` and so on. Scenarios press the action by name. `pressed` is true
+  only on the tick an action goes down; a scenario `tap` step presses and
+  releases, so several taps give several edges.
+- Menus use egui through `scene.ui()`. A scenario `click` step clicks a
+  button by its label. Saves go through `scene.save_data` and
+  `scene.load_data`. `rusting docs show guide/menus-and-ui` covers menus,
+  pause, quit, saves, rebinding and their tests.
+- `rusting docs show api/PlayerController` lists the controller's fields.
+  `turn_speed` turns the body's non-camera children (the visible rig)
+  toward the walking direction.
+- A `rusting.burst_emitter` with `rate` emits continuously over its `area`
+  box; `stretch` makes tall particles such as rain streaks.
+- A dynamic body with a `ConvexMesh` collider collides as the convex hull
+  of its mesh: a `Cylinder` mesh makes a rolling barrel.
+- There is no skeletal animation. Animate characters as child entities
+  rotated from game code each fixed tick.
 
 ## Game code
 
@@ -75,6 +114,9 @@ fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
     // Objects are found by their scene name.
     let hit = scene.touching("Player").iter().any(|name| name == "Spikes");
     let mut player = scene.object("Player");
+    // FrameTime: delta_seconds() and elapsed_seconds() are methods;
+    // fixed_tick and frame are fields.
+    player.rotate_y(1.5 * time.delta_seconds());
     if hit || player.position()[1] < -5.0 {
         player.set_position([0.0, 1.0, 0.0]);
     }
@@ -94,7 +136,9 @@ direction, `pointer_ray` the ray through the mouse cursor), launches bodies
 (`set_body_kind`, `set_linear_velocity`, `set_angular_velocity`; each wakes a
 sleeping body, and a body made `Kinematic` or `Fixed` stops) and reads their
 velocity (`linear_velocity`, `angular_velocity`), stops a body completely
-(`reset_body`), turns a player controller (`set_look`), removes objects
+(`reset_body`), turns a player controller (`set_look`) and reads its
+state (`player`: grounded, floor, wall, velocity), reparents objects
+(`reparent`), changes a light (`set_light`), removes objects
 (`despawn`), shows and
 hides them and their HUD text (`set_visible`), recolors one object without
 touching others that share its material (`color`, `set_color`,
@@ -104,7 +148,9 @@ transform, color and body kind (`initial`), saves and puts back the whole
 scene mid-game (`snapshot`, `restore`), hashes the state of one class to
 compare rounds (`state_hash`), reads
 and writes `rusting.tile_map` cells under a world position (`tile`,
-`set_tile`), fires sound cues and burst emitters (`trigger`), spawns shapes
+`set_tile`), plays sounds (`play_sound`, `play_sound_looped`,
+`stop_sound`, `set_master_volume`; clips are WAV, Ogg, MP3 or FLAC paths under
+`assets/`), fires sound cues and burst emitters (`trigger`), spawns shapes
 (`spawn_cube`, `spawn_sphere`), copies a hidden template object with its
 children (`spawn_copy`; a copied child is named `"<copy>/<child>"`), lists the
 objects in a class (`in_class`), runs setup once per round (`once`; `restart`

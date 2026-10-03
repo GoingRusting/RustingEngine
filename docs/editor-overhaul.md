@@ -214,7 +214,7 @@ item are named in parentheses.
   segmented controls, stat tiles). Follow-ups: move the Inspector, Render
   Settings and Physics Diagnostics panels onto the same kit, add physics and
   input map categories (M20), and wire `render_scale` and `background_color`
-  into the page once the renderer reads them.
+  into the page.
 - Project-wide search (M20).
 - 2D path: the Inspector's Tile Painter paints, draws lines, fills
   rectangles and flood fills the selected tile map in the Scene View, and
@@ -303,6 +303,48 @@ Items the audit found but left open, with the reason for each.
   Add a conflict dialog that shows the patch diff and offers keep mine,
   take theirs, or a per-field merge. The watch compares the file time
   first; switch to a file watcher if coarse clocks miss changes.
+- Agent panel (roadmap Milestone L4): a Blender-style area that lists the
+  operation journal of agent edits, shows each pending diff with accept and
+  reject, highlights the affected entities in the Hierarchy and Scene View,
+  and shows the last scenario results. Accept and reject go through snapshot
+  undo like any other scene edit.
+
+### Agent panel design
+
+An area type in the editor-type switcher beside Hierarchy and Console,
+named "Agent". Blender-style: compact header, flat rows, no modal dialogs.
+
+- **Header:** area switcher, a Journal / Pending / Results tab strip, and a
+  `Pause agent edits` toggle. While paused, outside writes queue as Pending
+  instead of reloading.
+- **Journal:** one row per outside write the editor saw, newest first: time,
+  source (`rusting scene patch`, `rusting mcp`, other), the
+  `OutsideChange` counts (added, changed, removed), and the Undo step it
+  made. Click a row to select its touched entities (`highlight_scene_ids`).
+  Kept in memory for the session, capped like `EditorHistory::MAX_SNAPSHOTS`.
+- **Pending:** a diff the editor has not applied: the file changed while the
+  scene had unsaved edits, or edits are paused. Each entity shows per-field
+  rows (path, old, new) from the same leaf diff `rusting diff` uses. Buttons:
+  Accept (apply behind one snapshot undo), Reject (keep the GUI scene and
+  record the reject), and Accept all. Accept applies only the chosen
+  entities' fields, so a field-level merge replaces the keep-mine or
+  take-theirs dialog above.
+- **Results:** the last `rusting test --json` run for the open project:
+  one row per scenario with pass or fail, tick, and the failing step's
+  `expected` and `actual`; perf and budgets from the `perf` report. Read
+  from the newest report file, refreshed when it changes.
+- **State:** `AgentPanelState` in `EditorState` holds the journal, the
+  pending diffs and the pause flag. Widgets come from `gui_elements` and
+  colors from `EditorTheme`; no per-panel colors.
+- **Rules:** every Accept and Reject goes through `remember_scene_before_edit`;
+  an external write never replaces unsaved GUI work without a Pending row.
+- **Tests (no GPU):** a clean write journals one row and highlights its
+  entities; a dirty-scene write becomes Pending and leaves the scene
+  untouched; Accept applies one entity's fields and Undo reverts them;
+  Reject leaves the scene and the file unchanged.
+- **Order of work:** the journal first (data already exists in
+  `reload_external_scene_change`), then Pending with per-field Accept, then
+  Results.
 
 ## Deferred: materials and mirrors
 

@@ -1261,6 +1261,16 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             render_capacity.as_ref(),
                         );
                     }
+                    EditorPanel::Agent => {
+                        let clicked = world
+                            .get_resource_mut::<agent_panel::AgentJournal>()
+                            .and_then(|mut journal| {
+                                agent_panel::draw_agent_area(ui, &mut journal)
+                            });
+                        if let Some(ids) = clicked {
+                            highlight_scene_ids(world, &mut state, &ids);
+                        }
+                    }
                     EditorPanel::Console => {
                         if let Some(mut console) =
                             world.get_resource_mut::<EditorConsole>()

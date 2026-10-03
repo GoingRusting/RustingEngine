@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub use rusting_core::input::{ActionMap, InputBinding};
 
-use super::{KeyCode, MouseButton};
+use super::{KeyCode, MouseButton, PadButton};
 
 pub(super) fn install(world: &mut World) {
     world.insert_resource(ActionMap::default());
@@ -14,7 +14,8 @@ pub(super) fn install(world: &mut World) {
 /// Binds a named action to keys and mouse buttons from scene data, so game
 /// code and scenarios can use an action no Rust code bound. Inputs are winit
 /// key names (`KeyF`, `Space`, `ArrowUp`, `Digit1`) or `MouseLeft`,
-/// `MouseRight` and `MouseMiddle`. Removing or editing the component updates
+/// `MouseRight` and `MouseMiddle`, or `Pad` plus a [`PadButton`] name
+/// (`PadSouth`, `PadStart`, `PadDpadUp`, `PadLeftStickUp`). Removing or editing the component updates
 /// the bindings.
 #[derive(
     Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
@@ -37,12 +38,26 @@ pub fn parse_input(name: &str) -> Result<InputBinding, String> {
     if let Some(button) = mouse {
         return Ok(InputBinding::Mouse(button));
     }
+    if let Some(pad) = name.strip_prefix("Pad") {
+        return serde_json::from_value::<PadButton>(serde_json::Value::from(pad))
+            .map(InputBinding::Pad)
+            .map_err(|_| {
+                format!(
+                    "unknown gamepad input `{name}`: use PadSouth, PadEast, PadWest, \
+                     PadNorth, PadLeftBumper, PadRightBumper, PadLeftTrigger, \
+                     PadRightTrigger, PadSelect, PadStart, PadLeftStick, PadRightStick, \
+                     PadDpadUp/Down/Left/Right or PadLeftStickUp/Down/Left/Right \
+                     (and RightStick)"
+                )
+            });
+    }
     serde_json::from_value::<KeyCode>(serde_json::Value::from(name))
         .map(InputBinding::Key)
         .map_err(|_| {
             format!(
                 "unknown input `{name}`: use a key name such as KeyF, Space \
-                 or ArrowUp, or MouseLeft, MouseRight or MouseMiddle"
+                 or ArrowUp, MouseLeft, MouseRight or MouseMiddle, or a gamepad \
+                 input such as PadSouth"
             )
         })
 }

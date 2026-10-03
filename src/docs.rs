@@ -1,0 +1,780 @@
+//! Offline documentation for the installed engine version, served by
+//! `rusting docs`: the manual, tutorials, the agent guides, every command
+//! and every diagnostic code, as one list of items an agent can search and
+//! read within a token budget.
+//!
+//! Manual pages are embedded at build time, so the text always matches the
+//! binary that prints it.
+
+use serde_json::{json, Value};
+
+use crate::diagnostics::CODES;
+use crate::schema::OPERATIONS;
+
+const PAGES: &[(&str, &str, &str)] = &[
+    (
+        "manual/getting-started",
+        "manual",
+        include_str!("../docs/getting-started.md"),
+    ),
+    (
+        "manual/concepts",
+        "manual",
+        include_str!("../docs/concepts.md"),
+    ),
+    (
+        "manual/scripting",
+        "manual",
+        include_str!("../docs/scripting.md"),
+    ),
+    (
+        "manual/determinism",
+        "manual",
+        include_str!("../docs/determinism.md"),
+    ),
+    (
+        "manual/dev-environment",
+        "manual",
+        include_str!("../docs/dev-environment.md"),
+    ),
+    (
+        "tutorial/hello-cube",
+        "tutorial",
+        include_str!("../docs/tutorials/01-hello-cube.md"),
+    ),
+    (
+        "tutorial/coin-run-cli",
+        "tutorial",
+        include_str!("../docs/tutorials/02-coin-run-cli.md"),
+    ),
+    (
+        "tutorial/gameplay-plugin",
+        "tutorial",
+        include_str!("../docs/tutorials/03-gameplay-plugin.md"),
+    ),
+    (
+        "tutorial/gpu-cube-rain",
+        "tutorial",
+        include_str!("../docs/tutorials/04-gpu-cube-rain.md"),
+    ),
+    (
+        "guide/gpu-condition-shaders",
+        "guide",
+        include_str!("../docs/gpu-condition-shaders.md"),
+    ),
+    ("guide/audio", "guide", include_str!("../docs/audio.md")),
+    ("guide/cameras", "guide", include_str!("../docs/cameras.md")),
+    (
+        "guide/menus-and-ui",
+        "guide",
+        include_str!("../docs/menus-and-ui.md"),
+    ),
+    (
+        "guide/agent-skill",
+        "guide",
+        include_str!("../skills/rusting-game/SKILL.md"),
+    ),
+    (
+        "guide/project-agents",
+        "guide",
+        include_str!("project_agents.md"),
+    ),
+];
+
+/// Sample games shipped with the engine: name, README and game code.
+macro_rules! samples {
+    ($($name:literal),* $(,)?) => {
+        &[$((
+            $name,
+            include_str!(concat!("../samples/", $name, "/README.md")),
+            include_str!(concat!("../samples/", $name, "/src/main.rs")),
+        )),*]
+    };
+}
+
+const SAMPLES: &[(&str, &str, &str)] = samples![
+    "brick_bounce",
+    "core_defense",
+    "crate_keeper",
+    "ember_arena",
+    "hammer_run",
+    "lantern_grid",
+    "night_vault",
+    "putt_course",
+    "sky_hop",
+    "snake_trail",
+    "target_range",
+    "tower_topple",
+];
+
+/// One readable entry.
+pub struct DocItem {
+    /// `kind/name`, as `rusting docs show` takes it.
+    pub id: String,
+    /// `manual`, `tutorial`, `guide`, `command`, `code` or `api`.
+    pub kind: &'static str,
+    pub title: String,
+    /// One line for listings and the brief.
+    pub summary: String,
+    pub text: String,
+}
+
+/// Rough token count: four characters to a token, rounded up.
+#[must_use]
+pub fn tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+fn first_sentence(text: &str) -> String {
+    let end = [". ", ".\n"]
+        .iter()
+        .filter_map(|stop| text.find(stop))
+        .min()
+        .map_or(text.len(), |index| index + 1);
+    text[..end].trim().replace('\n', " ")
+}
+
+fn page(id: &str, kind: &'static str, text: &str) -> DocItem {
+    let text = text.trim_start_matches('\u{feff}');
+    let title = text
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .unwrap_or(id)
+        .trim()
+        .to_owned();
+    // A guide's front matter carries its own description; otherwise the
+    // summary is the first sentence of the first plain paragraph.
+    let described = text.strip_prefix("---").and_then(|rest| {
+        let front = rest.split("\n---").next()?;
+        front
+            .lines()
+            .find_map(|line| line.strip_prefix("description:"))
+            .map(|description| first_sentence(description.trim()))
+    });
+    let summary = described.unwrap_or_else(|| {
+        let paragraph: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .skip_while(|line| {
+                line.is_empty()
+                    || line.starts_with(['#', '`', '-', '|', '>', '<', '!'])
+            })
+            .take_while(|line| !line.is_empty())
+            .collect();
+        first_sentence(&paragraph.join(" "))
+    });
+    DocItem {
+        id: id.to_owned(),
+        kind,
+        title,
+        summary,
+        text: text.to_owned(),
+    }
+}
+
+/// Every item, in the order the brief lists them.
+#[must_use]
+pub fn items() -> Vec<DocItem> {
+    let mut items: Vec<DocItem> = PAGES
+        .iter()
+        .map(|(id, kind, text)| page(id, kind, text))
+        .collect();
+    for operation in OPERATIONS {
+        let mut text = format!(
+            "rusting {}\n\n{}\n\nGPU: {}\n",
+            operation.usage, operation.summary, operation.gpu
+        );
+        for (flag, value) in operation.defaults {
+            text += &format!("Default {flag}: {value}\n");
+        }
+        text += &format!("\nExample: rusting {}\n", operation.example);
+        items.push(DocItem {
+            id: format!("command/{}", operation.name.replace(' ', "-")),
+            kind: "command",
+            title: format!("rusting {}", operation.usage),
+            summary: first_sentence(operation.summary),
+            text,
+        });
+    }
+    for info in CODES {
+        items.push(DocItem {
+            id: format!("code/{}", info.code),
+            kind: "code",
+            title: info.code.to_owned(),
+            summary: info.summary.to_owned(),
+            text: format!(
+                "{}\n\n{}\n\nFix: {}\n\nExample: {}\n",
+                info.code, info.summary, info.fix, info.example
+            ),
+        });
+    }
+    for (name, readme, code) in SAMPLES {
+        let mut item = page(&format!("sample/{name}"), "sample", readme);
+        item.text += &format!("\n## src/main.rs\n\n```rust\n{code}```\n");
+        items.push(item);
+    }
+    let api = api_items();
+    for owner in API_TYPES {
+        let methods: Vec<&DocItem> = api
+            .iter()
+            .filter(|item| item.title.split("::").next() == Some(owner))
+            .collect();
+        // A struct with public fields lists them above its methods.
+        let fields = if API_SOURCE.contains(&format!("pub struct {owner} {{")) {
+            struct_item(owner, API_SOURCE).text + "\n"
+        } else {
+            format!("# {owner}\n\n")
+        };
+        let mut text = format!(
+            "{fields}Every public method, {} in all. \
+             `rusting docs show api/{owner}::<method>` prints one.\n\n",
+            methods.len()
+        );
+        for item in &methods {
+            text += &format!("- {}: {}\n", item.title, item.summary);
+        }
+        items.push(DocItem {
+            id: format!("api/{owner}"),
+            kind: "api",
+            title: owner.to_owned(),
+            summary: format!("Index of every public {owner} method."),
+            text,
+        });
+    }
+    items.extend(api);
+    items.push(struct_item(
+        "PlayerController",
+        include_str!("runtime/player.rs"),
+    ));
+    items.push(struct_item(
+        "GpuStateField",
+        include_str!("runtime/hybrid_physics.rs"),
+    ));
+    items.push(struct_item("RayHit", include_str!("project_runner.rs")));
+    items.push(struct_item("Sound", include_str!("runtime/audio.rs")));
+    items.push(struct_item(
+        "HudElement",
+        include_str!("runtime/game_feel.rs"),
+    ));
+    items.push(struct_item(
+        "HudAnchor",
+        include_str!("runtime/game_feel.rs"),
+    ));
+    items.push(struct_item(
+        "PhysicsSyncMode",
+        include_str!("runtime/hybrid_physics.rs"),
+    ));
+    items
+}
+
+/// `api/{name}`: the struct's doc comment and every public field with its
+/// type and doc, or the enum's and every variant, read from `source`.
+fn struct_item(name: &str, source: &str) -> DocItem {
+    let enum_start = source.find(&format!("pub enum {name} {{"));
+    let start = enum_start
+        .or_else(|| source.find(&format!("pub struct {name} {{")))
+        .expect("type is in its source file");
+    let head = &source[..start];
+    let doc: Vec<&str> = head
+        .lines()
+        .rev()
+        .skip_while(|line| !line.starts_with("///"))
+        .take_while(|line| line.starts_with("///") || line.starts_with("#["))
+        .filter_map(|line| line.strip_prefix("///"))
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let list = if enum_start.is_some() {
+        "Variants"
+    } else {
+        "Fields"
+    };
+    let mut text = format!("# {name}\n\n{}\n\n{list}:\n\n", doc.join(" "));
+    let mut field_doc: Vec<&str> = Vec::new();
+    for line in source[start..].lines().skip(1).map(str::trim) {
+        if line == "}" {
+            break;
+        }
+        if let Some(doc) = line.strip_prefix("///") {
+            field_doc.push(doc.trim());
+        } else if let Some(field) = line.strip_prefix("pub ").or(enum_start
+            .map(|_| line)
+            .filter(|line| !line.starts_with('#')))
+        {
+            let field = field.trim_end_matches(',');
+            text += &format!("- `{field}`");
+            if !field_doc.is_empty() {
+                text += &format!(": {}", field_doc.join(" "));
+            }
+            text.push('\n');
+            field_doc.clear();
+        }
+    }
+    DocItem {
+        id: format!("api/{name}"),
+        kind: "api",
+        title: name.to_owned(),
+        summary: first_sentence(&doc.join(" ")),
+        text,
+    }
+}
+
+/// Types whose public methods make the gameplay API index.
+const API_TYPES: [&str; 7] = [
+    "GameScene",
+    "GameObject",
+    "CubeSpawn",
+    "SphereSpawn",
+    "GpuCondition",
+    "GpuFieldCondition",
+    "BeatClock",
+];
+
+/// Source files the API index reads.
+const API_SOURCE: &str = concat!(
+    include_str!("project_runner.rs"),
+    include_str!("runtime/hybrid_physics.rs"),
+    include_str!("runtime/audio.rs")
+);
+
+/// One item per public method of [`API_TYPES`], read from the doc comments
+/// and signatures in their source files, so the index cannot drift from the
+/// code.
+fn api_items() -> Vec<DocItem> {
+    let source = API_SOURCE;
+    let mut items = Vec::new();
+    let mut owner = None;
+    let mut docs: Vec<&str> = Vec::new();
+    let mut signature: Option<String> = None;
+    for line in source.lines() {
+        if let Some(sig) = signature.as_mut() {
+            sig.push(' ');
+            sig.push_str(line.trim());
+        } else if let Some(rest) = line.strip_prefix("impl ") {
+            owner = API_TYPES.iter().copied().find(|name| {
+                rest.strip_prefix(name)
+                    .is_some_and(|r| r.starts_with(['<', ' ']))
+            });
+            docs.clear();
+            continue;
+        } else if line == "}" {
+            owner = None;
+            continue;
+        } else if let Some(doc) = line.trim().strip_prefix("///") {
+            docs.push(doc.strip_prefix(' ').unwrap_or(doc));
+            continue;
+        } else if line.starts_with("    pub fn ") {
+            signature = Some(line.trim().to_owned());
+        } else {
+            if !line.trim().starts_with('#') {
+                docs.clear();
+            }
+            continue;
+        }
+        if line.trim_end().ends_with(['{', ';']) {
+            let sig = signature.take().unwrap_or_default();
+            let sig = sig.trim_end_matches(['{', ';']).trim().to_owned();
+            items.extend(api_item(owner, &sig, &docs));
+            docs.clear();
+        }
+    }
+    items
+}
+
+fn api_item(
+    owner: Option<&str>,
+    signature: &str,
+    docs: &[&str],
+) -> Option<DocItem> {
+    let owner = owner?;
+    let name = signature
+        .strip_prefix("pub fn ")?
+        .split(['(', '<'])
+        .next()?
+        .trim();
+    let text = docs.join("\n");
+    Some(DocItem {
+        id: format!("api/{owner}::{name}"),
+        kind: "api",
+        title: format!("{owner}::{name}"),
+        summary: first_sentence(text.trim()),
+        text: format!("{signature}\n\n{}\n", text.trim()),
+    })
+}
+
+/// The item whose id is `id`, or whose name after the `kind/` matches it
+/// case-insensitively (`scene-patch`, `scene_conflict`).
+#[must_use]
+pub fn find(id: &str) -> Option<DocItem> {
+    let wanted = id.to_ascii_lowercase();
+    let mut matches = items().into_iter().filter(|item| {
+        let name = item.id.to_ascii_lowercase();
+        name == wanted || name.split_once('/').is_some_and(|(_, n)| n == wanted)
+    });
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+/// Items holding every word of `query`, best first, cut to `limit`, and the
+/// number of items that matched before the cut. A hit in the id or title
+/// counts more than hits in the text.
+#[must_use]
+pub fn search(query: &str, limit: usize) -> (Vec<Value>, usize) {
+    let words: Vec<String> =
+        query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let mut scored: Vec<(usize, DocItem)> = items()
+        .into_iter()
+        .filter_map(|item| {
+            let text = item.text.to_lowercase();
+            let head = format!("{} {}", item.id, item.title).to_lowercase();
+            let mut score = 0;
+            for word in &words {
+                let hits = text.matches(word.as_str()).count();
+                let in_head = head.contains(word.as_str());
+                if hits == 0 && !in_head {
+                    return None;
+                }
+                score += hits.min(20) + if in_head { 25 } else { 0 };
+            }
+            Some((score, item))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    let total = scored.len();
+    let matches = scored
+        .into_iter()
+        .take(limit)
+        .map(|(score, item)| {
+            // The first line repeats the title, so look past it first.
+            let mentions =
+                |line: &&str| line.to_lowercase().contains(words[0].as_str());
+            let snippet = item
+                .text
+                .lines()
+                .skip(1)
+                .find(mentions)
+                .or_else(|| item.text.lines().find(mentions))
+                .map(|line| line.trim().chars().take(160).collect::<String>());
+            json!({
+                "id": item.id,
+                "kind": item.kind,
+                "title": item.title,
+                "score": score,
+                "snippet": snippet,
+            })
+        })
+        .collect();
+    (matches, total)
+}
+
+/// `text` cut at a line break so it fits `budget` tokens, and whether it was
+/// cut. A budget too small for the first line still gets that line whole.
+#[must_use]
+pub fn within_budget(text: &str, budget: usize) -> (String, bool) {
+    if tokens(text) <= budget {
+        return (text.to_owned(), false);
+    }
+    let mut out = String::new();
+    for line in text.lines() {
+        if !out.is_empty() && tokens(&format!("{out}{line}\n")) > budget {
+            break;
+        }
+        out += line;
+        out.push('\n');
+    }
+    (out, true)
+}
+
+/// A compact overview in the `llms.txt` style: what the engine is, how to
+/// look things up, then one line per item. Lines are dropped from the end,
+/// whole pages and commands first, so the result fits `budget` tokens.
+#[must_use]
+pub fn brief(budget: usize) -> (String, usize, usize) {
+    let head = "# Rusting engine\n\n\
+        Rust game engine with a Vulkan renderer, ECS, and a CLI built for \
+        agents: every command has `--json`, every error has a code.\n\n\
+        Look up: `rusting docs search <words>`, `rusting docs show <id>`, \
+        `rusting explain <CODE>`, `rusting schema --json`.\n\n";
+    let items = items();
+    let mut text = head.to_owned();
+    let mut listed = 0;
+    let mut kind = "";
+    // Keep room for the line that says how many items were left out.
+    let room = budget.saturating_sub(FOOTER_TOKENS);
+    for item in &items {
+        let heading = if item.kind == kind {
+            String::new()
+        } else {
+            format!("\n## {}s\n", item.kind)
+        };
+        let heading = if listed == 0 {
+            heading.trim_start().to_owned()
+        } else {
+            heading
+        };
+        let line = format!("{heading}- {}: {}\n", item.id, item.summary);
+        if listed > 0 && tokens(&text) + tokens(&line) > room {
+            break;
+        }
+        text += &line;
+        kind = item.kind;
+        listed += 1;
+    }
+    if listed < items.len() {
+        text += &format!(
+            "\n{} more items; `rusting docs` lists them all.\n",
+            items.len() - listed
+        );
+    }
+    (text, listed, items.len())
+}
+
+const FOOTER_TOKENS: usize = 20;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn api_index_lists_documented_gameplay_methods() {
+        let once = super::find("api/GameScene::once").expect("once indexed");
+        assert!(once.text.starts_with("pub fn once("), "{}", once.text);
+        assert!(once.summary.contains("once per round"), "{}", once.summary);
+        let api: Vec<_> = super::items()
+            .into_iter()
+            .filter(|i| i.kind == "api")
+            .collect();
+        assert!(api.len() > 30, "only {} api items", api.len());
+        assert!(api.iter().all(|i| !i.summary.is_empty()), "undocumented");
+        let player = super::find("api/PlayerController").expect("player");
+        assert!(
+            player.summary.starts_with("Walk, jump"),
+            "{}",
+            player.summary
+        );
+        assert!(
+            player.text.contains("- `wall: Option<Entity>`: The body"),
+            "{}",
+            player.text
+        );
+        assert!(!player.text.contains("`: \n"), "{}", player.text);
+    }
+
+    use super::*;
+
+    #[test]
+    fn every_item_has_a_unique_id_a_title_and_a_summary() {
+        let items = items();
+        let mut ids: Vec<_> = items.iter().map(|item| &item.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), items.len(), "ids are unique");
+        for item in &items {
+            assert!(!item.title.is_empty(), "{} has no title", item.id);
+            assert!(!item.summary.is_empty(), "{} has no summary", item.id);
+            assert!(item.id.contains('/'), "{} has no kind", item.id);
+        }
+        assert_eq!(
+            items.iter().filter(|item| item.kind == "command").count(),
+            OPERATIONS.len()
+        );
+        assert_eq!(
+            items.iter().filter(|item| item.kind == "code").count(),
+            CODES.len()
+        );
+    }
+
+    #[test]
+    fn find_accepts_a_bare_name_only_when_it_is_unambiguous() {
+        assert_eq!(find("scene_conflict").unwrap().id, "code/SCENE_CONFLICT");
+        assert_eq!(find("command/scene-patch").unwrap().kind, "command");
+        assert!(find("no-such-item").is_none());
+    }
+
+    #[test]
+    fn search_needs_every_word_and_ranks_head_hits_first() {
+        let (found, _) = search("scene patch", 5);
+        assert!(!found.is_empty());
+        assert_eq!(found[0]["id"], "command/scene-patch");
+        assert!(search("zzzznotaword", 5).0.is_empty());
+        assert!(search("  ", 5).0.is_empty());
+        let (three, total) = search("scene", 3);
+        assert_eq!(three.len(), 3);
+        assert!(total > 3, "total counts matches past the limit");
+    }
+
+    #[test]
+    fn budget_cuts_at_a_line_and_the_brief_fits_it() {
+        let (cut, truncated) = within_budget("aaaa\nbbbb\ncccc\n", 3);
+        assert!(truncated);
+        assert_eq!(cut, "aaaa\nbbbb\n");
+        assert_eq!(within_budget("abc", 5), ("abc".to_owned(), false));
+        for budget in [300, 1000, 4000] {
+            let (text, listed, total) = brief(budget);
+            assert!(tokens(&text) <= budget, "{budget}: {}", tokens(&text));
+            assert!(listed >= 1 && listed <= total);
+            assert_eq!(
+                text.contains(" more items;"),
+                listed < total,
+                "the brief says what it left out"
+            );
+        }
+        let (_, listed, total) = brief(1_000_000);
+        assert_eq!(listed, total, "a big budget lists everything");
+    }
+
+    #[test]
+    fn the_brief_names_only_commands_that_exist() {
+        let (text, _, _) = brief(1_000_000);
+        for word in ["docs", "explain", "schema"] {
+            assert!(
+                OPERATIONS.iter().any(|operation| operation.name == word),
+                "{word}"
+            );
+            assert!(text.contains(&format!("`rusting {word}")));
+        }
+    }
+
+    /// Every `rusting ...` command in a page or the catalog names a real
+    /// operation and only flags that operation's usage lists.
+    #[test]
+    fn documented_commands_name_real_operations_and_flags() {
+        let mut commands: Vec<(String, String)> = Vec::new();
+        for operation in OPERATIONS {
+            commands.push((
+                format!("catalog {}", operation.name),
+                format!("rusting {}", operation.example),
+            ));
+        }
+        for item in items().into_iter().filter(|item| item.kind != "api") {
+            for line in item.text.lines() {
+                let mut rest = line;
+                while let Some(start) = rest.find("`rusting ") {
+                    let after = &rest[start + 1..];
+                    let Some(end) = after.find('`') else { break };
+                    commands.push((item.id.clone(), after[..end].to_owned()));
+                    rest = &after[end..];
+                }
+                if let Some(command) = line
+                    .trim_start()
+                    .strip_prefix("$ ")
+                    .filter(|c| c.starts_with("rusting "))
+                {
+                    commands.push((item.id.clone(), command.to_owned()));
+                }
+            }
+        }
+        assert!(commands.len() > 40, "only {} commands", commands.len());
+        let mut stale = Vec::new();
+        for (source, command) in commands {
+            let words: Vec<&str> = command
+                .split_whitespace()
+                .skip(1)
+                .take_while(|w| !w.starts_with(['-', '<', '[', '.']))
+                .collect();
+            let operation = OPERATIONS
+                .iter()
+                .filter(|op| {
+                    let name: Vec<&str> = op.name.split(' ').collect();
+                    words.len() >= name.len() && words[..name.len()] == name[..]
+                })
+                .max_by_key(|op| op.name.len());
+            let Some(operation) = operation else {
+                // Prose such as "`rusting` itself" has no command word.
+                if !words.is_empty() {
+                    stale
+                        .push(format!("{source}: `{command}` unknown command"));
+                }
+                continue;
+            };
+            for flag in command
+                .split_whitespace()
+                .filter(|w| w.starts_with("--"))
+                .map(|w| w.trim_end_matches([',', '.', ';', ')', '`']))
+            {
+                if !matches!(flag, "--json" | "--help")
+                    && !operation.usage.contains(flag)
+                {
+                    stale.push(format!(
+                        "{source}: `{command}` flag {flag} not in `{}`",
+                        operation.usage
+                    ));
+                }
+            }
+        }
+        assert!(stale.is_empty(), "stale examples:\n{}", stale.join("\n"));
+    }
+
+    /// API audit (roadmap L2): a public gameplay method must not return a
+    /// borrow of the scene, which blocks the next `GameScene` call. The
+    /// methods below predate the rule; the list may only shrink.
+    #[test]
+    fn gameplay_methods_do_not_return_new_borrows() {
+        // `&mut Self` on `GameObject` is the chaining builder, not a borrow
+        // of the scene that outlives the statement.
+        const KNOWN: [&str; 4] = [
+            "api/GameScene::object",
+            "api/GameScene::try_object",
+            "api/GameScene::counter",
+            "api/GameScene::world",
+        ];
+        let mut found = Vec::new();
+        for item in items().into_iter().filter(|item| item.kind == "api") {
+            let signature = item.text.lines().next().unwrap_or_default();
+            let Some((_, returns)) = signature.split_once("->") else {
+                continue;
+            };
+            let chaining = item.id.starts_with("api/GameObject::")
+                && returns.trim() == "&mut Self";
+            if !chaining && returns.contains(['&', '\'']) {
+                found.push(item.id);
+            }
+        }
+        let new: Vec<_> = found
+            .iter()
+            .filter(|id| !KNOWN.contains(&id.as_str()))
+            .collect();
+        assert!(new.is_empty(), "returns a borrow: {new:?}");
+        let gone: Vec<_> = KNOWN
+            .iter()
+            .filter(|id| !found.iter().any(|f| f == *id))
+            .collect();
+        assert!(gone.is_empty(), "fixed; remove from KNOWN: {gone:?}");
+    }
+
+    /// A `Preferred:` line in a doc comment names the call to use instead;
+    /// each name must be in the index.
+    #[test]
+    fn preferred_calls_exist_in_the_index() {
+        let ids: Vec<String> = items()
+            .into_iter()
+            .filter(|item| item.kind == "api")
+            .map(|item| item.id)
+            .collect();
+        let mut marked = 0;
+        for item in items().into_iter().filter(|item| item.kind == "api") {
+            let owner = item.id.split("::").next().unwrap_or_default();
+            let Some(start) = item.text.find("Preferred:") else {
+                continue;
+            };
+            // The paragraph, which may wrap over lines.
+            let paragraph = item.text[start..].split("\n\n").next().unwrap();
+            marked += 1;
+            for name in paragraph.split("Self::").skip(1) {
+                let name: String = name
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                assert!(
+                    ids.contains(&format!("{owner}::{name}")),
+                    "{}: `{name}` is not in the API index",
+                    item.id
+                );
+            }
+        }
+        assert!(marked >= 2, "only {marked} calls mark a preferred one");
+    }
+}

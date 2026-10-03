@@ -96,9 +96,9 @@ use crate::assets::{
 use crate::rendering::debug_overlay::{DebugLine, RenderDebugOverlay};
 use crate::rendering::frame_passes::{FramePass, FrameResource};
 use crate::runtime::{
-    Antialiasing, CpuFrameTimings, CullingMode, GpuConditionInstruction,
-    Projection, QualityProfile, RawGpuPhysicsEvent, ReflectionProbe,
-    RenderBounds, RenderWorld, ShadowQuality, ToneMapping,
+    Antialiasing, CpuFrameTimings, CullingMode, ExtractedCamera,
+    GpuConditionInstruction, Projection, QualityProfile, RawGpuPhysicsEvent,
+    ReflectionProbe, RenderBounds, RenderWorld, ShadowQuality, ToneMapping,
 };
 
 #[derive(Debug)]
@@ -367,8 +367,8 @@ fn world_sphere(model: &[[f32; 4]; 4], sphere: [f32; 4]) -> [f32; 4] {
 
 /// Projection term of the LOD value: `tan(fov / 2)` for a perspective
 /// camera, minus half the view height for an orthographic one.
-fn lod_scale(render_world: &RenderWorld) -> f32 {
-    match render_world.active_camera.map(|camera| camera.projection) {
+fn lod_scale(camera: Option<ExtractedCamera>) -> f32 {
+    match camera.map(|camera| camera.projection) {
         Some(Projection::Perspective {
             vertical_fov_radians,
             ..
@@ -1079,6 +1079,9 @@ pub const FRAMES_IN_FLIGHT: usize = 2;
 /// Fixed physics ticks dispatched per rendered frame; later ticks wait for
 /// the next frame.
 const MAX_PHYSICS_STEPS_PER_FRAME: u64 = 8;
+/// Body-contact rounds per fixed tick. One Jacobi round cannot hold a deep
+/// pile up; each extra round costs one grid and one contact dispatch.
+const CONTACT_ROUNDS: u32 = 4;
 /// Largest event buffer per frame (48 bytes per event, 12 MiB in total).
 /// Below this, the buffer always fits every rule firing on every tick.
 // ponytail: fixed budget; derive it from device memory if scenes need more.
@@ -1134,6 +1137,8 @@ pub struct SceneRenderOptions<'a> {
     /// Scene effects this view draws when the scene has them. Games draw
     /// all of them; the editor's Scene view can switch each one off.
     pub effects: SceneEffects,
+    /// Draws through this camera instead of the render world's active one.
+    pub camera: Option<ExtractedCamera>,
 }
 
 /// Atmosphere effects a view may leave out, like Blender's viewport
@@ -1189,6 +1194,7 @@ impl<'a> SceneRenderOptions<'a> {
             debug_overlay: None,
             debug_view: SceneDebugView::Lit,
             effects: SceneEffects::default(),
+            camera: None,
         }
     }
 }
@@ -1243,11 +1249,12 @@ pub struct RenderCapacityDiagnostics {
     /// removed (stale generation) or is not GPU-simulated.
     pub physics_commands_rejected: u64,
     /// GPU bodies that found their contact-grid cell full, summed over the
-    /// steps of the latest completed physics frame. They still collide,
+    /// steps and contact rounds of the latest completed physics frame. They still collide,
     /// through the slower fallback list.
     pub physics_grid_overflow: u32,
     /// GPU bodies too big for one contact-grid cell in the latest completed
-    /// physics frame, summed over its steps. Each one tests every body.
+    /// physics frame, summed over its steps and contact rounds. Each one
+    /// tests every body.
     pub physics_oversized_bodies: u32,
     /// Contact-grid neighbours visited only because two cells share a hash
     /// slot, in the latest completed physics frame.
@@ -1378,6 +1385,12 @@ pub struct SceneRenderer {
     condition_shaders: HashMap<String, Result<Arc<ComputePipeline>, String>>,
     last_physics_tick: u64,
     last_frame_passes: Vec<FramePass>,
+    /// Image the next frame is stretched over after it renders, for
+    /// `RenderSettings::render_scale`.
+    /// Image the finished target is blitted onto, and the part of it.
+    upscale_to: Option<(Arc<ImageView>, Option<SceneViewport>)>,
+    /// Nearest-neighbour filtering for the `upscale_to` blit.
+    upscale_nearest: bool,
     last_frame_culled: Option<usize>,
     last_culling_path: CullingPath,
     culling_stats: CullingStats,
@@ -1697,6 +1710,8 @@ impl SceneRenderer {
             condition_shaders: HashMap::new(),
             last_physics_tick: 0,
             last_frame_passes: Vec::new(),
+            upscale_to: None,
+            upscale_nearest: false,
             last_frame_culled: Some(0),
             last_culling_path: CullingPath::Direct,
             culling_stats: CullingStats::default(),
@@ -1845,6 +1860,56 @@ impl SceneRenderer {
         }
     }
 
+    /// Makes the next [`Self::render`] stretch its finished target over
+    /// `target` with a linear blit, in the same command buffer.
+    pub fn upscale_next_frame(&mut self, target: Arc<ImageView>) {
+        self.upscale_to = Some((target, None));
+    }
+
+    /// Makes the next [`Self::render`] blit its viewport onto `region` of
+    /// `target`, in the same command buffer.
+    /// Nearest-neighbour (`true`) or linear filtering for the stretch of
+    /// [`Self::upscale_next_frame`] and [`Self::blit_next_frame`].
+    pub fn set_upscale_nearest(&mut self, nearest: bool) {
+        self.upscale_nearest = nearest;
+    }
+
+    pub fn blit_next_frame(
+        &mut self,
+        target: Arc<ImageView>,
+        region: SceneViewport,
+    ) {
+        self.upscale_to = Some((target, Some(region)));
+    }
+
+    /// Clears `target` to black after `before`.
+    pub fn clear(
+        &self,
+        before: Box<dyn GpuFuture>,
+        target: Arc<ImageView>,
+    ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
+        let error =
+            |error: &dyn std::fmt::Display| SceneRenderError(error.to_string());
+        let mut commands = AutoCommandBufferBuilder::primary(
+            self.command_allocator.clone(),
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .map_err(|e| error(&e))?;
+        commands
+            .clear_color_image(
+                vulkano::command_buffer::ClearColorImageInfo::image(
+                    target.image().clone(),
+                ),
+            )
+            .map_err(|e| error(&e))?;
+        let commands = commands.build().map_err(|e| error(&e))?;
+        Ok(before
+            .then_execute(self.queue.clone(), commands)
+            .map_err(|e| error(&e))?
+            .boxed())
+    }
+
     /// The culling path the last `render` took.
     pub fn last_culling_path(&self) -> CullingPath {
         self.last_culling_path
@@ -1874,6 +1939,7 @@ impl SceneRenderer {
             // Time spent minimized is skipped, not simulated in one step on
             // restore.
             self.last_physics_tick = render_world.physics_tick;
+            self.upscale_to = None;
             return Ok(before);
         }
         for context in &mut self.frame_contexts {
@@ -1929,7 +1995,8 @@ impl SceneRenderer {
         self.prepare_gpu_physics(render_world)?;
         self.prepare_lights(render_world)?;
         self.prepare_render_instances(render_world, assets)?;
-        let clip = view_projection(render_world, viewport.extent);
+        let camera = options.camera.or(render_world.active_camera);
+        let clip = view_projection(camera, viewport.extent);
         let prepared = self.prepared_instances.as_ref().unwrap();
         let quality = resolve_quality(render_world.quality, &self.capabilities);
         let path = select_culling_path(
@@ -1972,8 +2039,8 @@ impl SceneRenderer {
             values
         };
         let frustum = render_world.culling != CullingMode::Disabled;
-        let (eye, forward) = camera_eye_forward(render_world);
-        let lod_camera = [eye[0], eye[1], eye[2], lod_scale(render_world)];
+        let (eye, forward) = camera_eye_forward(camera);
+        let lod_camera = [eye[0], eye[1], eye[2], lod_scale(camera)];
         let cull_start = std::time::Instant::now();
         match path {
             CullingPath::Direct => {
@@ -2089,7 +2156,7 @@ impl SceneRenderer {
         frame.last_used = frames_rendered;
         let graphics_set = frame.graphics_set.clone();
         let framebuffer = frame.framebuffer.clone();
-        let orthographic = render_world.active_camera.is_some_and(|camera| {
+        let orthographic = camera.is_some_and(|camera| {
             matches!(camera.projection, Projection::Orthographic { .. })
         });
         let camera = CameraUniform {
@@ -2498,14 +2565,17 @@ impl SceneRenderer {
                 )
             };
         let condition_pipelines = if physics_ran {
+            let shaders = render_world
+                .gpu_solver_shaders
+                .iter()
+                .cloned()
+                .map(crate::runtime::ExtractedConditionShader::from)
+                .chain(render_world.gpu_condition_shaders.iter().cloned())
+                .collect::<Vec<_>>();
             condition_pipelines(
                 &mut self.condition_shaders,
                 &self.queue,
-                &[
-                    render_world.gpu_solver_shaders.as_slice(),
-                    &render_world.gpu_condition_shaders,
-                ]
-                .concat(),
+                shaders,
             )
         } else {
             Vec::new()
@@ -2521,8 +2591,12 @@ impl SceneRenderer {
                 .map(|body| body.rules.len())
                 .sum::<usize>();
             let steps = steps as usize;
-            // Custom shaders get one event per body and tick each.
-            let custom = condition_pipelines.len() * physics.source.len();
+            // Custom shaders get `events_per_body` per body and tick each.
+            let custom = condition_pipelines
+                .iter()
+                .map(|(_, shader)| shader.events_per_body as usize)
+                .sum::<usize>()
+                * physics.source.len();
             ((rules + custom) * steps)
                 .max(64)
                 .min(self.max_physics_events)
@@ -2689,12 +2763,27 @@ impl SceneRenderer {
             // A custom shader's layout holds only the bindings it uses.
             let condition_sets = condition_pipelines
                 .iter()
-                .map(|pipeline| {
+                .map(|(pipeline, shader)| {
                     let layout = pipeline.layout().set_layouts()[0].clone();
+                    let params = transient
+                        .allocate_slice::<[f32; 4]>(
+                            shader.params.len().max(1) as u64
+                        )
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                    if !shader.params.is_empty() {
+                        params
+                            .write()
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?
+                            .copy_from_slice(&shader.params);
+                        self.counters.upload_bytes += params.size();
+                    }
                     let writes = [
                         WriteDescriptorSet::buffer(0, physics.states.clone()),
                         WriteDescriptorSet::buffer(3, event_header.clone()),
                         WriteDescriptorSet::buffer(4, event_buffer.clone()),
+                        WriteDescriptorSet::buffer(14, params),
                     ]
                     .into_iter()
                     .filter(|write| {
@@ -2827,27 +2916,51 @@ impl SceneRenderer {
                     grid_cell_size: physics.grid_cell_size,
                 };
                 let grid = self.physics_contact_grid.as_ref().unwrap();
-                commands
-                    .fill_buffer(grid.counts.clone(), 0)
-                    .map_err(|error| SceneRenderError(error.to_string()))?
-                    .fill_buffer(grid.fallback.clone().slice(0..1), 0)
-                    .map_err(|error| SceneRenderError(error.to_string()))?;
-                // Contacts between bodies, the built-in step, then each
-                // custom condition shader.
-                let passes = resources
-                    .5
-                    .iter()
-                    .map(|(pipeline, set)| (pipeline, set))
-                    .chain(std::iter::once((
-                        &self.physics_pipeline,
-                        &resources.0,
-                    )))
-                    .chain(
-                        resources
-                            .4
-                            .iter()
-                            .map(|(pipeline, set)| (pipeline, set)),
-                    );
+                // Contacts between bodies (several rounds, each rebuilding
+                // the grid), the built-in step, then each custom condition
+                // shader.
+                for _ in 0..CONTACT_ROUNDS {
+                    commands
+                        .fill_buffer(grid.counts.clone(), 0)
+                        .map_err(|error| SceneRenderError(error.to_string()))?
+                        .fill_buffer(grid.fallback.clone().slice(0..1), 0)
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                    for (pipeline, set) in &resources.5 {
+                        commands
+                            .bind_pipeline_compute(pipeline.clone())
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?
+                            .bind_descriptor_sets(
+                                PipelineBindPoint::Compute,
+                                pipeline.layout().clone(),
+                                0,
+                                set.clone(),
+                            )
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?
+                            .push_constants(pipeline.layout().clone(), 0, push)
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?;
+                        count_work(&recorded, 0, 1, 0);
+                        self.counters.physics_dispatches += 1;
+                        unsafe {
+                            commands.dispatch([groups, 1, 1]).map_err(
+                                |error| SceneRenderError(error.to_string()),
+                            )?;
+                        }
+                    }
+                }
+                let passes =
+                    std::iter::once((&self.physics_pipeline, &resources.0))
+                        .chain(
+                            resources
+                                .4
+                                .iter()
+                                .map(|(pipeline, set)| (pipeline, set)),
+                        );
                 for (pipeline, set) in passes {
                     commands
                         .bind_pipeline_compute(pipeline.clone())
@@ -3614,6 +3727,37 @@ impl SceneRenderer {
         commands
             .end_render_pass(Default::default())
             .map_err(|error| SceneRenderError(error.to_string()))?;
+        if let Some((upscaled, region)) = self.upscale_to.take() {
+            let mut info = BlitImageInfo {
+                filter: if self.upscale_nearest {
+                    Filter::Nearest
+                } else {
+                    Filter::Linear
+                },
+                ..BlitImageInfo::images(
+                    target.image().clone(),
+                    upscaled.image().clone(),
+                )
+            };
+            if let Some(region) = region {
+                let corners = |area: SceneViewport| {
+                    let [x, y] = area.offset;
+                    let [w, h] = area.extent;
+                    [[x, y, 0], [x + w, y + h, 1]]
+                };
+                info.regions = [ImageBlit {
+                    src_subresource: target.image().subresource_layers(),
+                    src_offsets: corners(visible),
+                    dst_subresource: upscaled.image().subresource_layers(),
+                    dst_offsets: corners(region),
+                    ..Default::default()
+                }]
+                .into();
+            }
+            commands
+                .blit_image(info)
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+        }
         if labels {
             // Safety: closes the frame's outer label opened above.
             let _ = unsafe { commands.end_debug_utils_label() };
@@ -6885,16 +7029,23 @@ pub(super) fn create_compute_pipeline(
     .map_err(|error| SceneRenderError(error.to_string()))
 }
 
-/// Compiles new condition shaders and returns the usable ones in order.
+/// Compiles new condition shaders and returns the usable ones in order,
+/// each with its shader.
 fn condition_pipelines(
     cache: &mut HashMap<String, Result<Arc<ComputePipeline>, String>>,
     queue: &Arc<Queue>,
-    sources: &[String],
-) -> Vec<Arc<ComputePipeline>> {
-    cache.retain(|source, _| sources.contains(source));
-    sources
-        .iter()
-        .filter_map(|source| {
+    shaders: Vec<crate::runtime::ExtractedConditionShader>,
+) -> Vec<(
+    Arc<ComputePipeline>,
+    crate::runtime::ExtractedConditionShader,
+)> {
+    cache.retain(|source, _| {
+        shaders.iter().any(|shader| shader.source == *source)
+    });
+    shaders
+        .into_iter()
+        .filter_map(|shader| {
+            let source = &shader.source;
             cache
                 .entry(source.clone())
                 .or_insert_with(|| {
@@ -6907,6 +7058,7 @@ fn condition_pipelines(
                 .as_ref()
                 .ok()
                 .cloned()
+                .map(|pipeline| (pipeline, shader))
         })
         .collect()
 }
@@ -6921,7 +7073,9 @@ fn compile_condition_shader(
     use std::io::Write;
     use std::process::{Command, Stdio};
     let glsl = format!(
-        "#version 450\nlayout(local_size_x = 256) in;\n{}\n{source}\n\
+        "#version 450\nlayout(local_size_x = 256) in;\n{}\n\
+         layout(set = 0, binding = 14) readonly buffer ConditionParams \
+         {{ vec4 values[]; }} condition_params;\n{source}\n\
          void main() {{\n\
          uint body_index = gl_GlobalInvocationID.x;\n\
          if (body_index >= pc.body_count) return;\n\
@@ -6967,11 +7121,11 @@ fn compile_condition_shader(
 }
 
 fn view_projection(
-    render_world: &RenderWorld,
+    camera: Option<ExtractedCamera>,
     extent: [u32; 2],
 ) -> Matrix4<f32> {
     let aspect = extent[0] as f32 / extent[1].max(1) as f32;
-    if let Some(camera) = render_world.active_camera {
+    if let Some(camera) = camera {
         let world_from_camera = matrix_from_array(camera.transform.matrix);
         let view = world_from_camera
             .try_inverse()
@@ -7025,15 +7179,13 @@ fn matrix_from_array(matrix: [[f32; 4]; 4]) -> Matrix4<f32> {
 
 /// Active camera position and view direction; the default camera looks down
 /// -Z from the origin.
-fn camera_eye_forward(render_world: &RenderWorld) -> ([f32; 3], [f32; 3]) {
-    render_world
-        .active_camera
-        .map_or(([0.0; 3], [0.0, 0.0, -1.0]), |camera| {
-            (
-                light_position(camera.transform.matrix),
-                light_direction(camera.transform.matrix),
-            )
-        })
+fn camera_eye_forward(camera: Option<ExtractedCamera>) -> ([f32; 3], [f32; 3]) {
+    camera.map_or(([0.0; 3], [0.0, 0.0, -1.0]), |camera| {
+        (
+            light_position(camera.transform.matrix),
+            light_direction(camera.transform.matrix),
+        )
+    })
 }
 
 /// Orthographic light-space transform whose box covers the first
@@ -8602,10 +8754,7 @@ mod tests {
     fn frustum_test_keeps_bounds_that_touch_the_view_and_drops_the_rest() {
         // Default camera: at the origin looking down -Z, 60 degree vertical
         // field of view, near 0.1, far 1000, square aspect.
-        let planes = frustum_planes(&view_projection(
-            &RenderWorld::default(),
-            [100, 100],
-        ));
+        let planes = frustum_planes(&view_projection(None, [100, 100]));
         let sphere = |center, radius| RenderBounds::Sphere { center, radius };
         let aabb = |min, max| RenderBounds::Aabb { min, max };
         // The left plane passes x = -10 tan 30 at z = -10; a center 0.5
@@ -10546,6 +10695,7 @@ mod tests {
                     debug_overlay: Some(&overlay),
                     debug_view: SceneDebugView::Lit,
                     effects: SceneEffects::default(),
+                    camera: None,
                 },
                 &scene.render_world,
                 &scene.assets,
@@ -11397,7 +11547,11 @@ mod tests {
                     generation: 0,
                 },
                 transform: crate::Transform::new([x, 1.0, 0.0]),
-                rigid_body: Default::default(),
+                // A spin must not keep the box awake.
+                rigid_body: crate::runtime::RigidBody {
+                    angular_velocity: [0.0, 6.0, 0.0],
+                    ..Default::default()
+                },
                 solver,
                 collider: Some((unit_box, layers)),
                 custom_shader: None,
@@ -11460,11 +11614,11 @@ mod tests {
         world.physics_gravity = [0.0, -9.81, 0.0];
         world.fixed_delta_seconds = 1.0 / 60.0;
         let mut events = Vec::new();
-        for tick in 1..=90 {
+        for tick in 1..=150 {
             let world = &mut scene.render_world;
             world.physics_tick = tick;
-            world.gpu_physics_read_all = tick == 90;
-            world.gpu_physics_commands_serial += u64::from(tick == 90);
+            world.gpu_physics_read_all = tick == 150;
+            world.gpu_physics_commands_serial += u64::from(tick == 150);
             let before = scene.now();
             let _in_flight =
                 scene.render(before).then_signal_fence_and_flush().unwrap();
@@ -11480,6 +11634,7 @@ mod tests {
             "{resting:?}"
         );
         assert!(resting.linear_velocity[1].abs() < 0.2, "{resting:?}");
+        assert_eq!(resting.angular_velocity, [0.0; 3], "spun box sleeps");
         assert!(states[1].transform.position[1] < -5.0, "no collision falls");
         assert!(states[2].transform.position[1] < -5.0, "filtered out falls");
         // Only the resting box ever touched, and OnEnter fires once.
@@ -11597,10 +11752,10 @@ mod tests {
             )
         };
         let (states, diagnostics, counters) = run(DeviceSize::MAX);
-        // Grid pass, contact pass, the built-in step, and the state hash;
-        // frame 119's readback (an empty event header) landed in frame
-        // 120's counters.
-        assert_eq!(counters.physics_dispatches, 4);
+        // CONTACT_ROUNDS grid and contact passes, the built-in step, and
+        // the state hash; frame 119's readback (an empty event header)
+        // landed in frame 120's counters.
+        assert_eq!(counters.physics_dispatches, 2 * CONTACT_ROUNDS + 2);
         assert_eq!(counters.physics_event_bytes, 32);
         // The test blocks on each frame, so nothing waits a frame.
         assert_eq!(counters.physics_readback_latency_frames, 0);
@@ -11629,7 +11784,7 @@ mod tests {
             }
         }
         assert!(diagnostics.physics_grid_overflow > 0, "{diagnostics:?}");
-        assert_eq!(diagnostics.physics_oversized_bodies, 1);
+        assert_eq!(diagnostics.physics_oversized_bodies, CONTACT_ROUNDS);
         assert!(diagnostics.physics_fallback_tests > 0, "{diagnostics:?}");
         // Lists fill in atomic order, yet a second run matches bit for bit.
         let (again, _, _) = run(DeviceSize::MAX);
@@ -11645,7 +11800,11 @@ mod tests {
         let (starved, diagnostics, _) = run(0);
         assert_eq!(poses(&states), poses(&starved));
         // Fifteen bodies fit a cell and the one cell holds eight.
-        assert_eq!(diagnostics.physics_grid_overflow, 7, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics.physics_grid_overflow,
+            7 * CONTACT_ROUNDS,
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
@@ -11824,6 +11983,123 @@ mod tests {
         assert!((states[0].linear_velocity[0] - SPEED).abs() < 0.1);
     }
 
+    /// 3600 balls (r = 0.09) nine layers deep in a 4 x 4 m pit of 0.5 m by 4 m
+    /// static box walls, run for `ticks` with sideways gravity `push`.
+    fn run_ball_pit(
+        push: f32,
+        ticks: u64,
+    ) -> Vec<crate::runtime::GpuStateSample> {
+        use crate::runtime::{
+            Collider, ColliderShape, CollisionLayers, ExtractedGpuPhysicsBody,
+            GpuCollider, PhysicsId,
+        };
+        let mut bodies = Vec::new();
+        for layer in 0..9 {
+            for row in 0..20 {
+                for column in 0..20 {
+                    let slot = bodies.len() as u32;
+                    // A small fixed jitter so columns do not stack exactly.
+                    let jitter = (slot * 37 % 7) as f32 * 0.003 - 0.009;
+                    let at = |index: i32| -1.9 + 0.2 * index as f32 + jitter;
+                    bodies.push(ExtractedGpuPhysicsBody {
+                        entity: bevy_ecs::entity::Entity::from_raw_u32(
+                            10_000 + slot,
+                        )
+                        .unwrap(),
+                        physics_id: PhysicsId {
+                            slot,
+                            generation: 0,
+                        },
+                        transform: crate::Transform::new([
+                            at(column),
+                            0.1 + 0.2 * layer as f32,
+                            at(row),
+                        ]),
+                        rigid_body: Default::default(),
+                        solver: Default::default(),
+                        collider: Some((
+                            Collider {
+                                shape: ColliderShape::Sphere { radius: 0.09 },
+                                ..Collider::default()
+                            },
+                            CollisionLayers::default(),
+                        )),
+                        custom_shader: None,
+                        rules: Vec::new(),
+                        sync: Default::default(),
+                    });
+                }
+            }
+        }
+        let wall = |center: [f32; 3], half: [f32; 3]| GpuCollider {
+            model: crate::Transform::new(center).to_matrix(),
+            shape: [0.0, half[0], half[1], half[2]],
+            velocity: [0.0; 3],
+            friction: 0.5,
+            restitution: 0.0,
+            layers: CollisionLayers::default(),
+        };
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        world.gpu_physics = bodies;
+        world.gpu_colliders = vec![
+            wall([0.0, -0.5, 0.0], [10.0, 0.5, 10.0]),
+            wall([2.25, 2.0, 0.0], [0.25, 2.0, 2.5]),
+            wall([-2.25, 2.0, 0.0], [0.25, 2.0, 2.5]),
+            wall([0.0, 2.0, 2.25], [2.0, 2.0, 0.25]),
+            wall([0.0, 2.0, -2.25], [2.0, 2.0, 0.25]),
+        ];
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.physics_gravity = [push, -9.81, push * 0.5];
+        world.fixed_delta_seconds = 1.0 / 60.0;
+        for tick in 1..=ticks {
+            let world = &mut scene.render_world;
+            world.physics_tick = tick;
+            world.gpu_physics_read_all = tick == ticks;
+            world.gpu_physics_commands_serial += u64::from(tick == ticks);
+            let before = scene.now();
+            let _in_flight =
+                scene.render(before).then_signal_fence_and_flush().unwrap();
+            scene.renderer.block_until_physics_readbacks_complete();
+        }
+        scene.renderer.take_completed_physics_states()
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_deep_gpu_ball_pit_settles_and_its_walls_hold() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let states = run_ball_pit(0.0, 180);
+        assert_eq!(states.len(), 3600);
+        let resting = states
+            .iter()
+            .filter(|state| {
+                let [x, y, z] = state.linear_velocity;
+                (x * x + z * z).sqrt() < 0.1 && y.abs() < 0.1
+            })
+            .count();
+        // Sideways gravity presses the pile into the +x/+z corner.
+        let pressed = run_ball_pit(8.0, 180);
+        let escaped = pressed
+            .iter()
+            .filter(|state| {
+                let [x, y, z] = state.transform.position;
+                x.abs() > 2.0 || z.abs() > 2.0 || y < 0.0
+            })
+            .count();
+        // The old single-round solver left 646 at rest and let 17 through
+        // the corners; this one rests 3045 on an RTX 3060.
+        assert!(resting > 2800, "only {resting} of 3600 balls rest");
+        assert_eq!(escaped, 0, "{escaped} balls left the pit");
+    }
+
     #[test]
     #[cfg_attr(
         not(feature = "gpu-tests"),
@@ -11984,16 +12260,19 @@ mod tests {
         let counting = GpuConditionShader {
             events: vec!["fell".into()],
             glsl: "void condition(inout PhysicsState body) {\n\
-                   body.custom_values.y += 1.0;\n\
+                   // 2 * 0.5 from params, so 1 per tick.\n\
+                   body.custom_values.y += 2.0 * condition_params.values[0].y;\n\
                    if (body.model[3].y < -5.0)\n\
                    emit_event(body, EVENTS[0], 7u, body.custom_values);\n\
                    }"
             .into(),
+            ..Default::default()
         }
         .resolve(&mut registry);
         let broken = GpuConditionShader {
             events: Vec::new(),
             glsl: "void condition(inout PhysicsState body) { nope }".into(),
+            ..Default::default()
         }
         .resolve(&mut registry);
         let mut scene = SlabScene::new(&[]);
@@ -12018,7 +12297,8 @@ mod tests {
             })
             .collect();
         world.gpu_physics_revision = 1;
-        world.gpu_condition_shaders = vec![counting, broken];
+        world.gpu_condition_shaders = vec![counting.into(), broken.into()];
+        world.gpu_condition_shaders[0].params = vec![[0.0, 0.5, 0.0, 0.0]];
         world.physics_enabled = true;
         world.physics_gravity = [0.0; 3];
         world.fixed_delta_seconds = 1.0 / 60.0;

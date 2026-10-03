@@ -43,6 +43,83 @@ pub struct RuntimeInput {
     viewport_size: [f32; 2],
     mouse_motion: [f32; 2],
     cursor_captured: bool,
+    #[serde(default)]
+    pad_held: BTreeSet<PadButton>,
+    #[serde(default)]
+    pad_just_pressed: BTreeSet<PadButton>,
+    #[serde(default)]
+    pad_just_released: BTreeSet<PadButton>,
+    #[serde(default)]
+    sticks: [[f32; 2]; 2],
+    /// When this frame's presses happened, in fractional fixed ticks.
+    #[serde(default)]
+    press_ticks: Vec<(InputBinding, f64)>,
+}
+
+/// A gamepad button, in the layout of an Xbox pad: `South` is A, `East` B.
+/// Every connected pad feeds the same state. Each stick also acts as four
+/// buttons (`LeftStickUp`, ...) that press past half tilt, so menus and
+/// digital actions can bind a stick.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+pub enum PadButton {
+    South,
+    East,
+    West,
+    North,
+    LeftBumper,
+    RightBumper,
+    LeftTrigger,
+    RightTrigger,
+    Select,
+    Start,
+    LeftStick,
+    RightStick,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    LeftStickUp,
+    LeftStickDown,
+    LeftStickLeft,
+    LeftStickRight,
+    RightStickUp,
+    RightStickDown,
+    RightStickLeft,
+    RightStickRight,
+}
+
+/// Which stick [`RuntimeInput::stick`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stick {
+    Left,
+    Right,
+}
+
+fn record_edge<T: Ord + Copy>(
+    held: &mut BTreeSet<T>,
+    pressed_now: &mut BTreeSet<T>,
+    released_now: &mut BTreeSet<T>,
+    item: T,
+    pressed: bool,
+) {
+    if pressed {
+        if held.insert(item) {
+            pressed_now.insert(item);
+        }
+    } else if held.remove(&item) {
+        released_now.insert(item);
+    }
 }
 
 impl RuntimeInput {
@@ -57,6 +134,15 @@ impl RuntimeInput {
     #[must_use]
     pub fn key_just_released(&self, key: KeyCode) -> bool {
         self.keys_just_released.contains(&key)
+    }
+    /// Keys pressed since the last [`Self::clear_frame_edges`], for a
+    /// "press any key" prompt.
+    pub fn keys_pressed(&self) -> impl Iterator<Item = KeyCode> + '_ {
+        self.keys_just_pressed.iter().copied()
+    }
+    /// Keys released since the last [`Self::clear_frame_edges`].
+    pub fn keys_released(&self) -> impl Iterator<Item = KeyCode> + '_ {
+        self.keys_just_released.iter().copied()
     }
     #[must_use]
     pub fn mouse_held(&self, button: MouseButton) -> bool {
@@ -130,6 +216,8 @@ impl RuntimeInput {
     pub fn release_all(&mut self) {
         self.keys_just_released.append(&mut self.keys_held);
         self.mouse_just_released.append(&mut self.mouse_held);
+        self.pad_just_released.append(&mut self.pad_held);
+        self.sticks = [[0.0; 2]; 2];
     }
 
     /// Records the latest cursor position from a `CursorMoved` event.
@@ -146,6 +234,88 @@ impl RuntimeInput {
         self.viewport_size = size;
     }
 
+    #[must_use]
+    pub fn pad_held(&self, button: PadButton) -> bool {
+        self.pad_held.contains(&button)
+    }
+    #[must_use]
+    pub fn pad_just_pressed(&self, button: PadButton) -> bool {
+        self.pad_just_pressed.contains(&button)
+    }
+    #[must_use]
+    pub fn pad_just_released(&self, button: PadButton) -> bool {
+        self.pad_just_released.contains(&button)
+    }
+    /// Pad buttons pressed since the last [`Self::clear_frame_edges`].
+    pub fn pads_pressed(&self) -> impl Iterator<Item = PadButton> + '_ {
+        self.pad_just_pressed.iter().copied()
+    }
+    /// Stick tilt, each axis -1..1; `[0, 1]` is pushed fully up.
+    #[must_use]
+    pub fn stick(&self, stick: Stick) -> [f32; 2] {
+        self.sticks[stick as usize]
+    }
+
+    /// Records one gamepad button press or release.
+    pub fn record_pad_button(&mut self, button: PadButton, pressed: bool) {
+        record_edge(
+            &mut self.pad_held,
+            &mut self.pad_just_pressed,
+            &mut self.pad_just_released,
+            button,
+            pressed,
+        );
+    }
+
+    /// Records a stick's tilt and presses or releases its four direction
+    /// buttons: pressed past 0.5, released below 0.3, so a stick resting
+    /// near the threshold does not flicker.
+    pub fn record_stick(&mut self, stick: Stick, tilt: [f32; 2]) {
+        use PadButton::*;
+        self.sticks[stick as usize] = tilt;
+        let [up, down, left, right] = match stick {
+            Stick::Left => {
+                [LeftStickUp, LeftStickDown, LeftStickLeft, LeftStickRight]
+            }
+            Stick::Right => [
+                RightStickUp,
+                RightStickDown,
+                RightStickLeft,
+                RightStickRight,
+            ],
+        };
+        for (button, amount) in [
+            (up, tilt[1]),
+            (down, -tilt[1]),
+            (left, -tilt[0]),
+            (right, tilt[0]),
+        ] {
+            if amount > 0.5 {
+                self.record_pad_button(button, true);
+            } else if amount < 0.3 {
+                self.record_pad_button(button, false);
+            }
+        }
+    }
+
+    /// Records when a press happened, in fractional fixed ticks. The
+    /// windowed runner calls it as key and mouse events arrive; the first
+    /// press of a binding in a frame wins.
+    pub fn record_press_tick(&mut self, binding: InputBinding, tick: f64) {
+        if self.press_tick(binding).is_none() {
+            self.press_ticks.push((binding, tick));
+        }
+    }
+
+    /// When `binding` was pressed this frame, if the runner recorded it.
+    #[must_use]
+    pub fn press_tick(&self, binding: InputBinding) -> Option<f64> {
+        self.press_ticks
+            .iter()
+            .find(|(bound, _)| *bound == binding)
+            .map(|(_, tick)| *tick)
+    }
+
     /// Clears this frame's edge sets. Runtime integrations call this once per
     /// rendered frame after gameplay systems have read them, so the next frame
     /// starts empty.
@@ -154,18 +324,19 @@ impl RuntimeInput {
         self.keys_just_released.clear();
         self.mouse_just_pressed.clear();
         self.mouse_just_released.clear();
+        self.pad_just_pressed.clear();
+        self.pad_just_released.clear();
+        self.press_ticks.clear();
         self.mouse_motion = [0.0; 2];
     }
 }
 
 /// A raw input source which can satisfy a named gameplay action.
-///
-/// The enum deliberately leaves room for a future `Gamepad(GamepadButton)`
-/// variant without changing the [`ActionMap`] API.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputBinding {
     Key(KeyCode),
     Mouse(MouseButton),
+    Pad(PadButton),
 }
 
 /// Maps action names to one or more raw input bindings (any bound input
@@ -201,6 +372,7 @@ impl ActionMap {
         self.bindings_for(action).any(|binding| match binding {
             InputBinding::Key(key) => input.key_held(*key),
             InputBinding::Mouse(button) => input.mouse_held(*button),
+            InputBinding::Pad(button) => input.pad_held(*button),
         })
     }
     #[must_use]
@@ -208,6 +380,7 @@ impl ActionMap {
         self.bindings_for(action).any(|binding| match binding {
             InputBinding::Key(key) => input.key_just_pressed(*key),
             InputBinding::Mouse(button) => input.mouse_just_pressed(*button),
+            InputBinding::Pad(button) => input.pad_just_pressed(*button),
         })
     }
     #[must_use]
@@ -215,7 +388,20 @@ impl ActionMap {
         self.bindings_for(action).any(|binding| match binding {
             InputBinding::Key(key) => input.key_just_released(*key),
             InputBinding::Mouse(button) => input.mouse_just_released(*button),
+            InputBinding::Pad(button) => input.pad_just_released(*button),
         })
+    }
+    /// The earliest recorded time, in fractional fixed ticks, of a binding of
+    /// `action` pressed this frame.
+    #[must_use]
+    pub fn press_tick(
+        &self,
+        input: &RuntimeInput,
+        action: &str,
+    ) -> Option<f64> {
+        self.bindings_for(action)
+            .filter_map(|binding| input.press_tick(*binding))
+            .reduce(f64::min)
     }
     /// Inputs bound to `action`, in binding order; empty when unbound.
     #[must_use]
@@ -255,6 +441,27 @@ mod tests {
         assert!(!input.key_held(KeyCode::KeyW));
         assert!(input.key_just_released(KeyCode::KeyW));
         assert!(input.mouse_just_released(MouseButton::Right));
+    }
+
+    #[test]
+    fn pad_buttons_and_stick_directions_drive_actions() {
+        let mut map = ActionMap::default();
+        map.bind("jump", InputBinding::Pad(PadButton::South))
+            .bind("up", InputBinding::Pad(PadButton::LeftStickUp));
+        let mut input = RuntimeInput::default();
+        input.record_pad_button(PadButton::South, true);
+        assert!(map.just_pressed(&input, "jump"));
+        input.record_stick(Stick::Left, [0.0, 0.6]);
+        assert!(map.just_pressed(&input, "up"));
+        assert_eq!(input.stick(Stick::Left), [0.0, 0.6]);
+        input.clear_frame_edges();
+        // Between the thresholds the direction stays held.
+        input.record_stick(Stick::Left, [0.0, 0.4]);
+        assert!(map.held(&input, "up"));
+        input.record_stick(Stick::Left, [0.0, 0.1]);
+        assert!(map.just_released(&input, "up"));
+        input.release_all();
+        assert!(map.just_released(&input, "jump"));
     }
 
     #[test]

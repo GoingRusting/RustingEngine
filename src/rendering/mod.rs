@@ -15,6 +15,7 @@ pub mod frame_pacer;
 pub mod frame_passes;
 mod post_effects;
 pub mod readback;
+pub mod render_scale;
 pub mod scene_renderer;
 pub mod swapchain;
 
@@ -123,6 +124,73 @@ pub fn init_vulkan_headless() -> HeadlessVulkanBase {
         properties.api_version,
     );
     base
+}
+
+/// Opens the device a headless run would pick and has it fill a small
+/// buffer, so a driver that lists a device but cannot run work fails here.
+/// Returns the device name.
+pub fn probe_vulkan() -> Result<String, String> {
+    use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
+    use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
+    use vulkano::command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage,
+        PrimaryCommandBufferAbstract,
+    };
+    use vulkano::memory::allocator::{
+        AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
+    };
+    use vulkano::sync::GpuFuture;
+    let base = try_init_vulkan_headless()?;
+    let name = base
+        .device
+        .physical_device()
+        .properties()
+        .device_name
+        .clone();
+    let failed = |error: &dyn std::fmt::Display| format!("{name}: {error}");
+    let buffer = Buffer::new_slice::<u32>(
+        Arc::new(StandardMemoryAllocator::new_default(base.device.clone())),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+            ..Default::default()
+        },
+        64,
+    )
+    .map_err(|error| failed(&error))?;
+    let mut builder = AutoCommandBufferBuilder::primary(
+        Arc::new(StandardCommandBufferAllocator::new(
+            base.device.clone(),
+            Default::default(),
+        )),
+        base.queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .map_err(|error| failed(&error))?;
+    builder
+        .fill_buffer(buffer.clone(), 0x5275_7374)
+        .map_err(|error| failed(&error))?;
+    builder
+        .build()
+        .map_err(|error| failed(&error))?
+        .execute(base.queue.clone())
+        .map_err(|error| failed(&error))?
+        .then_signal_fence_and_flush()
+        .map_err(|error| failed(&error))?
+        .wait(Some(std::time::Duration::from_secs(5)))
+        .map_err(|error| failed(&error))?;
+    let read = buffer.read().map_err(|error| failed(&error))?;
+    if read.iter().all(|&word| word == 0x5275_7374) {
+        Ok(name)
+    } else {
+        Err(format!(
+            "{name}: the device ran the work but returned wrong data"
+        ))
+    }
 }
 
 /// Like [`init_vulkan_headless`], but reports a missing driver or device as

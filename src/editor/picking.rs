@@ -592,6 +592,7 @@ mod tests {
             },
             active: true,
             priority: 0,
+            viewport: None,
         };
         let editor_camera = world.spawn((camera, at(0.0, 0.0, 0.0))).id();
         // A mesh behind the light, and a scene camera off to the right.
@@ -667,6 +668,7 @@ mod tests {
             },
             active: true,
             priority: 0,
+            viewport: None,
         };
         let editor_camera = world
             .spawn((
@@ -721,6 +723,7 @@ mod tests {
                     },
                     active: true,
                     priority: 0,
+                    viewport: None,
                 },
                 GlobalTransform {
                     matrix: Matrix4::new_translation(&Vector3::new(
@@ -805,6 +808,7 @@ mod tests {
                     },
                     active: true,
                     priority: 0,
+                    viewport: None,
                 },
                 GlobalTransform {
                     matrix: Matrix4::new_translation(&Vector3::new(
@@ -913,6 +917,7 @@ mod tests {
             },
             active: true,
             priority: 0,
+            viewport: None,
         };
         let editor_camera = world
             .spawn((

@@ -306,6 +306,7 @@ impl EditorWindowRunner {
                         .then(|| &world.resource::<EditorDebugOverlay>().0),
                     debug_view: editor_debug_view(world),
                     effects: editor_scene_effects(world),
+                    camera: None,
                 },
                 world.resource::<RenderWorld>(),
                 world.resource::<AssetServer>(),

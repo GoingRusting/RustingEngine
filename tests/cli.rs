@@ -35,6 +35,12 @@ fn doctor_reports_capabilities_without_requiring_a_gpu() {
     assert!(result["data"]["platform"]["os"].is_string());
     assert!(result["data"]["build_tools"]["cargo"].is_boolean());
     assert!(result["data"]["vulkan"]["available"].is_boolean());
+    assert!(result["data"]["probe"].is_null());
+    // The probe succeeds or reports why; it never fails the command.
+    let (output, probed) = run(&["doctor", "--probe"]);
+    assert!(output.status.success(), "{probed}");
+    let probe = &probed["data"]["probe"];
+    assert!(probe["selected_device"].is_string() || probe["error"].is_string());
 }
 
 #[test]
@@ -186,6 +192,152 @@ fn missing_asset_reference_fails_validation_with_location() {
         .as_str()
         .unwrap()
         .starts_with("/entities/"));
+    assert_eq!(
+        result["diagnostics"][0]["entity"]["id"],
+        document["entities"][0]["id"]
+    );
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn docs_lists_searches_shows_and_briefs_within_a_token_budget() {
+    let (output, listed) = run(&["docs"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(listed["data"]["items"].as_array().unwrap().len() > 50);
+
+    let (_, found) = run(&["docs", "search", "determinism", "mode"]);
+    assert_eq!(found["data"]["matches"][0]["id"], "manual/determinism");
+
+    let (_, shown) =
+        run(&["docs", "show", "manual/concepts", "--budget", "50"]);
+    assert_eq!(shown["data"]["truncated"], true);
+    assert!(shown["data"]["tokens"].as_u64().unwrap() <= 50);
+    assert!(shown["data"]["total_tokens"].as_u64().unwrap() > 50);
+
+    let (_, brief) = run(&["docs", "--brief", "--budget", "500"]);
+    assert!(brief["data"]["tokens"].as_u64().unwrap() <= 500);
+    assert!(brief["data"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("guide/agent-skill"));
+
+    let (output, missing) = run(&["docs", "show", "no-such-page"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(missing["diagnostics"][0]["code"], "CLI_USAGE");
+    let (output, _) = run(&["docs", "--budget", "0", "--brief"]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn fix_renames_misspelled_scene_keys_in_place_and_keeps_the_rest() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    let root_arg = root.to_str().unwrap();
+    let scene = root.join("scenes/main.rscene");
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    // A required field that does not decode, an optional one that loading
+    // drops, and a key close to nothing, which has no certain fix.
+    let render = document["render"].as_object_mut().unwrap();
+    let quality = render.remove("quality").unwrap();
+    render.insert("qualty".into(), quality.clone());
+    let cube = document["entities"][0].as_object_mut().unwrap();
+    let visible = cube.remove("visible").unwrap_or(Value::Bool(true));
+    cube.insert("visble".into(), Value::Bool(!visible.as_bool().unwrap()));
+    cube.insert("notes".into(), "keep me".into());
+    std::fs::write(&scene, serde_json::to_vec_pretty(&document).unwrap())
+        .unwrap();
+
+    let (_, result) = run(&["validate", root_arg]);
+    assert_eq!(result["diagnostics"][0]["code"], "SCENE_JSON");
+    assert_eq!(result["diagnostics"][0]["fix"]["op"], "rename_key");
+    assert_eq!(result["diagnostics"][0]["fix"]["path"], "/render/qualty");
+
+    let before = std::fs::read(&scene).unwrap();
+    let (_, dry) = run(&["fix", root_arg, "--dry-run"]);
+    assert_eq!(dry["data"]["fixed"], 1, "a dry run shows the first round");
+    assert_eq!(std::fs::read(&scene).unwrap(), before, "and writes nothing");
+
+    let (output, fixed) = run(&["fix", root_arg]);
+    assert_eq!(output.status.code(), Some(1), "`notes` has no certain fix");
+    assert_eq!(fixed["data"]["fixed"], 2);
+    let left: Vec<_> = fixed["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["scene_location"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(left, ["/entities/0/notes"]);
+    let after: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    assert_eq!(after["render"]["quality"], quality);
+    assert_eq!(after["entities"][0]["visible"], !visible.as_bool().unwrap());
+    assert_eq!(after["entities"][0]["notes"], "keep me");
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn scene_and_patch_errors_point_at_the_line_object_and_operation() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    let scene = root.join("scenes/main.rscene");
+    let path = scene.to_str().unwrap();
+    let original = std::fs::read_to_string(&scene).unwrap();
+    let mut document: Value = serde_json::from_str(&original).unwrap();
+
+    // An unknown object in the second operation points into the patch file.
+    let id = document["entities"][0]["id"].clone();
+    let patch_path = parent.join("patch.json");
+    std::fs::write(
+        &patch_path,
+        serde_json::json!({"operations": [
+            {"op": "set", "id": id, "path": "/name", "value": "Fine"},
+            {"op": "set", "id": Uuid::new_v4(), "path": "/name", "value": "Lost"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let (_, result) =
+        run(&["scene", "patch", path, patch_path.to_str().unwrap()]);
+    let diagnostic = &result["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "PATCH_OPERATION");
+    assert_eq!(diagnostic["file"], patch_path.to_str().unwrap());
+    assert_eq!(diagnostic["scene_location"], "/operations/1");
+
+    // A patch that breaks a scene rule names the object it breaks it at.
+    let first = document["entities"][0]["name"].clone();
+    let second = document["entities"][1]["id"].clone();
+    std::fs::write(
+        &patch_path,
+        serde_json::json!({"operations": [
+            {"op": "set", "id": second, "path": "/name", "value": first}]})
+        .to_string(),
+    )
+    .unwrap();
+    let (_, result) =
+        run(&["scene", "patch", path, patch_path.to_str().unwrap()]);
+    let diagnostic = &result["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "PATCH_INVALID");
+    assert_eq!(diagnostic["entity"]["id"], second);
+    assert_eq!(diagnostic["entity"]["name"], first);
+
+    // A duplicated name names the second object that uses it.
+    document["entities"][1]["name"] = first.clone();
+    std::fs::write(&scene, serde_json::to_vec_pretty(&document).unwrap())
+        .unwrap();
+    let (_, result) = run(&["scene", "inspect", path]);
+    let diagnostic = &result["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "SCENE_STRUCTURE");
+    assert_eq!(diagnostic["scene_location"], "/entities/1");
+    assert_eq!(diagnostic["entity"]["id"], document["entities"][1]["id"]);
+    assert_eq!(diagnostic["entity"]["name"], first);
+
+    // Broken JSON reports its line and column.
+    std::fs::write(&scene, original.replacen('{', "{\n  oops", 1)).unwrap();
+    let (_, result) = run(&["scene", "inspect", path]);
+    let diagnostic = &result["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "SCENE_JSON");
+    assert_eq!(diagnostic["line"], 2);
+    assert!(diagnostic["column"].as_u64().unwrap() > 0);
     std::fs::remove_dir_all(parent).unwrap();
 }
 
@@ -391,6 +543,19 @@ fn capture_without_vulkan_still_reports_camera_and_picks_per_tick() {
     // second later.
     assert_eq!(pick("0"), cube.as_str());
     assert!(pick("60").is_null());
+    // A rectangle over the cube lists it with a share; one over empty sky
+    // lists nothing.
+    let rect = |rect: &str| {
+        let (_, result) = capture(
+            &[scene, png, "--size", "320x180", "--pick-rect", rect],
+            Some("no-such-vulkan-device"),
+        );
+        result["data"]["pick_rects"][0].clone()
+    };
+    let over = rect("120,110,80,70");
+    assert_eq!(over["entities"][0]["id"], cube.as_str());
+    assert!(over["entities"][0]["share"].as_f64().unwrap() > 0.0);
+    assert!(rect("0,0,20,10")["entities"].as_array().unwrap().is_empty());
     assert!(!Path::new(png).exists());
 
     let (output, missing) = capture(
@@ -450,6 +615,38 @@ fn capture_renders_a_png_and_maps_pixels_to_scene_ids() {
     assert!(output.status.success(), "{by_id}");
     assert_eq!(by_id["data"]["camera"]["name"], "Game Camera");
     let _ = std::fs::remove_dir_all(&parent);
+}
+
+#[test]
+fn listing_flags_cut_output_and_every_json_result_reports_its_size() {
+    let (output, full) = run(&["explain"]);
+    assert!(output.status.success(), "{full}");
+    let total = full["data"]["codes"].as_array().unwrap().len();
+    let (_, cut) = run(&["explain", "--limit", "2", "--fields", "code"]);
+    assert_eq!(cut["data"]["codes"].as_array().unwrap().len(), 2);
+    assert_eq!(cut["data"]["codes"][0].as_object().unwrap().len(), 1);
+    assert_eq!(cut["data"]["omitted"]["codes"], total - 2);
+    assert!(
+        cut["size"]["data_bytes"].as_u64().unwrap()
+            < full["size"]["data_bytes"].as_u64().unwrap()
+    );
+    let (_, counted) = run(&["explain", "--summary"]);
+    assert_eq!(counted["data"]["codes"]["count"], total);
+    let (output, bad) = run(&["explain", "--limit", "x"]);
+    assert_eq!(output.status.code(), Some(2), "{bad}");
+}
+
+#[test]
+fn schema_json_schema_prints_a_schema_per_file_kind() {
+    let (output, schema) = run(&["schema", "--json-schema"]);
+    assert!(output.status.success(), "{schema}");
+    for name in ["scene", "scene_patch", "scenario", "project", "asset_meta"] {
+        assert_eq!(
+            schema["data"][name]["$schema"],
+            "https://json-schema.org/draft/2020-12/schema",
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -668,4 +865,302 @@ fn validate_names_parts_below_the_project_determinism_mode() {
         }
     }
     std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn add_scaffolds_a_stub_and_a_failing_scenario() {
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let root = project.to_str().unwrap();
+
+    let (output, result) = run(&["add", "system", root, "spin_coins"]);
+    assert!(output.status.success(), "{result}");
+    let code = std::fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(code.contains("/// TODO") && code.contains("fn spin_coins("));
+    assert!(project.join("tests/spin_coins.json").is_file());
+
+    let (output, result) = run(&["add", "system", root, "spin_coins"]);
+    assert!(!output.status.success());
+    assert_eq!(result["diagnostics"][0]["code"], "PROJECT_EXISTS");
+
+    let (output, result) = run(&["add", "scenario", root, "Bad Name"]);
+    assert!(!output.status.success());
+    assert_eq!(result["diagnostics"][0]["code"], "CLI_USAGE");
+
+    let (output, result) = run(&["add", "scenario", root, "door_opens"]);
+    assert!(output.status.success(), "{result}");
+    let scenario: Value = serde_json::from_slice(
+        &std::fs::read(project.join("tests/door_opens.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(scenario["steps"][0]["expect"]["exists"], true);
+    std::fs::remove_dir_all(parent).ok();
+}
+
+#[test]
+fn diff_reports_added_removed_and_changed_entities_by_id() {
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let scene = project.join("scenes/main.rscene");
+    let edited = project.join("scenes/edited.rscene");
+    let mut value: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    let (output, result) =
+        run(&["diff", scene.to_str().unwrap(), scene.to_str().unwrap()]);
+    assert!(output.status.success(), "{result}");
+    assert_eq!(result["data"]["identical"], true);
+
+    let entities = value["entities"].as_array_mut().unwrap();
+    let removed = entities.pop().unwrap();
+    entities[0]["name"] = "Renamed".into();
+    entities.push(serde_json::json!({"id": Uuid::new_v4(), "name": "Fresh"}));
+    std::fs::write(&edited, value.to_string()).unwrap();
+    let (_, result) =
+        run(&["diff", scene.to_str().unwrap(), edited.to_str().unwrap()]);
+    let data = &result["data"];
+    assert_eq!(data["identical"], false);
+    assert_eq!(data["removed"][0]["id"], removed["id"]);
+    assert_eq!(data["added"][0]["name"], "Fresh");
+    assert_eq!(data["changed"][0]["changes"][0]["path"], "/name");
+    assert_eq!(data["changed"][0]["changes"][0]["after"], "Renamed");
+    std::fs::remove_dir_all(parent).ok();
+}
+
+#[test]
+fn scene_map_draws_tile_rows_and_places_entities_on_them() {
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let scene = project.join("scenes/main.rscene");
+    let mut value: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    let tile_map = serde_json::json!({"tile_size": 1.0, "rows": ["#..", "###"],
+        "tiles": {"#": {"solid": true}}});
+    value["entities"] = serde_json::json!([
+        {"id": Uuid::new_v4(), "name": "Ground",
+         "transform": {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+         "components": {"rusting.tile_map": tile_map.to_string()}},
+        {"id": Uuid::new_v4(), "name": "Hero",
+         "transform": {"position": [1.5, -0.5, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]}}
+    ]);
+    std::fs::write(&scene, value.to_string()).unwrap();
+    let (output, result) = run(&["scene", "map", scene.to_str().unwrap()]);
+    assert!(output.status.success(), "{result}");
+    let map = &result["data"]["maps"][0];
+    assert_eq!(map["rows"], serde_json::json!(["#A.", "###"]));
+    assert_eq!(map["legend"][1]["entity"], "Hero");
+    std::fs::remove_dir_all(parent).ok();
+}
+
+#[test]
+#[ignore = "runs a real cargo build of a generated project"]
+fn inspect_tick_reports_entity_state_after_that_tick() {
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let (output, result) = run(&[
+        "inspect",
+        project.to_str().unwrap(),
+        "--tick",
+        "5",
+        "--entity",
+        "Cube",
+    ]);
+    assert!(output.status.success(), "{result}");
+    assert_eq!(result["data"]["tick"], 5);
+    assert_eq!(result["data"]["entities"]["Cube"]["name"], "Cube");
+    std::fs::remove_dir_all(parent).ok();
+}
+
+#[test]
+fn serve_answers_json_rpc_lines_with_the_cli_envelope() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .arg("serve")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"doctor"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"docs search","params":["scenario"]}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"serve"}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"doctor","params":[1]}"#,
+        "not json",
+        r#"{"jsonrpc":"2.0","id":5,"method":"shutdown"}"#,
+        r#"{"jsonrpc":"2.0","id":6,"method":"doctor"}"#,
+    ];
+    let mut stdin = child.stdin.take().unwrap();
+    for request in requests {
+        writeln!(stdin, "{request}").unwrap();
+    }
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let replies: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    // The request after `shutdown` is never answered.
+    assert_eq!(replies.len(), 6, "{replies:?}");
+    let (_, cold) = run(&["doctor"]);
+    assert_eq!(replies[0]["id"], 1);
+    assert_eq!(replies[0]["result"]["ok"], true);
+    assert_eq!(
+        replies[0]["result"]["data"]["engine_version"],
+        cold["data"]["engine_version"]
+    );
+    assert!(replies[0]["result"]["size"]["data_bytes"].is_number());
+    assert_eq!(
+        replies[1]["result"]["schema_version"],
+        cold["schema_version"]
+    );
+    assert_eq!(replies[2]["error"]["code"], -32601);
+    assert_eq!(replies[3]["error"]["code"], -32602);
+    assert_eq!(replies[4]["error"]["code"], -32700);
+    assert!(replies[5]["result"].is_null());
+}
+
+#[test]
+#[ignore = "runs a real cargo build of a generated project"]
+fn debug_session_steps_and_inspects_a_running_game() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .args(["debug", project.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let get = r#""entity": "Cube", "path": "/transform/position/1""#;
+    for request in [
+        format!(r#"{{"id": 1, "cmd": "get", {get}}}"#),
+        r#"{"id": 2, "cmd": "step", "ticks": 30}"#.to_owned(),
+        r#"{"id": 3, "cmd": "set", "entity": "Cube", "path": "/transform/position/1", "value": 3.0}"#.to_owned(),
+        format!(r#"{{"id": 4, "cmd": "get", {get}}}"#),
+    ] {
+        writeln!(stdin, "{request}").unwrap();
+    }
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let replies: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 4, "{replies:?}");
+    assert_eq!(replies[0]["ok"], true, "{replies:?}");
+    assert_eq!(replies[1]["tick"], 29);
+    assert_eq!(replies[3]["result"], 3.0);
+    std::fs::remove_dir_all(parent).ok();
+}
+
+#[test]
+fn friction_fixes_for_docs_new_and_scene_query() {
+    // `docs search` reports how many matched past its default cut of 10.
+    let (_, found) = run(&["docs", "search", "GameScene::"]);
+    assert_eq!(found["data"]["matches"].as_array().unwrap().len(), 10);
+    assert!(found["data"]["total"].as_u64().unwrap() > 10, "{found}");
+    assert!(found["data"]["omitted"]["matches"].as_u64().unwrap() > 0);
+    let (_, more) = run(&["docs", "search", "GameScene::", "--limit", "30"]);
+    assert_eq!(more["data"]["matches"].as_array().unwrap().len(), 30);
+    // A type index and the sample games are docs items.
+    let (output, index) = run(&["docs", "show", "api/GameScene"]);
+    assert!(output.status.success(), "{index}");
+    assert!(index["data"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("set_counter"));
+    let (output, sample) = run(&["docs", "show", "sample/sky_hop"]);
+    assert!(output.status.success(), "{sample}");
+    assert!(sample["data"]["text"].as_str().unwrap().contains("```rust"));
+
+    // `new` ships the agent skill, and `scene query` prints registered
+    // components as JSON objects, not as JSON text.
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    assert!(root.join("skills/rusting-game/SKILL.md").is_file());
+    let scene = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("samples/hammer_run/scenes/main.rscene");
+    let (_, counters) = run(&[
+        "scene",
+        "query",
+        scene.to_str().unwrap(),
+        "--name",
+        "Goal Count",
+    ]);
+    let counter =
+        &counters["data"]["entities"][0]["components"]["rusting.counter"];
+    assert_eq!(counter["name"], "goal", "{counters}");
+
+    let (output, version) = run(&["--version"]);
+    assert!(output.status.success(), "{version}");
+    assert_eq!(version["data"]["engine_version"], env!("CARGO_PKG_VERSION"));
+
+    // Presets can be limited to a scope, and an unknown scope is refused.
+    let main = root.join("scenes/main.rscene");
+    let main = main.to_str().unwrap();
+    let (_, lit) = run(&[
+        "preset",
+        "apply",
+        main,
+        "night",
+        "--only",
+        "text",
+        "--dry-run",
+    ]);
+    let changes = lit["data"]["patch"]["changes"].as_array().unwrap();
+    assert!(
+        changes.iter().all(|change| change["path"]
+            .as_str()
+            .unwrap()
+            .contains("rusting.hud_element")),
+        "{lit}"
+    );
+    let (output, bad) =
+        run(&["preset", "apply", main, "night", "--only", "sky"]);
+    assert!(!output.status.success());
+    assert_eq!(bad["diagnostics"][0]["code"], "PRESET_SCOPE_UNKNOWN");
+
+    // A sound clip written relative to the scene, not to assets/, fails
+    // validation.
+    let patch_path = parent.join("cue.json");
+    let patch = serde_json::json!({"operations": [{"op": "create", "entity": {
+        "name": "Bell", "components": {"rusting.sound_cue":
+            {"clip": "../assets/bell.wav", "volume": 1.0, "on_collision": false}}}}]});
+    std::fs::write(&patch_path, patch.to_string()).unwrap();
+    let (output, patched) =
+        run(&["scene", "patch", main, patch_path.to_str().unwrap()]);
+    assert!(output.status.success(), "{patched}");
+    let (output, validated) = run(&["validate", root.to_str().unwrap()]);
+    assert!(!output.status.success());
+    assert!(
+        validated["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("relative to assets/"),
+        "{validated}"
+    );
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn a_closed_stdout_ends_output_without_a_panic() {
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .args(["docs", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
 }

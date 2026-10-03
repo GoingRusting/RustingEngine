@@ -122,6 +122,10 @@ pub const PRESETS: &[ArtPreset] = &[
     },
 ];
 
+/// What `preset apply --only` can limit a preset to: sun, ambient, sky,
+/// tone mapping and background; perspective field of view; HUD text.
+pub const PRESET_SCOPES: [&str; 3] = ["lighting", "camera", "text"];
+
 #[must_use]
 pub fn preset(name: &str) -> Option<&'static ArtPreset> {
     PRESETS.iter().find(|preset| preset.name == name)
@@ -130,13 +134,23 @@ pub fn preset(name: &str) -> Option<&'static ArtPreset> {
 /// The patch that applies `preset` to `document`. The sun goes on the first
 /// entity with a directional light; ambient, sky, tone mapping and
 /// background go on the first entity with any of them, else on the sun.
-/// Missing entities are created as `Sun` and `Environment`.
+/// Missing entities are created as `Sun` and `Environment`. `only` limits
+/// the patch to some of [`PRESET_SCOPES`]; empty means every scope.
 #[must_use]
 pub fn preset_patch(
     document: &SceneDocument,
     preset: &ArtPreset,
+    only: &[&str],
 ) -> ScenePatch {
+    let wants = |scope: &str| only.is_empty() || only.contains(&scope);
     let mut operations = Vec::new();
+    if !wants("lighting") {
+        preset_camera_and_text(document, preset, &wants, &mut operations);
+        return ScenePatch {
+            expected_revision: None,
+            operations,
+        };
+    }
     let environment_keys = [
         AMBIENT_LIGHT_COMPONENT,
         SKY_LIGHT_COMPONENT,
@@ -207,8 +221,30 @@ pub fn preset_patch(
         &component(BACKGROUND_COMPONENT),
         json!({"color": preset.background}),
     );
+    preset_camera_and_text(document, preset, &wants, &mut operations);
+    ScenePatch {
+        expected_revision: None,
+        operations,
+    }
+}
+
+fn preset_camera_and_text(
+    document: &SceneDocument,
+    preset: &ArtPreset,
+    wants: &dyn Fn(&str) -> bool,
+    operations: &mut Vec<PatchOperation>,
+) {
+    let mut set = |id: Uuid, path: &str, value: Value| {
+        operations.push(PatchOperation::Set {
+            id: id.into(),
+            path: path.into(),
+            value,
+            expected: None,
+        });
+    };
     for entity in &document.entities {
-        if let Some(camera) = &entity.camera {
+        if let Some(camera) = entity.camera.as_ref().filter(|_| wants("camera"))
+        {
             if matches!(camera.projection, SceneProjection::Perspective { .. })
             {
                 set(
@@ -218,8 +254,10 @@ pub fn preset_patch(
                 );
             }
         }
-        if entity.components.contains_key(HUD_ELEMENT_COMPONENT) {
-            let hud = component(HUD_ELEMENT_COMPONENT);
+        if wants("text")
+            && entity.components.contains_key(HUD_ELEMENT_COMPONENT)
+        {
+            let hud = format!("/components/{HUD_ELEMENT_COMPONENT}");
             set(
                 entity.id,
                 &format!("{hud}/font_size"),
@@ -227,10 +265,6 @@ pub fn preset_patch(
             );
             set(entity.id, &format!("{hud}/color"), json!(preset.text_color));
         }
-    }
-    ScenePatch {
-        expected_revision: None,
-        operations,
     }
 }
 
@@ -279,10 +313,25 @@ mod tests {
         let before = read_scene_document(&scene).unwrap();
 
         let night = preset("night").unwrap();
-        let dry = patch_scene_file(&scene, &preset_patch(&before, night), true)
-            .unwrap();
+        let lighting_only = preset_patch(&before, night, &["lighting"]);
+        assert!(lighting_only.operations.iter().all(|operation| !matches!(
+            operation,
+            crate::scene_patch::PatchOperation::Set { path, .. }
+                if path.contains(HUD_ELEMENT_COMPONENT) || path.starts_with("/camera")
+        )));
+        let text_only = preset_patch(&before, night, &["text"]);
+        assert!(!text_only.operations.is_empty());
+        assert!(text_only.operations.iter().all(|operation| matches!(
+            operation,
+            crate::scene_patch::PatchOperation::Set { path, .. }
+                if path.contains(HUD_ELEMENT_COMPONENT)
+        )));
+        let dry =
+            patch_scene_file(&scene, &preset_patch(&before, night, &[]), true)
+                .unwrap();
         assert!(!dry.written);
-        patch_scene_file(&scene, &preset_patch(&before, night), false).unwrap();
+        patch_scene_file(&scene, &preset_patch(&before, night, &[]), false)
+            .unwrap();
         let after = read_scene_document(&scene).unwrap();
         assert_eq!(
             after.entities.len(),
@@ -308,7 +357,8 @@ mod tests {
 
         // A second preset edits the same entities instead of adding more.
         let toy = preset("flat_toy").unwrap();
-        patch_scene_file(&scene, &preset_patch(&after, toy), false).unwrap();
+        patch_scene_file(&scene, &preset_patch(&after, toy, &[]), false)
+            .unwrap();
         let again = read_scene_document(&scene).unwrap();
         assert_eq!(again.entities.len(), after.entities.len());
 
