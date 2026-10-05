@@ -4,30 +4,37 @@
 //! integrations consume the ECS state through the `RenderExtract` schedule.
 
 mod actions;
+mod animation;
 mod audio;
 mod classes;
 mod click;
 mod components;
 mod cpu_physics;
 mod determinism;
+mod effect_presets;
 mod events;
 pub mod fluid;
 pub mod fluid_surface;
 mod game_feel;
 pub(crate) mod hierarchy;
 mod hybrid_physics;
+mod ik;
 mod input;
+mod particles;
 mod physics_benchmark;
 pub mod picking;
 mod player;
+mod ragdoll;
 mod render_benchmark;
 mod render_world;
 mod replay;
+mod retarget;
 mod scene_file;
 mod scene_instance;
 mod scene_tree;
 mod signals;
 pub mod sim_math;
+mod skinning;
 mod snapshot;
 mod state_hash;
 #[cfg(test)]
@@ -41,6 +48,7 @@ pub mod water;
 pub use actions::{
     bind_input_actions, parse_input, ActionMap, InputAction, InputBinding,
 };
+pub use animation::*;
 pub use audio::{
     route_sound_events, AudioCommand, AudioQueue, BeatClock, Sound, SoundId,
     QUEUE_LIMIT,
@@ -55,6 +63,7 @@ pub use cpu_physics::{
     SLEEP_STEPS,
 };
 pub use determinism::*;
+pub use effect_presets::*;
 pub use events::EventQueue;
 pub use fluid::{
     capture_fluids, restore_fluids, Fluid, FluidBlock, FluidParticle,
@@ -63,16 +72,20 @@ pub use fluid::{
 pub use game_feel::*;
 pub use hierarchy::{propagate_transforms, HierarchyDiagnostics};
 pub use hybrid_physics::*;
+pub use ik::*;
 #[cfg(feature = "window")]
 pub use input::Gamepads;
 pub use input::{KeyCode, MouseButton, PadButton, RuntimeInput, Stick};
+pub use particles::*;
 pub use physics_benchmark::{
     BenchmarkBody, PhysicsBenchmark, BENCHMARK_TOWER_HEIGHT,
 };
 pub use player::*;
+pub use ragdoll::*;
 pub use render_benchmark::*;
 pub use render_world::*;
 pub use replay::*;
+pub use retarget::*;
 pub use rusting_core::app::AppError;
 pub use rusting_core::input::ClickEvent;
 pub use rusting_core::schedule::{CpuFrameTimings, FrameReport, ScheduleStage};
@@ -85,6 +98,10 @@ pub use scene_instance::{
 pub use scene_tree::SceneTree;
 pub use signals::{
     Added, Connection, Connections, Removed, Signal, SignalError, SignalEvent,
+};
+pub use skinning::{
+    joint_matrices, morph_mesh, skin_mesh, update_skins, Deformers, Morph,
+    Skin, SkinnedMesh,
 };
 pub use snapshot::{SnapshotError, WorldSnapshot};
 pub use state_hash::*;
@@ -234,6 +251,7 @@ impl Default for App {
         app.add_system(ScheduleStage::Update, click::route_click_events);
         app.add_event::<CollisionEvent>();
         app.add_event::<JointBroken>();
+        app.add_event::<AnimationEvent>();
         // One chain: these systems all write `Transform`, and unordered
         // systems would run in whatever order threads finish.
         app.add_systems(
@@ -249,7 +267,14 @@ impl Default for App {
                 // Existing particles move before new ones spawn at rest.
                 game_feel::update_burst_particles,
                 game_feel::fire_bursts,
+                (
+                    particles::restart_on_contact,
+                    particles::add_particle_systems,
+                    particles::update_particles,
+                )
+                    .chain(),
                 game_feel::advance_tweens,
+                animation::advance_animations,
                 fluid::spawn_fluid_volumes,
                 fluid::couple_fluids,
                 fluid::step_fluids,

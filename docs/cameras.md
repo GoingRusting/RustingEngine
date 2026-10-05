@@ -85,7 +85,26 @@ active.
 - With viewport cameras, `perf.render.cameras` lists each drawn camera
   with its `gpu_ms`, `draws` and `triangles`.
 
-## Limits
+## Screens: a camera on a material
+
+`rusting.camera_screen` on an object with a mesh shows what another
+camera sees on that mesh, like a CCTV monitor, a mirror-like portal or a
+rear-view screen:
+
+```json
+"components": {"rusting.camera_screen": {"camera": "Cam B", "size": [320, 180]}}
+```
+
+- `camera` is the name of a camera entity. It may be inactive
+  (`"active": false`), so it draws only into the screen.
+- `size` is the image size in pixels. Small sizes are cheaper and give a
+  low-resolution monitor look.
+- The image replaces the material's base color and emissive maps. Give
+  the material some `emissive` so the screen glows, and give each screen
+  its own material; screens sharing one material show one feed.
+- Each screen renders the whole scene once more per frame. Keep to a few
+  screens and small sizes.
+
 
 - Pointer clicks, `pointer_ray()` and the sound listener use the
   full-window camera, even over another camera's viewport.
@@ -93,6 +112,7 @@ active.
   cameras. Use `Frustum` culling with split screen.
 - Post effects (bloom, fog, tone mapping, render scale) apply to every
   camera alike. Per-camera effects are not supported.
-- A camera cannot render into a texture for a material or an egui image.
-  Ray-cast a small image in game code instead. Split Signal's CCTV feeds do
-  this.
+- A camera screen's image cannot go into an egui image, and screens do not
+  show other screens' feeds (they show the material without the feed).
+  The editor viewport shows screens without their feeds; the game window
+  and captures show them.

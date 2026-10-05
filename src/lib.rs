@@ -65,8 +65,8 @@ pub mod prelude {
         GpuConditionShaders, GpuEventMode, GpuEventPayload, GpuFieldCondition,
         GpuPhysicsEvent, GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch,
         GpuStateField, HudAnchor, HudElement, Name, ObjectClasses,
-        PhysicsSolver, PhysicsSyncMode, PhysicsWorld, PlayerController,
-        RigidBody, RigidBodyKind, Sound, SoundId, Stick,
+        ParticleCommand, PhysicsSolver, PhysicsSyncMode, PhysicsWorld,
+        PlayerController, RigidBody, RigidBodyKind, Sound, SoundId, Stick,
     };
     pub use crate::rusting_game;
     pub use crate::Transform;

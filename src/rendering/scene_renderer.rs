@@ -400,6 +400,22 @@ fn lod_value(camera: [f32; 4], sphere: [f32; 4], screen_size: bool) -> f32 {
     }
 }
 
+/// One particle, read per instance by the particle pipelines.
+#[repr(C)]
+#[derive(BufferContents, Vertex, Clone, Copy, Debug, PartialEq)]
+struct ParticleVertex {
+    #[format(R32G32B32_SFLOAT)]
+    center: [f32; 3],
+    #[format(R32_SFLOAT)]
+    size: f32,
+    #[format(R32G32B32A32_SFLOAT)]
+    color: [f32; 4],
+    #[format(R32G32B32_SFLOAT)]
+    stretch: [f32; 3],
+    #[format(R32_SFLOAT)]
+    rotation: f32,
+}
+
 /// Vertex used by the editor-only debug pass.
 #[repr(C)]
 #[derive(BufferContents, Vertex, Clone, Copy)]
@@ -808,6 +824,15 @@ struct PreparedTexture {
     source_revision: u64,
 }
 
+/// A camera image for one screen material; see
+/// [`SceneRenderer::render_screens`].
+struct ScreenFeed {
+    renderer: Box<SceneRenderer>,
+    view: Arc<ImageView>,
+    sampler: Arc<Sampler>,
+    size: [u32; 2],
+}
+
 /// Set 1 of one material: base color, normal, metallic-roughness, occlusion,
 /// and emissive maps, white where the material has none.
 struct PreparedMaterial {
@@ -888,6 +913,8 @@ struct PreparedRenderInstances {
     lod_spheres: Vec<Option<[f32; 4]>>,
     /// `lod_signature` the instances were expanded with.
     lod_signature: Vec<(u64, u64)>,
+    /// Keys of the screen materials, each batched alone for its feed.
+    screens: Vec<u64>,
 }
 
 /// Instances the main pass draws, compacted per batch.
@@ -1341,6 +1368,8 @@ pub struct SceneRenderer {
     prepared_meshes_lods: Vec<(u64, u64)>,
     prepared_textures: HashMap<u64, PreparedTexture>,
     prepared_materials: HashMap<u64, PreparedMaterial>,
+    /// Camera images by the key of the material they replace maps of.
+    screen_feeds: HashMap<u64, ScreenFeed>,
     /// 1x1 white texture bound in place of every missing material map.
     white_texture: (Arc<ImageView>, Arc<Sampler>),
     /// Per-slot stand-ins for a map that is referenced but missing or
@@ -1645,6 +1674,7 @@ impl SceneRenderer {
             descriptor_allocator,
             prepared_textures: HashMap::new(),
             prepared_materials: HashMap::new(),
+            screen_feeds: HashMap::new(),
             white_texture,
             missing_textures,
             white_material,
@@ -1915,6 +1945,83 @@ impl SceneRenderer {
         self.last_culling_path
     }
 
+    /// Draws the camera of each screen in the render world into its own image, which
+    /// the next [`Self::render`] shows on the screen's material. Call it
+    /// before the frame's views.
+    // ponytail: a full child renderer per screen (own pipelines and targets);
+    // share pipelines between them if scenes with many screens cost too much.
+    pub fn render_screens(
+        &mut self,
+        before: Box<dyn GpuFuture>,
+        render_world: &RenderWorld,
+        assets: &AssetServer,
+    ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
+        use crate::rendering::swapchain::OFFSCREEN_COLOR_FORMAT;
+        let failed =
+            |error: &dyn std::fmt::Display| SceneRenderError(error.to_string());
+        self.screen_feeds.retain(|key, feed| {
+            render_world.screens.iter().any(|screen| {
+                screen.material.key() == *key && screen.size == feed.size
+            })
+        });
+        let mut future = before;
+        for screen in &render_world.screens {
+            let key = screen.material.key();
+            if !self.screen_feeds.contains_key(&key) {
+                let image = Image::new(
+                    self.memory_allocator.clone(),
+                    ImageCreateInfo {
+                        format: OFFSCREEN_COLOR_FORMAT,
+                        extent: [screen.size[0], screen.size[1], 1],
+                        usage: ImageUsage::COLOR_ATTACHMENT
+                            | ImageUsage::SAMPLED,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| failed(&error))?;
+                let feed = ScreenFeed {
+                    renderer: Box::new(SceneRenderer::new(
+                        self.queue.clone(),
+                        self.memory_allocator.clone(),
+                        OFFSCREEN_COLOR_FORMAT,
+                        screen.size,
+                    )?),
+                    view: ImageView::new_default(image)
+                        .map_err(|error| failed(&error))?,
+                    sampler: texture_sampler(
+                        &self.queue,
+                        TextureSampler {
+                            mag_filter: TextureFilter::Linear,
+                            min_filter: TextureFilter::Linear,
+                            mipmap_filter: TextureFilter::Linear,
+                            wrap: [TextureWrap::ClampToEdge; 2],
+                        },
+                    )?,
+                    size: screen.size,
+                };
+                self.screen_feeds.insert(key, feed);
+            }
+            let feed = self.screen_feeds.get_mut(&key).expect("inserted above");
+            let options = SceneRenderOptions {
+                camera: Some(screen.camera),
+                ..SceneRenderOptions::game(screen.size)
+            };
+            future = feed.renderer.render(
+                future,
+                feed.view.clone(),
+                screen.size,
+                options,
+                render_world,
+                assets,
+            )?;
+        }
+        Ok(future)
+    }
+
     pub fn render(
         &mut self,
         before: Box<dyn GpuFuture>,
@@ -2040,6 +2147,7 @@ impl SceneRenderer {
         };
         let frustum = render_world.culling != CullingMode::Disabled;
         let (eye, forward) = camera_eye_forward(camera);
+        let (camera_right, camera_up) = camera_right_up(camera);
         let lod_camera = [eye[0], eye[1], eye[2], lod_scale(camera)];
         let cull_start = std::time::Instant::now();
         match path {
@@ -3563,12 +3671,68 @@ impl SceneRenderer {
                 )?;
             }
         }
+        if !render_world.particles.is_empty() {
+            let (vertices, draws) =
+                particle_draws(&render_world.particles, eye, forward);
+            let upload = self.frame_contexts[self.frame_index]
+                .transient
+                .allocate_slice::<ParticleVertex>(vertices.len() as u64)
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            upload
+                .write()
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .copy_from_slice(&vertices);
+            self.counters.upload_bytes += upload.size();
+            commands
+                .set_viewport(0, [scene_viewport.clone()].into_iter().collect())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .set_scissor(0, [scene_scissor].into_iter().collect())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_vertex_buffers(0, upload)
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            for (additive, sprite, first, count) in draws {
+                let pipeline =
+                    active.particle_pipelines[usize::from(additive)].clone();
+                commands
+                    .bind_pipeline_graphics(pipeline.clone())
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .push_constants(
+                        pipeline.layout().clone(),
+                        0,
+                        particle_vertex_shader::Particles {
+                            view_projection: camera.view_projection,
+                            eye: camera.eye,
+                            right: [
+                                camera_right[0],
+                                camera_right[1],
+                                camera_right[2],
+                                0.0,
+                            ],
+                            up: [camera_up[0], camera_up[1], camera_up[2], 0.0],
+                            params: [sprite, 0, 0, 0],
+                        },
+                    )
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                count_work(&recorded, 1, 0, u64::from(count) * 2);
+                unsafe {
+                    commands
+                        .draw(6, count, 0, first)
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                }
+            }
+        }
         // Debug views show raw shader output, so they skip the curve.
         let tone = match options.debug_view {
             SceneDebugView::Lit => {
                 render_world.tone_mapping.unwrap_or_default()
             }
             _ => ToneMapping::default(),
+        };
+        let grade = match options.debug_view {
+            SceneDebugView::Lit => {
+                render_world.color_grading.unwrap_or_default()
+            }
+            _ => crate::runtime::ColorGrading::default(),
         };
         // The whole target is tone mapped, so area outside the viewport shows
         // the background like the old clear did.
@@ -3628,10 +3792,24 @@ impl SceneRenderer {
                     exposure: tone.exposure,
                     mapper: tone.mapper as u32,
                     bloom: bloom.map_or(0.0, |bloom| bloom.intensity),
-                    padding: 0.0,
+                    contrast: grade.contrast,
                     inv_extent: [
                         1.0 / extent[0] as f32,
                         1.0 / extent[1] as f32,
+                    ],
+                    saturation: grade.saturation,
+                    vignette: grade.vignette,
+                    shadows: [
+                        grade.shadows[0],
+                        grade.shadows[1],
+                        grade.shadows[2],
+                        1.0,
+                    ],
+                    highlights: [
+                        grade.highlights[0],
+                        grade.highlights[1],
+                        grade.highlights[2],
+                        1.0,
                     ],
                 },
             )
@@ -4139,7 +4317,7 @@ impl SceneRenderer {
                 continue;
             };
             let mut slot_index = 0;
-            let textures = slots(material).map(|slot| {
+            let mut textures = slots(material).map(|slot| {
                 let fallback = &self.missing_textures[slot_index];
                 slot_index += 1;
                 let Some(texture) = slot else {
@@ -4152,6 +4330,12 @@ impl SceneRenderer {
                     })
                     .unwrap_or_else(|| fallback.clone())
             });
+            if let Some(feed) = self.screen_feeds.get(&handle.key()) {
+                // Base color and emissive show the camera image.
+                for slot in [0, 4] {
+                    textures[slot] = (feed.view.clone(), feed.sampler.clone());
+                }
+            }
             let views = textures
                 .each_ref()
                 .map(|(view, _)| Arc::as_ptr(view) as usize);
@@ -4339,9 +4523,16 @@ impl SceneRenderer {
         let physics_indices =
             &self.prepared_physics.as_ref().unwrap().body_indices;
         let lod_signature = lod_signature(assets);
+        let mut screens = render_world
+            .screens
+            .iter()
+            .map(|screen| screen.material.key())
+            .collect::<Vec<_>>();
+        screens.sort_unstable();
         if self.prepared_instances.as_ref().is_some_and(|prepared| {
             prepared.renderables_revision == render_world.renderables_revision
                 && prepared.lod_signature == lod_signature
+                && prepared.screens == screens
                 && prepared.physics_revision
                     == render_world.gpu_physics_revision
                 && prepared.material_revisions.iter().all(
@@ -4417,7 +4608,14 @@ impl SceneRenderer {
                         || material.transmission > 0.0
                 })
             },
-            |material| material_group(assets.materials.get(material)),
+            |material| {
+                let mut group = material_group(assets.materials.get(material));
+                // A screen binds its own feed, so it shares no batch.
+                if screens.binary_search(&material.key()).is_ok() {
+                    group.0[0] = Some(!material.key());
+                }
+                group
+            },
         );
         let mut instances = Vec::with_capacity(order.len().max(1));
         for &index in &order {
@@ -4622,6 +4820,7 @@ impl SceneRenderer {
             gpu_owned,
             lod_spheres,
             lod_signature,
+            screens,
         });
         Ok(())
     }
@@ -5454,11 +5653,10 @@ fn sort_back_to_front(
     instances.sort_by(|a, b| depth(b).total_cmp(&depth(a)));
 }
 
-/// Builds a sampler for one texture's filter and wrap modes. Textures have
-/// no mip chain yet, so the mipmap filter is ignored. Linear minification
-/// filters anisotropically when the device enabled `samplerAnisotropy`.
-// ponytail: no mipmaps, so minified textures alias; generate mips with
-// blits when textured scenes show shimmer.
+/// Builds a sampler for one texture's filter and wrap modes. Textures get a
+/// full mip chain on upload, and the min filter picks how mips blend.
+/// Linear minification filters anisotropically when the device enabled
+/// `samplerAnisotropy`.
 fn texture_sampler(
     queue: &Arc<Queue>,
     sampler: TextureSampler,
@@ -6172,6 +6370,8 @@ struct MainPasses {
     reflection_pipeline: Arc<GraphicsPipeline>,
     debug_pipeline: Arc<GraphicsPipeline>,
     debug_on_top_pipeline: Arc<GraphicsPipeline>,
+    /// Particles blended by alpha, then added as light.
+    particle_pipelines: [Arc<GraphicsPipeline>; 2],
     tonemap_pipeline: Arc<GraphicsPipeline>,
     /// Height fog over the background after the opaque draws.
     sky_pipeline: Arc<GraphicsPipeline>,
@@ -6203,6 +6403,14 @@ impl MainPasses {
         name_object(
             &*self.debug_on_top_pipeline,
             &format!("Debug lines on top{suffix}"),
+        );
+        name_object(
+            &*self.particle_pipelines[0],
+            &format!("Particles{suffix}"),
+        );
+        name_object(
+            &*self.particle_pipelines[1],
+            &format!("Additive particles{suffix}"),
         );
         name_object(&*self.tonemap_pipeline, &format!("Tone map{suffix}"));
         name_object(&*self.sky_pipeline, &format!("Sky fog{suffix}"));
@@ -6336,6 +6544,10 @@ fn create_main_passes(
         shared.map(|passes| passes.pipeline.layout().clone()),
     )?;
     Ok(MainPasses {
+        particle_pipelines: [
+            create_particle_pipeline(queue, &render_pass, samples, false)?,
+            create_particle_pipeline(queue, &render_pass, samples, true)?,
+        ],
         debug_pipeline: create_debug_pipeline(
             queue.clone(),
             render_pass.clone(),
@@ -6912,6 +7124,172 @@ fn create_shadow_target(
     )
     .map_err(|error| SceneRenderError(error.to_string()))?;
     Ok((framebuffer, shadow_map))
+}
+
+/// Unlit camera-facing quads for particles, in the HDR subpass. They test
+/// against scene depth without writing it. `additive` adds light; otherwise
+/// the premultiplied color covers what is behind by its alpha.
+fn create_particle_pipeline(
+    queue: &Arc<Queue>,
+    render_pass: &Arc<RenderPass>,
+    samples: u32,
+    additive: bool,
+) -> Result<Arc<GraphicsPipeline>, SceneRenderError> {
+    let device = queue.device().clone();
+    let vertex = particle_vertex_shader::load(device.clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("particle vertex entry point is missing".into())
+        })?;
+    let fragment = particle_fragment_shader::load(device.clone())
+        .map_err(|error| SceneRenderError(error.to_string()))?
+        .entry_point("main")
+        .ok_or_else(|| {
+            SceneRenderError("particle fragment entry point is missing".into())
+        })?;
+    let stages = [
+        PipelineShaderStageCreateInfo::new(vertex.clone()),
+        PipelineShaderStageCreateInfo::new(fragment),
+    ];
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .map_err(|error| SceneRenderError(error.to_string()))?,
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))?;
+    let subpass = Subpass::from(render_pass.clone(), 0).ok_or_else(|| {
+        SceneRenderError("particle subpass is missing".into())
+    })?;
+    let blend = if additive {
+        AttachmentBlend {
+            src_color_blend_factor: BlendFactor::One,
+            dst_color_blend_factor: BlendFactor::One,
+            src_alpha_blend_factor: BlendFactor::Zero,
+            dst_alpha_blend_factor: BlendFactor::One,
+            ..AttachmentBlend::additive()
+        }
+    } else {
+        AttachmentBlend {
+            src_color_blend_factor: BlendFactor::One,
+            src_alpha_blend_factor: BlendFactor::One,
+            ..AttachmentBlend::alpha()
+        }
+    };
+    GraphicsPipeline::new(
+        device,
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(
+                ParticleVertex::per_instance()
+                    .definition(&vertex)
+                    .map_err(|error| SceneRenderError(error.to_string()))?,
+            ),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState {
+                cull_mode: CullMode::None,
+                ..Default::default()
+            }),
+            multisample_state: Some(MultisampleState {
+                rasterization_samples: sample_count(samples)?,
+                ..Default::default()
+            }),
+            depth_stencil_state: Some(DepthStencilState {
+                depth: Some(DepthState {
+                    write_enable: false,
+                    compare_op: CompareOp::Less,
+                }),
+                ..Default::default()
+            }),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                1,
+                ColorBlendAttachmentState {
+                    blend: Some(blend),
+                    ..Default::default()
+                },
+            )),
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// One instanced particle draw: additive, sprite, first instance, count.
+type ParticleDraw = (bool, u32, u32, u32);
+
+/// Particle instances of every batch, alpha batches far to near and each
+/// one's particles far to near, then additive batches. Returns the vertices
+/// and, per draw, whether it is additive, its sprite, first instance and
+/// count.
+fn particle_draws(
+    batches: &[crate::runtime::ParticleBatch],
+    eye: [f32; 3],
+    forward: [f32; 3],
+) -> (Vec<ParticleVertex>, Vec<ParticleDraw>) {
+    use crate::runtime::{ParticleBlend, ParticleSprite};
+    let depth = |p: [f32; 3]| {
+        (0..3)
+            .map(|axis| (p[axis] - eye[axis]) * forward[axis])
+            .sum::<f32>()
+    };
+    let mut order = batches
+        .iter()
+        .map(|batch| {
+            let count = batch.instances.len().max(1) as f32;
+            let mean = batch
+                .instances
+                .iter()
+                .fold(0.0, |sum, instance| sum + depth(instance.position))
+                / count;
+            (batch.blend == ParticleBlend::Additive, -mean, batch)
+        })
+        .collect::<Vec<_>>();
+    order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut vertices = Vec::new();
+    let mut draws = Vec::new();
+    for (additive, _, batch) in order {
+        let first = vertices.len() as u32;
+        let mut instances = batch.instances.clone();
+        if !additive {
+            instances.sort_by(|a, b| {
+                depth(b.position).total_cmp(&depth(a.position))
+            });
+        }
+        vertices.extend(instances.iter().map(|instance| ParticleVertex {
+            center: instance.position,
+            size: instance.size,
+            color: instance.color,
+            stretch: instance.stretch,
+            rotation: instance.rotation,
+        }));
+        let sprite = match batch.sprite {
+            ParticleSprite::Soft => 0,
+            ParticleSprite::Disc => 1,
+            ParticleSprite::Square => 2,
+        };
+        draws.push((additive, sprite, first, instances.len() as u32));
+    }
+    (vertices, draws)
+}
+
+/// Camera right and up in world space, for billboards.
+fn camera_right_up(camera: Option<ExtractedCamera>) -> ([f32; 3], [f32; 3]) {
+    camera.map_or(([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), |camera| {
+        let m = camera.transform.matrix;
+        let axis = |c: usize| {
+            Vector3::new(m[c][0], m[c][1], m[c][2])
+                .try_normalize(1e-6)
+                .map_or([0.0; 3], Into::into)
+        };
+        (axis(0), axis(1))
+    })
 }
 
 /// Makes a minimal unlit line pipeline for Scene View helpers.
@@ -8160,6 +8538,98 @@ void main() {
 }
 
 #[rustfmt::skip]
+mod particle_vertex_shader {
+    vulkano_shaders::shader! {
+        ty: "vertex",
+        src: r"
+#version 450
+layout(location = 0) in vec3 center;
+layout(location = 1) in float size;
+layout(location = 2) in vec4 color;
+layout(location = 3) in vec3 stretch;
+layout(location = 4) in float rotation;
+layout(location = 0) out vec4 v_color;
+layout(location = 1) out vec2 v_corner;
+layout(location = 2) flat out uint v_sprite;
+layout(push_constant) uniform Particles {
+    mat4 view_projection;
+    // w = 1: xyz is the camera position. w = 0: xyz points toward an
+    // orthographic camera.
+    vec4 eye;
+    vec4 right;
+    vec4 up;
+    uvec4 params;
+} particles;
+const vec2 CORNERS[6] = vec2[](
+    vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+    vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0)
+);
+void main() {
+    vec2 corner = CORNERS[gl_VertexIndex];
+    float half_size = size * 0.5;
+    float stretch_length = length(stretch);
+    vec3 offset;
+    if (stretch_length > 1e-5) {
+        // A streak along the velocity, turned to face the camera.
+        vec3 axis = stretch / stretch_length;
+        vec3 to_eye = particles.eye.w > 0.5
+            ? normalize(particles.eye.xyz - center)
+            : particles.eye.xyz;
+        vec3 side = cross(axis, to_eye);
+        float side_length = length(side);
+        side = side_length > 1e-5 ? side / side_length : particles.right.xyz;
+        offset = side * corner.x * half_size
+            + axis * corner.y * (half_size + stretch_length * 0.5);
+    } else {
+        float s = sin(rotation);
+        float c = cos(rotation);
+        vec2 turned = vec2(c * corner.x - s * corner.y, s * corner.x + c * corner.y);
+        offset = (particles.right.xyz * turned.x + particles.up.xyz * turned.y) * half_size;
+    }
+    gl_Position = particles.view_projection * vec4(center + offset, 1.0);
+    v_color = color;
+    v_corner = corner;
+    v_sprite = particles.params.x;
+}
+"
+    }
+}
+
+#[rustfmt::skip]
+mod particle_fragment_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+#version 450
+layout(location = 0) in vec4 v_color;
+layout(location = 1) in vec2 v_corner;
+layout(location = 2) flat in uint v_sprite;
+layout(location = 0) out vec4 f_color;
+void main() {
+    float r = length(v_corner);
+    float shape;
+    if (v_sprite == 0u) {
+        // Soft: bright core, smooth fall to the edge.
+        float edge = clamp(1.0 - r, 0.0, 1.0);
+        shape = edge * edge * (3.0 - 2.0 * edge);
+    } else if (v_sprite == 1u) {
+        float width = max(fwidth(r), 1e-4);
+        shape = 1.0 - smoothstep(1.0 - width, 1.0, r);
+    } else {
+        shape = 1.0;
+    }
+    float alpha = clamp(v_color.a, 0.0, 1.0) * shape;
+    if (alpha <= 0.0) {
+        discard;
+    }
+    // Premultiplied. Additive pipelines ignore the alpha output.
+    f_color = vec4(v_color.rgb * alpha, alpha);
+}
+"
+    }
+}
+
+#[rustfmt::skip]
 mod debug_fragment_shader {
     vulkano_shaders::shader! {
         ty: "fragment",
@@ -8201,12 +8671,18 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 // mapper follows ToneMapper: 0 Linear, 1 Reinhard, 2 ACES. bloom is the
 // glow's intensity, 0 when the frame has none; inv_extent is one over the
 // target size in pixels.
+// contrast, saturation, shadows, highlights and vignette follow
+// ColorGrading; the defaults leave the color unchanged.
 layout(push_constant) uniform ToneMap {
     float exposure;
     uint mapper;
     float bloom;
-    float padding;
+    float contrast;
     vec2 inv_extent;
+    float saturation;
+    float vignette;
+    vec4 shadows;
+    vec4 highlights;
 } tone;
 layout(location = 0) out vec4 f_color;
 void main() {
@@ -8221,6 +8697,18 @@ void main() {
     } else if (tone.mapper == 2u) {
         // Narkowicz 2015 fit of the ACES filmic curve.
         c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);
+    }
+    c = clamp(c, 0.0, 1.0);
+    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = max(mix(vec3(luma), c, tone.saturation), 0.0);
+    if (tone.contrast != 1.0) {
+        // Contrast in log space around linear mid grey.
+        c = 0.18 * pow(c / 0.18, vec3(tone.contrast));
+    }
+    c *= mix(tone.shadows.rgb, tone.highlights.rgb, smoothstep(0.0, 1.0, luma));
+    if (tone.vignette > 0.0) {
+        vec2 centered = gl_FragCoord.xy * tone.inv_extent - 0.5;
+        c *= 1.0 - tone.vignette * smoothstep(0.25, 0.75, length(centered));
     }
     f_color = vec4(clamp(c, 0.0, 1.0), hdr.a);
 }
@@ -13375,6 +13863,112 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn every_primitive_shows_its_outside_to_the_camera() {
+        use crate::assets::{procedural_primitive_mesh, PrimitiveShape};
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::new(&[(0.0, MaterialAsset::default())]);
+        scene.debug_view = SceneDebugView::Normals;
+        // The torus has a hole at the center and the plane faces up.
+        for shape in PrimitiveShape::ALL.into_iter().filter(|shape| {
+            !matches!(shape, PrimitiveShape::Torus | PrimitiveShape::Plane)
+        }) {
+            let mesh =
+                scene.assets.meshes.insert(procedural_primitive_mesh(shape));
+            scene.render_world.renderables[0].mesh = mesh;
+            scene.render_world.renderables[0].transform =
+                crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_scaling(1.5).into(),
+                };
+            scene.render_world.renderables_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            // Blue is the normal's z: toward the camera when the front faces
+            // survive culling, away when the mesh is inside out.
+            let [blue, ..] = scene.center_pixel();
+            assert!(blue > 200, "{shape:?} shows its inside: blue {blue}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_screen_material_shows_what_its_camera_sees() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Red slab at the back, white screen slab in front of it.
+        let mut scene = SlabScene::new(&[
+            (
+                0.0,
+                MaterialAsset {
+                    base_color: [1.0, 0.0, 0.0, 1.0],
+                    ..Default::default()
+                },
+            ),
+            (1.0, MaterialAsset::default()),
+        ]);
+        // The screen camera looks at the red slab from behind.
+        let mut camera = scene.render_world.active_camera.unwrap();
+        camera.transform = crate::runtime::GlobalTransform {
+            matrix: (Matrix4::new_translation(&nalgebra::Vector3::new(
+                0.0, 0.0, -5.0,
+            )) * Matrix4::from_axis_angle(
+                &nalgebra::Vector3::y_axis(),
+                std::f32::consts::PI,
+            ))
+            .into(),
+        };
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            let screens = scene
+                .renderer
+                .render_screens(before, &scene.render_world, &scene.assets)
+                .unwrap();
+            scene
+                .render(screens)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.center_pixel()
+        };
+        let [blue, green, red, _] = frame(&mut scene);
+        assert!(
+            blue > 200 && green > 200 && red > 200,
+            "no screen: {blue} {green} {red}"
+        );
+        scene
+            .render_world
+            .screens
+            .push(crate::runtime::ExtractedScreen {
+                material: scene.render_world.renderables[1].material,
+                camera,
+                size: [8, 8],
+            });
+        // Specular light on the screen keeps green and blue above 0.
+        let [blue, green, red, _] = frame(&mut scene);
+        assert!(
+            red > 200 && blue < 120 && green < 120,
+            "screen: {blue} {green} {red}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn hdr_values_above_one_survive_until_tone_mapping() {
         use crate::runtime::{ToneMapper, ToneMapping};
         if vulkano::VulkanLibrary::new().is_err() {
@@ -13422,6 +14016,39 @@ mod tests {
         // ACES fit: 4 gives 0.973 and 0.5 gives 0.616.
         let aces = frame(&mut scene, ToneMapper::Aces, 1.0);
         assert!(near(aces, [252, 206]), "aces: {aces:?}");
+        // Color grading runs after the curve, on red 1 and green 0.125.
+        let grade = |scene: &mut SlabScene, grading| {
+            scene.render_world.color_grading = Some(grading);
+            frame(scene, ToneMapper::Linear, 0.25)
+        };
+        let default = crate::runtime::ColorGrading::default();
+        let grey = grade(
+            &mut scene,
+            crate::runtime::ColorGrading {
+                saturation: 0.0,
+                ..default
+            },
+        );
+        assert!(near(grey, [149, 149]), "saturation 0: {grey:?}");
+        let contrast = grade(
+            &mut scene,
+            crate::runtime::ColorGrading {
+                contrast: 2.0,
+                ..default
+            },
+        );
+        assert!(near(contrast, [255, 83]), "contrast 2: {contrast:?}");
+        let tint = [0.5, 1.0, 1.0];
+        let tinted = grade(
+            &mut scene,
+            crate::runtime::ColorGrading {
+                shadows: tint,
+                highlights: tint,
+                ..default
+            },
+        );
+        assert!(near(tinted, [188, 99]), "tint: {tinted:?}");
+        scene.render_world.color_grading = None;
         // Debug views skip the curve.
         scene.debug_view = SceneDebugView::Normals;
         let [r, g] = frame(&mut scene, ToneMapper::Reinhard, 1.0);
@@ -14131,6 +14758,69 @@ mod tests {
         ]);
         assert!(r > b + 30, "near red must blend over far blue: r={r} b={b}");
         assert!(b > 80, "far blue must still show through: b={b}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn particles_render_with_their_color_and_size() {
+        use crate::runtime::{
+            ParticleBatch, ParticleBlend, ParticleInstance, ParticleSprite,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let particle = |x: f32, size: f32, color: [f32; 4]| ParticleInstance {
+            position: [x, 0.0, 0.0],
+            size,
+            color,
+            stretch: [0.0; 3],
+            rotation: 0.0,
+        };
+        // The orthographic test camera sees 2 units across 32 pixels.
+        let mut scene = SlabScene::with_extent(&[], [32, 32]);
+        scene.render_world.particles = vec![
+            ParticleBatch {
+                entity: None,
+                blend: ParticleBlend::Alpha,
+                sprite: ParticleSprite::Square,
+                instances: vec![
+                    particle(-0.5, 0.5, [1.0, 0.0, 0.0, 1.0]),
+                    particle(0.5, 0.25, [1.0, 0.0, 0.0, 1.0]),
+                ],
+            },
+            ParticleBatch {
+                entity: None,
+                blend: ParticleBlend::Additive,
+                sprite: ParticleSprite::Square,
+                instances: vec![particle(0.5, 0.25, [0.0, 1.0, 0.0, 1.0])],
+            },
+        ];
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let pixels = scene.pixels();
+        let pixel = |x: usize, y: usize| {
+            let at = (y * 32 + x) * 4;
+            [pixels[at + 2], pixels[at + 1], pixels[at]]
+        };
+        let red = pixels.chunks(4).filter(|p| p[2] > 128 && p[1] < 64).count();
+        // 0.5 units is 8 pixels square.
+        assert_eq!(red, 64, "alpha particle covers its size");
+        assert_eq!(pixel(8, 16), [255, 0, 0], "alpha particle color");
+        let [r, g, b] = pixel(24, 16);
+        assert!(
+            r > 128 && g > 128 && b < 32,
+            "additive adds green: {r} {g} {b}"
+        );
+        assert_eq!(pixel(16, 2), [0, 0, 0], "background stays clear");
     }
 
     #[test]

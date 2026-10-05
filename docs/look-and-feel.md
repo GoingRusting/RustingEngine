@@ -1,0 +1,186 @@
+# Look and feel
+
+A game that passes its tests can still look cheap. Most of the cheap look
+comes from a few causes: flat lighting, random colors, plain boxes for
+everything, and a HUD laid on top of the scene. This guide is a checklist
+for each of them and the polish loop that finds them.
+
+## The polish loop
+
+Do this after the game works and before calling it done.
+
+1. Capture. Add `capture` steps at the moments a player sees most: the
+   start, the middle of a round, the win and lose screens. Use
+   `"contact_sheet"` to see several frames in one image.
+2. Look. Open every image. Describe what you see in one sentence, as a
+   player would. If you cannot tell what the player should look at, the
+   frame fails.
+3. Critique. Go through the checklist below and write down every item the
+   frame fails.
+4. Fix the worst item, capture again, and repeat. Two or three passes are
+   normal.
+
+## Checklist
+
+- **Silhouette.** The player, enemies and pickups read as shapes against
+  the background, even in grey. Raise contrast between them and what is
+  behind them; a rim of light or an emissive edge helps.
+- **Palette.** Use the five colors of your art preset (`rusting preset
+  list`): dark, mid and light for the world, two accents for what matters
+  (player, goal, danger). Do not give every object its own random color.
+  Many random colors in a large crowd read as noise.
+- **Value contrast.** The darkest and lightest parts of the frame differ
+  clearly. If the whole frame is mid grey, lower the ambient light and
+  raise the key light.
+- **Warm key, cool fill.** One strong directional or spot light (the key)
+  in a warm color, and a weaker sky or ambient light (the fill) in a cool
+  color, or the reverse for night. Equal light from every side looks flat.
+- **Materials.** Not everything has roughness 0.5. Metal is metallic and
+  smoother; cloth, wood and stone are rough. Emissive is for lights,
+  screens and pickups only.
+- **Shapes.** Use the rounded primitives (below) or real models for
+  anything the player looks at closely. Plain cubes are for floors and
+  walls.
+- **HUD.** Text stays inside a safe margin (about 3% of the screen from
+  each edge) and has a backdrop or outline where it crosses the scene.
+  Show only what the player needs now; put long help text behind a key.
+  The center of the screen stays clear during play.
+- **Motion and feedback.** Every action the player takes gets a response
+  within a few frames: a sound, a burst, a flash, a scale pop or a camera
+  shake. Idle objects that should feel alive move a little
+  (`rusting.tween`).
+- **Air.** An empty sky reads as a stage set. A few slow particles (dust
+  motes, falling leaves, snow, fireflies) make the space feel lived in;
+  keep them small, sparse and in the palette. `rusting effect apply
+  <scene> dust_motes` adds one; `rusting docs show guide/effects`.
+
+## Presets and color grading
+
+`rusting preset apply <scene> <name>` sets the sky, sun, ambient light,
+fog, bloom, tone mapping and color grading in one patch. Presets:
+`daylight`, `golden_hour`, `night`, `flat_toy`, `dark_interior` (horror,
+night shifts) and `bright_stylized` (cartoon). `--only` limits it to some
+parts. `rusting preset list --json` prints each preset's values and its
+five-color palette.
+
+`rusting.color_grading` runs after tone mapping:
+
+```json
+"rusting.color_grading": {"contrast": 1.1, "saturation": 0.9,
+  "shadows": [0.92, 0.98, 1.1], "highlights": [1.08, 1.0, 0.9], "vignette": 0.3}
+```
+
+- `contrast` above 1 darkens shadows and brightens highlights around mid
+  grey.
+- `saturation` 0 is greyscale, 1 is unchanged.
+- `shadows` and `highlights` tint the dark and bright parts. Cool shadows
+  with warm highlights is the classic film look.
+- `vignette` 0..1 darkens the corners and leads the eye to the center.
+
+## Mesh kit
+
+Built-in primitives (`{"BuiltinPrimitive": "<name>"}`): `Cube`, `Sphere`,
+`Cylinder`, `Cone`, `Capsule`, `RoundedCube`, `Torus`, `Plane`, `Quad`,
+`Triangle`, `Tetrahedron`, `Octahedron`, `Dodecahedron`, `Icosahedron`,
+`Pyramid`. Cylinder, cone, capsule and sphere are smooth shaded.
+
+- `RoundedCube` is a unit box with edges rounded by 0.1. Edges catch the
+  light, so crates, furniture and buttons stop looking like placeholders.
+  Large scales stretch the rounding; for a wall, keep a plain `Cube`.
+- `Capsule` has diameter 1 and height 2, like a `Capsule` collider with
+  radius 0.5 and half height 0.5. Use it for limbs, characters and posts.
+
+A simple character from the kit. Patch it in, then move `Hero` as one
+object; the parts follow:
+
+```json
+{"operations": [
+  {"op": "create", "entity": {"name": "Hero",
+    "transform": {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]}}},
+  {"op": "create", "entity": {"name": "Hero Torso", "parent": "Hero",
+    "transform": {"position": [0, 1.1, 0], "rotation": [0, 0, 0], "scale": [0.5, 0.6, 0.28]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "RoundedCube"},
+      "material": {"Inline": {"base_color": [0.18, 0.32, 0.6, 1], "roughness": 0.7}}}}},
+  {"op": "create", "entity": {"name": "Hero Head", "parent": "Hero",
+    "transform": {"position": [0, 1.62, 0], "rotation": [0, 0, 0], "scale": [0.34, 0.34, 0.34]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Sphere"},
+      "material": {"Inline": {"base_color": [0.9, 0.68, 0.52, 1], "roughness": 0.6}}}}},
+  {"op": "create", "entity": {"name": "Hero Arm L", "parent": "Hero",
+    "transform": {"position": [-0.34, 1.1, 0], "rotation": [0, 0, 0.08], "scale": [0.14, 0.3, 0.14]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Capsule"},
+      "material": {"Inline": {"base_color": [0.18, 0.32, 0.6, 1], "roughness": 0.7}}}}},
+  {"op": "create", "entity": {"name": "Hero Arm R", "parent": "Hero",
+    "transform": {"position": [0.34, 1.1, 0], "rotation": [0, 0, -0.08], "scale": [0.14, 0.3, 0.14]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Capsule"},
+      "material": {"Inline": {"base_color": [0.18, 0.32, 0.6, 1], "roughness": 0.7}}}}},
+  {"op": "create", "entity": {"name": "Hero Leg L", "parent": "Hero",
+    "transform": {"position": [-0.13, 0.4, 0], "rotation": [0, 0, 0], "scale": [0.18, 0.4, 0.18]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Capsule"},
+      "material": {"Inline": {"base_color": [0.15, 0.13, 0.12, 1], "roughness": 0.8}}}}},
+  {"op": "create", "entity": {"name": "Hero Leg R", "parent": "Hero",
+    "transform": {"position": [0.13, 0.4, 0], "rotation": [0, 0, 0], "scale": [0.18, 0.4, 0.18]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Capsule"},
+      "material": {"Inline": {"base_color": [0.15, 0.13, 0.12, 1], "roughness": 0.8}}}}}
+]}
+```
+
+The feet are at the origin of `Hero`. Animate it by rotating the arm and
+leg parts from game code each fixed tick (swing them with
+`sin(tick * speed)`), or key their rotations in a `rusting.animation`
+clip (`rusting docs show guide/animation`). A rigged glTF character keeps
+its skin and clips through `scene add-model` (see "Skinned meshes" there).
+Rename the parts for each copy, or use `spawn_copy` on a hidden template.
+
+## Free models
+
+A real model beats any pile of primitives. Many good game models are free
+under CC0, which allows any use without credit. Sources that work well:
+
+| Source | What | License |
+| --- | --- | --- |
+| [Kenney](https://kenney.nl/assets) | Large kits in one style: city, dungeon, furniture, vehicles, nature, characters | CC0 |
+| [Quaternius](https://quaternius.com) | Low-poly packs: characters, animals, nature, sci-fi, weapons | CC0 |
+| [Poly Pizza](https://poly.pizza) | Search across thousands of low-poly models | CC0 or CC-BY per model |
+| [Poly Haven](https://polyhaven.com) | Realistic models, PBR textures and HDRIs | CC0 |
+| [ambientCG](https://ambientcg.com) | PBR textures (color, normal, roughness maps) | CC0 |
+
+Steps:
+
+1. Download the glTF (`.glb` or `.gltf`) version. Pick models from one
+   kit or author so the style matches. Low-poly kits fit best: textures
+   are small and draws stay cheap.
+2. Check the license on the model's page. CC0 needs no credit. CC-BY needs
+   the author's name in your README credits. Skip anything with
+   "non-commercial" or no license.
+3. Import it into the project and record where it came from:
+
+   ```sh
+   rusting asset import . ~/Downloads/barrel.glb --to models \
+     --license CC0-1.0 --author "Kenney" --url https://kenney.nl/assets/...
+   ```
+
+4. Place it in a scene:
+
+   ```sh
+   rusting scene add-model scenes/main.rscene assets/models/barrel.glb --name "Barrel 1"
+   ```
+
+   This creates one object named `Barrel 1` with a child per glTF node
+   and keeps the model's materials and textures. It writes the converted
+   meshes (`.rmesh`) and textures (`.rtexture`) next to the model; keep
+   them with the project. The model's glTF animations become a
+   `rusting.animation` on `Barrel 1`; the first clip autoplays. Move,
+   scale or add a collider to `Barrel 1` with
+   a patch. Run `add-model` again with another `--name` for each copy, or
+   `spawn_copy` it from code.
+5. Capture and look: imported models are often far larger or smaller than
+   the scene (check the scale) and may face +Z instead of -Z (turn the
+   parent by π).
+
+Limits: skinned meshes and glTF animations import as a still pose. Child
+object names come from the glTF file, so look them up under the parent
+you named rather than by their name alone.
+
+A shared Rusting model library on a CDN is planned so agents can fetch a
+small set of house models by name. It does not exist yet; use the sources
+above until it does.

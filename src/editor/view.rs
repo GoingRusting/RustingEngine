@@ -1261,6 +1261,12 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             render_capacity.as_ref(),
                         );
                     }
+                    EditorPanel::Timeline => timeline::draw_timeline_area(
+                        ui,
+                        world,
+                        &mut state,
+                        &mut component_edits,
+                    ),
                     EditorPanel::Agent => {
                         let clicked = world
                             .get_resource_mut::<agent_panel::AgentJournal>()
@@ -1714,6 +1720,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             finish_transform_mode(&mut transform_mode);
                             state.scene_dirty = true;
                             state.scene_message = Some("Undo applied".into());
+                            timeline::scene_replaced(world);
                         }
                         Err(error) => {
                             history.undo.push_back(previous);
@@ -1746,6 +1753,7 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                             finish_transform_mode(&mut transform_mode);
                             state.scene_dirty = true;
                             state.scene_message = Some("Redo applied".into());
+                            timeline::scene_replaced(world);
                         }
                         Err(error) => {
                             history.redo.push(next);
@@ -2787,6 +2795,14 @@ pub fn draw_editor_view(world: &mut World, context: &Context) {
                 Some(format!("Component edit failed: {error}"));
         }
     }
+    if let Some((entity, command)) = state.particle_command.take() {
+        if let Some(mut emitter) =
+            world.get_mut::<crate::runtime::ParticleEmitter>(entity)
+        {
+            emitter.command = command;
+        }
+    }
+    timeline::update_timeline(world, &mut state);
     if let Some(request) = project_request {
         let opened = match request {
             ProjectRequest::Create {
@@ -3330,6 +3346,10 @@ pub(super) fn start_embedded_preview(
                 preview_before: None,
             }));
             state.play_snapshot = Some(snapshot);
+            // Preview particles stay in the editor; the game starts fresh.
+            crate::runtime::reset_particles(world);
+            timeline::restore_rest_pose(world);
+            state.timeline.playing = false;
             state.mode = EditorMode::Play;
             world.resource_mut::<crate::runtime::TimeControl>().resume();
             if state.workspace == EditorWorkspace::Scene {
@@ -4830,6 +4850,19 @@ fn build_scene_debug_overlay(
             } else {
                 overlay.line(start, end, color);
             }
+        }
+    }
+    // Skeletons, in front of the meshes they bend.
+    for (entity, lines) in crate::editor::overlay::bone_shapes(world) {
+        let (color, width) = if Some(entity) == selected {
+            ([1.0, 0.78, 0.12, 1.0], 2.5)
+        } else if selection.contains(&entity) {
+            ([0.85, 0.42, 0.08, 1.0], 2.0)
+        } else {
+            ([0.35, 0.75, 0.85, 0.9], 1.5)
+        };
+        for [start, end] in lines {
+            overlay.line_on_top(start, end, color, width);
         }
     }
     // The selected environment's fog height, like a light's range.

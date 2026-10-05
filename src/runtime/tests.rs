@@ -2191,6 +2191,67 @@ fn easing_curves_start_at_zero_and_end_at_one() {
 }
 
 #[test]
+fn animations_run_on_the_fixed_step_and_send_marker_events() {
+    let mut app = App::new();
+    let key = |time, value: &[f32]| Keyframe {
+        time,
+        value: value.to_vec(),
+    };
+    let clip = AnimationClip {
+        name: "open".into(),
+        repeat: TweenRepeat::Once,
+        tracks: vec![
+            AnimationTrack {
+                property: AnimationProperty::Position,
+                keys: vec![
+                    key(0.0, &[0.0, 0.0, 0.0]),
+                    key(1.0, &[2.0, 0.0, 0.0]),
+                ],
+                ..AnimationTrack::default()
+            },
+            AnimationTrack {
+                property: AnimationProperty::Field {
+                    component: TWEEN_COMPONENT.into(),
+                    path: "/duration".into(),
+                },
+                keys: vec![key(0.0, &[1.0]), key(1.0, &[3.0])],
+                ..AnimationTrack::default()
+            },
+        ],
+        events: vec![AnimationMarker {
+            time: 1.0,
+            name: "opened".into(),
+        }],
+        ..AnimationClip::default()
+    };
+    let door = app.spawn((
+        Transform::default(),
+        Name("Door".into()),
+        // Writes scale, so it does not fight the position track.
+        Tween {
+            property: TweenProperty::Scale,
+            ..Tween::default()
+        },
+        Animation {
+            clips: vec![clip],
+            autoplay: "open".into(),
+            ..Animation::default()
+        },
+    ));
+    let mut seen = Vec::new();
+    for _ in 0..90 {
+        run_fixed_steps(&mut app, 1);
+        let events = app.world().resource::<EventQueue<AnimationEvent>>();
+        seen.extend(events.iter().map(|e| (e.object.clone(), e.name.clone())));
+    }
+    assert_eq!(seen, [("Door".to_owned(), "opened".to_owned())]);
+    let world = app.world();
+    assert_eq!(world.get::<Transform>(door).unwrap().position[0], 2.0);
+    assert_eq!(world.get::<Tween>(door).unwrap().duration, 3.0);
+    assert!(!world.get::<AnimationPlayer>(door).unwrap().playing);
+}
+
+#[test]
 fn tweens_play_once_loop_and_ping_pong_on_the_fixed_step() {
     let mut app = App::new();
     let tween = |repeat| Tween {
@@ -4643,4 +4704,214 @@ fn a_platformer_rides_a_platform_whose_parent_moves() {
     run_fixed_steps(&mut app, 120);
     let x = app.world().get::<Transform>(runner).unwrap().position[0];
     assert!((x - 3.0).abs() < 0.05, "rode to {x}");
+}
+
+/// A two-bone character standing on the ground with a ragdoll that a
+/// ball thrown at it knocks down. Returns the app, the character, its hips
+/// and the ball.
+fn ragdoll_scene(muscle: f32) -> (App, Entity, Entity, Entity) {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let hero = world
+        .spawn((
+            Name("Hero".into()),
+            Transform::new([0.0, 0.9, 0.0]),
+            PhysicsBody {
+                simulation: SimulationClass::Static,
+                ..PhysicsBody::default()
+            },
+            Collider {
+                shape: ColliderShape::Box {
+                    half_extents: [0.25, 0.9, 0.25],
+                },
+                ..Collider::default()
+            },
+            Ragdoll {
+                bones: vec![
+                    RagdollBone {
+                        path: "Hips".into(),
+                        length: 0.3,
+                        radius: 0.12,
+                        mass: 10.0,
+                        ..RagdollBone::default()
+                    },
+                    RagdollBone {
+                        path: "Hips/Spine".into(),
+                        length: 0.5,
+                        radius: 0.12,
+                        mass: 12.0,
+                        ..RagdollBone::default()
+                    },
+                ],
+                hit_speed: 3.0,
+                recover_after: 1.0,
+                blend_time: 0.5,
+                muscle,
+                command: None,
+            },
+        ))
+        .id();
+    let hips = world
+        .spawn((Name("Hips".into()), Transform::new([0.0, 0.1, 0.0])))
+        .id();
+    let spine = world
+        .spawn((Name("Spine".into()), Transform::new([0.0, 0.3, 0.0])))
+        .id();
+    hierarchy::set_parent(world, hips, hero).unwrap();
+    hierarchy::set_parent(world, spine, hips).unwrap();
+    let ball = cpu_body(
+        world,
+        [2.0, 1.4, 0.0],
+        ColliderShape::Sphere { radius: 0.2 },
+        RigidBodyKind::Dynamic,
+    );
+    let mut body = world.get_mut::<RigidBody>(ball).unwrap();
+    body.linear_velocity = [-12.0, 0.0, 0.0];
+    body.mass = 5.0;
+    body.gravity_scale = 0.0;
+    (app, hero, hips, ball)
+}
+
+fn phase(app: &App, hero: Entity) -> RagdollPhase {
+    app.world()
+        .get::<RagdollState>(hero)
+        .map_or(RagdollPhase::Animated, |state| state.phase)
+}
+
+#[test]
+fn ragdolls_go_limp_on_a_hit_fall_and_blend_back_deterministically() {
+    let (mut app, hero, hips, _) = ragdoll_scene(0.0);
+    let mut steps = 0;
+    while phase(&app, hero) == RagdollPhase::Animated {
+        run_fixed_steps(&mut app, 1);
+        steps += 1;
+        assert!(steps < 30, "the ball never knocked the character down");
+    }
+    let parts = app.world().get::<RagdollState>(hero).unwrap().parts.clone();
+    assert_eq!(parts.len(), 2);
+    let joint = app
+        .world()
+        .get::<Joint>(parts[1])
+        .expect("spine is jointed");
+    assert_eq!(joint.target, parts[0]);
+    assert!(app.world().get::<Collider>(hero).is_none());
+    // The bodies fall and the bones follow them.
+    run_fixed_steps(&mut app, 50);
+    let fallen = app.world().get::<GlobalTransform>(hips).unwrap().matrix[3];
+    let parts_y = app.world().get::<Transform>(parts[0]).unwrap().position[1];
+    assert!(parts_y < 0.8, "hips body at {parts_y}");
+    let hips_local = *app.world().get::<Transform>(hips).unwrap();
+    assert_ne!(hips_local.position, [0.0, 0.1, 0.0]);
+    // Same scene, same ticks, same pose.
+    let (mut again, hero_b, hips_b, _) = ragdoll_scene(0.0);
+    run_fixed_steps(&mut again, steps + 50);
+    assert_eq!(phase(&again, hero_b), RagdollPhase::Limp);
+    assert_eq!(*again.world().get::<Transform>(hips_b).unwrap(), hips_local);
+    // It gets up where it lies and blends back to its old pose.
+    run_fixed_steps(&mut app, 15);
+    assert_eq!(phase(&app, hero), RagdollPhase::Blending);
+    assert!(parts
+        .iter()
+        .all(|&part| app.world().get_entity(part).is_err()));
+    assert!(app.world().get::<Collider>(hero).is_some());
+    let root = app.world().get::<Transform>(hero).unwrap().position;
+    assert!(
+        (root[0] - fallen[0]).abs() < 0.2 && (root[2] - fallen[2]).abs() < 0.2,
+        "the character stands where its hips lay: {root:?} {fallen:?}"
+    );
+    run_fixed_steps(&mut app, 31);
+    assert_eq!(phase(&app, hero), RagdollPhase::Animated);
+    let back = app.world().get::<Transform>(hips).unwrap();
+    assert!(back
+        .position
+        .iter()
+        .zip([0.0, 0.1, 0.0])
+        .all(|(a, b)| (a - b).abs() < 1e-5));
+    assert!(back.rotation.iter().all(|a| a.abs() < 1e-5), "{back:?}");
+    // Game code turns it on and off.
+    app.world_mut().get_mut::<Ragdoll>(hero).unwrap().command = Some(true);
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Limp);
+    app.world_mut().get_mut::<Ragdoll>(hero).unwrap().command = Some(false);
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Blending);
+}
+
+#[test]
+fn active_ragdolls_hold_the_pose_shrug_off_pushes_and_get_back_up() {
+    let (mut app, hero, _, ball) = ragdoll_scene(10.0);
+    app.world_mut().despawn(ball);
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Active);
+    let parts = app.world().get::<RagdollState>(hero).unwrap().parts.clone();
+    let spine_tilt = |app: &App| {
+        let up = quaternion_of(app, parts[1]) * nalgebra::Vector3::y();
+        up.y.clamp(-1.0, 1.0).acos()
+    };
+    let hips_y =
+        |app: &App| app.world().get::<Transform>(parts[0]).unwrap().position[1];
+    // Muscles hold the rest pose up against gravity.
+    run_fixed_steps(&mut app, 120);
+    assert!(spine_tilt(&app) < 0.05, "spine tilts {}", spine_tilt(&app));
+    assert!(
+        (hips_y(&app) - 1.15).abs() < 0.05,
+        "hips at {}",
+        hips_y(&app)
+    );
+    // A shove bends the spine, and the muscles pull it back.
+    app.world_mut()
+        .get_mut::<RigidBody>(parts[1])
+        .unwrap()
+        .angular_velocity = [0.0, 0.0, 30.0];
+    run_fixed_steps(&mut app, 2);
+    assert!(spine_tilt(&app) > 0.1, "spine tilts {}", spine_tilt(&app));
+    run_fixed_steps(&mut app, 60);
+    assert!(spine_tilt(&app) < 0.05, "spine tilts {}", spine_tilt(&app));
+    // A clip bending the spine (written each tick) is followed.
+    let spine = find_target(app.world(), hero, "Hips/Spine").unwrap();
+    for _ in 0..120 {
+        app.world_mut()
+            .get_mut::<Transform>(spine)
+            .unwrap()
+            .rotation = [0.0, 0.0, 0.5];
+        run_fixed_steps(&mut app, 1);
+    }
+    assert!(
+        // Gravity on the leaning spine sags a 10 Hz muscle a little.
+        (spine_tilt(&app) - 0.5).abs() < 0.08,
+        "{}",
+        spine_tilt(&app)
+    );
+    // Limp, it falls; recovered, the muscles stand it back up.
+    app.world_mut().get_mut::<Ragdoll>(hero).unwrap().command = Some(true);
+    run_fixed_steps(&mut app, 40);
+    assert_eq!(phase(&app, hero), RagdollPhase::Limp);
+    assert!(hips_y(&app) < 0.5, "hips at {}", hips_y(&app));
+    app.world_mut().get_mut::<Ragdoll>(hero).unwrap().command = Some(false);
+    run_fixed_steps(&mut app, 120);
+    assert_eq!(phase(&app, hero), RagdollPhase::Active);
+    assert!(
+        (hips_y(&app) - 1.15).abs() < 0.05,
+        "hips at {}",
+        hips_y(&app)
+    );
+    assert!(spine_tilt(&app) < 0.05, "spine tilts {}", spine_tilt(&app));
+    // Muscles off: limp, then plain animation once it recovers.
+    app.world_mut().get_mut::<Ragdoll>(hero).unwrap().muscle = 0.0;
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Limp);
+    run_fixed_steps(&mut app, 62);
+    assert_eq!(phase(&app, hero), RagdollPhase::Blending);
+    assert!(parts
+        .iter()
+        .all(|&part| app.world().get_entity(part).is_err()));
+}
+
+fn quaternion_of(app: &App, entity: Entity) -> nalgebra::UnitQuaternion<f32> {
+    let [roll, pitch, yaw] =
+        app.world().get::<Transform>(entity).unwrap().rotation;
+    nalgebra::UnitQuaternion::from_rotation_matrix(
+        &sim_math::rotation_from_euler(roll, pitch, yaw),
+    )
 }

@@ -18,6 +18,7 @@ pub mod profiler;
 mod project;
 mod project_settings;
 mod shortcuts;
+mod timeline;
 pub mod view;
 
 use dock::EditorLayoutFile;
@@ -76,6 +77,35 @@ pub fn editor_needs_continuous_redraw(world: &World) -> bool {
         || world
             .get_resource::<EditorFlyCamera>()
             .is_some_and(|fly| fly.active || fly.drag.is_some())
+        || previewing_particles(world)
+        || world
+            .get_resource::<EditorState>()
+            .is_some_and(|state| state.timeline.playing)
+}
+
+fn previewing_particles(world: &World) -> bool {
+    world
+        .get_resource::<EditorState>()
+        .is_some_and(|state| state.mode == EditorMode::Edit)
+        && world.iter_entities().any(|entity| {
+            entity.get::<crate::runtime::ParticleSystem>().is_some_and(
+                |system| {
+                    !system.paused && (system.playing || system.alive() > 0)
+                },
+            )
+        })
+}
+
+/// Live particle preview while the scene is stopped, like Godot's emitting
+/// preview: emitters play in the Scene view without starting the game.
+/// Call once per frame before the runtime update.
+pub fn update_edit_preview(world: &mut World, delta: std::time::Duration) {
+    if world
+        .get_resource::<EditorState>()
+        .is_some_and(|state| state.mode == EditorMode::Edit)
+    {
+        crate::runtime::preview_particles(world, delta);
+    }
 }
 
 /// Editor view state saved beside a scene, like Godot's per-scene edit
@@ -512,6 +542,11 @@ pub struct EditorState {
     pub tile_stroke_undo: Option<SceneDocument>,
     /// How Scene View strokes apply the tile brush.
     pub tile_tool: TileTool,
+    /// Particle Play/Pause/Restart/Stop pressed in the Inspector, sent to
+    /// the emitter after drawing. Transport is not a scene edit.
+    pub particle_command: Option<(Entity, crate::runtime::ParticleCommand)>,
+    /// Clip, playhead, and record state of the Timeline area.
+    pub timeline: timeline::TimelineState,
     /// Pressed cell of a Rectangle or Line drag.
     pub tile_rect_start: Option<(usize, usize)>,
     /// Scene View handle being dragged, and the entity it edits.
@@ -731,6 +766,8 @@ impl Default for EditorState {
             tile_brush: None,
             tile_stroke_undo: None,
             tile_tool: TileTool::Paint,
+            particle_command: None,
+            timeline: timeline::TimelineState::default(),
             tile_rect_start: None,
             scene_handle: None,
             mode: EditorMode::Edit,
@@ -1914,14 +1951,15 @@ fn new_scene_variant(base: &std::path::Path) -> Result<PathBuf, String> {
 
 /// Adds a glTF file to the scene like Blender's importer: one new empty
 /// object named after the file, at the origin, holding the file's node tree
-/// with its names, local transforms, meshes, materials, cameras, and lights.
+/// with its names, local transforms, meshes, materials, cameras, and lights,
+/// and its node animations as `rusting.animation` clips on the new object.
 /// Imported names that clash with existing objects get a number. Returns the
 /// new root object. The caller takes the undo snapshot.
 fn add_model_to_scene(
     world: &mut World,
     path: &std::path::Path,
 ) -> Result<Entity, String> {
-    let nodes = world
+    let mut nodes = world
         .resource_mut::<AssetServer>()
         .import_gltf_scene(path)
         .map_err(|error| error.to_string())?;
@@ -1961,6 +1999,25 @@ fn add_model_to_scene(
         let name = free_name(&names, base);
         names.insert(name.clone());
         world.entity_mut(entity).insert(Name(name));
+    }
+    // Clip tracks and skin joints name nodes by path, so they use the
+    // renamed names.
+    for (node, &entity) in nodes.iter_mut().zip(&entities) {
+        if let Some(name) = world.get::<Name>(entity) {
+            node.name.clone_from(&name.0);
+        }
+    }
+    crate::assets::insert_gltf_skins(world, &nodes, &entities);
+    let clips = world
+        .resource::<AssetServer>()
+        .import_gltf_animations(path, &nodes)
+        .map_err(|error| error.to_string())?;
+    if let Some(first) = clips.first() {
+        world.entity_mut(root).insert(crate::runtime::Animation {
+            autoplay: first.name.clone(),
+            clips,
+            ..crate::runtime::Animation::default()
+        });
     }
     Ok(root)
 }

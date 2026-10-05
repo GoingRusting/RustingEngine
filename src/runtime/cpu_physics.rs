@@ -69,6 +69,9 @@ pub struct Contact {
     pub depth: f32,
     pub point: [f32; 3],
     pub sensor: bool,
+    /// How fast the bodies were closing along `normal` before the solve,
+    /// in m/s; 0 when they were not.
+    pub speed: f32,
 }
 
 /// First collider a ray reaches.
@@ -527,6 +530,8 @@ pub(crate) fn next_spawn_order(world: &mut World) -> SpawnOrder {
 pub struct PhysicsWorld {
     bodies: Vec<Body>,
     contacts: Vec<Contact>,
+    /// Fast bodies the last step stopped at a fixed or kinematic surface.
+    impacts: Vec<Contact>,
     /// Consecutive still steps of each awake dynamic body, and the position
     /// each sleeping body fell asleep at (to notice gameplay moving it).
     rest: HashMap<Entity, (u32, [f32; 3])>,
@@ -602,6 +607,15 @@ impl PhysicsWorld {
     #[must_use]
     pub fn contacts(&self) -> &[Contact] {
         &self.contacts
+    }
+
+    /// Fast bodies (`a`) the last step's continuous collision stopped at a
+    /// fixed or kinematic collider (`b`) before they touched, with the
+    /// speed they hit at. Such a hit never shows in [`Self::contacts`] with
+    /// its speed, because the body arrives already stopped.
+    #[must_use]
+    pub fn impacts(&self) -> &[Contact] {
+        &self.impacts
     }
 
     /// Nearest collider hit by a ray within `max_distance`, among colliders
@@ -943,6 +957,10 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         articulation::build(world, &mut bodies, &links);
     let mut contacts = find_contacts(&bodies);
     contacts.retain(|(a, b, _)| !joints::excluded(&links, *a, *b));
+    for (a, b, contact) in &mut contacts {
+        let closing = bodies[*a].velocity - bodies[*b].velocity;
+        contact.speed = closing.dot(&Vector3::from(contact.normal)).max(0.0);
+    }
     // Players with `push_bodies` off stay in the contacts, so dynamic bodies
     // still rest on them, but the solver sees them at rest and they shove
     // nothing. Their own velocity is put back after the solve.
@@ -1006,6 +1024,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         }
     }
     let gravity = Vector3::from(settings.gravity);
+    let mut impacts = Vec::new();
     if settings.enabled {
         for body in bodies
             .iter_mut()
@@ -1055,7 +1074,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
                     torque,
                 });
         }
-        sweep_fast_bodies(&mut bodies, dt);
+        impacts = sweep_fast_bodies(&mut bodies, dt);
         for body in bodies.iter_mut().filter(|body| {
             body.movable
                 && body.kind != RigidBodyKind::Fixed
@@ -1095,6 +1114,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
     let mut physics = world.resource_mut::<PhysicsWorld>();
     physics.contacts =
         contacts.into_iter().map(|(.., contact)| contact).collect();
+    physics.impacts = impacts;
     physics.bodies = bodies;
     physics.rest = rest;
 }
@@ -1108,6 +1128,12 @@ impl PhysicsWorld {
         self.joint_warm.remove(&entity);
     }
 
+    /// Restarts `entity`'s still-step count, so a body that gameplay drives
+    /// every step never falls asleep.
+    pub(crate) fn keep_awake(&mut self, entity: Entity) {
+        self.rest.remove(&entity);
+    }
+
     /// Moves the kept solver state from old entities to new ones, after a
     /// snapshot was loaded into new entities. State of unlisted entities is
     /// dropped.
@@ -1118,15 +1144,17 @@ impl PhysicsWorld {
                 .map(|entity| body.entity = entity)
                 .is_some()
         });
-        self.contacts.retain_mut(|contact| {
-            match (new(&contact.a), new(&contact.b)) {
-                (Some(a), Some(b)) => {
-                    (contact.a, contact.b) = (a, b);
-                    true
+        for contacts in [&mut self.contacts, &mut self.impacts] {
+            contacts.retain_mut(|contact| {
+                match (new(&contact.a), new(&contact.b)) {
+                    (Some(a), Some(b)) => {
+                        (contact.a, contact.b) = (a, b);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            }
-        });
+            });
+        }
         self.rest = self
             .rest
             .drain()
@@ -1849,7 +1877,8 @@ fn clip(
 // ponytail: grown boxes keep sharp corners and hulls are not grown, so a
 // fast body stops a little early at box corners and can still clip a hull
 // edge it only grazes. Add a swept-shape test if gameplay needs it.
-fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
+fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) -> Vec<Contact> {
+    let mut impacts = Vec::new();
     for index in 0..bodies.len() {
         let body = &bodies[index];
         let travel = body.velocity.norm() * dt;
@@ -1892,11 +1921,16 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
                     } else {
                         0.0
                     };
-                Some((distance + added - reach, normal, target.kind))
+                Some((
+                    distance + added - reach,
+                    normal,
+                    target.kind,
+                    target.entity,
+                ))
             })
             .filter(|(distance, ..)| *distance < travel)
             .min_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((stop, normal, kind)) = hit else {
+        let Some((stop, normal, kind, target)) = hit else {
             continue;
         };
         let body = &mut bodies[index];
@@ -1909,8 +1943,18 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) {
         let into = body.velocity.dot(&normal);
         if into < 0.0 {
             body.velocity -= normal * into;
+            impacts.push(Contact {
+                a: body.entity,
+                b: target,
+                normal: (-normal).into(),
+                depth: 0.0,
+                point: body.position.into(),
+                sensor: false,
+                speed: -into,
+            });
         }
     }
+    impacts
 }
 
 /// `body` with its sphere, box or capsule grown by `pad`, for casting a
@@ -2050,6 +2094,7 @@ fn collide(a: &Body, b: &Body) -> Option<Contact> {
         depth,
         point: point.into(),
         sensor,
+        speed: 0.0,
     })
 }
 
@@ -2891,6 +2936,7 @@ mod tests {
                 ),
             ],
             contacts: Vec::new(),
+            impacts: Vec::new(),
             rest: HashMap::new(),
             warm: HashMap::new(),
             joint_warm: HashMap::new(),
@@ -3127,5 +3173,132 @@ mod tests {
             Vector3::new(1.0, 2.0, 0.0),
         );
         assert_near((a - b).norm(), 2.0);
+    }
+
+    #[test]
+    fn foot_ik_stands_on_the_ground_and_skips_its_own_colliders() {
+        use crate::runtime::GlobalTransform;
+        use crate::runtime::{
+            propagate_transforms, Animation, Children, Ik, IkKind, Parent,
+        };
+        use crate::Transform;
+        let mut world = World::new();
+        let mut chain = vec![world
+            .spawn((Transform::default(), Animation::default()))
+            .id()];
+        for position in [[0.3, 1.0, 0.0], [0.0, -0.5, 0.05], [0.0, -0.5, -0.05]]
+        {
+            let parent = *chain.last().unwrap();
+            let child = world
+                .spawn((
+                    Transform {
+                        position,
+                        ..Transform::default()
+                    },
+                    Parent(parent),
+                ))
+                .id();
+            world.entity_mut(parent).insert(Children(vec![child]));
+            chain.push(child);
+        }
+        let foot = chain[3];
+        world.entity_mut(foot).insert(Ik {
+            kind: IkKind::Foot,
+            ..Ik::default()
+        });
+        // A collider on the foot sits between the ray start and the step,
+        // whose top is at 0.2.
+        let mut shoe =
+            body(Shape::Box(Vector3::repeat(0.05)), [0.3, 0.35, 0.0]);
+        shoe.entity = foot;
+        let mut step = body(Shape::Box(Vector3::repeat(0.5)), [0.3, -0.3, 0.0]);
+        step.entity = world.spawn_empty().id();
+        world.insert_resource(PhysicsWorld {
+            bodies: vec![shoe, step],
+            contacts: Vec::new(),
+            impacts: Vec::new(),
+            rest: HashMap::new(),
+            warm: HashMap::new(),
+            joint_warm: HashMap::new(),
+            meshes: HashMap::new(),
+        });
+        crate::runtime::solve_ik(&mut world);
+        propagate_transforms(&mut world);
+        let at = world.get::<GlobalTransform>(foot).unwrap().matrix[3];
+        assert_near(at[1], 0.2);
+        assert!((at[0] - 0.3).abs() < 1e-3 && at[2].abs() < 1e-3, "{at:?}");
+    }
+
+    #[test]
+    fn foot_ik_lowers_the_hips_tilts_to_the_slope_and_does_not_pile_up() {
+        use crate::runtime::{
+            propagate_transforms, Animation, Children, GlobalTransform, Ik,
+            IkKind, Parent,
+        };
+        use crate::Transform;
+        let mut world = World::new();
+        let mut chain = vec![world
+            .spawn((Transform::default(), Animation::default()))
+            .id()];
+        for position in [
+            [0.0, 1.0, 0.0],
+            [0.3, 0.0, 0.0],
+            [0.0, -0.5, 0.05],
+            [0.0, -0.5, -0.05],
+        ] {
+            let parent = *chain.last().unwrap();
+            let child = world
+                .spawn((
+                    Transform {
+                        position,
+                        ..Transform::default()
+                    },
+                    Parent(parent),
+                ))
+                .id();
+            world.entity_mut(parent).insert(Children(vec![child]));
+            chain.push(child);
+        }
+        let (hips, foot) = (chain[1], chain[4]);
+        world.entity_mut(foot).insert(Ik {
+            kind: IkKind::Foot,
+            ..Ik::default()
+        });
+        // A slope tilted 0.3 rad about Z, 0.28 m below the floor under the
+        // foot: out of the straight leg's reach without lowering the hips.
+        let mut slope =
+            body(Shape::Box(Vector3::repeat(0.5)), [0.3, -0.8, 0.0]);
+        slope.rotation = Rotation3::from_axis_angle(&Vector3::z_axis(), 0.3);
+        slope.entity = world.spawn_empty().id();
+        let normal = slope.rotation * Vector3::y();
+        world.insert_resource(PhysicsWorld {
+            bodies: vec![slope],
+            contacts: Vec::new(),
+            impacts: Vec::new(),
+            rest: HashMap::new(),
+            warm: HashMap::new(),
+            joint_warm: HashMap::new(),
+            meshes: HashMap::new(),
+        });
+        let ground = world
+            .resource::<PhysicsWorld>()
+            .raycast([0.3, 0.5, 0.0], [0.0, -1.0, 0.0], 1.0, u32::MAX)
+            .unwrap()
+            .point[1];
+        let mut poses = Vec::new();
+        for _ in 0..3 {
+            crate::runtime::solve_ik(&mut world);
+            propagate_transforms(&mut world);
+            let model = world.get::<GlobalTransform>(foot).unwrap().matrix;
+            assert_near(model[3][1], ground);
+            let up = Vector3::new(model[1][0], model[1][1], model[1][2]);
+            assert!(up.normalize().dot(&normal) > 0.9999, "{up:?}");
+            poses.push((
+                *world.get::<Transform>(hips).unwrap(),
+                *world.get::<Transform>(foot).unwrap(),
+            ));
+        }
+        assert!(poses[0].0.position[1] < 0.75, "hips lowered");
+        assert_eq!(poses[0], poses[2], "no pile-up across ticks");
     }
 }

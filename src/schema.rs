@@ -58,6 +58,7 @@ pub const READ_ONLY: &[&str] = &[
     "asset list",
     "diff",
     "preset list",
+    "effect list",
     "docs",
     "explain",
     "schema",
@@ -75,6 +76,7 @@ pub const WRITES_PROJECT: &[&str] = &[
     "add scenario",
     "add system",
     "preset apply",
+    "effect apply",
     "cook",
 ];
 
@@ -152,6 +154,22 @@ pub const OPERATIONS: &[Operation] = &[
         gpu: NO_GPU,
         defaults: &[("dry-run", "false")],
         example: "scene patch my_game/scenes/main.rscene patch.json --dry-run --json",
+    },
+    Operation {
+        name: "scene add-model",
+        usage: "scene add-model <scene-path> <model.glb|gltf> [--name NAME] [--dry-run] [--json]",
+        summary: "Place a glTF or GLB model in a scene as one object (named after the file, or NAME) with a child per node and primitive, keeping its materials and textures. Import the model under assets/ first with `asset import`; move the object with a patch afterwards.",
+        gpu: NO_GPU,
+        defaults: &[("dry-run", "false")],
+        example: "scene add-model my_game/scenes/main.rscene my_game/assets/models/tree.glb --name Tree --json",
+    },
+    Operation {
+        name: "scene retarget",
+        usage: "scene retarget <scene-path> <from-object> <clip> <to-object> [--dry-run] [--json]",
+        summary: "Copy a clip from one character's skeleton to another's and save it on the target's rusting.animation (replacing a clip of the same name). Bones pair up by the objects' `humanoid` maps, or by bone name with rig prefixes such as mixamorig: dropped. Rotations keep their turn from the source's rest pose; only the hips keep position keys, scaled by hip height. Rest poses are the scene's transforms.",
+        gpu: NO_GPU,
+        defaults: &[("dry-run", "false")],
+        example: "scene retarget my_game/scenes/main.rscene Mixamo walk Knight --dry-run --json",
     },
     Operation {
         name: "validate",
@@ -328,6 +346,22 @@ pub const OPERATIONS: &[Operation] = &[
         gpu: NO_GPU,
         defaults: &[("--dry-run", "false"), ("--only", "every scope")],
         example: "preset apply my_game/scenes/main.rscene night --only lighting --dry-run --json",
+    },
+    Operation {
+        name: "effect list",
+        usage: "effect list [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "List the particle effect presets (dust_motes, falling_leaves, snow, rain, sparks, smoke, fire, embers, fireflies, magic_sparkle, confetti) with a summary, a suggested height and the full `rusting.particle_emitter` each one writes.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "effect list --json",
+    },
+    Operation {
+        name: "effect apply",
+        usage: "effect apply <scene-path> <effect> [--on OBJECT | --name NAME --at X,Y,Z] [--dry-run] [--json]",
+        summary: "Add a particle effect preset to a scene as one scene patch. `--on` sets the `rusting.particle_emitter` of an existing object (a torch, a chimney); otherwise a new object named after the effect is created at `--at`, or at the preset's suggested height above the origin. Every value stays ordinary, editable scene data.",
+        gpu: NO_GPU,
+        defaults: &[("--at", "0, the preset's height, 0"), ("--name", "the effect's name in title case, made unique"), ("--dry-run", "false")],
+        example: "effect apply my_game/scenes/main.rscene fire --at 2,0,-3 --json",
     },
     Operation {
         name: "docs",
@@ -613,6 +647,18 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"mapper": "Aces", "exposure": 1.2}),
     },
     ComponentSection {
+        key: "rusting.color_grading",
+        summary: "Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, and vignette (0..1) darkening the corners. The first one found is used.",
+        gpu: "a few instructions per pixel",
+        example: || json!({"contrast": 1.1, "saturation": 0.9, "shadows": [0.92, 0.98, 1.1], "highlights": [1.08, 1.0, 0.9], "vignette": 0.3}),
+    },
+    ComponentSection {
+        key: "rusting.camera_screen",
+        summary: "On an object with a mesh: shows what the camera entity named camera sees, at size [w, h] pixels, in place of the material's base color and emissive maps. The camera may be inactive. Give each screen its own material.",
+        gpu: "renders the scene once more per screen per frame",
+        example: || json!({"camera": "Cam B", "size": [320, 180]}),
+    },
+    ComponentSection {
         key: "rusting.environment_map",
         summary: "Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere. Rough surfaces see it blurred. The first one found is used.",
         gpu: NO_GPU,
@@ -689,6 +735,42 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger(). rate above 0 emits that many particles per second with no trigger, starting anywhere in the area box (half extents); stretch makes particles taller, for rain. Particles copy the emitter's mesh.",
         gpu: NO_GPU,
         example: || json!({"count": 20, "speed": 4.0, "lifetime": 0.8, "particle_scale": 0.1, "gravity": 9.81, "on_collision": false, "rate": 0.0, "area": [0.0, 0.0, 0.0], "stretch": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.particle_emitter",
+        summary: "Particle effects: rate and bursts per cycle, an emission shape (Point, Box, Sphere, Cone, Circle), random [min, max] ranges for lifetime, speed, size, rotation and spin, gravity, drag, wind and turbulence, size and color keys over life, fades, World or Local space, Billboard or Velocity facing, Alpha or Additive blend. Particles are not entities; each emitter is one instanced draw. Random values come from the scene seed, the emitter's SceneId and the fixed tick. Game code calls play(), pause(), stop() or restart(). `rusting effect list` shows ready presets.",
+        gpu: "one instanced draw of up to max_particles quads per emitter, rebuilt every frame",
+        example: || json!({"autoplay": true, "rate": 20.0, "bursts": [], "max_particles": 500, "prewarm": false, "duration": 5.0, "looping": true, "on_collision": false, "shape": "Sphere", "shape_size": [0.5, 0.5, 0.5], "lifetime": [1.0, 2.0], "speed": [0.5, 1.5], "size": [0.05, 0.1], "rotation": [0.0, 0.0], "spin": [0.0, 0.0], "direction": [0.0, 1.0, 0.0], "spread": 0.5, "gravity": 0.0, "drag": 0.5, "wind": [0.0, 0.0, 0.0], "turbulence": 0.5, "turbulence_frequency": 1.0, "size_over_life": [{"t": 0.0, "value": 1.0}, {"t": 1.0, "value": 0.2}], "color_over_life": [{"t": 0.0, "color": [1.0, 0.8, 0.3, 1.0]}, {"t": 1.0, "color": [1.0, 0.2, 0.1, 1.0]}], "start_colors": [], "emissive": 3.0, "fade_in": 0.1, "fade_out": 0.4, "space": "World", "facing": "Billboard", "stretch": 0.1, "blend": "Additive", "sprite": "Soft"}),
+    },
+    ComponentSection {
+        key: "rusting.animation",
+        summary: "Keyframe animation: named clips of tracks keyed over time. A track writes Position, Rotation (radians), Scale, Color (RGBA), Emissive (RGB), Visible, Orientation (quaternion x,y,z,w, used by imported glTF clips), or a numeric Field of another registered component, on this entity or a child path such as Arm/Hand. Interpolation is Step, Linear or Smooth (Catmull-Rom); repeat is Once, Loop or PingPong; speed scales time. Markers in events reach game code as animation events. A clip with `blend` points is a 1D blend space: its clips are stretched to its length (1 s when 0) and the two around the `blend_parameter` value are mixed. With `blend_parameter_y` set it is a 2D blend space: each point also has `at_y`, and every point is weighted by gradient bands (a point plays alone on its spot). Transitions make a state machine: when the playing clip is `from` (empty: any) and the parameter test holds (Above, Below or Equal; at_end also waits for the clip to finish), it crossfades to `to`; the first match in list order wins. Layers play clips on top of the state on their own clocks: an override layer replaces, an additive one adds the clip's motion from its first frame, `weight` (or the `weight_parameter` value) scales it, and `mask` limits it to target paths and their children. `root_motion` (Off, InPlace, Transform, Velocity) keeps the `root_bone` Position track at its first-frame x and z and collects its horizontal motion: InPlace for game code (take_root_motion), Transform moves the object, Velocity sets its GPU body velocity through the physics command bridge. `humanoid` maps standard bone names (Hips, Spine, LeftUpperArm...) to this rig's bone paths for `rusting scene retarget`; empty matches bones by name without rig prefixes. Runs on the fixed tick, so playback is deterministic. Game code calls play_animation(), crossfade(), stop_animation(), is_playing() and set_animation_parameter().",
+        gpu: NO_GPU,
+        example: || json!({"clips": [{"name": "bob", "duration": 0.0, "repeat": "PingPong", "tracks": [{"target": "", "property": "Position", "interpolation": "Smooth", "keys": [{"time": 0.0, "value": [0.0, 0.0, 0.0]}, {"time": 1.0, "value": [0.0, 0.5, 0.0]}]}], "events": [{"time": 1.0, "name": "top"}], "blend": [], "blend_parameter": "", "blend_parameter_y": ""}], "autoplay": "bob", "speed": 1.0, "parameters": {}, "transitions": [{"from": "bob", "to": "run", "parameter": "speed", "compare": "Above", "value": 1.0, "at_end": false, "fade": 0.2}], "layers": [{"clip": "wave", "weight": 1.0, "weight_parameter": "", "additive": false, "mask": ["Body/Arm"]}], "root_motion": "Off", "root_bone": "", "humanoid": [{"bone": "Hips", "path": "Armature/Hips"}]}),
+    },
+    ComponentSection {
+        key: "rusting.skin",
+        summary: "Skinned mesh: joint paths from this object (child names joined by /, .. for the parent) and one column-major inverse bind matrix per joint. Vertex joints and weights come from the .rskin file the glTF importer cooks next to the mesh. glTF import and `scene add-model` fill it in; animate the joints with rusting.animation. The mesh is bent on the CPU each frame a joint moves.",
+        gpu: "the bent mesh is uploaded again each frame a joint moves",
+        example: || json!({"joints": ["../Armature/Root", "../Armature/Root/Tip"], "inverse_bind": [[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]], [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, -1.0, 0.0, 1.0]]]}),
+    },
+    ComponentSection {
+        key: "rusting.ik",
+        summary: "Inverse kinematics on the end of a joint chain, solved each fixed step after the animation pose. kind LookAt turns this object so its local forward axis points at target. kind TwoBone bends this object's parent and grandparent (upper arm and forearm, thigh and shin) so this object's origin reaches target; the middle joint bends toward pole if set. kind Foot is TwoBone toward the ground under this object (no target): a ray from reach metres above the character's floor (nearest ancestor with rusting.animation) finds the CPU collider below, and the foot keeps its animated height above it, turns to the slope, and lowers the hips (the thigh's parent) when the ground is out of reach. weight 0 keeps the animated pose, 1 solves fully. A null target turns off LookAt and TwoBone. kind Chain bends the `joints` ancestors above this object (FABRIK, for tails, spines and tentacles) so it reaches target. Each tick starts from the clip pose, never last tick's IK.",
+        gpu: NO_GPU,
+        example: || json!({"kind": "TwoBone", "target": null, "pole": null, "weight": 1.0, "forward": [0.0, 0.0, -1.0], "reach": 0.5, "joints": 3}),
+    },
+    ComponentSection {
+        key: "rusting.ragdoll",
+        summary: "Hands a character's bones from animation to CPU physics and back. Going limp (game code `set_ragdoll(name, true)`, or a CPU body closing on the character's colliders at hit_speed m/s or faster; 0 only on command) spawns a capsule body per entry of bones (path from this object, length and radius in metres along the bone's local +Y, mass in kg) moving as the animation moved it, jointed to the nearest ancestor bone's body with `joint` (a rusting joint kind; X axis along the bone by default, set by frame). The character's own collider is taken off while limp. After recover_after seconds (0 waits for `set_ragdoll(name, false)`) the character moves under its hips, the bodies are removed, and bones blend back to the animation over blend_time seconds. Bones without an entry keep their animated local pose. muscle (Hz, 0 = passive) makes it an active ragdoll: the bodies exist from the start, each is turned toward its bone's animated pose relative to its parent body by a critically damped spring at that frequency, and the top body is held to the animated hips; hits push it and it springs back, a hit at hit_speed drops the muscles until recovery, after which they regain strength over blend_time. Set muscle to 0 to go limp and return to plain animation.",
+        gpu: NO_GPU,
+        example: || json!({"bones": [{"path": "Armature/Hips", "length": 0.25, "radius": 0.12, "mass": 10.0, "joint": {"ConeTwist": {"swing": 0.7, "twist": [-0.4, 0.4]}}, "frame": [0.0, 0.0, 1.5707964]}, {"path": "Armature/Hips/Spine", "length": 0.4, "radius": 0.12, "mass": 12.0, "joint": {"ConeTwist": {"swing": 0.5, "twist": [-0.3, 0.3]}}, "frame": [0.0, 0.0, 1.5707964]}], "hit_speed": 6.0, "recover_after": 2.0, "blend_time": 0.5, "muscle": 0.0}),
+    },
+    ComponentSection {
+        key: "rusting.morph",
+        summary: "Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1. The shape offsets come from the .rmorph file the glTF importer cooks next to the mesh. glTF import and `scene add-model` fill it in, and imported clips animate it with a Field track on /weights. Extra mesh parts of the object (its children without their own rusting.morph) use these weights too. The mesh is reshaped on the CPU each frame a weight changes.",
+        gpu: "the reshaped mesh is uploaded again each frame a weight changes",
+        example: || json!({"weights": [0.0, 1.0]}),
     },
     ComponentSection {
         key: "rusting.fluid_block",

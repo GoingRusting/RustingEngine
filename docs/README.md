@@ -38,6 +38,15 @@ were run against this version of the engine.
   hashes, `rusting determinism`, and replays.
 - [Architecture](../architecture.md): how the runtime, renderer, and editor
   fit together.
+- [Animation](animation.md): keyframe clips, skinned models, state
+  machines, blend spaces, IK, and ragdolls.
+- [Effects](effects.md): particle emitters and ready-made presets.
+- [Look and feel](look-and-feel.md): art presets, color grading, and a
+  polish checklist.
+- [Cameras](cameras.md), [Audio](audio.md), and
+  [Menus and UI](menus-and-ui.md).
+- [GPU condition shaders](gpu-condition-shaders.md): custom checks and
+  solvers for GPU physics.
 - [WebAssembly scripts](scripting.md): the optional sandboxed scripting
   host for modding and designer logic, its host functions, and its limits.
 - [Development environment](dev-environment.md): iteration speed targets, running GPU tests without a

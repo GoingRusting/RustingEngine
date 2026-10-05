@@ -3,6 +3,7 @@
 
 mod add_component;
 pub(super) mod data_asset;
+mod particles;
 pub(super) mod placement;
 mod reflected;
 pub mod widgets;
@@ -23,10 +24,11 @@ use crate::assets::{
 use crate::runtime::{
     registered_component_info, AutoSimulation, Camera, Collider, ColliderShape,
     DirectionalLight, FrameTime, GpuStateMirror, MeshRenderer, Name,
-    ObjectClasses, PhysicsBackendStatus, PhysicsBody, PhysicsSolver,
-    PhysicsSyncMode, PointLight, Projection, RenderBounds, RigidBody,
-    RigidBodyKind, SimulationClass, SpotLight, UnregisteredComponents,
-    AUTO_SIMULATION_COMPONENT, PHYSICS_SYNC_COMPONENT,
+    ObjectClasses, ParticleEmitter, ParticleSystem, PhysicsBackendStatus,
+    PhysicsBody, PhysicsSolver, PhysicsSyncMode, PointLight, Projection,
+    RenderBounds, RigidBody, RigidBodyKind, SimulationClass, SpotLight,
+    UnregisteredComponents, AUTO_SIMULATION_COMPONENT,
+    PARTICLE_EMITTER_COMPONENT, PHYSICS_SYNC_COMPONENT,
 };
 use crate::Transform;
 
@@ -439,6 +441,32 @@ pub(super) fn draw_inspector_area(
                     .and_then(|registry| registry.inspectors.get(name));
                 let label = placement::component_label(name);
                 let removed = widgets::section(ui, &label, true, |ui| {
+                    if name == PARTICLE_EMITTER_COMPONENT {
+                        let Ok(mut emitter) =
+                            serde_json::from_str::<ParticleEmitter>(serialized)
+                        else {
+                            widgets::value(ui, "Value", serialized);
+                            return;
+                        };
+                        let mut command = None;
+                        if particles::draw_particle_emitter(
+                            ui,
+                            &mut emitter,
+                            world.get::<ParticleSystem>(entity),
+                            &mut command,
+                        ) {
+                            component_edits.push(ComponentEdit::Set {
+                                entity,
+                                name: name.clone(),
+                                value: serde_json::to_string(&emitter)
+                                    .unwrap_or_else(|_| serialized.clone()),
+                            });
+                        }
+                        if let Some(command) = command {
+                            state.particle_command = Some((entity, command));
+                        }
+                        return;
+                    }
                     if let Some(inspector) = inspector {
                         if let Some(value) = inspector(ui, serialized) {
                             component_edits.push(ComponentEdit::Set {

@@ -680,6 +680,177 @@ pub fn patch_scene(path: &Path, patch_path: &Path, dry_run: bool) -> CliResult {
     apply_scene_patch(path, &patch, Some(patch_path), dry_run)
 }
 
+/// Places a glTF or GLB model in a scene as one object named `name`, with a
+/// child per glTF node and per extra primitive, through the patch path.
+/// The model's node animations become `rusting.animation` clips on that
+/// object; the first one autoplays.
+/// Mesh and texture pieces are written next to the model file, so keep the
+/// model under `assets/` (`rusting asset import` puts it there).
+#[cfg(feature = "gltf")]
+pub fn add_model(
+    scene: &Path,
+    model: &Path,
+    name: &str,
+    dry_run: bool,
+) -> CliResult {
+    use crate::runtime::{hierarchy::set_parent, RenderExtractPlugin, SceneId};
+    use crate::{App, AssetPlugin};
+    let mut app = App::new();
+    let entities = app
+        .add_plugin(AssetPlugin)
+        .and_then(|app| app.add_plugin(RenderExtractPlugin))
+        .map_err(|error| error.to_string())
+        .and_then(|app| {
+            let world = app.world_mut();
+            let mut assets = world.resource_mut::<crate::assets::AssetServer>();
+            let nodes = assets
+                .import_gltf_scene(model)
+                .map_err(|error| error.to_string())?;
+            let clips = assets
+                .import_gltf_animations(model, &nodes)
+                .map_err(|error| error.to_string())?;
+            let root = world
+                .spawn((
+                    SceneId::new(),
+                    crate::runtime::Name(name.into()),
+                    crate::Transform::default(),
+                ))
+                .id();
+            if let Some(first) = clips.first() {
+                world.entity_mut(root).insert(crate::runtime::Animation {
+                    autoplay: first.name.clone(),
+                    clips,
+                    ..crate::runtime::Animation::default()
+                });
+            }
+            let spawned =
+                crate::assets::spawn_gltf_nodes_in_world(world, &nodes, None)
+                    .map_err(|error| error.to_string())?;
+            for entity in spawned {
+                if world.get::<crate::runtime::Parent>(entity).is_none() {
+                    set_parent(world, entity, root)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            let mut document = crate::runtime::scene_document(world, name)
+                .map_err(|error| error.to_string())?;
+            let folder = scene
+                .parent()
+                .filter(|folder| !folder.as_os_str().is_empty());
+            crate::runtime::relativize_scene_assets(
+                &mut document,
+                folder.unwrap_or(Path::new(".")),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(document.entities)
+        });
+    let entities = match entities {
+        Ok(entities) => entities,
+        Err(message) => {
+            return CliResult::failure(
+                "MODEL_IMPORT",
+                message,
+                Some(model.to_owned()),
+            )
+        }
+    };
+    let patch = crate::scene_patch::ScenePatch {
+        expected_revision: None,
+        operations: entities
+            .iter()
+            .map(|entity| crate::scene_patch::PatchOperation::Create {
+                entity: crate::scene_patch::entity_form(entity),
+            })
+            .collect(),
+    };
+    apply_scene_patch(scene, &patch, None, dry_run)
+}
+
+/// Copies clip `clip` of object `from` onto object `to`'s skeleton (see
+/// `runtime::retarget_clip`) and saves it on `to`'s animation through the
+/// patch path, replacing a clip of the same name. Rest poses are the
+/// scene's transforms.
+pub fn retarget_clip(
+    scene: &Path,
+    from: &str,
+    clip: &str,
+    to: &str,
+    dry_run: bool,
+) -> CliResult {
+    use crate::runtime::{
+        load_scene, Animation, Name, RenderExtractPlugin, SceneLoadMode,
+    };
+    use crate::{App, AssetPlugin};
+    let mut app = App::new();
+    if let Err(error) = app
+        .add_plugin(AssetPlugin)
+        .and_then(|app| app.add_plugin(RenderExtractPlugin))
+    {
+        return CliResult::failure("RETARGET_FAILED", error.to_string(), None);
+    }
+    let world = app.world_mut();
+    world
+        .resource_mut::<crate::runtime::SceneComponentRegistry>()
+        .keep_unregistered();
+    if let Err(error) = load_scene(world, scene, SceneLoadMode::Replace) {
+        return scene_error(error, scene);
+    }
+    let names: Vec<_> = world
+        .query::<(bevy_ecs::entity::Entity, &Name)>()
+        .iter(world)
+        .map(|(entity, name)| (entity, name.0.clone()))
+        .collect();
+    let named = |name: &str| {
+        names
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(entity, _)| *entity)
+            .ok_or_else(|| format!("no object is named `{name}`"))
+    };
+    let world = &*world;
+    let animation = named(from).and_then(|source| {
+        let target = named(to)?;
+        let clip = crate::runtime::retarget_clip(world, source, clip, target)?;
+        let mut animation = world
+            .get::<Animation>(target)
+            .cloned()
+            .unwrap_or_else(|| Animation {
+                clips: Vec::new(),
+                autoplay: String::new(),
+                ..Animation::default()
+            });
+        match animation.clip(&clip.name) {
+            Some(i) => animation.clips[i] = clip,
+            None => animation.clips.push(clip),
+        }
+        Ok(animation)
+    });
+    let animation = match animation {
+        Ok(animation) => animation,
+        Err(message) => {
+            return CliResult::failure(
+                "RETARGET_FAILED",
+                message,
+                Some(scene.to_owned()),
+            )
+        }
+    };
+    let patch = crate::scene_patch::ScenePatch {
+        expected_revision: None,
+        operations: vec![crate::scene_patch::PatchOperation::Set {
+            id: crate::scene_patch::EntityRef::Name(to.into()),
+            path: format!(
+                "/components/{}",
+                crate::runtime::ANIMATION_COMPONENT
+            ),
+            value: serde_json::to_value(&animation)
+                .expect("animations serialize"),
+            expected: None,
+        }],
+    };
+    apply_scene_patch(scene, &patch, None, dry_run)
+}
+
 /// `patch_file` is where the patch came from, if it is a file, so an
 /// operation error can point into it.
 fn apply_scene_patch(
@@ -1228,6 +1399,99 @@ pub fn apply_preset(
     };
     let mut patch = crate::art_direction::preset_patch(&document, preset, only);
     patch.expected_revision = Some(crate::runtime::scene_revision(&bytes));
+    apply_scene_patch(path, &patch, None, dry_run)
+}
+
+pub fn list_effects() -> CliResult {
+    let effects: Vec<_> = crate::runtime::EFFECT_PRESETS
+        .iter()
+        .map(|preset| {
+            json!({
+                "name": preset.name,
+                "summary": preset.summary,
+                "height": preset.height,
+                "component": preset.emitter(),
+            })
+        })
+        .collect();
+    CliResult::success(json!({ "effects": effects }))
+}
+
+/// Where `effect apply` puts a preset: on an existing object, or on a new
+/// one at a position.
+pub enum EffectTarget<'a> {
+    On(&'a str),
+    New {
+        name: Option<&'a str>,
+        at: Option<[f32; 3]>,
+    },
+}
+
+/// Applies a particle effect preset as one scene patch.
+pub fn apply_effect(
+    path: &Path,
+    name: &str,
+    target: EffectTarget,
+    dry_run: bool,
+) -> CliResult {
+    let Some(preset) = crate::runtime::effect_preset(name) else {
+        let names: Vec<_> = crate::runtime::EFFECT_PRESETS
+            .iter()
+            .map(|preset| preset.name)
+            .collect();
+        return CliResult::failure(
+            "EFFECT_UNKNOWN",
+            format!("no effect `{name}`; choose one of {}", names.join(", ")),
+            None,
+        );
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => return scene_error(error.into(), path),
+    };
+    let document = match read_scene(path) {
+        Ok(document) => document,
+        Err(result) => return result,
+    };
+    let component = json!(preset.emitter());
+    let key =
+        format!("/components/{}", crate::runtime::PARTICLE_EMITTER_COMPONENT);
+    let operation = match target {
+        EffectTarget::On(object) => crate::scene_patch::PatchOperation::Set {
+            id: crate::scene_patch::EntityRef::Name(object.to_owned()),
+            path: key,
+            value: component,
+            expected: None,
+        },
+        EffectTarget::New { name: object, at } => {
+            let title = name
+                .split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    chars.next().map_or_else(String::new, |first| {
+                        first.to_uppercase().chain(chars).collect()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let object = object.map_or_else(
+                || crate::art_direction::unused_name(&document, &title),
+                str::to_owned,
+            );
+            let at = at.unwrap_or([0.0, preset.height, 0.0]);
+            crate::scene_patch::PatchOperation::Create {
+                entity: json!({
+                    "name": object,
+                    "transform": {"position": at, "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+                    "components": {crate::runtime::PARTICLE_EMITTER_COMPONENT: component},
+                }),
+            }
+        }
+    };
+    let patch = crate::scene_patch::ScenePatch {
+        expected_revision: Some(crate::runtime::scene_revision(&bytes)),
+        operations: vec![operation],
+    };
     apply_scene_patch(path, &patch, None, dry_run)
 }
 
@@ -2890,6 +3154,46 @@ mod shape_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    #[cfg(feature = "gltf")]
+    fn a_gltf_model_lands_in_a_scene_under_one_named_object() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-add-model-{}", std::process::id()));
+        let models = root.join("assets/models");
+        std::fs::create_dir_all(&models).unwrap();
+        let model = models.join("environment.gltf");
+        std::fs::copy("samples/vertical_slice/environment.gltf", &model)
+            .unwrap();
+        let scene = root.join("scenes/main.rscene");
+        std::fs::create_dir_all(scene.parent().unwrap()).unwrap();
+        std::fs::write(
+            &scene,
+            r#"{"version": 9, "name": "Main", "entities": []}"#,
+        )
+        .unwrap();
+        let result = add_model(&scene, &model, "Courtyard", false);
+        assert!(result.ok, "{:?}", result.diagnostics);
+        let document = read_scene_document(&scene).unwrap();
+        let top: Vec<_> = document
+            .entities
+            .iter()
+            .filter(|entity| entity.parent.is_none())
+            .collect();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].name.as_deref(), Some("Courtyard"));
+        let mesh = document
+            .entities
+            .iter()
+            .find_map(|entity| entity.mesh_renderer.as_ref())
+            .unwrap();
+        // Paths are relative to the scene, like a hand-written patch.
+        assert!(
+            matches!(&mesh.mesh, crate::runtime::SceneMesh::AssetPath(path)
+            if path.starts_with("../assets/models"))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn an_old_engine_agents_md_is_flagged_and_refreshed() {

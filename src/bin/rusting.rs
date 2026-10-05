@@ -31,6 +31,7 @@ fn help_for(command: &[String]) -> String {
         "asset" => "asset import",
         "add" => "add scenario",
         "preset" => "preset apply",
+        "effect" => "effect apply",
         topic => topic,
     };
     match OPERATIONS.iter().find(|operation| operation.name == topic) {
@@ -184,6 +185,40 @@ fn execute(args: &[String]) -> CliResult {
         | ["scene", "patch", scene, "--dry-run", patch] => {
             cli::patch_scene(Path::new(scene), Path::new(patch), true)
         }
+        ["scene", "retarget", scene, from, clip, to, flags @ ..] => {
+            let dry_run = match flags {
+                [] => false,
+                ["--dry-run"] => true,
+                _ => return usage("`scene retarget` takes only --dry-run"),
+            };
+            cli::retarget_clip(Path::new(scene), from, clip, to, dry_run)
+        }
+        ["scene", "add-model", scene, model, flags @ ..] => {
+            let mut name = Path::new(model)
+                .file_stem()
+                .map_or_else(|| "Model".to_owned(), |stem| stem.to_string_lossy().into_owned());
+            let mut dry_run = false;
+            let mut flags = flags.iter();
+            while let Some(flag) = flags.next() {
+                match (*flag, flags.clone().next()) {
+                    ("--dry-run", _) => dry_run = true,
+                    ("--name", Some(value)) => {
+                        name = (*value).to_owned();
+                        flags.next();
+                    }
+                    _ => return usage(format!("unknown `scene add-model` flag `{flag}`")),
+                }
+            }
+            #[cfg(feature = "gltf")]
+            {
+                cli::add_model(Path::new(scene), Path::new(model), &name, dry_run)
+            }
+            #[cfg(not(feature = "gltf"))]
+            {
+                let _ = (scene, name, dry_run);
+                usage("this build has no glTF support (feature `gltf`)")
+            }
+        }
         ["determinism", root] => {
             cli::check_game_determinism(Path::new(root), 600)
         }
@@ -317,6 +352,42 @@ fn execute(args: &[String]) -> CliResult {
                 Some(flag) => usage(format!("unknown `preset apply` flag `{flag}`")),
                 None => cli::apply_preset(Path::new(scene), name, &only, dry_run),
             }
+        }
+        ["effect", "list"] => cli::list_effects(),
+        ["effect", "apply", scene, name, flags @ ..] => {
+            let (mut on, mut object, mut at, mut dry_run) = (None, None, None, false);
+            let mut flags = flags.iter();
+            while let Some(flag) = flags.next() {
+                match (*flag, flags.clone().next()) {
+                    ("--dry-run", _) => dry_run = true,
+                    ("--on", Some(value)) => {
+                        on = Some(*value);
+                        flags.next();
+                    }
+                    ("--name", Some(value)) => {
+                        object = Some(*value);
+                        flags.next();
+                    }
+                    ("--at", Some(value)) => {
+                        let parts: Vec<f32> =
+                            value.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                        let Ok(position) = <[f32; 3]>::try_from(parts) else {
+                            return usage("--at takes X,Y,Z");
+                        };
+                        at = Some(position);
+                        flags.next();
+                    }
+                    _ => return usage(format!("unknown `effect apply` flag `{flag}`")),
+                }
+            }
+            let target = match (on, object, at) {
+                (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+                    return usage("--on puts the effect on an existing object; leave out --name and --at")
+                }
+                (Some(on), ..) => cli::EffectTarget::On(on),
+                (None, name, at) => cli::EffectTarget::New { name, at },
+            };
+            cli::apply_effect(Path::new(scene), name, target, dry_run)
         }
         ["asset", "list", root] => cli::list_assets(Path::new(root)),
         ["asset", action @ ("import" | "reimport"), root, target, flags @ ..] =>

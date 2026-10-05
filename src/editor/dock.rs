@@ -31,10 +31,12 @@ pub enum EditorPanel {
     PhysicsDiagnostics,
     /// Journal of scene changes written by tools outside the editor.
     Agent,
+    /// Dope sheet for the selected object's animation clips.
+    Timeline,
 }
 
 impl EditorPanel {
-    pub(super) const ALL: [Self; 13] = [
+    pub(super) const ALL: [Self; 14] = [
         Self::Scene,
         Self::Game,
         Self::Code,
@@ -48,6 +50,7 @@ impl EditorPanel {
         Self::RenderSettings,
         Self::PhysicsDiagnostics,
         Self::Agent,
+        Self::Timeline,
     ];
 
     pub(super) fn icon(self) -> super::EditorIcon {
@@ -66,6 +69,7 @@ impl EditorPanel {
             Self::RenderSettings => EditorIcon::Gear,
             Self::PhysicsDiagnostics => EditorIcon::ViewOptions,
             Self::Agent => EditorIcon::Console,
+            Self::Timeline => EditorIcon::Play,
         }
     }
 
@@ -84,6 +88,7 @@ impl EditorPanel {
             Self::RenderSettings => "Render Settings",
             Self::PhysicsDiagnostics => "Physics Diagnostics",
             Self::Agent => "Agent",
+            Self::Timeline => "Timeline",
         }
     }
 }

@@ -10,9 +10,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::runtime::{
-    SceneDocument, SceneProjection, AMBIENT_LIGHT_COMPONENT,
-    BACKGROUND_COMPONENT, HUD_ELEMENT_COMPONENT, SKY_LIGHT_COMPONENT,
-    TONE_MAPPING_COMPONENT,
+    ColorGrading, SceneDocument, SceneProjection, AMBIENT_LIGHT_COMPONENT,
+    BACKGROUND_COMPONENT, COLOR_GRADING_COMPONENT, HUD_ELEMENT_COMPONENT,
+    SKY_LIGHT_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 use crate::scene_patch::{PatchOperation, ScenePatch};
 
@@ -41,6 +41,11 @@ pub struct ArtPreset {
     pub font_size: f32,
     /// sRGBA HUD text color.
     pub text_color: [f32; 4],
+    /// Written as `rusting.color_grading`.
+    pub grading: ColorGrading,
+    /// Linear RGB base colors that suit the light: dark, mid, light, then
+    /// two accents. Use them for materials so the scene stays in one palette.
+    pub palette: [[f32; 3]; 5],
 }
 
 pub const PRESETS: &[ArtPreset] = &[
@@ -62,6 +67,8 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 60.0,
         font_size: 20.0,
         text_color: [1.0, 1.0, 1.0, 1.0],
+        grading: ColorGrading { contrast: 1.05, saturation: 1.05, shadows: [0.97, 0.99, 1.04], highlights: [1.03, 1.01, 0.97], vignette: 0.15 },
+        palette: [[0.08, 0.1, 0.12], [0.35, 0.45, 0.3], [0.85, 0.82, 0.75], [0.9, 0.35, 0.1], [0.1, 0.4, 0.8]],
     },
     ArtPreset {
         name: "golden_hour",
@@ -81,6 +88,8 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 50.0,
         font_size: 22.0,
         text_color: [1.0, 0.93, 0.8, 1.0],
+        grading: ColorGrading { contrast: 1.1, saturation: 1.1, shadows: [0.9, 0.92, 1.1], highlights: [1.08, 1.0, 0.88], vignette: 0.25 },
+        palette: [[0.12, 0.06, 0.08], [0.6, 0.3, 0.18], [0.95, 0.8, 0.6], [0.95, 0.5, 0.1], [0.25, 0.2, 0.5]],
     },
     ArtPreset {
         name: "night",
@@ -100,6 +109,8 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 55.0,
         font_size: 20.0,
         text_color: [0.75, 0.85, 1.0, 1.0],
+        grading: ColorGrading { contrast: 1.15, saturation: 0.9, shadows: [0.85, 0.9, 1.15], highlights: [1.1, 1.0, 0.85], vignette: 0.35 },
+        palette: [[0.02, 0.025, 0.05], [0.12, 0.15, 0.25], [0.45, 0.5, 0.6], [1.0, 0.6, 0.2], [0.3, 0.8, 0.9]],
     },
     ArtPreset {
         name: "flat_toy",
@@ -119,6 +130,50 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 45.0,
         font_size: 26.0,
         text_color: [0.15, 0.15, 0.2, 1.0],
+        grading: ColorGrading { contrast: 1.0, saturation: 1.15, shadows: [1.0, 1.0, 1.0], highlights: [1.0, 1.0, 1.0], vignette: 0.0 },
+        palette: [[0.15, 0.15, 0.2], [0.85, 0.3, 0.3], [0.95, 0.9, 0.8], [0.2, 0.55, 0.9], [0.95, 0.75, 0.15]],
+    },
+    ArtPreset {
+        name: "dark_interior",
+        summary: "Almost no ambient, warm practical lights carry the scene, heavy vignette: horror, night shifts, dungeons. Add point lights.",
+        sun_color: [0.5, 0.6, 0.9],
+        sun_illuminance: 3_000.0,
+        sun_shadows: true,
+        sun_rotation: [-1.0, 0.6, 0.0],
+        ambient_color: [0.35, 0.4, 0.6],
+        ambient_intensity: 0.02,
+        sky_color: [0.05, 0.06, 0.1],
+        ground_color: [0.02, 0.02, 0.02],
+        sky_intensity: 0.05,
+        tone_mapper: "Aces",
+        exposure: 1.4,
+        background: [0.005, 0.005, 0.01, 1.0],
+        field_of_view_degrees: 65.0,
+        font_size: 20.0,
+        text_color: [0.95, 0.85, 0.65, 1.0],
+        grading: ColorGrading { contrast: 1.2, saturation: 0.85, shadows: [0.85, 0.92, 1.15], highlights: [1.12, 1.0, 0.82], vignette: 0.45 },
+        palette: [[0.03, 0.03, 0.04], [0.18, 0.15, 0.13], [0.55, 0.5, 0.42], [1.0, 0.55, 0.15], [0.8, 0.1, 0.08]],
+    },
+    ArtPreset {
+        name: "bright_stylized",
+        summary: "Strong sun with soft shadows, saturated colors and gentle contrast: cartoon, casual and party games.",
+        sun_color: [1.0, 0.97, 0.9],
+        sun_illuminance: 90_000.0,
+        sun_shadows: true,
+        sun_rotation: [-0.95, 0.6, 0.0],
+        ambient_color: [0.85, 0.9, 1.0],
+        ambient_intensity: 0.2,
+        sky_color: [0.6, 0.8, 1.0],
+        ground_color: [0.5, 0.45, 0.35],
+        sky_intensity: 0.45,
+        tone_mapper: "Aces",
+        exposure: 1.1,
+        background: [0.35, 0.65, 0.95, 1.0],
+        field_of_view_degrees: 50.0,
+        font_size: 26.0,
+        text_color: [1.0, 1.0, 1.0, 1.0],
+        grading: ColorGrading { contrast: 1.05, saturation: 1.25, shadows: [0.92, 0.95, 1.1], highlights: [1.04, 1.02, 0.96], vignette: 0.1 },
+        palette: [[0.12, 0.1, 0.2], [0.25, 0.65, 0.3], [0.98, 0.95, 0.88], [1.0, 0.4, 0.3], [0.2, 0.5, 1.0]],
     },
 ];
 
@@ -155,6 +210,7 @@ pub fn preset_patch(
         AMBIENT_LIGHT_COMPONENT,
         SKY_LIGHT_COMPONENT,
         TONE_MAPPING_COMPONENT,
+        COLOR_GRADING_COMPONENT,
         BACKGROUND_COMPONENT,
     ];
     let sun = document
@@ -218,6 +274,11 @@ pub fn preset_patch(
     );
     set(
         environment,
+        &component(COLOR_GRADING_COMPONENT),
+        json!(preset.grading),
+    );
+    set(
+        environment,
         &component(BACKGROUND_COMPONENT),
         json!({"color": preset.background}),
     );
@@ -269,7 +330,7 @@ fn preset_camera_and_text(
 }
 
 /// Scene names are unique, so a created `Sun` becomes `Sun 2` when needed.
-fn unused_name(document: &SceneDocument, base: &str) -> String {
+pub(crate) fn unused_name(document: &SceneDocument, base: &str) -> String {
     let taken = |name: &str| {
         document
             .entities
@@ -378,6 +439,8 @@ mod tests {
         assert_eq!(tone.mapper, ToneMapper::Linear);
         let ambient = *world.query::<&AmbientLight>().single(world).unwrap();
         assert_eq!(ambient.intensity, toy.ambient_intensity);
+        let grading = *world.query::<&ColorGrading>().single(world).unwrap();
+        assert_eq!(grading, toy.grading);
         assert_eq!(world.query::<&SceneBackground>().iter(world).count(), 1);
         assert_eq!(
             world

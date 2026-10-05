@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.0.3] - 2026-10-05
+
+### Added
+
+- Animation: keyframe clips that move, turn, scale, recolor or hide objects, with smooth blending between clips
+- Timeline in the editor: play, scrub and edit keys, with a record mode and full undo
+- Animated and skinned glTF models: bones, blend shapes and their clips now import and play
+- Animation state machine and blend spaces: switch and mix walk, run and other clips from game code
+- Animation layers: play a clip on top of another, like waving while walking
+- Root motion: walk clips move the character instead of sliding in place
+- Copy animations between differently built skeletons
+- IK: heads look at targets, hands and feet reach for things, feet stay on slopes and stairs
+- Ragdolls: characters go limp when hit hard and get back up, or stay physical and stagger when pushed
+- Particles: a new emitter with eleven ready presets (dust, leaves, snow, rain, sparks, smoke, fire, embers, fireflies, sparkle, confetti)
+- Particle editor in the Inspector with a live preview
+- Color grading and vignette, plus two new art presets: dark interior and bright stylized
+- Camera screens: show what another camera sees on a mesh, like CCTV monitors
+- Rounded cubes and capsules, and a ready-made simple character
+- Add a downloaded glTF model to a scene with one command
+- Skeletons show in the editor; click a bone to select it
+- New guides: Animation, Effects and Look and feel
+
+### Changed
+
+- Cylinders and cones look smooth
+
+### Fixed
+
+- Spheres were drawn inside out and looked badly lit
+- Adding a model to a scene no longer fails in some cases
+
+---
+
 ## [2.0.2] - 2026-10-03
 
 ### Added

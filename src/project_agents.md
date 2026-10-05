@@ -38,6 +38,9 @@ command takes `--json` for output a program can read.
    center.
 6. `rusting capture scenes/main.rscene shot.png --tick 60` renders a frame so
    you can look at the result. Scenario files can capture frames too.
+   A working game is not done until it looks good: run the polish loop and
+   checklist in `rusting docs show guide/look-and-feel` (lighting, palette,
+   HUD, shapes, free CC0 models with `rusting scene add-model`).
 7. `rusting run` opens the game window. `--ticks N` runs it headless and
    saves the end state to `build/final.rscene`; inspect it with
    `rusting scene query build/final.rscene --json`. Game output (`eprintln!`)
@@ -98,12 +101,27 @@ command takes `--json` for output a program can read.
 - `rusting docs show api/PlayerController` lists the controller's fields.
   `turn_speed` turns the body's non-camera children (the visible rig)
   toward the walking direction.
+- A `rusting.particle_emitter` is the full particle effect (fire, smoke,
+  snow, sparks); `rusting effect list` lists ready presets and
+  `rusting docs show guide/effects` covers its fields.
 - A `rusting.burst_emitter` with `rate` emits continuously over its `area`
   box; `stretch` makes tall particles such as rain streaks.
 - A dynamic body with a `ConvexMesh` collider collides as the convex hull
   of its mesh: a `Cylinder` mesh makes a rolling barrel.
-- There is no skeletal animation. Animate characters as child entities
-  rotated from game code each fixed tick.
+- `rusting.animation` plays keyframe clips (position, rotation, scale,
+  color, emissive, visible, numeric fields) on an object and its named
+  children, with `transitions` between clips driven by
+  `set_animation_parameter`, 1D/2D blend spaces, masked override or
+  additive `layers`, `root_motion` (`scene retarget` copies clips between
+  skeletons), `rusting.ik` makes a joint look at or
+  reach a target object, and `rusting.ragdoll` hands bones to physics on
+  a hit or `set_ragdoll` and blends them back (`muscle` above 0 keeps
+  them physical and following the clips: an active ragdoll); `rusting docs show guide/animation` covers it. `scene
+  add-model` keeps a glTF's node animations as clips, and a skinned
+  glTF's skin as `rusting.skin` and blend shapes as `rusting.morph` (both
+  on the CPU; keep to a few characters).
+  Without a rigged model, build characters from child entities and key
+  them.
 
 ## Game code
 

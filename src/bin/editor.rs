@@ -8,9 +8,9 @@ use rusting_engine::editor::{
     editor_needs_continuous_redraw, editor_scene_effects,
     handle_keyboard_input, handle_mouse_button_input, handle_mouse_wheel,
     load_editor_scene, release_editor_navigation,
-    ui_receives_during_navigation, update_fly_camera, EditorDebugOverlay,
-    EditorPlugin, EditorShortcuts, EditorState, EditorViewport,
-    EditorWorkspace, SCENE_VIEW_TEXTURE,
+    ui_receives_during_navigation, update_edit_preview, update_fly_camera,
+    EditorDebugOverlay, EditorPlugin, EditorShortcuts, EditorState,
+    EditorViewport, EditorWorkspace, SCENE_VIEW_TEXTURE,
 };
 use rusting_engine::rendering::egui_painter::EguiPainter;
 use rusting_engine::rendering::frame_pacer::{select_present_mode, FramePacer};
@@ -557,6 +557,7 @@ impl ApplicationHandler for EditorApplication {
                 // Navigation runs before ECS extraction, so the renderer uses
                 // the new editor-camera transform in this same frame.
                 update_fly_camera(self.runtime.world_mut(), delta);
+                update_edit_preview(self.runtime.world_mut(), delta);
                 if let Err(error) = self.runtime.update(delta) {
                     eprintln!("editor runtime update failed: {error}");
                     event_loop.exit();

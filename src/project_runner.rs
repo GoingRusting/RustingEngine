@@ -1754,7 +1754,8 @@ impl GameScene<'_> {
     }
 
     /// Fires the named object's `rusting.sound_cue` and
-    /// `rusting.burst_emitter`, the way a pickup does when collected.
+    /// `rusting.burst_emitter` and restarts its `rusting.particle_emitter`,
+    /// the way a pickup does when collected.
     pub fn trigger(&mut self, name: &str) {
         let Some(entity) = find_named_entity(self.world, name) else {
             return;
@@ -1769,6 +1770,173 @@ impl GameScene<'_> {
         {
             emitter.trigger();
         }
+        self.particles(name, crate::runtime::ParticleCommand::Restart);
+    }
+
+    /// Plays, pauses, stops or restarts the named object's
+    /// `rusting.particle_emitter` on the next fixed tick. `Stop` lets live
+    /// particles finish.
+    pub fn particles(
+        &mut self,
+        name: &str,
+        command: crate::runtime::ParticleCommand,
+    ) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut emitter) = self
+            .world
+            .get_mut::<crate::runtime::ParticleEmitter>(entity)
+        {
+            emitter.command = command;
+        }
+    }
+
+    /// Plays the named object's `rusting.animation` clip from its start on
+    /// the next fixed tick.
+    pub fn play_animation(&mut self, name: &str, clip: &str) {
+        self.animate(name, crate::runtime::AnimationCommand::Play(clip.into()));
+    }
+
+    /// Blends the named object from its current clip into `clip` over
+    /// `seconds`.
+    pub fn crossfade(&mut self, name: &str, clip: &str, seconds: f32) {
+        self.animate(
+            name,
+            crate::runtime::AnimationCommand::Crossfade(clip.into(), seconds),
+        );
+    }
+
+    /// Stops the named object's animation, holding its current pose.
+    pub fn stop_animation(&mut self, name: &str) {
+        self.animate(name, crate::runtime::AnimationCommand::Stop);
+    }
+
+    /// Sets how fast the named object's animation plays; 1 is real time.
+    pub fn set_animation_speed(&mut self, name: &str, speed: f32) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut animation) =
+            self.world.get_mut::<crate::runtime::Animation>(entity)
+        {
+            animation.speed = speed.max(0.0);
+        }
+    }
+
+    /// Makes the named character's `rusting.ragdoll` go limp (`true`) or
+    /// get back up (`false`) next fixed step.
+    pub fn set_ragdoll(&mut self, name: &str, limp: bool) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut ragdoll) =
+            self.world.get_mut::<crate::runtime::Ragdoll>(entity)
+        {
+            ragdoll.command = Some(limp);
+        }
+    }
+
+    /// Sets the named character's ragdoll muscle stiffness in Hz. Above 0
+    /// makes it an active ragdoll; 0 lets it go limp and then return to
+    /// plain animation.
+    pub fn set_ragdoll_muscle(&mut self, name: &str, hz: f32) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut ragdoll) =
+            self.world.get_mut::<crate::runtime::Ragdoll>(entity)
+        {
+            ragdoll.muscle = hz.max(0.0);
+        }
+    }
+
+    /// Whether the named character is limp (not animated or blending back).
+    #[must_use]
+    pub fn is_limp(&mut self, name: &str) -> bool {
+        find_named_entity(self.world, name)
+            .and_then(|entity| {
+                self.world.get::<crate::runtime::RagdollState>(entity)
+            })
+            .is_some_and(|state| {
+                state.phase == crate::runtime::RagdollPhase::Limp
+            })
+    }
+
+    /// Sets a parameter the named object's animation transitions test,
+    /// such as `speed` or `grounded`. The next fixed tick follows the first
+    /// transition that matches.
+    pub fn set_animation_parameter(
+        &mut self,
+        name: &str,
+        parameter: &str,
+        value: f32,
+    ) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut animation) =
+            self.world.get_mut::<crate::runtime::Animation>(entity)
+        {
+            animation.parameters.insert(parameter.into(), value);
+        }
+    }
+
+    fn animate(
+        &mut self,
+        name: &str,
+        command: crate::runtime::AnimationCommand,
+    ) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut animation) =
+            self.world.get_mut::<crate::runtime::Animation>(entity)
+        {
+            animation.command = Some(command);
+        }
+    }
+
+    /// True while the named object plays `clip`. A `Once` clip stops
+    /// playing at its end.
+    #[must_use]
+    pub fn is_playing(&mut self, name: &str, clip: &str) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let (Some(animation), Some(player)) = (
+            self.world.get::<crate::runtime::Animation>(entity),
+            self.world.get::<crate::runtime::AnimationPlayer>(entity),
+        ) else {
+            return false;
+        };
+        player.playing
+            && player.current.is_some_and(|current| {
+                Some(current.clip) == animation.clip(clip)
+            })
+    }
+
+    /// Root motion the object's clips produced since the last call, in its
+    /// local frame, and resets it. Needs `root_motion` set on its
+    /// animation; `InPlace` leaves applying it to game code.
+    pub fn take_root_motion(&mut self, name: &str) -> [f32; 3] {
+        find_named_entity(self.world, name)
+            .and_then(|entity| {
+                self.world
+                    .get_mut::<crate::runtime::AnimationPlayer>(entity)
+            })
+            .map(|mut player| std::mem::take(&mut player.root_motion))
+            .unwrap_or_default()
+    }
+
+    /// Animation markers passed since the last frame, in tick order.
+    #[must_use]
+    pub fn animation_events(&self) -> Vec<crate::runtime::AnimationEvent> {
+        self.world
+            .resource::<EventQueue<crate::runtime::AnimationEvent>>()
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Names of the objects touching `name` in the last physics step, sensors

@@ -144,7 +144,7 @@ the value it saw. Put the jump back by applying the patch in reverse
 
 Presets write a look as ordinary scene data (sun, ambient and sky light,
 tone mapping, background, camera, and HUD style): `daylight`,
-`golden_hour`, `night`, and `flat_toy`.
+`golden_hour`, `night`, `flat_toy`, `dark_interior` and `bright_stylized`. Each also sets color grading and lists a palette of material colors.
 
 ```bash
 rusting preset apply "Coin Run/scenes/main.rscene" golden_hour --dry-run

@@ -89,6 +89,57 @@ pub fn object_shapes(
         .collect()
 }
 
+/// Joints of every visible skin, Blender-armature style: a line from the
+/// parent joint plus a small cross, both owned by the joint so clicking a
+/// bone selects it. Joints shared by several skins appear once. The Scene
+/// View draws them in front of meshes and picks them before meshes.
+pub fn bone_shapes(world: &World) -> Vec<(Entity, Vec<Segment>)> {
+    let Some(mut query) = world.try_query::<(Entity, &crate::runtime::Skin)>()
+    else {
+        return Vec::new();
+    };
+    let mut joints: Vec<Entity> = query
+        .iter(world)
+        .filter(|(entity, _)| {
+            crate::runtime::visible_in_hierarchy(world, *entity)
+        })
+        .flat_map(|(entity, skin)| {
+            skin.joints.iter().filter_map(move |path| {
+                crate::runtime::find_target(world, entity, path)
+            })
+        })
+        .collect();
+    joints.sort();
+    joints.dedup();
+    let origin = |entity| {
+        world
+            .get::<GlobalTransform>(entity)
+            .map(|transform| transform_point(transform.matrix, [0.0; 3]))
+    };
+    joints
+        .iter()
+        .filter_map(|&joint| {
+            let at = origin(joint)?;
+            let mut lines: Vec<Segment> = (0..3)
+                .map(|axis| {
+                    let (mut start, mut end) = (at, at);
+                    start[axis] -= 0.04;
+                    end[axis] += 0.04;
+                    [start, end]
+                })
+                .collect();
+            if let Some(parent) = world
+                .get::<crate::runtime::Parent>(joint)
+                .filter(|parent| joints.binary_search(&parent.0).is_ok())
+                .and_then(|parent| origin(parent.0))
+            {
+                lines.push([parent, at]);
+            }
+            Some((joint, lines))
+        })
+        .collect()
+}
+
 /// Local-space shape: forward is -Z and up is +Y, like the renderer.
 /// `faces_view` leaves out shapes that `object_shapes` draws facing the
 /// editor camera.

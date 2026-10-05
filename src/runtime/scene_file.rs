@@ -1092,6 +1092,18 @@ pub const TWEEN_COMPONENT: &str = "rusting.tween";
 pub const SOUND_CUE_COMPONENT: &str = "rusting.sound_cue";
 /// Registry name of the built-in particle burst emitter.
 pub const BURST_EMITTER_COMPONENT: &str = "rusting.burst_emitter";
+/// Registry name of the built-in particle emitter.
+pub const PARTICLE_EMITTER_COMPONENT: &str = "rusting.particle_emitter";
+/// Registry name of the built-in keyframe animation.
+pub const ANIMATION_COMPONENT: &str = "rusting.animation";
+/// Registry name of the built-in skinned mesh joints.
+pub const SKIN_COMPONENT: &str = "rusting.skin";
+/// Registry name of the built-in inverse kinematics.
+pub const IK_COMPONENT: &str = "rusting.ik";
+/// Registry name of the built-in ragdoll.
+pub const RAGDOLL_COMPONENT: &str = "rusting.ragdoll";
+/// Registry name of the built-in blend shape weights.
+pub const MORPH_COMPONENT: &str = "rusting.morph";
 /// Registry name of the built-in fluid block.
 pub const FLUID_BLOCK_COMPONENT: &str = "rusting.fluid_block";
 pub const WATER_COMPONENT: &str = "rusting.water";
@@ -1105,6 +1117,8 @@ pub const REFLECTION_PROBE_COMPONENT: &str = "rusting.reflection_probe";
 pub const FOG_COMPONENT: &str = "rusting.fog";
 /// Registry name of the built-in bloom.
 pub const BLOOM_COMPONENT: &str = "rusting.bloom";
+pub const COLOR_GRADING_COMPONENT: &str = "rusting.color_grading";
+pub const CAMERA_SCREEN_COMPONENT: &str = "rusting.camera_screen";
 /// Registry name of the built-in screen-space ambient occlusion.
 pub const AMBIENT_OCCLUSION_COMPONENT: &str = "rusting.ambient_occlusion";
 /// Registry name of the built-in scene clear color.
@@ -1163,6 +1177,24 @@ impl Default for SceneComponentRegistry {
             .register::<super::BurstEmitter>(BURST_EMITTER_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
+            .register::<super::ParticleEmitter>(PARTICLE_EMITTER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Animation>(ANIMATION_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Skin>(SKIN_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Morph>(MORPH_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Ik>(IK_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Ragdoll>(RAGDOLL_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
             .register::<super::FluidBlock>(FLUID_BLOCK_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
@@ -1185,6 +1217,12 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Bloom>(BLOOM_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::ColorGrading>(COLOR_GRADING_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::CameraScreen>(CAMERA_SCREEN_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::AmbientOcclusion>(AMBIENT_OCCLUSION_COMPONENT)
@@ -1676,7 +1714,7 @@ fn scene_document_with(
         Option<&CollisionLayers>,
         Option<&GpuPhysicsWatch>,
     )>();
-    let raw = query
+    let mut raw = query
         .iter(world)
         .map(
             |(
@@ -1714,6 +1752,16 @@ fn scene_document_with(
             },
         )
         .collect::<Vec<_>>();
+    if let Some(rest) = world.get_resource::<super::PreviewRestPose>() {
+        for (_, id, _, _, _, transform, _, _, visibility, ..) in &mut raw {
+            if let Some((_, rest_transform, rest_visibility)) =
+                rest.0.iter().find(|rest| rest.0 == *id)
+            {
+                *transform = Some(*rest_transform);
+                *visibility = *rest_visibility;
+            }
+        }
+    }
     let ids = raw
         .iter()
         .map(|(entity, id, ..)| (*entity, id.0))
@@ -2047,7 +2095,7 @@ pub(super) fn absolutize_scene_assets(
 }
 
 /// Converts absolute paths to paths relative to the scene being written.
-pub(super) fn relativize_scene_assets(
+pub fn relativize_scene_assets(
     document: &mut SceneDocument,
     scene_folder: &Path,
 ) -> Result<(), SceneIoError> {

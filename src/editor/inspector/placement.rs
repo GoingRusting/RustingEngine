@@ -20,14 +20,16 @@ use crate::runtime::{
     TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 use crate::runtime::{
-    ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT, BURST_EMITTER_COMPONENT,
-    CONNECTIONS_COMPONENT, COUNTER_COMPONENT, FLUID_BLOCK_COMPONENT,
-    INPUT_ACTION_COMPONENT, JOINT_COMPONENT, PHYSICS_SYNC_COMPONENT,
-    PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
-    PLAYER_CONTROLLER_COMPONENT, REFLECTION_PROBE_COMPONENT,
-    RENDER_BOUNDS_COMPONENT, SCENE_INSTANCE_COMPONENT, SOUND_CUE_COMPONENT,
-    TWEEN_COMPONENT, WATER_COMPONENT,
+    ANIMATION_COMPONENT, ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT,
+    BURST_EMITTER_COMPONENT, CONNECTIONS_COMPONENT, COUNTER_COMPONENT,
+    FLUID_BLOCK_COMPONENT, IK_COMPONENT, INPUT_ACTION_COMPONENT,
+    JOINT_COMPONENT, MORPH_COMPONENT, PARTICLE_EMITTER_COMPONENT,
+    PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
+    PLAYER_CONTROLLER_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
+    RENDER_BOUNDS_COMPONENT, SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT,
+    SOUND_CUE_COMPONENT, TWEEN_COMPONENT, WATER_COMPONENT,
 };
+use crate::runtime::{CAMERA_SCREEN_COMPONENT, COLOR_GRADING_COMPONENT};
 
 /// Components that together make a World Environment object.
 pub(in crate::editor) const ENVIRONMENT_COMPONENTS: [&str; 3] = [
@@ -53,6 +55,7 @@ fn kind(name: &str) -> Kind {
         | ENVIRONMENT_MAP_COMPONENT
         | FOG_COMPONENT
         | BLOOM_COMPONENT
+        | COLOR_GRADING_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
         TILE_MAP_COMPONENT => Kind::TileMap,
@@ -107,6 +110,9 @@ pub(in crate::editor) fn placement(
         }
         FOG_COMPONENT => first_with::<Fog>(world),
         BLOOM_COMPONENT => first_with::<Bloom>(world),
+        COLOR_GRADING_COMPONENT => {
+            first_with::<crate::runtime::ColorGrading>(world)
+        }
         AMBIENT_OCCLUSION_COMPONENT => first_with::<AmbientOcclusion>(world),
         _ => None,
     };
@@ -166,6 +172,30 @@ pub(in crate::editor) fn component_help(
         BURST_EMITTER_COMPONENT => (
             "Fires a burst of short-lived particles.",
             "Sparks, dust, explosions, hit effects.",
+        ),
+        PARTICLE_EMITTER_COMPONENT => (
+            "A full particle effect: emission shape, random ranges, forces, size and color over life, glow and blending.",
+            "Fire, smoke, snow, rain, leaves, magic. Start from `rusting effect list`.",
+        ),
+        SKIN_COMPONENT => (
+            "Joints that bend the object's mesh, with weights from the imported model.",
+            "Characters and creatures imported from glTF. Animate the joints with Animation.",
+        ),
+        MORPH_COMPONENT => (
+            "Blend shape weights that reshape the object's mesh, from the imported model.",
+            "Faces, blinking eyes, squash and stretch. Animate the weights with Animation.",
+        ),
+        RAGDOLL_COMPONENT => (
+            "Lets a character go limp when hit or told to, then blend back to its animation.",
+            "Knockdowns, falls, deaths and stumbles of animated characters.",
+        ),
+        IK_COMPONENT => (
+            "Turns this object toward a target, or bends its parent and grandparent so it reaches one.",
+            "Heads that track the player, hands on levers, feet on uneven ground.",
+        ),
+        ANIMATION_COMPONENT => (
+            "Keyframe clips that move, turn, scale, recolor, show or hide the object and its children, with events for game code.",
+            "Doors, platforms, blinking lights, idle bobbing, cutscene moves.",
         ),
         FLUID_BLOCK_COMPONENT => (
             "Fills the object's box with fluid particles that splash and settle.",
@@ -246,6 +276,14 @@ pub(in crate::editor) fn component_help(
         AMBIENT_OCCLUSION_COMPONENT => (
             "Darkens creases and contact points for depth.",
             "Make objects look grounded. Costs some GPU time.",
+        ),
+        COLOR_GRADING_COMPONENT => (
+            "Adjusts contrast, saturation, shadow and highlight tints, and vignette.",
+            "Give the whole picture one mood, like a film look.",
+        ),
+        CAMERA_SCREEN_COMPONENT => (
+            "Shows what another camera sees on this mesh.",
+            "CCTV monitors and rear-view screens.",
         ),
         HUD_ELEMENT_COMPONENT => (
             "A piece of screen UI: text, bar or image at a screen position.",

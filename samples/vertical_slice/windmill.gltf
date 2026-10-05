@@ -1,0 +1,202 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "RustingEngine windmill fixture"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "Windmill",
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Tower",
+      "mesh": 0,
+      "scale": [
+        0.4,
+        1.5,
+        0.4
+      ],
+      "children": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "Rotor",
+      "mesh": 0,
+      "translation": [
+        0,
+        1.2,
+        1.2
+      ],
+      "scale": [
+        2.5,
+        0.15,
+        0.1
+      ]
+    },
+    {
+      "name": "Flag",
+      "mesh": 0,
+      "translation": [
+        0.5,
+        1.6,
+        0
+      ],
+      "scale": [
+        0.3,
+        0.1,
+        0.05
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Cube",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1
+        }
+      ]
+    }
+  ],
+  "animations": [
+    {
+      "name": "spin",
+      "samplers": [
+        {
+          "input": 2,
+          "output": 3,
+          "interpolation": "LINEAR"
+        },
+        {
+          "input": 4,
+          "output": 5,
+          "interpolation": "CUBICSPLINE"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 1,
+            "path": "rotation"
+          }
+        },
+        {
+          "sampler": 1,
+          "target": {
+            "node": 2,
+            "path": "translation"
+          }
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AACAvwAAgL8AAIC/AACAvwAAgL8AAIA/AACAvwAAgD8AAIC/AACAvwAAgD8AAIA/AACAPwAAgL8AAIC/AACAPwAAgL8AAIA/AACAPwAAgD8AAIC/AACAPwAAgD8AAIA/AAABAAMAAAADAAIABAAGAAcABAAHAAUAAAAEAAUAAAAFAAEAAgADAAcAAgAHAAYAAAACAAYAAAAGAAQAAQAFAAcAAQAHAAMAAAAAAAAAgD8AAABAAABAQAAAgEAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAADzBDU/8wQ1PwAAAAAAAAAAAACAPzIxjSQAAAAAAAAAAPMENT/zBDW/AAAAAAAAAAAyMQ0lAACAvwAAAAAAAABAAACAQAAAAAAAAAAAAAAAAAAAAD/NzMw/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/NzMw/AAAAAAAAAAAAAAAAAAAAAA==",
+      "byteLength": 388
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 96
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 72
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 168,
+      "byteLength": 20
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 188,
+      "byteLength": 80
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 268,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 280,
+      "byteLength": 108
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 8,
+      "type": "VEC3",
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 5,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        4
+      ]
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 5,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 3,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        4
+      ]
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 9,
+      "type": "VEC3"
+    }
+  ]
+}

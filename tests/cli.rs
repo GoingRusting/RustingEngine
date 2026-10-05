@@ -835,6 +835,51 @@ fn art_presets_list_and_apply_as_scene_patches() {
 }
 
 #[test]
+fn effect_presets_list_and_apply_as_scene_patches() {
+    let (output, listed) = run(&["effect", "list"]);
+    assert!(output.status.success(), "{listed}");
+    let effects = listed["data"]["effects"].as_array().unwrap();
+    assert_eq!(effects.len(), 11);
+    assert!(effects.iter().all(|effect| effect["component"].is_object()));
+
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let scene = project.join("scenes/main.rscene");
+    let scene = scene.to_str().unwrap();
+    let (output, applied) =
+        run(&["effect", "apply", scene, "fire", "--at", "1,0,2"]);
+    assert!(output.status.success(), "{applied}");
+    let (_, found) = run(&["scene", "query", scene, "--name", "Fire"]);
+    assert_eq!(found["data"]["count"], 1, "{found}");
+    let (output, smoke) =
+        run(&["effect", "apply", scene, "smoke", "--on", "Fire"]);
+    assert!(output.status.success(), "{smoke}");
+    let document: Value =
+        serde_json::from_slice(&std::fs::read(scene).unwrap()).unwrap();
+    let fire = document["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["name"] == "Fire")
+        .unwrap();
+    assert_eq!(
+        fire["transform"]["position"],
+        serde_json::json!([1.0, 0.0, 2.0])
+    );
+    let emitter = fire["components"]["rusting.particle_emitter"]
+        .as_str()
+        .unwrap();
+    assert!(
+        emitter.contains("\"Cone\""),
+        "smoke replaced fire: {emitter}"
+    );
+    let (output, unknown) = run(&["effect", "apply", scene, "lava"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(unknown["diagnostics"][0]["code"], "EFFECT_UNKNOWN");
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
 fn validate_names_parts_below_the_project_determinism_mode() {
     let parent = temporary_parent();
     let root = generated_project(&parent);
@@ -1163,4 +1208,61 @@ fn a_closed_stdout_ends_output_without_a_panic() {
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn scene_retarget_saves_a_clip_on_the_other_rig() {
+    let parent = temporary_parent();
+    let project = generated_project(&parent);
+    let scene = project.join("scenes/main.rscene");
+    let scene = scene.to_str().unwrap();
+    let ids: Vec<String> = (0..4).map(|_| Uuid::new_v4().to_string()).collect();
+    let entity = |id: &str,
+                  parent: Option<&str>,
+                  name: &str,
+                  y: f32,
+                  components: Value| {
+        serde_json::json!({"op": "create", "entity": {
+            "id": id, "parent": parent, "name": name,
+            "transform": {"position": [0.0, y, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "components": components,
+        }})
+    };
+    let walk = serde_json::json!({"clips": [{"name": "walk", "tracks": [{
+        "target": "mixamorig:Hips",
+        "property": "Rotation",
+        "keys": [{"time": 0.0, "value": [0.0, 0.5, 0.0]}],
+    }]}]});
+    let patch = serde_json::json!({"operations": [
+        entity(&ids[0], None, "Mixamo", 0.0, serde_json::json!({"rusting.animation": walk})),
+        entity(&ids[1], Some(&ids[0]), "mixamorig:Hips", 1.0, serde_json::json!({})),
+        entity(&ids[2], None, "Knight", 0.0, serde_json::json!({})),
+        entity(&ids[3], Some(&ids[2]), "Hips", 2.0, serde_json::json!({})),
+    ]});
+    let patch_path = parent.join("rigs.json");
+    std::fs::write(&patch_path, patch.to_string()).unwrap();
+    let (output, built) =
+        run(&["scene", "patch", scene, patch_path.to_str().unwrap()]);
+    assert!(output.status.success(), "{built}");
+    let (output, dry) = run(&[
+        "scene",
+        "retarget",
+        scene,
+        "Mixamo",
+        "walk",
+        "Knight",
+        "--dry-run",
+    ]);
+    assert!(output.status.success(), "{dry}");
+    assert_eq!(dry["data"]["patch"]["written"], false);
+    let (output, applied) =
+        run(&["scene", "retarget", scene, "Mixamo", "walk", "Knight"]);
+    assert!(output.status.success(), "{applied}");
+    let document = std::fs::read_to_string(scene).unwrap();
+    assert!(document.contains(r#"\"target\":\"Hips\""#), "{document}");
+    let (output, missing) =
+        run(&["scene", "retarget", scene, "Mixamo", "run", "Knight"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(missing["diagnostics"][0]["code"], "RETARGET_FAILED");
+    std::fs::remove_dir_all(parent).unwrap();
 }

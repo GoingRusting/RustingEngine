@@ -599,6 +599,61 @@ impl Default for Bloom {
     }
 }
 
+/// Shows what a camera sees on this object's mesh, like a CCTV monitor. The
+/// camera's image replaces the base color and emissive maps of the object's
+/// material, so a material with black base color and emissive `[1, 1, 1]`
+/// is an unlit screen. Screens that share a material show the same feed;
+/// give each screen its own material (a different `name` is enough). The
+/// camera can stay inactive.
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraScreen {
+    /// Name of the camera entity to show.
+    pub camera: String,
+    /// Feed resolution in pixels.
+    pub size: [u32; 2],
+}
+
+impl Default for CameraScreen {
+    fn default() -> Self {
+        Self {
+            camera: String::new(),
+            size: [640, 360],
+        }
+    }
+}
+
+/// Color grading applied after tone mapping: contrast, saturation, a tint
+/// for dark and for bright tones, and a vignette. The defaults change
+/// nothing. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorGrading {
+    /// Contrast around mid grey. 1 leaves the image as is; 1.2 deepens
+    /// shadows and brightens highlights.
+    pub contrast: f32,
+    /// 0 is grey, 1 leaves colors as they are, above 1 makes them stronger.
+    pub saturation: f32,
+    /// Linear RGB multiplied into dark tones, e.g. a cool `[0.9, 0.95, 1.1]`.
+    pub shadows: [f32; 3],
+    /// Linear RGB multiplied into bright tones, e.g. a warm `[1.1, 1.0, 0.9]`.
+    pub highlights: [f32; 3],
+    /// How much the corners darken. 0 is none, 1 makes them black.
+    pub vignette: f32,
+}
+
+impl Default for ColorGrading {
+    fn default() -> Self {
+        Self {
+            contrast: 1.0,
+            saturation: 1.0,
+            shadows: [1.0; 3],
+            highlights: [1.0; 3],
+            vignette: 0.0,
+        }
+    }
+}
+
 /// Screen-space ambient occlusion: darkens ambient and sky light in creases
 /// and corners where nearby geometry blocks it. Off on the Eco quality
 /// profile. The one on the entity with the lowest ID is used.

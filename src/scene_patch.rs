@@ -230,7 +230,7 @@ impl PatchError {
 }
 
 /// Entity in patch form: registered component strings parsed to JSON.
-fn entity_form(entity: &crate::runtime::SceneEntity) -> Value {
+pub(crate) fn entity_form(entity: &crate::runtime::SceneEntity) -> Value {
     let mut value = serde_json::to_value(entity).expect("entities serialize");
     if let Some(Value::Object(components)) = value.get_mut("components") {
         for component in components.values_mut() {

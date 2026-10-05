@@ -9,14 +9,24 @@ use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
-    AxisMotion, Bloom, BurstEmitter, Connection, Connections, Counter,
-    CullingMode, DeterminismMode, Easing, EnvironmentMap, FluidBlock, Fog,
-    HudAnchor, HudElement, InputAction, Joint, JointAxis, JointKind,
-    JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode, Pickup,
-    PlatformerController, PlayerController, QualityProfile, RandomSeed,
+    AxisMotion, Bloom, BurstEmitter, CameraScreen, ColorGrading, Connection,
+    Connections, Counter, CullingMode, DeterminismMode, Easing, EnvironmentMap,
+    FluidBlock, Fog, HudAnchor, HudElement, InputAction, Joint, JointAxis,
+    JointKind, JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode,
+    Pickup, PlatformerController, PlayerController, QualityProfile, RandomSeed,
     ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
     SceneInstance, ShadowQuality, SkyLight, SoundCue, TileKind, TileMap,
     ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, WaterBody,
+};
+use crate::runtime::{
+    Animation, AnimationClip, AnimationCompare, AnimationLayer,
+    AnimationMarker, AnimationProperty, AnimationTrack, AnimationTransition,
+    BlendPoint, HumanoidBone, Ik, IkKind, Interpolation, Keyframe, Morph,
+    Ragdoll, RagdollBone, RootMotion, Skin,
+};
+use crate::runtime::{
+    ColorKey, CurveKey, EmitterShape, ParticleBlend, ParticleBurst,
+    ParticleEmitter, ParticleFacing, ParticleSpace, ParticleSprite,
 };
 
 crate::reflect! {
@@ -272,6 +282,289 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    enum EmitterShape { Point, Box, Sphere, Cone, Circle }
+}
+
+crate::reflect! {
+    enum ParticleSpace { World, Local }
+}
+
+crate::reflect! {
+    enum ParticleFacing { Billboard, Velocity }
+}
+
+crate::reflect! {
+    enum ParticleBlend { Alpha, Additive }
+}
+
+crate::reflect! {
+    enum ParticleSprite { Soft, Disc, Square }
+}
+
+crate::reflect! {
+    struct ParticleBurst {
+        time: f32 { unit: "s", min: 0.0, doc: "into each cycle" },
+        count: u32 { unit: "particles" },
+    }
+}
+
+crate::reflect! {
+    struct CurveKey {
+        t: f32 { unit: "life", min: 0.0, max: 1.0 },
+        value: f32 { unit: "factor", min: 0.0 },
+    }
+}
+
+crate::reflect! {
+    struct ColorKey {
+        t: f32 { unit: "life", min: 0.0, max: 1.0 },
+        color: [f32; 4] {
+            unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
+        },
+    }
+}
+
+crate::reflect! {
+    struct ParticleEmitter {
+        autoplay: bool { doc: "off waits for play()" },
+        rate: f32 { unit: "particles/s", min: 0.0 },
+        bursts: Vec<ParticleBurst> { doc: "fired once per cycle" },
+        max_particles: u32 { unit: "particles", doc: "alive at once" },
+        prewarm: bool { doc: "start as if one cycle already played" },
+        duration: f32 { unit: "s", min: 0.0, doc: "one cycle" },
+        looping: bool { doc: "off stops emitting after one cycle" },
+        on_collision: bool { doc: "restart on contact; CPU colliders only" },
+        shape: EmitterShape,
+        shape_size: [f32; 3] {
+            unit: "m", min: 0.0,
+            doc: "box half extents; x is the radius of round shapes",
+        },
+        lifetime: [f32; 2] { unit: "s", min: 0.0, doc: "min, max" },
+        speed: [f32; 2] { unit: "m/s", doc: "min, max" },
+        size: [f32; 2] { unit: "m", min: 0.0, doc: "min, max" },
+        rotation: [f32; 2] { unit: "rad", doc: "min, max" },
+        spin: [f32; 2] { unit: "rad/s", doc: "min, max" },
+        direction: [f32; 3] { doc: "launch axis in the emitter's space" },
+        spread: f32 {
+            unit: "rad", min: 0.0, max: std::f64::consts::PI,
+            doc: "half angle around direction; 3.14 is every way",
+        },
+        gravity: f32 { unit: "m/s²", doc: "downward" },
+        drag: f32 { unit: "1/s", min: 0.0 },
+        wind: [f32; 3] { unit: "m/s²", doc: "constant world push" },
+        turbulence: f32 { unit: "m/s²", min: 0.0 },
+        turbulence_frequency: f32 { unit: "1/m", min: 0.0 },
+        size_over_life: Vec<CurveKey> { doc: "size factor keys by life" },
+        color_over_life: Vec<ColorKey> { doc: "color keys by life" },
+        start_colors: Vec<[f32; 4]> {
+            doc: "each particle picks one; tints its color",
+        },
+        emissive: f32 { unit: "factor", min: 0.0, doc: "above 1 blooms" },
+        fade_in: f32 { unit: "life", min: 0.0, max: 1.0 },
+        fade_out: f32 { unit: "life", min: 0.0, max: 1.0 },
+        space: ParticleSpace,
+        facing: ParticleFacing,
+        stretch: f32 {
+            unit: "s", min: 0.0, doc: "Velocity facing: length per m/s",
+        },
+        blend: ParticleBlend,
+        sprite: ParticleSprite,
+        #[skip] command: crate::runtime::ParticleCommand,
+    }
+}
+
+crate::reflect! {
+    enum AnimationProperty {
+        Position,
+        Rotation,
+        Scale,
+        Color,
+        Emissive,
+        Visible,
+        Orientation,
+        Field {
+            component: String { doc: "registered scene component name" },
+            path: String { doc: "JSON pointer to a number, e.g. /intensity" },
+        },
+    }
+}
+
+crate::reflect! {
+    enum Interpolation { Step, Linear, Smooth }
+}
+
+crate::reflect! {
+    struct Keyframe {
+        time: f32 { unit: "s", min: 0.0 },
+        value: Vec<f32> {
+            doc: "3 for transforms (rotation in rad), 4 for Color, 3 for Emissive, 1 otherwise",
+        },
+    }
+}
+
+crate::reflect! {
+    struct AnimationTrack {
+        target: String { doc: "empty for this entity, else child names: Arm/Hand" },
+        property: AnimationProperty,
+        interpolation: Interpolation,
+        keys: Vec<Keyframe> { doc: "sorted by time" },
+    }
+}
+
+crate::reflect! {
+    struct AnimationMarker {
+        time: f32 { unit: "s", min: 0.0 },
+        name: String { doc: "event name game code receives" },
+    }
+}
+
+crate::reflect! {
+    struct AnimationClip {
+        name: String,
+        duration: f32 { unit: "s", min: 0.0, doc: "0 uses the last key" },
+        repeat: TweenRepeat,
+        tracks: Vec<AnimationTrack>,
+        events: Vec<AnimationMarker>,
+        blend: Vec<BlendPoint> {
+            doc: "blend space: clips mixed by blend_parameter (and blend_parameter_y for 2D); empty for a plain clip",
+        },
+        blend_parameter: String { doc: "parameter that picks the blend position (x axis in 2D)" },
+        blend_parameter_y: String { doc: "y axis parameter; set for a 2D blend space" },
+    }
+}
+
+crate::reflect! {
+    struct BlendPoint {
+        clip: String,
+        at: f32 { doc: "position on the blend parameter axis" },
+        at_y: f32 { doc: "position on the y axis of a 2D blend space" },
+    }
+}
+
+crate::reflect! {
+    enum AnimationCompare { Above, Below, Equal }
+}
+
+crate::reflect! {
+    struct AnimationTransition {
+        from: String { doc: "clip name; empty matches any clip" },
+        to: String,
+        parameter: String { doc: "parameter to test; empty skips the test" },
+        compare: AnimationCompare,
+        value: f32,
+        at_end: bool { doc: "also wait until `from` has played once" },
+        fade: f32 { unit: "s", min: 0.0, doc: "crossfade length; 0 cuts" },
+    }
+}
+
+crate::reflect! {
+    struct HumanoidBone {
+        bone: String { doc: "standard name such as Hips, Spine, Head, LeftUpperArm, RightFoot" },
+        path: String { doc: "this rig's path to the bone" },
+    }
+}
+
+crate::reflect! {
+    enum RootMotion {
+        Off,
+        InPlace,
+        Transform,
+        Velocity,
+    }
+}
+
+crate::reflect! {
+    struct AnimationLayer {
+        clip: String,
+        weight: f32 { min: 0.0, max: 1.0, doc: "how much of the layer shows" },
+        weight_parameter: String { doc: "parameter read as the weight; empty uses weight" },
+        additive: bool { doc: "add the clip's motion from its first frame instead of replacing" },
+        mask: Vec<String> { doc: "target paths (with children) the layer writes; empty writes all" },
+    }
+}
+
+crate::reflect! {
+    struct Animation {
+        clips: Vec<AnimationClip>,
+        autoplay: String { doc: "clip played on start; empty plays nothing" },
+        speed: f32 { unit: "factor", min: 0.0 },
+        parameters: std::collections::BTreeMap<String, f32> {
+            doc: "named numbers game code sets for transitions",
+        },
+        transitions: Vec<AnimationTransition> {
+            doc: "state machine edges; the first match each tick wins",
+        },
+        layers: Vec<AnimationLayer> {
+            doc: "clips played on top of the state machine, in order",
+        },
+        root_motion: RootMotion {
+            doc: "Off moves the root bone as keyed; InPlace collects for game code; Transform moves this object; Velocity drives its GPU body",
+        },
+        root_bone: String { doc: "path of the bone whose Position track carries root motion; empty is this object" },
+        humanoid: Vec<HumanoidBone> {
+            doc: "humanoid bone names (Hips, Spine, LeftUpperArm...) of this rig's bone paths, for retargeting; empty matches by bone name",
+        },
+        #[skip] command: Option<crate::runtime::AnimationCommand>,
+    }
+}
+
+crate::reflect! {
+    enum IkKind {
+        LookAt,
+        TwoBone,
+        Foot,
+        Chain,
+    }
+}
+
+crate::reflect! {
+    struct RagdollBone {
+        path: String { doc: "bone path from the character" },
+        length: f32 { unit: "m", min: 0.0, doc: "capsule along the bone's local +Y, ends included" },
+        radius: f32 { unit: "m", min: 0.0 },
+        mass: f32 { unit: "kg", min: 0.0 },
+        joint: JointKind { doc: "joint to the nearest ancestor bone's body" },
+        frame: [f32; 3] { unit: "rad", doc: "joint axes in the bone's frame; the default turns X along the bone" },
+    }
+}
+
+crate::reflect! {
+    struct Ragdoll {
+        bones: Vec<RagdollBone>,
+        hit_speed: f32 { unit: "m/s", min: 0.0, doc: "a body closing on the character this fast makes it go limp; 0 only on command" },
+        recover_after: f32 { unit: "s", min: 0.0, doc: "seconds limp before getting up; 0 waits for game code" },
+        blend_time: f32 { unit: "s", min: 0.0, doc: "seconds to blend back to the animation, or for active muscles to regain strength" },
+        muscle: f32 { unit: "Hz", min: 0.0, doc: "above 0 keeps the bodies on and turns them toward the animation; 5 loose, 15 stiff" },
+        #[skip] command: Option<bool>,
+    }
+}
+
+crate::reflect! {
+    struct Ik {
+        kind: IkKind { doc: "LookAt turns this object; TwoBone bends its parent and grandparent" },
+        target: Entity { doc: "object to reach or look at; null turns the solve off" },
+        pole: Entity { doc: "TwoBone: the middle joint bends toward it; null keeps the bend plane" },
+        weight: f32 { min: 0.0, max: 1.0, doc: "0 keeps the animated pose, 1 solves fully" },
+        forward: [f32; 3] { doc: "LookAt: local axis that points at the target" },
+        reach: f32 { unit: "m", min: 0.0, doc: "Foot: ground search above and below the character's floor" },
+        joints: u32 { doc: "Chain: how many joints above this object bend" },
+    }
+}
+
+crate::reflect! {
+    struct Morph {
+        weights: Vec<f32> { doc: "one weight per blend shape of the mesh, usually 0 to 1" },
+    }
+}
+
+crate::reflect! {
+    struct Skin {
+        joints: Vec<String> { doc: "joint paths from this object; `..` is the parent" },
+        inverse_bind: Vec<[[f32; 4]; 4]> { doc: "column-major, one per joint" },
+    }
+}
+
+crate::reflect! {
     struct FluidBlock {
         spacing: f32 { unit: "m", min: 0.02, doc: "rest spacing of particles" },
         count_x: u32 { unit: "particles" },
@@ -441,6 +734,38 @@ crate::reflect! {
         sky_affect: f32 {
             unit: "factor", min: 0.0, max: 1.0,
             doc: "how much the background fades into the fog",
+        },
+    }
+}
+
+crate::reflect! {
+    struct CameraScreen {
+        camera: String { doc: "name of the camera whose image this mesh shows" },
+        size: [u32; 2] { unit: "px", doc: "feed width and height" },
+    }
+}
+
+crate::reflect! {
+    struct ColorGrading {
+        contrast: f32 {
+            unit: "factor", min: 0.0, max: 3.0,
+            doc: "contrast around mid grey; 1 leaves the image as is",
+        },
+        saturation: f32 {
+            unit: "factor", min: 0.0, max: 3.0,
+            doc: "0 is grey, 1 unchanged, above 1 stronger colors",
+        },
+        shadows: [f32; 3] {
+            unit: "linear rgb",
+            doc: "tint multiplied into dark tones; [1, 1, 1] is none",
+        },
+        highlights: [f32; 3] {
+            unit: "linear rgb",
+            doc: "tint multiplied into bright tones; [1, 1, 1] is none",
+        },
+        vignette: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "how much the corners darken; 0 is none",
         },
     }
 }

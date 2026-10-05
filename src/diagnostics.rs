@@ -181,6 +181,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting scene query scenes/main.rscene --component physics_body --json",
     ),
     code(
+        "EFFECT_UNKNOWN",
+        "No particle effect preset has the given name.",
+        "List the effects and use one of their names.",
+        "rusting effect list",
+    ),
+    code(
         "EXPORT_FAILED",
         "The export build or copy step failed.",
         "Fix the error in the message; `rusting check` must pass before an export.",
@@ -227,6 +233,12 @@ pub const CODES: &[CodeInfo] = &[
         "A file or folder the command needs could not be created or written.",
         "Check permissions and free space for the path in the message.",
         "rusting determinism --json",
+    ),
+    code(
+        "MODEL_IMPORT",
+        "`scene add-model` could not import the glTF model.",
+        "Check that the file is a valid .gltf or .glb and that its buffers and images sit next to it.",
+        "rusting scene add-model scenes/main.rscene assets/models/barrel.glb --dry-run",
     ),
     code(
         "PATCH_INVALID",
@@ -299,6 +311,12 @@ pub const CODES: &[CodeInfo] = &[
         "project.json has a format version this engine does not read.",
         "Use the engine version that made the project, or upgrade the manifest.",
         "rusting doctor",
+    ),
+    code(
+        "RETARGET_FAILED",
+        "`scene retarget` could not find an object or clip, or the clip is a blend space.",
+        "Check both object names and the clip name; retarget the point clips of a blend space one by one.",
+        "rusting scene retarget scenes/main.rscene Mixamo walk Knight --dry-run",
     ),
     code(
         "RUST_BUILD_ERROR",

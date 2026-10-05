@@ -44,7 +44,10 @@ fn extension(path: &Path) -> String {
 /// Cooked caches and import sidecars the engine writes next to sources.
 /// They are not something to pick, so the browser hides them.
 fn is_engine_cache(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "rmesh" | "rtexture" | "rmeta")
+    matches!(
+        extension(path).as_str(),
+        "rmesh" | "rskin" | "rmorph" | "rtexture" | "rmeta"
+    )
 }
 
 /// Drag payload of a model row; the Scene View adds it on drop.

@@ -37,6 +37,15 @@ pub struct ExtractedCamera {
     pub priority: i32,
 }
 
+/// A [`CameraScreen`](super::CameraScreen) ready to draw: the camera's image
+/// replaces the maps of `material`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExtractedScreen {
+    pub material: crate::assets::Handle<crate::assets::MaterialAsset>,
+    pub camera: ExtractedCamera,
+    pub size: [u32; 2],
+}
+
 /// Optional camera selected by a tool such as the editor Scene viewport.
 /// Runtime Game views leave this empty and use the highest-priority active
 /// gameplay camera.
@@ -122,7 +131,13 @@ pub struct RenderWorld {
     pub tone_mapping: Option<ToneMapping>,
     pub fog: Option<super::Fog>,
     pub bloom: Option<super::Bloom>,
+    pub color_grading: Option<super::ColorGrading>,
+    /// Meshes that show a camera's image, in entity order.
+    pub screens: Vec<ExtractedScreen>,
     pub ambient_occlusion: Option<super::AmbientOcclusion>,
+    /// Live particles of each visible emitter, in entity order; each batch
+    /// is one instanced draw.
+    pub particles: Vec<super::ParticleBatch>,
     pub lights_revision: u64,
     pub report: ExtractionReport,
     /// Bodies whose newest runtime transforms will be owned by GPU compute.
@@ -172,7 +187,7 @@ pub struct RenderWorld {
     cached: HashMap<Entity, ExtractedRenderable>,
     renderables_signature: Option<u64>,
     /// Tick and component counts seen by the last signature hash.
-    renderables_fingerprint: Option<(Tick, [usize; 5])>,
+    renderables_fingerprint: Option<(Tick, [usize; 6])>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -188,6 +203,7 @@ impl Plugin for RenderExtractPlugin {
 }
 
 pub fn extract_render_world(world: &mut World) {
+    super::update_skins(world);
     // Most game frames do not add objects or change their CPU transforms.
     // Hashing in place is much cheaper than allocating and sorting a new list
     // of ten thousand objects only to discover that nothing changed.
@@ -237,7 +253,10 @@ pub fn extract_render_world(world: &mut World) {
     let tone_mapping = collect_first::<ToneMapping>(world);
     let fog = collect_first::<super::Fog>(world);
     let bloom = collect_first::<super::Bloom>(world);
+    let color_grading = collect_first::<super::ColorGrading>(world);
+    let screens = collect_screens(world);
     let ambient_occlusion = collect_first::<super::AmbientOcclusion>(world);
+    let particles = collect_particles(world);
     let has_gpu_physics_resources = world
         .contains_resource::<super::PhysicsIdRegistry>()
         && world.contains_resource::<super::GpuEventRegistry>()
@@ -365,7 +384,10 @@ pub fn extract_render_world(world: &mut World) {
     render_world.tone_mapping = tone_mapping;
     render_world.fog = fog;
     render_world.bloom = bloom;
+    render_world.color_grading = color_grading;
+    render_world.screens = screens;
     render_world.ambient_occlusion = ambient_occlusion;
+    render_world.particles = particles;
     render_world.environment = environment;
     render_world.reflection_probes = reflection_probes;
     if render_world.directional_lights != directional_lights
@@ -419,6 +441,29 @@ pub fn extract_render_world(world: &mut World) {
     render_world.reflections_disabled = !reflections;
 }
 
+fn collect_particles(world: &mut World) -> Vec<super::ParticleBatch> {
+    let mut query = world.query::<(
+        Entity,
+        &super::ParticleEmitter,
+        &super::ParticleSystem,
+        Option<&GlobalTransform>,
+    )>();
+    let world = &*world;
+    let mut batches = query
+        .iter(world)
+        .filter(|(entity, _, system, _)| {
+            !system.particles.is_empty() && visible_in_hierarchy(world, *entity)
+        })
+        .map(|(entity, emitter, system, global)| super::ParticleBatch {
+            entity: Some(entity),
+            ..super::particle_batch(emitter, system, global)
+        })
+        .filter(|batch| !batch.instances.is_empty())
+        .collect::<Vec<_>>();
+    batches.sort_by_key(|batch| batch.entity.map(Entity::index));
+    batches
+}
+
 /// True unless no `GlobalTransform`, `MeshRenderer`, `Visibility`, or
 /// `Parent` changed since the last call and none was removed. Removing one
 /// lowers a count; adding one back is itself a change. A static scene then
@@ -432,7 +477,7 @@ fn renderables_changed(world: &mut World) -> bool {
     let newer = |tick: Tick| {
         last_run.is_none_or(|last_run| tick.is_newer_than(last_run, this_run))
     };
-    let mut counts = [0; 5];
+    let mut counts = [0; 6];
     let mut changed = false;
     let mut query = world.query_filtered::<(
         Option<Ref<GlobalTransform>>,
@@ -440,19 +485,23 @@ fn renderables_changed(world: &mut World) -> bool {
         Option<Ref<Visibility>>,
         Option<Ref<super::Parent>>,
         Option<Ref<RenderBounds>>,
+        Option<Ref<super::SkinnedMesh>>,
     ), Or<(
         With<MeshRenderer>,
         With<Visibility>,
         With<super::Parent>,
         With<RenderBounds>,
     )>>();
-    for (transform, renderer, visibility, parent, bounds) in query.iter(world) {
+    for (transform, renderer, visibility, parent, bounds, skinned) in
+        query.iter(world)
+    {
         let ticks = [
             transform.map(|value| value.last_changed()),
             renderer.map(|value| value.last_changed()),
             visibility.map(|value| value.last_changed()),
             parent.map(|value| value.last_changed()),
             bounds.map(|value| value.last_changed()),
+            skinned.map(|value| value.last_changed()),
         ];
         for (count, tick) in counts.iter_mut().zip(ticks) {
             if let Some(tick) = tick {
@@ -478,15 +527,19 @@ fn renderables_signature(world: &mut World) -> u64 {
         &GlobalTransform,
         &MeshRenderer,
         Option<&RenderBounds>,
+        Option<&super::SkinnedMesh>,
     )>();
     let world = &*world;
-    for (entity, transform, renderer, bounds) in query.iter(world) {
+    for (entity, transform, renderer, bounds, skinned) in query.iter(world) {
         if !visible_in_hierarchy(world, entity) {
             continue;
         }
         count += 1;
         entity.to_bits().hash(&mut hasher);
-        renderer.mesh.key().hash(&mut hasher);
+        skinned
+            .map_or(renderer.mesh, |skinned| skinned.mesh)
+            .key()
+            .hash(&mut hasher);
         renderer.material.key().hash(&mut hasher);
         renderer.cast_shadows.hash(&mut hasher);
         renderer.receive_shadows.hash(&mut hasher);
@@ -529,22 +582,23 @@ fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
         &GlobalTransform,
         &MeshRenderer,
         Option<&RenderBounds>,
+        Option<&super::SkinnedMesh>,
     )>();
     let world_ref = &*world;
     let mut renderables = query
         .iter(world_ref)
         .filter(|(entity, ..)| visible_in_hierarchy(world_ref, *entity))
-        .map(
-            |(entity, transform, renderer, bounds)| ExtractedRenderable {
+        .map(|(entity, transform, renderer, bounds, skinned)| {
+            ExtractedRenderable {
                 entity,
                 transform: *transform,
-                mesh: renderer.mesh,
+                mesh: skinned.map_or(renderer.mesh, |skinned| skinned.mesh),
                 material: renderer.material,
                 cast_shadows: renderer.cast_shadows,
                 receive_shadows: renderer.receive_shadows,
                 bounds: bounds.copied(),
-            },
-        )
+            }
+        })
         .collect::<Vec<_>>();
     renderables.sort_by_key(|renderable| {
         (
@@ -609,6 +663,45 @@ fn collect_views(world: &mut World) -> Vec<(ExtractedCamera, [f32; 4])> {
         (camera.priority, std::cmp::Reverse(camera.entity.to_bits()))
     });
     views
+}
+
+fn collect_screens(world: &mut World) -> Vec<ExtractedScreen> {
+    let mut cameras =
+        world.query::<(Entity, &super::Name, &GlobalTransform, &Camera)>();
+    let cameras: Vec<_> = cameras
+        .iter(world)
+        .map(|(entity, name, transform, camera)| {
+            (
+                name.0.clone(),
+                ExtractedCamera {
+                    entity,
+                    transform: *transform,
+                    projection: camera.projection,
+                    priority: camera.priority,
+                },
+            )
+        })
+        .collect();
+    let mut query =
+        world.query::<(Entity, &super::CameraScreen, &MeshRenderer)>();
+    let mut screens: Vec<_> = query
+        .iter(world)
+        .filter(|(_, screen, _)| !screen.size.contains(&0))
+        .filter_map(|(entity, screen, renderer)| {
+            let (_, camera) =
+                cameras.iter().find(|(name, _)| *name == screen.camera)?;
+            Some((
+                entity.index(),
+                ExtractedScreen {
+                    material: renderer.material,
+                    camera: *camera,
+                    size: screen.size,
+                },
+            ))
+        })
+        .collect();
+    screens.sort_by_key(|(entity, _)| *entity);
+    screens.into_iter().map(|(_, screen)| screen).collect()
 }
 
 fn collect_directional_lights(
@@ -711,6 +804,36 @@ mod tests {
             cast_shadows: true,
             receive_shadows: true,
         }
+    }
+
+    #[test]
+    fn screens_find_their_camera_by_name() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let server = AssetServer::default();
+        let renderer = renderer(&server);
+        app.insert_resource(server);
+        let camera = Camera {
+            active: false,
+            ..Camera::default()
+        };
+        let cam = app.spawn((
+            Transform::new([0.0, 0.0, 5.0]),
+            super::super::Name("Cam B".into()),
+            camera,
+        ));
+        let screen = |name: &str, size| super::super::CameraScreen {
+            camera: name.into(),
+            size,
+        };
+        app.spawn((Transform::default(), renderer, screen("Cam B", [64, 32])));
+        app.spawn((Transform::default(), renderer, screen("Nobody", [64, 32])));
+        app.spawn((Transform::default(), renderer, screen("Cam B", [0, 32])));
+        app.update(Duration::ZERO).unwrap();
+        let screens = &app.world().resource::<RenderWorld>().screens;
+        assert_eq!(screens.len(), 1);
+        assert_eq!(screens[0].camera.entity, cam);
+        assert_eq!(screens[0].size, [64, 32]);
     }
 
     #[test]

@@ -2122,3 +2122,335 @@ fn menu_actions_show_their_shortcut() {
     assert!(texts.contains(&"Undo".into()), "{texts:?}");
     assert!(texts.contains(&"Ctrl+Z".into()), "{texts:?}");
 }
+
+/// Editor with one selected emitter and the Inspector filling the window.
+fn particle_editor() -> (App, Entity) {
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
+    app.add_plugin(EditorPlugin).unwrap();
+    let entity = app.spawn((
+        Name("Sparks".into()),
+        Transform::default(),
+        SceneId(uuid::Uuid::new_v4()),
+    ));
+    crate::runtime::set_registered_component(
+        app.world_mut(),
+        entity,
+        crate::runtime::PARTICLE_EMITTER_COMPONENT,
+        r#"{"rate": 30.0}"#,
+    )
+    .unwrap();
+    let mut state = app.world_mut().resource_mut::<EditorState>();
+    state.selected = Some(entity);
+    state.selection = vec![entity];
+    state.dock_layout = EditorDockNode::Area {
+        id: 1,
+        panel: EditorPanel::Inspector,
+    };
+    (app, entity)
+}
+
+/// Draws one editor frame with `events`; returns each text and its center.
+fn editor_frame(
+    app: &mut App,
+    context: &Context,
+    events: Vec<egui::Event>,
+) -> Vec<(String, egui::Pos2)> {
+    let input = egui::RawInput {
+        events,
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 4000.0),
+        )),
+        ..Default::default()
+    };
+    let output = context.run(input, |context| {
+        draw_editor_view(app.world_mut(), context);
+    });
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                text.pos + text.galley.rect.center().to_vec2(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn click_text(app: &mut App, context: &Context, text: &str) {
+    let texts = editor_frame(app, context, Vec::new());
+    let at = texts
+        .iter()
+        .find(|(shown, _)| shown == text)
+        .unwrap_or_else(|| panic!("no {text}: {texts:?}"))
+        .1;
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    editor_frame(app, context, vec![egui::Event::PointerMoved(at)]);
+    editor_frame(app, context, vec![button(true)]);
+    editor_frame(app, context, vec![button(false)]);
+}
+
+#[test]
+fn particle_inspector_edits_are_one_undo_step_each() {
+    let (mut app, entity) = particle_editor();
+    let context = Context::default();
+    let texts = editor_frame(&mut app, &context, Vec::new());
+    for title in ["Emission", "Shape", "Lifetime", "Velocity", "Rendering"] {
+        assert!(texts.iter().any(|(text, _)| text == title), "{title}");
+    }
+    let bursts = |app: &App| {
+        app.world()
+            .get::<crate::runtime::ParticleEmitter>(entity)
+            .unwrap()
+            .bursts
+            .len()
+    };
+    click_text(&mut app, &context, "+ Add Burst");
+    assert_eq!(bursts(&app), 1);
+    // The edit stopped, so it closes into one Undo step.
+    editor_frame(&mut app, &context, Vec::new());
+    let history = app.world().resource::<EditorHistory>();
+    assert_eq!(history.undo.len(), 1);
+    assert!(app.world().resource::<EditorState>().scene_dirty);
+
+    app.world_mut()
+        .resource_mut::<EditorCommandQueue>()
+        .0
+        .push(EditorAction::Undo);
+    editor_frame(&mut app, &context, Vec::new());
+    let world = app.world_mut();
+    let emitters = world
+        .query::<&crate::runtime::ParticleEmitter>()
+        .iter(world)
+        .map(|emitter| (emitter.rate, emitter.bursts.len()))
+        .collect::<Vec<_>>();
+    assert_eq!(emitters, [(30.0, 0)]);
+}
+
+#[test]
+fn particles_preview_while_stopped_and_transport_is_not_an_edit() {
+    let (mut app, entity) = particle_editor();
+    let context = Context::default();
+    let alive = |app: &App| {
+        app.world()
+            .get::<crate::runtime::ParticleSystem>(entity)
+            .map_or(0, crate::runtime::ParticleSystem::alive)
+    };
+    for _ in 0..10 {
+        update_edit_preview(app.world_mut(), Duration::from_millis(50));
+    }
+    assert!(alive(&app) > 0);
+    assert!(editor_needs_continuous_redraw(app.world()));
+
+    click_text(&mut app, &context, "Pause");
+    editor_frame(&mut app, &context, Vec::new());
+    update_edit_preview(app.world_mut(), Duration::from_millis(50));
+    let system = app
+        .world()
+        .get::<crate::runtime::ParticleSystem>(entity)
+        .unwrap();
+    assert!(system.paused);
+    assert!(!editor_needs_continuous_redraw(app.world()));
+    assert!(app.world().resource::<EditorHistory>().undo.is_empty());
+    assert!(!app.world().resource::<EditorState>().scene_dirty);
+
+    // Play starts the game's emitters fresh, without the preview's state.
+    let world = app.world_mut();
+    let mut state = world.resource::<EditorState>().clone();
+    let mut history = EditorHistory::default();
+    view::start_embedded_preview(world, &mut state, &mut history);
+    assert!(world
+        .get::<crate::runtime::ParticleSystem>(entity)
+        .is_none());
+    // Nor does the preview step while the game runs.
+    world.resource_mut::<EditorState>().mode = state.mode;
+    update_edit_preview(world, Duration::from_millis(50));
+    assert!(world
+        .get::<crate::runtime::ParticleSystem>(entity)
+        .is_none());
+}
+
+fn timeline_editor() -> (App, Entity) {
+    let (mut app, entity) = particle_editor();
+    app.world_mut().resource_mut::<EditorState>().dock_layout =
+        EditorDockNode::Area {
+            id: 1,
+            panel: EditorPanel::Timeline,
+        };
+    (app, entity)
+}
+
+fn slide_clip(app: &mut App, entity: Entity) {
+    crate::runtime::set_registered_component(
+        app.world_mut(),
+        entity,
+        crate::runtime::ANIMATION_COMPONENT,
+        r#"{"clips": [{"name": "slide", "tracks": [{"property": "Position",
+            "keys": [{"time": 0.0, "value": [0.0, 0.0, 0.0]},
+                     {"time": 1.0, "value": [2.0, 0.0, 0.0]}]}]}]}"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn timeline_adds_animation_and_keys_as_one_undo_step_each() {
+    let (mut app, entity) = timeline_editor();
+    let context = Context::default();
+    click_text(&mut app, &context, "+ Add Animation");
+    editor_frame(&mut app, &context, Vec::new());
+    assert!(app
+        .world()
+        .get::<crate::runtime::Animation>(entity)
+        .is_some());
+    assert_eq!(app.world().resource::<EditorHistory>().undo.len(), 1);
+
+    click_text(&mut app, &context, "Insert Key");
+    click_text(&mut app, &context, "All");
+    editor_frame(&mut app, &context, Vec::new());
+    let animation = app.world().get::<crate::runtime::Animation>(entity);
+    assert_eq!(animation.unwrap().clips[0].tracks.len(), 3);
+    assert_eq!(app.world().resource::<EditorHistory>().undo.len(), 2);
+
+    app.world_mut()
+        .resource_mut::<EditorCommandQueue>()
+        .0
+        .push(EditorAction::Undo);
+    editor_frame(&mut app, &context, Vec::new());
+    let world = app.world_mut();
+    let tracks = world
+        .query::<&crate::runtime::Animation>()
+        .iter(world)
+        .map(|animation| animation.clips[0].tracks.len())
+        .collect::<Vec<_>>();
+    assert_eq!(tracks, [0]);
+}
+
+#[test]
+fn timeline_scrub_poses_but_scene_documents_keep_the_rest_pose() {
+    let (mut app, entity) = timeline_editor();
+    slide_clip(&mut app, entity);
+    let context = Context::default();
+    app.world_mut().resource_mut::<EditorState>().timeline.time = 0.5;
+    editor_frame(&mut app, &context, Vec::new());
+    let x =
+        |app: &App| app.world().get::<Transform>(entity).unwrap().position[0];
+    assert!((x(&app) - 1.0).abs() < 1e-4, "{}", x(&app));
+    let document =
+        crate::runtime::scene_document(app.world_mut(), "check").unwrap();
+    let saved = document.entities[0].transform.as_ref().unwrap();
+    assert_eq!(saved.position[0], 0.0);
+    assert!(app.world().resource::<EditorHistory>().undo.is_empty());
+
+    // Leaving the animation puts the rest pose back.
+    app.world_mut().resource_mut::<EditorState>().selected = None;
+    editor_frame(&mut app, &context, Vec::new());
+    assert_eq!(x(&app), 0.0);
+}
+
+#[test]
+fn timeline_record_mode_keys_transform_edits_at_the_playhead() {
+    let (mut app, entity) = timeline_editor();
+    slide_clip(&mut app, entity);
+    let context = Context::default();
+    {
+        let mut state = app.world_mut().resource_mut::<EditorState>();
+        state.timeline.time = 0.5;
+        state.timeline.record = true;
+    }
+    editor_frame(&mut app, &context, Vec::new());
+    // A gizmo or Inspector edit moves the posed object.
+    app.world_mut()
+        .get_mut::<Transform>(entity)
+        .unwrap()
+        .position[1] = 3.0;
+    editor_frame(&mut app, &context, Vec::new());
+    let keys = &app
+        .world()
+        .get::<crate::runtime::Animation>(entity)
+        .unwrap()
+        .clips[0]
+        .tracks[0]
+        .keys;
+    assert_eq!(keys.len(), 3);
+    assert_eq!(keys[1].time, 0.5);
+    assert_eq!(keys[1].value, [1.0, 3.0, 0.0]);
+    assert!(app.world().resource::<EditorState>().scene_dirty);
+    // Rotation and scale did not change, so they got no track.
+    let animation = app.world().get::<crate::runtime::Animation>(entity);
+    assert_eq!(animation.unwrap().clips[0].tracks.len(), 1);
+}
+
+#[cfg(feature = "gltf")]
+#[test]
+fn added_model_clips_follow_renamed_nodes() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-windmill-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("windmill.gltf");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/vertical_slice/windmill.gltf"),
+        &path,
+    )
+    .unwrap();
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+    add_model_to_scene(world, &path).unwrap();
+    let second = add_model_to_scene(world, &path).unwrap();
+    let animation = world.get::<crate::runtime::Animation>(second).unwrap();
+    let rotor = &animation.clips[0].tracks[0].target;
+    let target = crate::runtime::find_target(world, second, rotor).unwrap();
+    // The second copy's rotor was renamed, and its track follows.
+    assert_ne!(rotor, "Tower/Rotor");
+    assert!(world.get::<Parent>(target).is_some());
+    std::fs::remove_dir_all(folder).unwrap();
+}
+
+#[cfg(feature = "gltf")]
+#[test]
+fn added_model_skin_joints_follow_renamed_nodes() {
+    let folder = std::env::temp_dir()
+        .join(format!("rusting-editor-bar-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("bending_bar.gltf");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/vertical_slice/bending_bar.gltf"),
+        &path,
+    )
+    .unwrap();
+    let mut app = App::new();
+    app.add_plugin(crate::AssetPlugin).unwrap();
+    let world = app.world_mut();
+    add_model_to_scene(world, &path).unwrap();
+    let second = add_model_to_scene(world, &path).unwrap();
+    let rig = world.get::<crate::runtime::Children>(second).unwrap().0[0];
+    let body = world.get::<crate::runtime::Children>(rig).unwrap().0[0];
+    let skin = world.get::<crate::runtime::Skin>(body).unwrap().clone();
+    // The second copy's joints were renamed, and the skin follows.
+    assert_ne!(skin.joints[1], "../Root/Tip");
+    for joint in &skin.joints {
+        let target = crate::runtime::find_target(world, body, joint).unwrap();
+        assert_ne!(target, body);
+    }
+    // Both skeletons show in the Scene View: Root as a cross, Tip as a
+    // cross plus the bone from Root.
+    crate::runtime::propagate_transforms(world);
+    let bones = crate::editor::overlay::bone_shapes(world);
+    assert_eq!(bones.len(), 4);
+    let tip =
+        crate::runtime::find_target(world, body, &skin.joints[1]).unwrap();
+    let (_, lines) = bones.iter().find(|(joint, _)| *joint == tip).unwrap();
+    assert_eq!(lines.len(), 4);
+    std::fs::remove_dir_all(folder).unwrap();
+}

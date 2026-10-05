@@ -917,6 +917,26 @@ pub struct MeshAsset {
     pub indices: Vec<u32>,
 }
 
+/// Up to four joints and weights per vertex of a skinned glTF mesh, cooked
+/// next to its `.rmesh` as `.rskin`. Joint numbers index the `rusting.skin`
+/// joint list of the entity that renders the mesh.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SkinWeights {
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+}
+
+/// Blend shape offsets of a glTF mesh, cooked next to its `.rmesh` as
+/// `.rmorph`: per target, one position and one normal offset per vertex.
+/// The `rusting.morph` weights scale each target.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MorphTargets {
+    pub positions: Vec<Vec<[f32; 3]>>,
+    /// Empty for a target without normal offsets, and for flat-shaded
+    /// meshes, which keep their face normals.
+    pub normals: Vec<Vec<[f32; 3]>>,
+}
+
 /// What a LOD group measures to pick a level.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
@@ -1005,10 +1025,17 @@ pub enum PrimitiveShape {
     /// Upright 1×1 square in the XY plane facing +Z, with the whole texture
     /// mapped upright: the sprite shape for 2D scenes.
     Quad,
+    /// 1×1×1 box with edges rounded by 0.1, for crates, furniture and any
+    /// box that should not look like a placeholder.
+    RoundedCube,
+    /// Diameter 1 and height 2 with round ends, like Godot's capsule: limbs,
+    /// characters and posts. Matches a `Capsule` collider with radius 0.5 and
+    /// half height 0.5.
+    Capsule,
 }
 
 impl PrimitiveShape {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Cube,
         Self::Sphere,
         Self::Triangle,
@@ -1022,6 +1049,8 @@ impl PrimitiveShape {
         Self::Cone,
         Self::Torus,
         Self::Quad,
+        Self::RoundedCube,
+        Self::Capsule,
     ];
 
     #[must_use]
@@ -1040,6 +1069,8 @@ impl PrimitiveShape {
             Self::Cone => "Cone",
             Self::Torus => "Torus",
             Self::Quad => "Quad",
+            Self::RoundedCube => "Rounded Cube",
+            Self::Capsule => "Capsule",
         }
     }
 }
@@ -1192,6 +1223,8 @@ pub struct AssetServer {
     /// Local mesh boxes by asset key and revision, so per-frame editor
     /// callers do not rescan every vertex of a large mesh.
     mesh_bounds_cache: Mutex<HashMap<(AssetKey, u64), Option<MeshBox>>>,
+    /// Skinned and morphed mesh copies, kept with the meshes they live in.
+    pub(crate) deformers: crate::runtime::Deformers,
 }
 
 type MeshBox = ([f32; 3], [f32; 3]);
@@ -1208,6 +1241,31 @@ pub struct ImportedGltfPrimitive {
 }
 
 impl AssetServer {
+    /// The `.rskin` weights cooked next to a mesh file by the glTF importer.
+    pub fn skin_weights(
+        &self,
+        mesh: Handle<MeshAsset>,
+    ) -> Result<SkinWeights, AssetError> {
+        let path = self.meshes.path(mesh).ok_or_else(|| AssetError::Load {
+            path: PathBuf::new(),
+            message: "skinned mesh has no file".into(),
+        })?;
+        decode_cooked(&path.with_extension("rskin"))
+    }
+
+    /// The `.rmorph` blend shapes cooked next to a mesh file by the glTF
+    /// importer.
+    pub fn morph_targets(
+        &self,
+        mesh: Handle<MeshAsset>,
+    ) -> Result<MorphTargets, AssetError> {
+        let path = self.meshes.path(mesh).ok_or_else(|| AssetError::Load {
+            path: PathBuf::new(),
+            message: "morphed mesh has no file".into(),
+        })?;
+        decode_cooked(&path.with_extension("rmorph"))
+    }
+
     /// Smallest local box around every vertex of `handle`, computed once per
     /// mesh revision.
     #[must_use]
@@ -1455,9 +1513,37 @@ impl AssetServer {
                 let tangents = imported_tangents.unwrap_or_else(|| {
                     vec![[1.0, 0.0, 0.0, 1.0]; positions.len()]
                 });
+                let mut skin = reader
+                    .read_joints(0)
+                    .zip(reader.read_weights(0))
+                    .map(|(joints, weights)| SkinWeights {
+                        joints: joints.into_u16().collect(),
+                        weights: weights.into_f32().collect(),
+                    });
+                let mut morph = MorphTargets::default();
+                for (offsets, normal_offsets, _) in reader.read_morph_targets()
+                {
+                    morph.positions.push(offsets.map_or_else(
+                        || vec![[0.0; 3]; positions.len()],
+                        Iterator::collect,
+                    ));
+                    morph.normals.push(
+                        normal_offsets.map_or_else(Vec::new, Iterator::collect),
+                    );
+                }
                 if normals.len() != positions.len()
+                    || morph.positions.iter().chain(&morph.normals).any(
+                        |offsets| {
+                            !offsets.is_empty()
+                                && offsets.len() != positions.len()
+                        },
+                    )
                     || uvs.len() != positions.len()
                     || tangents.len() != positions.len()
+                    || skin.as_ref().is_some_and(|skin| {
+                        skin.joints.len() != positions.len()
+                            || skin.weights.len() != positions.len()
+                    })
                 {
                     return Err(AssetError::Load {
                         path: source.clone(),
@@ -1490,6 +1576,29 @@ impl AssetServer {
                     };
                 check_mesh_indices(&source, &indices, vertices.len())?;
                 if flat {
+                    if let Some(skin) = &mut skin {
+                        // flat_shaded gives each triangle corner its own
+                        // vertex, in index order.
+                        let corners = &indices[..indices.len() / 3 * 3];
+                        *skin = SkinWeights {
+                            joints: corners
+                                .iter()
+                                .map(|&index| skin.joints[index as usize])
+                                .collect(),
+                            weights: corners
+                                .iter()
+                                .map(|&index| skin.weights[index as usize])
+                                .collect(),
+                        };
+                    }
+                    let corners = &indices[..indices.len() / 3 * 3];
+                    for offsets in &mut morph.positions {
+                        *offsets = corners
+                            .iter()
+                            .map(|&index| offsets[index as usize])
+                            .collect();
+                    }
+                    morph.normals.iter_mut().for_each(Vec::clear);
                     (vertices, indices) = flat_shaded(&vertices, &indices);
                 }
                 if generate {
@@ -1500,6 +1609,18 @@ impl AssetServer {
                     mesh.index(),
                     primitive.index()
                 ));
+                if let Some(skin) = &skin {
+                    write_cooked_asset(
+                        &mesh_key.with_extension("rskin"),
+                        skin,
+                    )?;
+                }
+                if !morph.positions.is_empty() {
+                    write_cooked_asset(
+                        &mesh_key.with_extension("rmorph"),
+                        &morph,
+                    )?;
+                }
                 let mesh_asset = MeshAsset { vertices, indices };
                 write_cooked_asset(&mesh_key, &mesh_asset)?;
                 let mesh_handle =
@@ -1630,12 +1751,14 @@ impl AssetServer {
         let source = normalize_path(path.as_ref())?;
         // ponytail: parses the JSON a second time after import_gltf; share
         // the parsed document if import time on large files matters.
-        let document = gltf::Gltf::open(&source)
-            .map_err(|error| AssetError::Load {
-                path: source.clone(),
-                message: error.to_string(),
-            })?
-            .document;
+        let load_error = |error: gltf::Error| AssetError::Load {
+            path: source.clone(),
+            message: error.to_string(),
+        };
+        let gltf::Gltf { document, blob } =
+            gltf::Gltf::open(&source).map_err(load_error)?;
+        let buffers = gltf::import_buffers(&document, source.parent(), blob)
+            .map_err(load_error)?;
         let mut first_primitive = Vec::new();
         let mut offset = 0;
         for mesh in document.meshes() {
@@ -1663,6 +1786,36 @@ impl AssetServer {
                         rotation: [roll, pitch, yaw],
                         scale,
                     },
+                    skin: node.skin().map(|skin| ImportedGltfSkin {
+                        joints: skin
+                            .joints()
+                            .map(|joint| joint.index())
+                            .collect(),
+                        inverse_bind: skin
+                            .reader(|buffer| Some(&buffers[buffer.index()]))
+                            .read_inverse_bind_matrices()
+                            .map_or_else(
+                                || {
+                                    vec![
+                                        nalgebra::Matrix4::identity().into();
+                                        skin.joints().len()
+                                    ]
+                                },
+                                Iterator::collect,
+                            ),
+                    }),
+                    morph_weights: node.mesh().and_then(|mesh| {
+                        let targets =
+                            mesh.primitives().next()?.morph_targets().len();
+                        (targets > 0).then(|| {
+                            let mut weights = node
+                                .weights()
+                                .or(mesh.weights())
+                                .map_or_else(Vec::new, <[f32]>::to_vec);
+                            weights.resize(targets, 0.0);
+                            weights
+                        })
+                    }),
                     primitives: node.mesh().map_or_else(Vec::new, |mesh| {
                         let start = first_primitive[mesh.index()];
                         primitives[start..start + mesh.primitives().len()]
@@ -1731,6 +1884,149 @@ impl AssetServer {
             }
         }
         Ok(nodes)
+    }
+}
+
+impl AssetServer {
+    /// Reads a glTF file's node animations as `rusting.animation` clips for
+    /// a root whose children are the glTF scene's top nodes, as `nodes`
+    /// from [`Self::import_gltf_scene`] spawn. Translation and scale become
+    /// Position and Scale tracks, rotation an Orientation (quaternion)
+    /// track. Cubic spline keys keep their values and play Smooth. Morph
+    /// target weights are skipped.
+    #[cfg(feature = "gltf")]
+    pub fn import_gltf_animations(
+        &self,
+        path: impl AsRef<Path>,
+        nodes: &[ImportedGltfNode],
+    ) -> Result<Vec<crate::runtime::AnimationClip>, AssetError> {
+        use crate::runtime::{
+            AnimationClip, AnimationProperty, AnimationTrack, Interpolation,
+            Keyframe, TweenRepeat,
+        };
+        use gltf::animation::util::ReadOutputs;
+        let source = normalize_path(path.as_ref())?;
+        let error = |message: String| AssetError::Load {
+            path: source.clone(),
+            message,
+        };
+        let gltf = gltf::Gltf::open(&source)
+            .map_err(|value| error(value.to_string()))?;
+        let buffers =
+            gltf::import_buffers(&gltf.document, source.parent(), gltf.blob)
+                .map_err(|value| error(value.to_string()))?;
+        // ponytail: a name path finds the first child with that name, so
+        // siblings that share a name animate the first one.
+        let target = |mut node: usize| {
+            let mut names = vec![nodes.get(node)?.name.as_str()];
+            while let Some(parent) = nodes[node].parent {
+                names.push(&nodes[parent].name);
+                node = parent;
+            }
+            names.reverse();
+            Some(names.join("/"))
+        };
+        let mut clips = Vec::new();
+        for animation in gltf.document.animations() {
+            let mut tracks = Vec::new();
+            for channel in animation.channels() {
+                let Some(target_path) = target(channel.target().node().index())
+                else {
+                    continue;
+                };
+                let reader = channel
+                    .reader(|buffer| Some(&buffers[buffer.index()].0[..]));
+                let (Some(times), Some(outputs)) =
+                    (reader.read_inputs(), reader.read_outputs())
+                else {
+                    continue;
+                };
+                let (property, mut values): (_, Vec<Vec<f32>>) = match outputs {
+                    ReadOutputs::Translations(values) => (
+                        AnimationProperty::Position,
+                        values.map(Vec::from).collect(),
+                    ),
+                    ReadOutputs::Scales(values) => (
+                        AnimationProperty::Scale,
+                        values.map(Vec::from).collect(),
+                    ),
+                    ReadOutputs::Rotations(values) => (
+                        AnimationProperty::Orientation,
+                        values.into_f32().map(Vec::from).collect(),
+                    ),
+                    ReadOutputs::MorphTargetWeights(values) => {
+                        let node = channel.target().node().index();
+                        let width = nodes[node]
+                            .morph_weights
+                            .as_ref()
+                            .map_or(0, Vec::len);
+                        if width == 0 {
+                            continue;
+                        }
+                        let values = values.into_f32().collect::<Vec<_>>();
+                        (
+                            AnimationProperty::Field {
+                                component: crate::runtime::MORPH_COMPONENT
+                                    .into(),
+                                path: "/weights".into(),
+                            },
+                            values.chunks(width).map(<[f32]>::to_vec).collect(),
+                        )
+                    }
+                };
+                let interpolation = match channel.sampler().interpolation() {
+                    gltf::animation::Interpolation::Step => Interpolation::Step,
+                    gltf::animation::Interpolation::Linear => {
+                        Interpolation::Linear
+                    }
+                    gltf::animation::Interpolation::CubicSpline => {
+                        // (in-tangent, value, out-tangent) per key.
+                        values = values
+                            .chunks(3)
+                            .filter_map(|key| key.get(1).cloned())
+                            .collect();
+                        Interpolation::Smooth
+                    }
+                };
+                if property == AnimationProperty::Orientation {
+                    // Shortest arc between keys, so the blend never spins
+                    // the long way round.
+                    for index in 1..values.len() {
+                        let dot: f32 = values[index - 1]
+                            .iter()
+                            .zip(&values[index])
+                            .map(|(a, b)| a * b)
+                            .sum();
+                        if dot < 0.0 {
+                            values[index].iter_mut().for_each(|v| *v = -*v);
+                        }
+                    }
+                }
+                tracks.push(AnimationTrack {
+                    target: target_path,
+                    property,
+                    interpolation,
+                    keys: times
+                        .zip(values)
+                        .map(|(time, value)| Keyframe { time, value })
+                        .collect(),
+                });
+            }
+            if tracks.is_empty() {
+                continue;
+            }
+            clips.push(AnimationClip {
+                name: animation.name().map_or_else(
+                    || format!("Animation {}", animation.index()),
+                    str::to_owned,
+                ),
+                duration: 0.0,
+                repeat: TweenRepeat::Loop,
+                tracks,
+                ..AnimationClip::default()
+            });
+        }
+        Ok(clips)
     }
 }
 
@@ -1828,6 +2124,11 @@ pub fn spawn_gltf_nodes_in_world(
             if let Some(first) = node.primitives.first() {
                 world_entity.insert(renderer(first));
             }
+            if let Some(weights) = &node.morph_weights {
+                world_entity.insert(crate::runtime::Morph {
+                    weights: weights.clone(),
+                });
+            }
             world_entity.id()
         })
         .collect::<Vec<_>>();
@@ -1851,7 +2152,38 @@ pub fn spawn_gltf_nodes_in_world(
             crate::runtime::hierarchy::set_parent(world, child, entity)?;
         }
     }
+    insert_gltf_skins(world, nodes, &entities);
     Ok(entities)
+}
+
+/// Inserts each skinned node's `rusting.skin`, with joint paths from the
+/// current node names. A node's extra primitives, its children outside
+/// `entities`, get the same skin one level further down.
+pub fn insert_gltf_skins(
+    world: &mut bevy_ecs::world::World,
+    nodes: &[ImportedGltfNode],
+    entities: &[bevy_ecs::entity::Entity],
+) {
+    for (index, &entity) in entities.iter().enumerate() {
+        let Some(skin) = gltf_node_skin(nodes, index) else {
+            continue;
+        };
+        let parts = world
+            .get::<crate::runtime::Children>(entity)
+            .map_or_else(Vec::new, |children| children.0.clone());
+        for part in parts.into_iter().filter(|part| !entities.contains(part)) {
+            let mut part_skin = skin.clone();
+            for joint in &mut part_skin.joints {
+                *joint = if joint.is_empty() {
+                    "..".into()
+                } else {
+                    format!("../{joint}")
+                };
+            }
+            world.entity_mut(part).insert(part_skin);
+        }
+        world.entity_mut(entity).insert(skin);
+    }
 }
 
 /// One glTF node prepared for spawning; see [`spawn_gltf_nodes`].
@@ -1865,6 +2197,56 @@ pub struct ImportedGltfNode {
     pub primitives: Vec<ImportedGltfPrimitive>,
     pub camera: Option<Camera>,
     pub light: Option<ImportedGltfLight>,
+    pub skin: Option<ImportedGltfSkin>,
+    /// Starting blend shape weights when the node's mesh has morph targets.
+    pub morph_weights: Option<Vec<f32>>,
+}
+
+/// A glTF skin on a node: joint node indices in the same list and their
+/// inverse bind matrices (column-major).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedGltfSkin {
+    pub joints: Vec<usize>,
+    pub inverse_bind: Vec<[[f32; 4]; 4]>,
+}
+
+/// The `rusting.skin` for node `index`, with joint paths built from the
+/// current node names, or `None` when the node has no skin. Paths are
+/// relative to the skinned node; nodes with no shared ancestor meet at the
+/// root the nodes are spawned under.
+pub fn gltf_node_skin(
+    nodes: &[ImportedGltfNode],
+    index: usize,
+) -> Option<crate::runtime::Skin> {
+    let skin = nodes.get(index)?.skin.as_ref()?;
+    let chain = |mut node: usize| {
+        let mut chain = vec![node];
+        while let Some(parent) = nodes[node].parent {
+            chain.push(parent);
+            node = parent;
+        }
+        chain.reverse();
+        chain
+    };
+    let from = chain(index);
+    let joints = skin
+        .joints
+        .iter()
+        .map(|&joint| {
+            let to = chain(joint);
+            let shared =
+                from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+            let mut path = vec![".."; from.len() - shared];
+            path.extend(
+                to[shared..].iter().map(|&node| nodes[node].name.as_str()),
+            );
+            path.join("/")
+        })
+        .collect();
+    Some(crate::runtime::Skin {
+        joints,
+        inverse_bind: skin.inverse_bind.clone(),
+    })
 }
 
 /// A `KHR_lights_punctual` light attached to a glTF node.
@@ -1912,6 +2294,7 @@ impl Default for AssetServer {
             fallback_texture,
             fallback_material,
             mesh_bounds_cache: Mutex::default(),
+            deformers: crate::runtime::Deformers::default(),
         }
     }
 }
@@ -1954,11 +2337,11 @@ pub fn procedural_sphere_mesh(subdivisions: u32) -> MeshAsset {
             let second = first + row;
             indices.extend_from_slice(&[
                 first,
-                second,
                 first + 1,
                 second,
+                second,
+                first + 1,
                 second + 1,
-                first + 1,
             ]);
         }
     }
@@ -2016,6 +2399,8 @@ pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
         PrimitiveShape::Cone => cone_mesh(32),
         PrimitiveShape::Torus => torus_mesh(32, 12),
         PrimitiveShape::Quad => quad_mesh(),
+        PrimitiveShape::RoundedCube => rounded_cube_mesh(0.1, 4),
+        PrimitiveShape::Capsule => capsule_mesh(32, 8),
     };
     // The builders write placeholder tangents; normal maps need real ones.
     generate_tangents(&mut mesh.vertices, &mesh.indices);
@@ -2233,36 +2618,153 @@ fn pyramid_mesh() -> MeshAsset {
     )
 }
 
-fn cylinder_mesh(segments: u32) -> MeshAsset {
-    let mut triangles = Vec::with_capacity((segments * 4) as usize);
-    for step in 0..segments {
-        let a = std::f32::consts::TAU * step as f32 / segments as f32;
-        let b = std::f32::consts::TAU * (step + 1) as f32 / segments as f32;
-        let bottom_a = [0.5 * a.cos(), -0.5, 0.5 * a.sin()];
-        let bottom_b = [0.5 * b.cos(), -0.5, 0.5 * b.sin()];
-        let top_a = [bottom_a[0], 0.5, bottom_a[2]];
-        let top_b = [bottom_b[0], 0.5, bottom_b[2]];
-        triangles.extend_from_slice(&[
-            [bottom_a, top_b, bottom_b],
-            [bottom_a, top_a, top_b],
-            [[0.0, 0.5, 0.0], top_b, top_a],
-            [[0.0, -0.5, 0.0], bottom_a, bottom_b],
-        ]);
+/// Turns a profile of `(radius, y)` points with `(radial, y)` normals
+/// around the Y axis. Consecutive points form a band; repeat a point with a
+/// new normal for a hard edge.
+fn lathe_mesh(profile: &[([f32; 2], [f32; 2])], segments: u32) -> MeshAsset {
+    let mut vertices = Vec::new();
+    for step in 0..=segments {
+        let angle = std::f32::consts::TAU * step as f32 / segments as f32;
+        let (sin, cos) = angle.sin_cos();
+        for (index, ([radius, y], [radial, normal_y])) in
+            profile.iter().copied().enumerate()
+        {
+            vertices.push(MeshVertex {
+                position: [radius * cos, y, radius * sin],
+                normal: normalize3([radial * cos, normal_y, radial * sin]),
+                uv: [
+                    step as f32 / segments as f32,
+                    index as f32 / (profile.len() - 1) as f32,
+                ],
+                tangent: [1.0, 0.0, 0.0, 1.0],
+            });
+        }
     }
-    mesh_from_triangles(&triangles)
+    let rows = profile.len() as u32;
+    let mut indices = Vec::new();
+    for step in 0..segments {
+        for index in 0..rows - 1 {
+            let [low_a, low_b] =
+                [step * rows + index, (step + 1) * rows + index];
+            let [high_a, high_b] = [low_a + 1, low_b + 1];
+            for triangle in [[low_a, high_b, low_b], [low_a, high_a, high_b]] {
+                let [a, b, c] = triangle.map(|i| vertices[i as usize].position);
+                if dot3_nonzero(cross(subtract(b, a), subtract(c, a))) {
+                    indices.extend_from_slice(&triangle);
+                }
+            }
+        }
+    }
+    MeshAsset { vertices, indices }
+}
+
+fn cylinder_mesh(segments: u32) -> MeshAsset {
+    let [down, out, up] = [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+    lathe_mesh(
+        &[
+            ([0.0, -0.5], down),
+            ([0.5, -0.5], down),
+            ([0.5, -0.5], out),
+            ([0.5, 0.5], out),
+            ([0.5, 0.5], up),
+            ([0.0, 0.5], up),
+        ],
+        segments,
+    )
 }
 
 fn cone_mesh(segments: u32) -> MeshAsset {
-    let mut triangles = Vec::with_capacity((segments * 2) as usize);
-    for step in 0..segments {
-        let a = std::f32::consts::TAU * step as f32 / segments as f32;
-        let b = std::f32::consts::TAU * (step + 1) as f32 / segments as f32;
-        let point_a = [0.5 * a.cos(), -0.5, 0.5 * a.sin()];
-        let point_b = [0.5 * b.cos(), -0.5, 0.5 * b.sin()];
-        triangles.push([point_a, [0.0, 0.5, 0.0], point_b]);
-        triangles.push([[0.0, -0.5, 0.0], point_a, point_b]);
+    let down = [0.0, -1.0];
+    // The side rises 1 over a run of 0.5.
+    let side = [1.0, 0.5];
+    lathe_mesh(
+        &[
+            ([0.0, -0.5], down),
+            ([0.5, -0.5], down),
+            ([0.5, -0.5], side),
+            ([0.0, 0.5], side),
+        ],
+        segments,
+    )
+}
+
+/// Radius 0.5 hemispheres on a cylinder from y -0.5 to 0.5.
+fn capsule_mesh(segments: u32, cap_rings: u32) -> MeshAsset {
+    let mut profile = Vec::new();
+    for (center, from, to) in [(-0.5, -1.0, 0.0), (0.5, 0.0, 1.0)] {
+        for ring in 0..=cap_rings {
+            let t = from + (to - from) * ring as f32 / cap_rings as f32;
+            let (sin, cos) = (t * std::f32::consts::FRAC_PI_2).sin_cos();
+            profile.push(([0.5 * cos, center + 0.5 * sin], [cos, sin]));
+        }
     }
-    mesh_from_triangles(&triangles)
+    lathe_mesh(&profile, segments)
+}
+
+/// Unit box whose edges are rounded by `radius`, with `bevel_steps` bands
+/// across each rounded edge.
+fn rounded_cube_mesh(radius: f32, bevel_steps: u32) -> MeshAsset {
+    let inner = 0.5 - radius;
+    let coordinates: Vec<f32> = (0..=bevel_steps)
+        .map(|step| -0.5 + radius * step as f32 / bevel_steps as f32)
+        .chain(
+            (0..=bevel_steps)
+                .map(|step| inner + radius * step as f32 / bevel_steps as f32),
+        )
+        .collect();
+    let size = coordinates.len() as u32;
+    let axes: [[f32; 3]; 3] =
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let scaled = |axis: [f32; 3], by: f32| axis.map(|value| value * by);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    // (normal, u, v) with u x v = normal, so the grid winds outward.
+    for (normal, u, v) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)]
+        .into_iter()
+        .flat_map(|(n, u, v)| {
+            [
+                (scaled(axes[n], 1.0), axes[u], axes[v]),
+                (scaled(axes[n], -1.0), axes[v], axes[u]),
+            ]
+        })
+    {
+        let base = vertices.len() as u32;
+        for (i, a) in coordinates.iter().enumerate() {
+            for (j, b) in coordinates.iter().enumerate() {
+                let point: [f32; 3] = std::array::from_fn(|k| {
+                    0.5 * normal[k] + a * u[k] + b * v[k]
+                });
+                let core = point.map(|value| value.clamp(-inner, inner));
+                let direction = normalize3(subtract(point, core));
+                vertices.push(MeshVertex {
+                    position: std::array::from_fn(|k| {
+                        core[k] + direction[k] * radius
+                    }),
+                    normal: direction,
+                    uv: [
+                        i as f32 / (size - 1) as f32,
+                        j as f32 / (size - 1) as f32,
+                    ],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
+                });
+            }
+        }
+        for i in 0..size - 1 {
+            for j in 0..size - 1 {
+                let at = |i: u32, j: u32| base + i * size + j;
+                let [a, b, c, d] =
+                    [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+                for triangle in [[a, b, c], [a, c, d]] {
+                    let [p, q, r] =
+                        triangle.map(|i| vertices[i as usize].position);
+                    if dot3_nonzero(cross(subtract(q, p), subtract(r, p))) {
+                        indices.extend_from_slice(&triangle);
+                    }
+                }
+            }
+        }
+    }
+    MeshAsset { vertices, indices }
 }
 
 fn torus_mesh(major_segments: u32, minor_segments: u32) -> MeshAsset {
@@ -2311,6 +2813,11 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+/// False for the zero-area triangles a lathe makes at the poles.
+fn dot3_nonzero(value: [f32; 3]) -> bool {
+    dot(value, value) > 1e-18
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -2471,6 +2978,40 @@ impl Plugin for AssetPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primitives_wind_outward_with_unit_normals() {
+        for shape in PrimitiveShape::ALL {
+            let mesh = procedural_primitive_mesh(shape);
+            for vertex in &mesh.vertices {
+                let length = dot(vertex.normal, vertex.normal).sqrt();
+                assert!((length - 1.0).abs() < 1e-4, "{shape:?}");
+            }
+            for triangle in mesh.indices.chunks(3) {
+                let [a, b, c] =
+                    [0, 1, 2].map(|i| mesh.vertices[triangle[i] as usize]);
+                let face = cross(
+                    subtract(b.position, a.position),
+                    subtract(c.position, a.position),
+                );
+                let normal =
+                    [0, 1, 2].map(|k| a.normal[k] + b.normal[k] + c.normal[k]);
+                assert!(
+                    !dot3_nonzero(face) || dot(face, normal) > 0.0,
+                    "{shape:?} winds inward"
+                );
+            }
+        }
+        let capsule = procedural_primitive_mesh(PrimitiveShape::Capsule);
+        let top = capsule.vertices.iter().map(|v| v.position[1]);
+        assert!((top.fold(f32::MIN, f32::max) - 1.0).abs() < 1e-5);
+        let cylinder = procedural_primitive_mesh(PrimitiveShape::Cylinder);
+        assert!(cylinder.vertices.iter().any(|v| v.normal[1] == 0.0));
+        let rounded = procedural_primitive_mesh(PrimitiveShape::RoundedCube);
+        for vertex in &rounded.vertices {
+            assert!(vertex.position.iter().all(|v| v.abs() <= 0.5 + 1e-5));
+        }
+    }
 
     #[cfg(feature = "gltf")]
     fn gltf_image(
@@ -3148,5 +3689,52 @@ mod tests {
         std::fs::write(folder.join("empty.rlod"), r#"{"levels": []}"#).unwrap();
         assert!(server.load_lod_group(folder.join("empty.rlod")).is_err());
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn every_primitive_of_a_skinned_node_gets_the_skin() {
+        let server = AssetServer::default();
+        let primitive = ImportedGltfPrimitive {
+            name: "Part".into(),
+            mesh: server.fallback_mesh,
+            material: server.fallback_material,
+        };
+        let node = |name: &str, parent| ImportedGltfNode {
+            name: name.into(),
+            parent,
+            transform: crate::Transform::default(),
+            primitives: Vec::new(),
+            camera: None,
+            light: None,
+            skin: None,
+            morph_weights: None,
+        };
+        let nodes = vec![
+            node("Rig", None),
+            ImportedGltfNode {
+                primitives: vec![primitive.clone(), primitive],
+                skin: Some(ImportedGltfSkin {
+                    joints: vec![2],
+                    inverse_bind: vec![[[0.0; 4]; 4]],
+                }),
+                ..node("Body", Some(0))
+            },
+            node("Bone", Some(0)),
+        ];
+        let mut world = bevy_ecs::world::World::new();
+        let entities =
+            spawn_gltf_nodes_in_world(&mut world, &nodes, None).expect("spawn");
+        let part = world
+            .get::<crate::runtime::Children>(entities[1])
+            .unwrap()
+            .0[0];
+        let joints =
+            |entity| world.get::<crate::runtime::Skin>(entity).unwrap();
+        assert_eq!(joints(entities[1]).joints, ["../Bone"]);
+        assert_eq!(joints(part).joints, ["../../Bone"]);
+        assert_eq!(
+            crate::runtime::find_target(&world, part, "../../Bone"),
+            Some(entities[2])
+        );
     }
 }

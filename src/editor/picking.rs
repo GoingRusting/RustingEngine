@@ -52,28 +52,42 @@ pub(super) fn pick_entity(
             .map(|(entity, mesh, transform)| (entity, mesh.mesh, *transform))
             .collect::<Vec<_>>()
     };
+    let shape_hits = |shapes: Vec<(Entity, Vec<[[f32; 3]; 2]>)>| {
+        shapes
+            .into_iter()
+            .filter_map(|(entity, lines)| {
+                lines
+                    .iter()
+                    .filter_map(|&[start, end]| {
+                        let project = |point| {
+                            project_world_to_screen(
+                                world,
+                                camera_entity,
+                                point,
+                                viewport,
+                            )
+                        };
+                        let near = segment_distance(
+                            click,
+                            project(start)?,
+                            project(end)?,
+                        ) <= SHAPE_PICK_RADIUS;
+                        near.then(|| (Vector3::from(start) - ray.origin).norm())
+                    })
+                    .min_by(f32::total_cmp)
+                    .map(|distance| (distance, entity))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+    };
+    // Bones are drawn in front of the mesh they bend, so they win.
+    if let Some((_, joint)) =
+        shape_hits(crate::editor::overlay::bone_shapes(world))
+    {
+        return Some(joint);
+    }
     let shapes =
         crate::editor::overlay::object_shapes(world, Some(camera_entity));
-    let shape_hits = shapes.into_iter().filter_map(|(entity, lines)| {
-        lines
-            .iter()
-            .filter_map(|&[start, end]| {
-                let project = |point| {
-                    project_world_to_screen(
-                        world,
-                        camera_entity,
-                        point,
-                        viewport,
-                    )
-                };
-                let near =
-                    segment_distance(click, project(start)?, project(end)?)
-                        <= SHAPE_PICK_RADIUS;
-                near.then(|| (Vector3::from(start) - ray.origin).norm())
-            })
-            .min_by(f32::total_cmp)
-            .map(|distance| (distance, entity))
-    });
+    let shape_hits = shape_hits(shapes);
     let assets = world.resource::<AssetServer>();
     candidates
         .into_iter()
@@ -82,7 +96,7 @@ pub(super) fn pick_entity(
             let distance = ray_mesh_bounds(ray, transform, bounds)?;
             Some((distance, entity))
         })
-        .chain(shape_hits.collect::<Vec<_>>())
+        .chain(shape_hits)
         .min_by(|left, right| left.0.total_cmp(&right.0))
         // A tile selects the tile map that owns it.
         .map(|(_, entity)| {

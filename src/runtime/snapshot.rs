@@ -425,6 +425,17 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<AmbientLight>();
     types.register::<BurstEmitter>();
     types.register::<BurstParticle>();
+    types.register::<super::ParticleEmitter>();
+    types.register::<super::ParticleSystem>();
+    types.register::<super::Animation>();
+    types.register::<super::Skin>();
+    types.register::<super::Morph>();
+    types.register::<super::Ik>();
+    types.register::<super::IkPose>();
+    types.register::<super::Ragdoll>();
+    types.register::<super::RagdollState>();
+    types.register::<super::SkinnedMesh>();
+    types.register::<super::AnimationPlayer>();
     types.register::<Camera>();
     types.register::<FluidBlock>();
     types.register::<super::WaterBody>();
@@ -460,6 +471,8 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::EnvironmentMap>();
     types.register::<super::ReflectionProbe>();
     types.register::<super::Fog>();
+    types.register::<super::ColorGrading>();
+    types.register::<super::CameraScreen>();
     types.register::<super::Bloom>();
     types.register::<super::AmbientOcclusion>();
     types.register::<SceneId>();
@@ -487,6 +500,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<EventQueue<GpuPhysicsEvent>>();
     types.register::<EventQueue<GpuPhysicsEventsLost>>();
     types.register::<EventQueue<HudButtonPressed>>();
+    types.register::<EventQueue<super::AnimationEvent>>();
     types.register::<EventQueue<SoundEvent>>();
     types.register::<AudioQueue>();
     types.register::<ExitState>();

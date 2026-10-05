@@ -44,7 +44,11 @@ aim), `core_defense` (top-down, mouse), `lantern_grid` (click puzzle),
 6. Look at your frames. Add `capture` steps to scenarios and open the PNGs.
    A test that passes on a black screen, or with the camera inside a wall,
    is not a finished game.
-7. `rusting run` opens the window for a human to play.
+7. Polish. Run the loop in `rusting docs show guide/look-and-feel`:
+   capture, look, critique against its checklist (silhouette, palette,
+   warm key and cool fill, materials, shapes, HUD margins, feedback), fix
+   the worst item, repeat. Start from `rusting preset apply`.
+8. `rusting run` opens the window for a human to play.
 
 Every error carries a code such as `SCENE_CONFLICT`. `rusting explain CODE`
 prints what it means, how to fix it and an example; `rusting explain` lists
@@ -127,6 +131,14 @@ Prefer these components over game code when they fit:
   height]` fractions); `scene.set_camera(name, active, viewport)` changes
   one from code. A `rusting.hud` with `"camera": "<name>"` anchors to that
   camera's viewport. `rusting docs show guide/cameras`.
+- `rusting.particle_emitter` is the full particle effect: shape, random
+  `[min, max]` ranges, gravity/drag/wind/turbulence, size and color over
+  life, additive glow, velocity streaks, one instanced draw per emitter.
+  `scene.particles(name, ParticleCommand::Stop)` controls it from code.
+  `rusting effect apply <scene> fire --at X,Y,Z` (or `--on OBJECT`) adds a
+  preset: dust_motes, falling_leaves, snow, rain, sparks, smoke, fire,
+  embers, fireflies, magic_sparkle, confetti.
+  `rusting docs show guide/effects`.
 - `rusting.burst_emitter` with `rate` (particles per second) emits every
   fixed step with no trigger; `area` (half extents of a world-aligned box)
   spreads the start points and `stretch` makes each particle that many
@@ -136,17 +148,66 @@ Prefer these components over game code when they fit:
 - Round things: give a dynamic body `"collider": {"shape": "ConvexMesh"}`
   and a `Cylinder` (or any) mesh; it collides as the mesh's convex hull, so
   a barrel on its side rolls. There is no cylinder shape of its own.
-- There is no skeletal animation or skinned mesh. Build a character from
-  child entities (torso, limbs) and set their rotations from game code each
-  fixed tick, or use `rusting.tween` for simple loops.
+- Keyframe animation: `rusting.animation` holds named clips; each track
+  keys `Position`, `Rotation` (radians), `Scale`, `Color`, `Emissive`,
+  `Visible` or a numeric `Field` of another component, on the object or a
+  child path such as `Arm/Hand`, with `Step`, `Linear` or `Smooth`
+  interpolation and `Once`, `Loop` or `PingPong` repeat. Clip `events`
+  markers reach game code through `scene.animation_events()`. Game code
+  calls `play_animation`, `crossfade`, `stop_animation`, `is_playing` and
+  `set_animation_speed`. `transitions` (from, to, parameter test, fade)
+  make a state machine driven by `set_animation_parameter`. Clips with
+  `blend` points are 1D or 2D blend spaces; `layers` play clips on top
+  (override or additive, masked to child paths); `root_motion` turns a
+  root bone's stride into object motion (`take_root_motion` for game code).
+  `rusting scene retarget <scene> <from> <clip> <to>` copies a clip onto
+  another skeleton (bones matched by name or the `humanoid` map).
+  `rusting.ik` (`LookAt`, `TwoBone`, `Foot` or `Chain`) makes a
+  joint look at or reach a target object. `rusting.ragdoll` makes a
+  character go limp on a hit or `set_ragdoll(name, true)` and blend back
+  to its animation afterwards; with `muscle` (Hz) above 0 it is an active
+  ragdoll that follows its clips physically and staggers when pushed
+  (good for animatronics, zombies and hit reactions). See
+  `rusting docs show guide/animation`.
+  `scene add-model` keeps a glTF's node animations as clips on the new
+  object (the first autoplays).
+- Skinned glTF models keep their skin: `scene add-model` adds
+  `rusting.skin` (joint paths and inverse bind matrices; weights live in a
+  `.rskin` file next to the mesh), and the model's clips move the joints.
+  Blend shapes become `rusting.morph` weights, which clips key with a
+  `Field` track on `/weights`. Both run on the CPU, so keep to a few
+  characters. Without a rigged
+  model, build a character from child entities (torso, limbs) and key
+  their rotations in a clip, or use `rusting.tween` for simple loops.
 - Textures: `mesh_renderer.material.Inline.base_color_texture` (and the
   other slots) is a plain path string relative to the scene file, such as
   `"../assets/textures/crate.png"`. `uv_scale: [8, 4]` repeats the texture
   across each face instead of stretching it; `uv_offset` shifts it. The
   first row of an image is the top of each cube side face.
-- Look: `rusting.background`, `rusting.sky_light`, `rusting.fog`,
-  `rusting.bloom`, `rusting.tone_mapping`, `rusting.environment_map`,
-  `directional_light`, `point_light`, `spot_light`.
+- Look: `rusting preset apply scenes/main.rscene <preset>` sets sky, sun,
+  ambient, fog, bloom, tone mapping and color grading at once (`daylight`,
+  `golden_hour`, `night`, `flat_toy`, `dark_interior`,
+  `bright_stylized`); `rusting preset list --json` gives each preset's
+  five-color palette, so take object colors from it. Tune with
+  `rusting.background`, `rusting.sky_light`, `rusting.fog`,
+  `rusting.bloom`, `rusting.tone_mapping`, `rusting.color_grading`
+  (`contrast`, `saturation`, `shadows`/`highlights` tints, `vignette`),
+  `rusting.environment_map`, `directional_light`, `point_light`,
+  `spot_light`.
+- Shapes: `BuiltinPrimitive` takes `Cube`, `Sphere`, `Cylinder`, `Cone`,
+  `Capsule` (diameter 1, height 2), `RoundedCube` (unit box, edges rounded
+  by 0.1), `Torus`, `Plane`, `Quad` and a few solids. Use `RoundedCube` and
+  `Capsule` for props and characters the player looks at; `guide/look-and-feel`
+  has a ready character patch.
+- Screens: `rusting.camera_screen` (`camera` name, `size` [w, h]) shows
+  another camera's view on a mesh, for CCTV monitors and rear-view screens.
+  Give each screen its own material with some `emissive`. See
+  `guide/cameras`.
+- Models: free CC0 glTF models (Kenney, Quaternius, Poly Pizza) look far
+  better than primitives. `rusting asset import . model.glb --to models
+  --license CC0-1.0 --author NAME`, then `rusting scene add-model
+  scenes/main.rscene assets/models/model.glb --name "Tree 1"` places it as
+  one object with its materials. See `guide/look-and-feel`.
 
 Player actions are `player.forward`, `player.back`, `player.left`,
 `player.right`, `player.jump`, `player.sprint`. The player controller is
@@ -193,6 +254,7 @@ rusting_game!(update);
 | sound | `play_sound("sfx/hit.wav", volume)`, `play_sound_looped`, `play_sound_with(clip, Sound { pan, bus, at_tick, position, .. })`, `set_sound_volume(id, v, fade)`, `set_bus_volume(bus, v, fade)`, `stop_sound(id)`, `stop_all_sounds`, `set_master_volume`, `sounds_requested()`, `BeatClock`, `press_tick(action)` (fractional tick of a press); clip paths are under `assets/`; see `guide/audio` |
 | files | `load_text("levels/1.txt")` reads a text file under `assets/`; `rusting validate` fails on a literal asset path in game code that is not a file |
 | look | `set_hud(name, \|hud\| ..)` (text, color, size of a `rusting.hud`, shown the same tick), `set_visible`, `color`, `set_color`, `set_emissive` (per object), `set_light(name, color, intensity, range)` (point or spot light; `None` keeps a value) |
+| animation | `play_animation(name, clip)`, `crossfade(name, clip, secs)`, `stop_animation`, `is_playing(name, clip)`, `set_animation_speed`, `set_animation_parameter(name, param, value)` (state machine input), `animation_events()` (clip markers), `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `is_limp(name)`; see `guide/animation` |
 | rounds, levels | `restart`, `once(key, setup)`, `load_scene("scenes/level_2.rscene")`, `initial(name)` (starting transform, color, body kind), `snapshot()` / `restore(&snapshot)`, `state_hash(class)` |
 | menus, saves | `ui()` (egui), `set_paused`, `paused`, `quit`, `save_data(key, text)`, `load_data`, `delete_data`, `counters()`, `keys_pressed()`, `rebind(action, &[key])`, `cursor()`, `viewport_size()`; see `guide/menus-and-ui` |
 | video settings | `set_render_scale(0.25..=2.0)`, `render_scale`, `set_pixelated(true)` (nearest upscale for a chunky low scale), `set_vsync`, `set_max_fps(Option<u32>)`, `set_fullscreen`, `fullscreen`, `set_window_size([w, h])` |
@@ -378,6 +440,7 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
 
 - `rusting check` and `rusting test` pass.
 - You opened every capture and it shows what its scenario claims.
+- The frames pass the `guide/look-and-feel` checklist.
 - The project `README.md` says how to play, what each file does and what
   each scenario proves.
 - If the engine was missing something, report the gap (what you needed,

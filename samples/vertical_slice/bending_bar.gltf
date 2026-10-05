@@ -1,0 +1,192 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "RustingEngine bending bar fixture"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "Bar",
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Rig",
+      "children": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "Body",
+      "mesh": 0,
+      "skin": 0
+    },
+    {
+      "name": "Root",
+      "children": [
+        3
+      ]
+    },
+    {
+      "name": "Tip",
+      "translation": [
+        0,
+        1,
+        0
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Bar",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "JOINTS_0": 2,
+            "WEIGHTS_0": 3
+          },
+          "indices": 1
+        }
+      ]
+    }
+  ],
+  "skins": [
+    {
+      "joints": [
+        2,
+        3
+      ],
+      "inverseBindMatrices": 4,
+      "skeleton": 2
+    }
+  ],
+  "animations": [
+    {
+      "name": "bend",
+      "samplers": [
+        {
+          "input": 5,
+          "output": 6,
+          "interpolation": "LINEAR"
+        }
+      ],
+      "channels": [
+        {
+          "sampler": 0,
+          "target": {
+            "node": 3,
+            "path": "rotation"
+          }
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,zczMvQAAAADNzMy9zczMPQAAAADNzMy9zczMPQAAAADNzMw9zczMvQAAAADNzMw9zczMvQAAgD/NzMy9zczMPQAAgD/NzMy9zczMPQAAgD/NzMw9zczMvQAAgD/NzMw9zczMvQAAAEDNzMy9zczMPQAAAEDNzMy9zczMPQAAAEDNzMw9zczMvQAAAEDNzMw9AAABAAUAAAAFAAQAAQACAAYAAQAGAAUAAgADAAcAAgAHAAYAAwAAAAQAAwAEAAcABAAFAAkABAAJAAgABQAGAAoABQAKAAkABgAHAAsABgALAAoABwAEAAgABwAIAAsAAAACAAEAAAADAAIACAAJAAoACAAKAAsAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAAAAAAAAAAAA/AAAAPwAAAAAAAAAAAAAAPwAAAD8AAAAAAAAAAAAAAD8AAAA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAPMENT/zBDU/",
+      "byteLength": 672
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 144
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 144,
+      "byteLength": 120
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 264,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 312,
+      "byteLength": 192
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 504,
+      "byteLength": 128
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 632,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 640,
+      "byteLength": 32
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 12,
+      "type": "VEC3",
+      "min": [
+        -0.1,
+        0,
+        -0.1
+      ],
+      "max": [
+        0.1,
+        2,
+        0.1
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 60,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5121,
+      "count": 12,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 12,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 2,
+      "type": "MAT4"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 2,
+      "type": "SCALAR",
+      "min": [
+        0
+      ],
+      "max": [
+        1
+      ]
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 2,
+      "type": "VEC4"
+    }
+  ]
+}

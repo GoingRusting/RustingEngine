@@ -65,6 +65,11 @@ const PAGES: &[(&str, &str, &str)] = &[
     ("guide/audio", "guide", include_str!("../docs/audio.md")),
     ("guide/cameras", "guide", include_str!("../docs/cameras.md")),
     (
+        "guide/look-and-feel",
+        "guide",
+        include_str!("../docs/look-and-feel.md"),
+    ),
+    (
         "guide/menus-and-ui",
         "guide",
         include_str!("../docs/menus-and-ui.md"),
@@ -79,15 +84,23 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("project_agents.md"),
     ),
+    ("guide/effects", "guide", include_str!("../docs/effects.md")),
+    (
+        "guide/animation",
+        "guide",
+        include_str!("../docs/animation.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
+/// Read from the copies in `docs/samples/` (made by `scripts/sync_sample_docs.sh`),
+/// because each sample is its own Cargo package and is left out of the published crate.
 macro_rules! samples {
     ($($name:literal),* $(,)?) => {
         &[$((
             $name,
-            include_str!(concat!("../samples/", $name, "/README.md")),
-            include_str!(concat!("../samples/", $name, "/src/main.rs")),
+            include_str!(concat!("../docs/samples/", $name, "/README.md")),
+            include_str!(concat!("../docs/samples/", $name, "/main.rs")),
         )),*]
     };
 }
@@ -252,6 +265,18 @@ pub fn items() -> Vec<DocItem> {
     ));
     items.push(struct_item("RayHit", include_str!("project_runner.rs")));
     items.push(struct_item("Sound", include_str!("runtime/audio.rs")));
+    items.push(struct_item(
+        "ParticleEmitter",
+        include_str!("runtime/particles.rs"),
+    ));
+    items.push(struct_item(
+        "Animation",
+        include_str!("runtime/animation.rs"),
+    ));
+    items.push(struct_item("Skin", include_str!("runtime/skinning.rs")));
+    items.push(struct_item("Morph", include_str!("runtime/skinning.rs")));
+    items.push(struct_item("Ik", include_str!("runtime/ik.rs")));
+    items.push(struct_item("Ragdoll", include_str!("runtime/ragdoll.rs")));
     items.push(struct_item(
         "HudElement",
         include_str!("runtime/game_feel.rs"),
@@ -538,6 +563,23 @@ const FOOTER_TOKENS: usize = 20;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sample_doc_copies_match_the_samples() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for (name, readme, code) in super::SAMPLES {
+            let dir = root.join("samples").join(name);
+            if !dir.exists() {
+                continue; // published crate: only the copies exist
+            }
+            let stale = "is out of date; run scripts/sync_sample_docs.sh";
+            let real = std::fs::read_to_string(dir.join("README.md")).unwrap();
+            assert_eq!(*readme, real, "docs/samples/{name}/README.md {stale}");
+            let real =
+                std::fs::read_to_string(dir.join("src/main.rs")).unwrap();
+            assert_eq!(*code, real, "docs/samples/{name}/main.rs {stale}");
+        }
+    }
+
     #[test]
     fn api_index_lists_documented_gameplay_methods() {
         let once = super::find("api/GameScene::once").expect("once indexed");

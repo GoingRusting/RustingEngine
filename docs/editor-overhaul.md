@@ -346,8 +346,61 @@ named "Agent". Blender-style: compact header, flat rows, no modal dialogs.
   `reload_external_scene_change`), then Pending with per-field Accept, then
   Results.
 
+## Deferred: particle editor
+
+The particle Inspector (`src/editor/inspector/particles.rs`) ships the
+sections, range, gradient and curve widgets, presets, and the live preview.
+Later:
+
+- A standalone Particle panel (Blender-style area type) with a larger
+  curve and gradient editor and a bigger isolated preview.
+- Keyboard nudging and box selection of curve and gradient keys.
+- Per-key interpolation (step or smooth) once the runtime supports it.
+- A Scene view gizmo for `shape_size` and `direction`.
+- Save a tuned emitter as a project preset.
+
+## Deferred: animation timeline
+
+The Timeline area (`src/editor/timeline.rs`) ships the clip header,
+transport, ruler scrub, key insert/move/delete, interpolation per track,
+record mode and the rest-pose preview. Later:
+
+- Zoom and pan of the time axis; the span is the clip length plus 10%.
+- Drag and rename event markers in the Timeline (the Inspector edits them
+  today).
+- Box select, multi-key move, copy and paste of keys.
+- A curve editor (Blender's Graph Editor) for per-channel values.
+- Color, emissive and field track preview in Edit mode.
+- A Delete-key shortcut scoped to the Timeline area, once shortcuts know
+  the hovered area (it now deletes the object).
+- Blend space editor: a 1D strip or 2D plane of the `blend` points with a
+  draggable marker for the parameter values (Godot's BlendSpace2D editor).
+- A "Retarget from…" button in the Animation inspector that picks a
+  source object and clip and runs `retarget_clip` through snapshot undo,
+  plus a humanoid-map editor that suggests bones by name.
+- Ragdoll bone editor: a "Generate from skeleton" button that lists the
+  bones with lengths from their children, and capsule and joint-limit
+  gizmos in the viewport (Blender's bone envelope display).
+- Preview animation layers in the Timeline, with a mask picker that lists
+  the object's child paths.
+
 ## Deferred: materials and mirrors
 
 - Glass / Mirror presets in the Material section (Opacity + roughness + reflectivity in one click).
 - A true planar mirror (second camera render into a texture). Today Reflection Probe + low roughness only approximates one.
 - Reword the Reflection Probe environment picker text.
+
+## Deferred: skinned meshes
+
+- Skeleton overlay: done (joint crosses and bone lines in front of meshes,
+  click a bone to select its joint). Left: hide it per object or by an
+  overlay toggle, and draw Blender octahedral bones instead of lines.
+- Blend shape sliders: show `rusting.morph` weights with the glTF target
+  names (`extras.targetNames`, not imported yet) as 0–1 sliders.
+- IK overlay: draw a line from each `rusting.ik` object to its target and
+  pole in the Scene view, and a "Create IK Target" button that spawns an
+  empty at the chain end and links it.
+- A Skin section in the Inspector that lists joints by name, with missing
+  paths shown as warnings, instead of the raw matrix list.
+- Pose mode: rotate joints with the gizmo while the Timeline is in Record,
+  without selecting each joint in the Scene tree first.
