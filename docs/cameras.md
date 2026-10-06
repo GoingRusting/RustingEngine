@@ -85,6 +85,14 @@ children. It sets their pitch, and it sets their orbit offset when
 over-the-shoulder view. `mouse_look: false` stops the controller from
 capturing the mouse, so a second player can use it.
 
+With `mouse_look` on, the first left click captures the cursor and Escape
+releases it. A captured cursor has no screen position, so `pointer_ray()`
+is not useful while looking. To click things while looking, use
+`scene.aim(distance)`, the ray through the centre of the view, on a left
+click, and draw a crosshair or aim dot at the centre of the screen.
+`pointer_ray()` is for views where the cursor stays free: set
+`mouse_look: false` for those.
+
 `pitch_limits` and `yaw_limits` bound the view, in radians, for a seated or
 turret camera. A booth seat that turns ±100° and looks ±40° up and down:
 

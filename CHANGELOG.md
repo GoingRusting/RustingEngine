@@ -40,6 +40,7 @@ Engine features for the horror game FOREVER BEAR.
 - The `restart` and `load_scene` docs say that playing sounds carry on and how to stop them first
 - Scenario `greater_than` and `less_than` compare an array's length, so `/playing` can be counted
 - `audio:/playing` shows each sound's `[left, right]` `gain`, and the audio docs give the pan law and warn that a named listener does not turn with the camera
+- The camera docs explain clicking with `aim` while mouse look holds the cursor
 
 ### Fixed
 

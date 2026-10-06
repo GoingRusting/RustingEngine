@@ -1463,7 +1463,8 @@ impl GameScene<'_> {
     /// a top-down or point-and-click game aims. Pass it to
     /// [`Self::raycast`] to find the ground point under the cursor. `None`
     /// before the cursor has entered the window or without an active
-    /// camera.
+    /// camera. A player controller with `mouse_look` captures the cursor,
+    /// so click through [`Self::aim`] in a first-person view instead.
     #[must_use]
     pub fn pointer_ray(&mut self) -> Option<([f32; 3], [f32; 3])> {
         let input = self.world.resource::<RuntimeInput>();
