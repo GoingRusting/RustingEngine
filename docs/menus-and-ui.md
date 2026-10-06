@@ -150,7 +150,23 @@ Scenarios drive egui the same way a player does:
 ## Text on meshes
 
 Signs, monitor labels and notes on a desk are text that sits in the 3D world
-and tilts, lights and fogs with it. `rusting_engine::text_texture::text_texture`
+and tilts, lights and fogs with it. From game code, `set_text` draws text
+onto an object that already has a mesh, as its base color map:
+
+```rust
+use rusting_engine::text_texture::TextStyle;
+
+let style = TextStyle { size: 48.0, monospace: true, ..TextStyle::default() };
+let [w, h] = scene.set_text("Clock", &format!("{hour:02}:{minute:02}"), style).unwrap();
+// Scale the mesh to w / h so the letters keep their shape.
+```
+
+Each distinct string is drawn once and kept, so a clock costs one texture
+per string it shows. Give the object an Unlit material for glowing text.
+`set_material` puts any material from `create_material` on an object, and
+`create_texture` registers a texture for one.
+
+For more control, `rusting_engine::text_texture::text_texture`
 draws a string into an ordinary texture on the CPU with egui's built-in
 fonts (the `ui` feature, on by default). Use the texture as a material's base
 color on any mesh, usually a thin box or a plane:

@@ -476,15 +476,26 @@ pub fn search(query: &str, limit: usize) -> (Vec<Value>, usize) {
         .into_iter()
         .take(limit)
         .map(|(score, item)| {
-            // The first line repeats the title, so look past it first.
-            let mentions =
-                |line: &&str| line.to_lowercase().contains(words[0].as_str());
+            // The line naming the most query words; the first line repeats
+            // the title, so it is used only when no other line matches.
+            let found = |line: &str| {
+                let line = line.to_lowercase();
+                words
+                    .iter()
+                    .filter(|word| line.contains(word.as_str()))
+                    .count()
+            };
             let snippet = item
                 .text
                 .lines()
                 .skip(1)
-                .find(mentions)
-                .or_else(|| item.text.lines().find(mentions))
+                .enumerate()
+                .filter(|(_, line)| found(line) > 0)
+                .max_by_key(|(index, line)| {
+                    (found(line), std::cmp::Reverse(*index))
+                })
+                .map(|(_, line)| line)
+                .or_else(|| item.text.lines().find(|line| found(line) > 0))
                 .map(|line| line.trim().chars().take(160).collect::<String>());
             json!({
                 "id": item.id,
@@ -643,6 +654,13 @@ mod tests {
         assert!(!found.is_empty());
         assert_eq!(found[0]["id"], "command/scene-patch");
         assert!(search("zzzznotaword", 5).0.is_empty());
+        // The snippet is the line naming the most query words.
+        let (found, _) = search("text texture", 50);
+        let guide =
+            found.iter().find(|item| item["id"] == "guide/menus-and-ui");
+        let snippet =
+            guide.unwrap()["snippet"].as_str().unwrap().to_lowercase();
+        assert!(snippet.contains("text_texture"), "{snippet}");
         assert!(search("  ", 5).0.is_empty());
         let (three, total) = search("scene", 3);
         assert_eq!(three.len(), 3);

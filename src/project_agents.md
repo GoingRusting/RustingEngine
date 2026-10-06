@@ -160,7 +160,9 @@ state (`player`: grounded, floor, wall, velocity), reparents objects
 (`despawn`), shows and
 hides them and their HUD text (`set_visible`), recolors one object without
 touching others that share its material (`color`, `set_color`,
-`set_emissive`), reloads the starting scene for a new round (`restart`;
+`set_emissive`), swaps its material (`create_material`, `set_material`),
+draws text onto it for signs, paper and monitor labels (`set_text`),
+reloads the starting scene for a new round (`restart`;
 physics after it repeats the first run exactly), reads an object's starting
 transform, color and body kind (`initial`), saves and puts back the whole
 scene mid-game (`snapshot`, `restore`), hashes the state of one class to

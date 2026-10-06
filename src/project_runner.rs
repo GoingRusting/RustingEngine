@@ -1748,6 +1748,76 @@ impl GameScene<'_> {
         self.edit_material(name, |material| material.emissive = emissive);
     }
 
+    /// Puts `material` on the named object, for example one made with
+    /// [`Self::create_material`]. Other objects keep theirs.
+    pub fn set_material(
+        &mut self,
+        name: &str,
+        material: crate::assets::Handle<crate::assets::MaterialAsset>,
+    ) {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return;
+        };
+        if let Some(mut renderer) = self.world.get_mut::<MeshRenderer>(entity) {
+            renderer.material = material;
+        }
+    }
+
+    /// Registers a texture, such as one from
+    /// [`crate::text_texture::text_texture`], for use in a material.
+    pub fn create_texture(
+        &mut self,
+        texture: crate::assets::TextureAsset,
+    ) -> crate::assets::Handle<crate::assets::TextureAsset> {
+        self.world
+            .resource_mut::<AssetServer>()
+            .textures
+            .insert(texture)
+    }
+
+    /// Draws `text` into a texture and shows it as the named object's base
+    /// color map, for signs, labels, paper and monitor overlays. Lines split
+    /// on `\n`. Returns the texture size in texels, so the mesh can be
+    /// scaled to `size[0] / size[1]`, or `None` when no object has the
+    /// name. Use an Unlit material for glowing text. Each distinct text is
+    /// drawn once and kept, so a clock that cycles through its strings
+    /// costs one texture per string.
+    #[cfg(feature = "ui")]
+    pub fn set_text(
+        &mut self,
+        name: &str,
+        text: &str,
+        style: crate::text_texture::TextStyle,
+    ) -> Option<[u32; 2]> {
+        find_named_entity(self.world, name)?;
+        let key = format!("{text}\u{0}{style:?}");
+        let cached = self
+            .world
+            .get_resource::<TextTextures>()
+            .and_then(|cache| cache.0.get(&key).copied());
+        let texture = match cached {
+            Some(texture) => texture,
+            None => {
+                let texture = self.create_texture(
+                    crate::text_texture::text_texture(text, style),
+                );
+                self.world
+                    .get_resource_or_insert_with(TextTextures::default)
+                    .0
+                    .insert(key, texture);
+                texture
+            }
+        };
+        self.edit_material(name, |material| {
+            material.base_color_texture = Some(texture);
+        });
+        self.world
+            .resource::<AssetServer>()
+            .textures
+            .get(texture)
+            .map(|texture| texture.size)
+    }
+
     /// Gives the named object a changed copy of its material. Equal
     /// materials are shared, as the scene loader shares them, so switching
     /// between a few colors does not grow the material list.
@@ -2630,6 +2700,13 @@ fn stale_cooked_scene_warning(
         )
     })
 }
+
+/// Textures drawn by [`GameScene::set_text`], by text and style.
+#[cfg(feature = "ui")]
+#[derive(Resource, Default)]
+struct TextTextures(
+    HashMap<String, crate::assets::Handle<crate::assets::TextureAsset>>,
+);
 
 /// egui input translation and painting for [`crate::runtime::RuntimeUi`].
 #[cfg(feature = "ui")]
@@ -4546,6 +4623,59 @@ mod tests {
         };
         assert_eq!(material(&mut scene, "A"), material(&mut scene, "B"));
         assert_eq!(count(scene.world), before + 2);
+    }
+
+    #[test]
+    #[cfg(feature = "ui")]
+    fn game_code_puts_text_and_materials_on_existing_objects() {
+        let mut app = crate::App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        let world = app.world_mut();
+        let (mesh, material) = {
+            let assets = world.resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        let renderer = MeshRenderer {
+            mesh,
+            material,
+            cast_shadows: true,
+            receive_shadows: true,
+        };
+        world.spawn((Name("Sign".into()), Transform::default(), renderer));
+        world.spawn((Name("Other".into()), Transform::default(), renderer));
+        let textures =
+            |world: &World| world.resource::<AssetServer>().textures.len();
+        let before = textures(world);
+        let mut scene = GameScene { world };
+        let material_of = |scene: &mut GameScene<'_>, name| {
+            let entity = find_named_entity(scene.world, name).unwrap();
+            scene.world.get::<MeshRenderer>(entity).unwrap().material
+        };
+        let texture_of = |scene: &mut GameScene<'_>, name| {
+            let handle = material_of(scene, name);
+            let assets = scene.world.resource::<AssetServer>();
+            assets.materials.get(handle).unwrap().base_color_texture
+        };
+        let style = crate::text_texture::TextStyle::default();
+        let size = scene.set_text("Sign", "AISLE 4", style).unwrap();
+        assert!(size[0] > size[1], "one line is wider than tall: {size:?}");
+        let first = texture_of(&mut scene, "Sign").unwrap();
+        assert_ne!(texture_of(&mut scene, "Other"), Some(first));
+        // Switching back to a string drawn before reuses its texture.
+        scene.set_text("Sign", "AISLE 5", style);
+        assert_ne!(texture_of(&mut scene, "Sign"), Some(first));
+        scene.set_text("Sign", "AISLE 4", style);
+        assert_eq!(texture_of(&mut scene, "Sign"), Some(first));
+        assert_eq!(textures(scene.world), before + 2);
+        assert_eq!(scene.set_text("Nowhere", "x", style), None);
+        // set_material swaps in a whole material made by game code.
+        let red = scene.create_material(crate::assets::MaterialAsset {
+            base_color: [1.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        });
+        scene.set_material("Other", red);
+        assert_eq!(material_of(&mut scene, "Other"), red);
+        assert_eq!(scene.color("Other"), Some([1.0, 0.0, 0.0, 1.0]));
     }
 
     #[test]
