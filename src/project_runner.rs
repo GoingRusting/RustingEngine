@@ -3132,6 +3132,9 @@ struct ProjectApplication {
     perf: Option<(Instant, u32)>,
     /// Time spent in `runtime.update` and in `render` since the last line.
     perf_spent: [std::time::Duration; 2],
+    /// Each frame's length in milliseconds since the last line, and when
+    /// the last frame ended.
+    perf_frames: (Vec<f64>, Option<Instant>),
     /// Plays the audio queue; `None` without the `audio` feature or a device.
     audio: Option<crate::audio_output::AudioOutput>,
     /// Set by [`crate::project::QUIT_AFTER_MS_ENV`]: close at this time.
@@ -3139,8 +3142,19 @@ struct ProjectApplication {
 }
 
 /// Environment variable that makes a running game print, once a second, its
-/// frame rate and where the frame time goes.
+/// frame rate, frame-time percentiles and where the frame time goes.
 pub const PERF_ENV: &str = "RUSTING_PERF";
+
+/// p50, p95, p99 and the largest of some frame lengths (nearest rank);
+/// zeros when there are none. Sorts `lengths`.
+fn frame_percentiles(lengths: &mut [f64]) -> [f64; 4] {
+    lengths.sort_by(f64::total_cmp);
+    let rank = |p: f64| {
+        let index = (p * lengths.len() as f64).ceil() as usize;
+        lengths.get(index.saturating_sub(1)).copied().unwrap_or(0.0)
+    };
+    [rank(0.5), rank(0.95), rank(0.99), rank(1.0)]
+}
 
 impl ProjectApplication {
     /// Wraps a prepared runtime. The window opens when winit resumes.
@@ -3157,6 +3171,7 @@ impl ProjectApplication {
             code_reload: None,
             perf: std::env::var_os(PERF_ENV).map(|_| (Instant::now(), 0)),
             perf_spent: [std::time::Duration::ZERO; 2],
+            perf_frames: (Vec::new(), None),
             audio: crate::audio_output::AudioOutput::open(),
             quit_at: std::env::var(crate::project::QUIT_AFTER_MS_ENV)
                 .ok()
@@ -3230,10 +3245,17 @@ impl ProjectApplication {
             return;
         };
         *frames += 1;
+        let now = Instant::now();
+        let (lengths, last) = &mut self.perf_frames;
+        if let Some(last) = last.replace(now) {
+            lengths.push((now - last).as_secs_f64() * 1000.0);
+        }
         let elapsed = since.elapsed();
         if elapsed < std::time::Duration::from_secs(1) {
             return;
         }
+        let [p50, p95, p99, max] =
+            frame_percentiles(&mut std::mem::take(lengths));
         let fps = f64::from(*frames) / elapsed.as_secs_f64();
         let [update, render] =
             std::mem::take(&mut self.perf_spent).map(|time| time / *frames);
@@ -3257,7 +3279,7 @@ impl ProjectApplication {
         let gpu = renderer.gpu_pass_times();
         let counters = renderer.render_counters();
         let mut line = format!(
-            "[rusting] perf {fps:.0} fps ({:.2} ms/frame) | update {:.2} render {:.2} ms | CPU physics {:.2} extract {:.2} prepare {:.2} record {:.2} ms | GPU {:.2} ms",
+            "[rusting] perf {fps:.0} fps ({:.2} ms/frame) | frame p50 {p50:.2} p95 {p95:.2} p99 {p99:.2} max {max:.2} ms | update {:.2} render {:.2} ms | CPU physics {:.2} extract {:.2} prepare {:.2} record {:.2} ms | GPU {:.2} ms",
             1000.0 / fps,
             ms(update),
             ms(render),
@@ -3867,6 +3889,16 @@ macro_rules! rusting_game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_percentiles_use_the_nearest_rank() {
+        // 100 frames of 10 ms with six slow ones: p95 sees the slow tail.
+        let mut lengths = vec![10.0; 94];
+        lengths.extend([20.0, 20.0, 20.0, 20.0, 20.0, 40.0]);
+        lengths.reverse();
+        assert_eq!(frame_percentiles(&mut lengths), [10.0, 20.0, 20.0, 40.0]);
+        assert_eq!(frame_percentiles(&mut []), [0.0; 4]);
+    }
 
     #[test]
     fn a_cooked_scene_older_than_its_source_is_reported() {

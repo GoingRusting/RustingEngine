@@ -223,6 +223,14 @@ with `cargo run --release --example render_bench -- balanced --no-bodies
 per-instance custom value yet; give a copy that must look different its own
 material.
 
+To measure your own game in its real window, run it with `RUSTING_PERF=1`
+(for example `RUSTING_PERF=1 rusting run --release`). Once a second it
+prints a `[rusting] perf` line with the frame rate, the p50, p95, p99 and
+largest frame time over that second, and where the time went (update,
+render, CPU and GPU passes). `rusting test` captures render offscreen and
+read every frame back, so their frame times run higher than the window's;
+use them as a regression guard, not as the frame budget.
+
 ## Free models
 
 A real model beats any pile of primitives. Many good game models are free
