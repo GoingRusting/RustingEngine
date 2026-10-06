@@ -186,6 +186,34 @@ fn page(id: &str, kind: &'static str, text: &str) -> DocItem {
     }
 }
 
+/// Every scenario file field and step kind on one page, from the schema
+/// catalog, so it cannot drift from what `rusting test` reads.
+fn scenario_reference() -> DocItem {
+    let section = crate::schema::catalog_entry("scenario")
+        .expect("the catalog has a scenario section");
+    let line = |value: &Value| match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let mut text = String::from(
+        "# Scenario file reference\n\nEvery field of a `rusting test` \
+         scenario file and every step kind, generated from \
+         `rusting schema scenario`.\n",
+    );
+    for (key, value) in section.as_object().into_iter().flatten() {
+        text += &format!("\n## {key}\n\n");
+        match value {
+            Value::Object(fields) => {
+                for (name, field) in fields {
+                    text += &format!("- `{name}`: {}\n", line(field));
+                }
+            }
+            other => text += &format!("{}\n", line(other)),
+        }
+    }
+    page("reference/scenario", "reference", &text)
+}
+
 /// Every item, in the order the brief lists them.
 #[must_use]
 pub fn items() -> Vec<DocItem> {
@@ -222,6 +250,7 @@ pub fn items() -> Vec<DocItem> {
             ),
         });
     }
+    items.push(scenario_reference());
     for (name, readme, code) in SAMPLES {
         let mut item = page(&format!("sample/{name}"), "sample", readme);
         item.text += &format!("\n## src/main.rs\n\n```rust\n{code}```\n");
@@ -639,6 +668,17 @@ mod tests {
             items.iter().filter(|item| item.kind == "code").count(),
             CODES.len()
         );
+    }
+
+    #[test]
+    fn the_scenario_reference_lists_every_step_kind() {
+        let page = find("scenario").unwrap();
+        assert_eq!(page.id, "reference/scenario");
+        for step in ["expect_pixels", "expect_screen", "capture", "log", "set"]
+        {
+            assert!(page.text.contains(&format!("- `{step}`:")), "{step}");
+        }
+        assert!(page.text.contains("## budgets"));
     }
 
     #[test]
