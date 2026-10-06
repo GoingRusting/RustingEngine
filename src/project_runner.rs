@@ -2709,9 +2709,27 @@ fn load_project_runtime<P: Plugin>(
     if let Some(warning) = stale_cooked_scene_warning(folder, scene_path) {
         eprintln!("{warning}");
     }
+    request_project_window(runtime.world_mut(), folder);
     runtime.insert_resource(ProjectFolder(folder.to_path_buf()));
     crate::runtime::check_determinism(runtime.world_mut())?;
     Ok(runtime)
+}
+
+/// Asks for the `window` size in the folder's `project.json`, if any. The
+/// window opens at its default size and takes this one after the first
+/// frame, the same way [`GameScene::set_window_size`] works.
+fn request_project_window(world: &mut World, folder: &Path) {
+    let size = std::fs::read(folder.join("project.json"))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+        })
+        .and_then(|project| {
+            serde_json::from_value(project["window"].clone()).ok()
+        });
+    if let Some(size) = size {
+        GameScene { world }.set_window_size(size);
+    }
 }
 
 /// A warning when `scene_path` is the project's cooked main scene and the
@@ -3889,6 +3907,24 @@ macro_rules! rusting_game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_json_window_size_is_asked_for() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-window-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut world = World::new();
+        request_project_window(&mut world, &folder);
+        assert!(world.get_resource::<WindowRequest>().is_none());
+        std::fs::write(
+            folder.join("project.json"),
+            r#"{"name": "n", "window": [1920, 1080]}"#,
+        )
+        .unwrap();
+        request_project_window(&mut world, &folder);
+        assert_eq!(world.resource::<WindowRequest>().size, Some([1920, 1080]));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn frame_percentiles_use_the_nearest_rank() {

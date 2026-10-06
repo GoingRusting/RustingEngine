@@ -213,6 +213,11 @@ pub struct ProjectManifest {
     /// cooked scene.
     #[serde(default, skip_serializing_if = "is_default")]
     pub determinism: crate::runtime::DeterminismMode,
+    /// Window size in pixels, `[width, height]`, asked for when the game
+    /// opens from the project folder; `None` keeps the default window.
+    /// Game code can still change it with `GameScene::set_window_size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<[u32; 2]>,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -617,6 +622,7 @@ fn write_project_template(
         binary_name: package_name.clone(),
         generators: std::collections::BTreeMap::new(),
         determinism: Default::default(),
+        window: None,
     };
     std::fs::write(
         root.join("project.json"),

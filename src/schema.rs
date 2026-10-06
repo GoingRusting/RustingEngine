@@ -1183,6 +1183,8 @@ pub fn json_schemas() -> Value {
                 "binary_name": {"type": "string"},
                 "generators": {"type": "object"},
                 "determinism": {"type": "string"},
+                "window": {"type": "array", "items": {"type": "integer",
+                    "minimum": 1}, "minItems": 2, "maxItems": 2},
             },
             "required": ["name", "main_scene", "cooked_scene"],
         },
@@ -1433,9 +1435,10 @@ mod tests {
             binary_name: String::new(),
             generators: Default::default(),
             determinism: Default::default(),
+            window: None,
         };
         let mut keys = written_keys(&project);
-        keys.extend(["generators".to_owned(), "determinism".to_owned()]);
+        keys.extend(["generators", "determinism", "window"].map(String::from));
         assert_eq!(keys, schema_keys(&schemas["project"]));
         for name in
             ["scene", "scene_patch", "scenario", "project", "asset_meta"]

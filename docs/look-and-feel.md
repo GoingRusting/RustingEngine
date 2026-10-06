@@ -230,6 +230,8 @@ largest frame time over that second, and where the time went (update,
 render, CPU and GPU passes). `rusting test` captures render offscreen and
 read every frame back, so their frame times run higher than the window's;
 use them as a regression guard, not as the frame budget.
+To measure at a set size, put `"window": [1920, 1080]` in `project.json`:
+the game asks for that window size when it runs from the project folder.
 
 ## Free models
 

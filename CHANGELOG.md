@@ -47,6 +47,7 @@ Engine features for the horror game FOREVER BEAR.
 - The scenario and camera docs show turning a player's view with `set` on the controller's `yaw` and `pitch`
 - The `audio:` scenario probe reports each bus's own `level` and `peak` under `/buses/<bus>`, measured after the bus's effects and volume
 - `RUSTING_PERF=1` adds the p50, p95, p99 and largest frame time of each second to its `[rusting] perf` line
+- `project.json` takes `"window": [width, height]`, the window size a game asks for when it runs from the project folder
 
 ### Fixed
 
