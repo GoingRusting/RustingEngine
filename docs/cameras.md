@@ -82,7 +82,19 @@ no body.
 A `rusting.player_controller` owns the transform of its direct camera
 children. It sets their pitch, and it sets their orbit offset when
 `camera_distance > 0`. `camera_offset` moves the camera off the body, for an
-over-the-shoulder view. `mouse_look: false` stops the controller from
+over-the-shoulder view.
+
+Where the eye sits:
+
+- First person (`camera_distance` 0): the camera child's own local
+  position, measured from the body centre. `camera_height` is not used. A
+  non-zero `camera_offset` replaces the child's position. For a seated eye
+  at 1.2 m with the body centre at 0.9 m, put the camera child at
+  `[0, 0.3, 0]`.
+- Third person: the orbit centre is `camera_height` above the body centre,
+  plus `camera_offset`. The child's own position is overwritten.
+
+`mouse_look: false` stops the controller from
 capturing the mouse, so a second player can use it.
 
 With `mouse_look` on, the first left click captures the cursor and Escape

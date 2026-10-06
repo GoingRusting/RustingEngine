@@ -1975,6 +1975,11 @@ fn player_look_needs_captured_cursor_and_clamps_pitch() {
         (player.yaw, player.pitch)
     };
     assert_eq!(look(&mut app, [100.0, 0.0]), (0.0, 0.0));
+    // First person ignores camera_height (0.6): the child keeps 0.7.
+    assert_eq!(
+        app.world().get::<Transform>(camera).unwrap().position,
+        [0.0, 0.7, 0.0]
+    );
 
     app.world_mut()
         .resource_mut::<RuntimeInput>()

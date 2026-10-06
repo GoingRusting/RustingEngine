@@ -106,6 +106,9 @@ pub struct PlayerController {
     /// an over-the-shoulder camera 0.6 m to the right.
     pub camera_offset: [f32; 3],
     /// Height of the third-person orbit center above the body center.
+    /// Unused in first person (`camera_distance` 0): there the camera
+    /// child keeps its own local position, or takes `camera_offset` when
+    /// that is not zero. Neither adds to the other.
     pub camera_height: f32,
     /// Steepest ground in radians the body stands on and walks up.
     pub max_slope: f32,

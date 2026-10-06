@@ -41,6 +41,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenario `greater_than` and `less_than` compare an array's length, so `/playing` can be counted
 - `audio:/playing` shows each sound's `[left, right]` `gain`, and the audio docs give the pan law and warn that a named listener does not turn with the camera
 - The camera docs explain clicking with `aim` while mouse look holds the cursor
+- The camera docs say where a player controller's eye sits in first and third person
 
 ### Fixed
 
