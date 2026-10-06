@@ -2242,7 +2242,19 @@ fn once_a_day(marker: &Path) -> bool {
     if let Some(folder) = marker.parent() {
         let _ = std::fs::create_dir_all(folder);
     }
-    let _ = std::fs::write(marker, "");
+    // Never follow a planted symlink, and never truncate: only the
+    // modified time of a plain file is touched.
+    if std::fs::symlink_metadata(marker)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return false;
+    }
+    let _ = std::fs::File::options()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(marker)
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()));
     true
 }
 
@@ -3276,6 +3288,15 @@ mod shape_tests {
             .set_modified(yesterday)
             .unwrap();
         assert!(once_a_day(&marker));
+        #[cfg(unix)]
+        {
+            let target = marker.with_file_name("target");
+            std::fs::write(&target, "keep").unwrap();
+            std::fs::remove_file(&marker).unwrap();
+            std::os::unix::fs::symlink(&target, &marker).unwrap();
+            assert!(!once_a_day(&marker));
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        }
         std::fs::remove_dir_all(marker.parent().unwrap().parent().unwrap())
             .unwrap();
     }
