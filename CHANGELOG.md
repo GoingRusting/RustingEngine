@@ -33,6 +33,7 @@ Engine features for the horror game FOREVER BEAR.
 - `asset reimport` by path registers a file under `assets/` that has no `.rmeta` yet, such as a model added by `scene add-model`, instead of failing with ASSET_NOT_FOUND
 - The docs list every built-in primitive's size and axis (`docs/look-and-feel.md` "Mesh kit" and the `mesh` schema entry)
 - `rusting schema` and `rusting explain PATCH_JSON` show a full `create` patch with a parent, built-in sections and a component
+- Scenario `expect_screen` and pick checks are much faster on large scenes: a check on a 3,895-entity scene takes about 0.3 s instead of 15-20 s
 
 ### Fixed
 

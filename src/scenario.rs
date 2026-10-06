@@ -314,47 +314,110 @@ impl CameraView {
         )
     }
 
-    /// The object under `pixel`, found by casting a ray against mesh bounds.
-    /// Returns its persistent ID, name, distance and world position, or a
-    /// null `id` when the ray hits nothing.
-    // ponytail: bounds-only picking, like gameplay clicks; a rendered ID
-    // buffer would give exact silhouettes.
-    pub fn pick(&self, world: &mut World, pixel: [u32; 2]) -> Value {
+    /// Mesh entities that can show in this view, with their bounds and
+    /// matrices worked out once so many rays can be cast cheaply. Meshes
+    /// entirely outside the view frustum are left out.
+    fn pick_targets(&self, world: &mut World) -> Vec<PickTarget> {
+        let size = [self.extent[0] as f32, self.extent[1] as f32];
+        let Some(clip_from_world) =
+            picking::clip_from_world(size, self.camera, self.transform)
+        else {
+            return Vec::new();
+        };
+        let mut meshes =
+            world.query::<(Entity, &MeshRenderer, &GlobalTransform)>();
+        let assets = world.resource::<AssetServer>();
+        let mut bounds = std::collections::HashMap::new();
+        meshes
+            .iter(world)
+            .filter_map(|(entity, renderer, transform)| {
+                let (minimum, maximum) = *bounds
+                    .entry(renderer.mesh)
+                    .or_insert_with(|| {
+                        assets
+                            .meshes
+                            .get(renderer.mesh)
+                            .and_then(picking::mesh_bounds)
+                    })
+                    .as_ref()?;
+                let world_from_local =
+                    picking::matrix_from_array(transform.matrix);
+                let clip_from_local = clip_from_world * world_from_local;
+                let corners = (0..8).map(|corner| {
+                    let pick = |axis: usize| {
+                        if corner >> axis & 1 == 0 {
+                            minimum[axis]
+                        } else {
+                            maximum[axis]
+                        }
+                    };
+                    clip_from_local
+                        * nalgebra::Vector4::new(pick(0), pick(1), pick(2), 1.0)
+                });
+                let corners: Vec<_> = corners.collect();
+                let outside = |test: fn(&nalgebra::Vector4<f32>) -> bool| {
+                    corners.iter().all(test)
+                };
+                if outside(|c| c.x < -c.w)
+                    || outside(|c| c.x > c.w)
+                    || outside(|c| c.y < -c.w)
+                    || outside(|c| c.y > c.w)
+                    || outside(|c| c.w <= 0.0)
+                {
+                    return None;
+                }
+                Some(PickTarget {
+                    entity,
+                    local_from_world: world_from_local.try_inverse()?,
+                    world_from_local,
+                    minimum,
+                    maximum,
+                })
+            })
+            .collect()
+    }
+
+    /// The nearest target under `pixel`: distance, entity and world point.
+    fn nearest(
+        &self,
+        targets: &[PickTarget],
+        pixel: [u32; 2],
+    ) -> Option<(f32, Entity, nalgebra::Vector3<f32>)> {
         let ray = picking::scene_ray(
             [pixel[0] as f32 + 0.5, pixel[1] as f32 + 0.5],
             [0.0, 0.0],
             [self.extent[0] as f32, self.extent[1] as f32],
             self.camera,
             self.transform,
-        );
-        let mut meshes =
-            world.query::<(Entity, &MeshRenderer, &GlobalTransform)>();
-        let assets = world.resource::<AssetServer>();
-        let hit = ray.and_then(|ray| {
-            meshes
-                .iter(world)
-                .filter_map(|(entity, renderer, transform)| {
-                    let mesh = assets.meshes.get(renderer.mesh)?;
-                    let distance =
-                        picking::ray_mesh_bounds(ray, *transform, mesh)?;
-                    Some((
-                        distance,
-                        entity,
-                        ray.origin + ray.direction * distance,
-                    ))
-                })
-                .min_by(|left, right| left.0.total_cmp(&right.0))
-        });
-        match hit {
-            Some((distance, entity, point)) => json!({
-                "pixel": pixel,
-                "id": world.get::<SceneId>(entity).map(|id| id.0),
-                "name": world.get::<Name>(entity).map(|name| &name.0),
-                "distance": distance,
-                "world_position": [point.x, point.y, point.z],
-            }),
-            None => json!({"pixel": pixel, "id": null}),
-        }
+        )?;
+        targets
+            .iter()
+            .filter_map(|target| {
+                let origin = target.local_from_world * ray.origin.push(1.0);
+                let direction =
+                    target.local_from_world * ray.direction.push(0.0);
+                let local = picking::ray_aabb(
+                    origin.xyz(),
+                    direction.xyz(),
+                    target.minimum,
+                    target.maximum,
+                )?;
+                let point = (target.world_from_local
+                    * (origin + direction * local))
+                    .xyz();
+                Some(((point - ray.origin).norm(), target.entity, point))
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+    }
+
+    /// The object under `pixel`, found by casting a ray against mesh bounds.
+    /// Returns its persistent ID, name, distance and world position, or a
+    /// null `id` when the ray hits nothing.
+    // ponytail: bounds-only picking, like gameplay clicks; a rendered ID
+    // buffer would give exact silhouettes.
+    pub fn pick(&self, world: &mut World, pixel: [u32; 2]) -> Value {
+        let targets = self.pick_targets(world);
+        pick_json(world, pixel, self.nearest(&targets, pixel))
     }
 
     /// Every object that covers part of `rect` (`[x0, y0, x1, y1]`, end
@@ -368,14 +431,19 @@ impl CameraView {
         let y1 = rect[3].min(self.extent[1]);
         let (x0, y0) = (rect[0].min(x1), rect[1].min(y1));
         let step = |len: u32| len.div_ceil(64).max(1) as usize;
+        let targets = self.pick_targets(world);
         let mut counts: BTreeMap<Option<Uuid>, (u32, Value)> = BTreeMap::new();
         let mut samples = 0_u32;
         for y in (y0..y1).step_by(step(y1 - y0)) {
             for x in (x0..x1).step_by(step(x1 - x0)) {
-                let hit = self.pick(world, [x, y]);
-                let id = hit["id"].as_str().and_then(|id| id.parse().ok());
-                let entry = counts.entry(id).or_insert((0, hit));
-                entry.0 += 1;
+                let hit = self.nearest(&targets, [x, y]);
+                let id = hit.and_then(|(_, entity, _)| {
+                    world.get::<SceneId>(entity).map(|id| id.0)
+                });
+                counts
+                    .entry(id)
+                    .or_insert_with(|| (0, pick_json(world, [x, y], hit)))
+                    .0 += 1;
                 samples += 1;
             }
         }
@@ -409,6 +477,32 @@ impl CameraView {
             "rotation": transform.map(|transform| transform.rotation),
             "world_matrix": self.transform.matrix,
         })
+    }
+}
+
+/// A mesh prepared for many ray casts by [`CameraView::pick_rect`].
+struct PickTarget {
+    entity: Entity,
+    world_from_local: nalgebra::Matrix4<f32>,
+    local_from_world: nalgebra::Matrix4<f32>,
+    minimum: nalgebra::Vector3<f32>,
+    maximum: nalgebra::Vector3<f32>,
+}
+
+fn pick_json(
+    world: &World,
+    pixel: [u32; 2],
+    hit: Option<(f32, Entity, nalgebra::Vector3<f32>)>,
+) -> Value {
+    match hit {
+        Some((distance, entity, point)) => json!({
+            "pixel": pixel,
+            "id": world.get::<SceneId>(entity).map(|id| id.0),
+            "name": world.get::<Name>(entity).map(|name| &name.0),
+            "distance": distance,
+            "world_position": [point.x, point.y, point.z],
+        }),
+        None => json!({"pixel": pixel, "id": null}),
     }
 }
 
