@@ -281,7 +281,7 @@ impl HeadlessCapture {
     }
 
     /// Device, work counters and GPU time of the last frame, also per
-    /// camera when viewport cameras split it.
+    /// camera when viewport cameras split it and per camera screen drawn.
     #[must_use]
     pub fn metadata(&mut self, app: &App) -> Value {
         let properties = self.base.device.physical_device().properties();
@@ -305,6 +305,21 @@ impl HeadlessCapture {
                 })
             })
             .collect();
+        let mut cameras = cameras;
+        let name = |camera| {
+            app.world()
+                .get::<crate::runtime::Name>(camera)
+                .map(|name| name.0.clone())
+        };
+        for (camera, counters, gpu) in self.renderer.screen_stats() {
+            cameras.push(json!({
+                "name": name(camera),
+                "screen": true,
+                "gpu_ms": gpu.as_secs_f64() * 1000.0,
+                "draws": counters.draws,
+                "triangles": counters.triangles,
+            }));
+        }
         let gpu = match self.views.is_empty() {
             true => self.renderer.gpu_pass_times().total(),
             false => self.views.iter().map(|(_, _, gpu)| *gpu).sum(),
@@ -488,6 +503,15 @@ mod tests {
             Transform::new([100.0, 0.0, 3.0]),
             camera(1, [0.5, 0.0, 0.5, 1.0]),
         ));
+        // An inactive camera shown on the mesh as a screen.
+        app.spawn((
+            crate::runtime::Name("Feed".into()),
+            Transform::new([0.0, 0.0, 5.0]),
+            Camera {
+                active: false,
+                ..Camera::default()
+            },
+        ));
         app.spawn((
             Transform::default(),
             MeshRenderer {
@@ -495,6 +519,11 @@ mod tests {
                 material,
                 cast_shadows: false,
                 receive_shadows: false,
+            },
+            crate::runtime::CameraScreen {
+                camera: "Feed".into(),
+                size: [8, 8],
+                ..Default::default()
             },
         ));
         let mut capture = HeadlessCapture::new([64, 32]).unwrap();
@@ -516,6 +545,9 @@ mod tests {
             .iter()
             .map(|camera| camera["name"].clone())
             .collect();
-        assert_eq!(names, ["Left", "Right"]);
+        // Screen feeds come after the views, each with its own numbers.
+        assert_eq!(names, ["Left", "Right", "Feed"]);
+        assert_eq!(metadata["cameras"][2]["screen"], true);
+        assert!(metadata["cameras"][2]["draws"].as_u64().unwrap() > 0);
     }
 }

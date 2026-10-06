@@ -612,8 +612,9 @@ pub struct PerfReport {
     pub tick_ms_p95: f64,
     pub tick_ms_max: f64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
-    /// of the last rendered frame, and with viewport cameras `cameras`:
-    /// `[{name, gpu_ms, draws, triangles}]`, one per drawn camera. Null
+    /// of the last rendered frame, and `cameras`:
+    /// `[{name, gpu_ms, draws, triangles}]`, one per viewport camera, then
+    /// one per camera screen drawn that frame (with `"screen": true`). Null
     /// without a renderer (no capture step, `gpu`, or render budget).
     pub render: Value,
 }

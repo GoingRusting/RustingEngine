@@ -144,7 +144,10 @@ active.
 - `expect_pixels` with `"camera"` checks a region of that camera's
   viewport in the real frame.
 - With viewport cameras, `perf.render.cameras` lists each drawn camera
-  with its `gpu_ms`, `draws` and `triangles`.
+  with its `gpu_ms`, `draws` and `triangles`. Camera screens drawn in that
+  frame follow, marked `"screen": true`, so a wall of monitors shows what
+  each feed costs. A screen skipped by `update_every` that frame is not
+  listed.
 
 ## Screens: a camera on a material
 

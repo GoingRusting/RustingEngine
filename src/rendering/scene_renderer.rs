@@ -1404,8 +1404,8 @@ pub struct SceneRenderer {
     screen_feeds: HashMap<u64, ScreenFeed>,
     /// Calls of [`Self::render_screens`], for `update_every`.
     screen_frame: u64,
-    /// Feeds the last [`Self::render_screens`] drew.
-    screens_drawn: usize,
+    /// Feeds the last [`Self::render_screens`] drew: camera and feed key.
+    screens_drawn: Vec<(bevy_ecs::entity::Entity, u64)>,
     /// 1x1 white texture bound in place of every missing material map.
     white_texture: (Arc<ImageView>, Arc<Sampler>),
     /// Per-slot stand-ins for a map that is referenced but missing or
@@ -1722,7 +1722,7 @@ impl SceneRenderer {
             prepared_materials: HashMap::new(),
             screen_feeds: HashMap::new(),
             screen_frame: 0,
-            screens_drawn: 0,
+            screens_drawn: Vec::new(),
             white_texture,
             missing_textures,
             white_material,
@@ -1998,7 +1998,27 @@ impl SceneRenderer {
     /// their previous image.
     #[must_use]
     pub fn screens_drawn(&self) -> usize {
-        self.screens_drawn
+        self.screens_drawn.len()
+    }
+
+    /// Camera, work counters and GPU time of each feed the last
+    /// [`Self::render_screens`] drew. Read after that frame's work ends.
+    pub fn screen_stats(
+        &mut self,
+    ) -> Vec<(
+        bevy_ecs::entity::Entity,
+        RenderCounters,
+        std::time::Duration,
+    )> {
+        let drawn = self.screens_drawn.clone();
+        drawn
+            .into_iter()
+            .filter_map(|(camera, key)| {
+                let feed = self.screen_feeds.get_mut(&key)?;
+                let gpu = feed.renderer.gpu_pass_times().total();
+                Some((camera, feed.renderer.render_counters(), gpu))
+            })
+            .collect()
     }
 
     /// Draws the camera of each screen in the render world into its own image, which
@@ -2055,7 +2075,7 @@ impl SceneRenderer {
         }
         let frame = self.screen_frame;
         self.screen_frame += 1;
-        self.screens_drawn = 0;
+        self.screens_drawn.clear();
         for (index, screen) in render_world.screens.iter().enumerate() {
             let key = screen.material.key();
             let fresh = !self.screen_feeds.contains_key(&key);
@@ -2074,7 +2094,7 @@ impl SceneRenderer {
             if !fresh && (!screen.enabled || !due || !seen()) {
                 continue;
             }
-            self.screens_drawn += 1;
+            self.screens_drawn.push((screen.camera.entity, key));
             if fresh {
                 let image = Image::new(
                     self.memory_allocator.clone(),
