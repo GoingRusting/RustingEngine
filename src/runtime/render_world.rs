@@ -51,6 +51,8 @@ pub struct ExtractedScreen {
     pub enabled: bool,
     /// The feed's own color grading; `None` uses the scene's.
     pub grading: Option<super::ColorGrading>,
+    /// Multiplies the scene's tone mapping exposure for this feed.
+    pub exposure: f32,
 }
 
 /// Optional camera selected by a tool such as the editor Scene viewport.
@@ -712,6 +714,7 @@ fn collect_screens(world: &mut World) -> Vec<ExtractedScreen> {
                     update_every: screen.update_every,
                     enabled: screen.enabled,
                     grading: screen.grading,
+                    exposure: screen.exposure,
                 },
             ))
         })

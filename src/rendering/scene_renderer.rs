@@ -1192,6 +1192,8 @@ pub struct SceneRenderOptions<'a> {
     /// Replaces the render world's color grading, as a camera screen's
     /// own look does.
     pub grading: Option<crate::runtime::ColorGrading>,
+    /// Multiplies the render world's tone mapping exposure.
+    pub exposure: f32,
 }
 
 /// Atmosphere effects a view may leave out, like Blender's viewport
@@ -1249,6 +1251,7 @@ impl<'a> SceneRenderOptions<'a> {
             effects: SceneEffects::default(),
             camera: None,
             grading: None,
+            exposure: 1.0,
         }
     }
 }
@@ -2118,6 +2121,7 @@ impl SceneRenderer {
             let options = SceneRenderOptions {
                 camera: Some(screen.camera),
                 grading: screen.grading,
+                exposure: screen.exposure,
                 ..SceneRenderOptions::game(screen.size)
             };
             future = feed.renderer.render(
@@ -3856,7 +3860,9 @@ impl SceneRenderer {
         // Debug views show raw shader output, so they skip the curve.
         let tone = match options.debug_view {
             SceneDebugView::Lit => {
-                render_world.tone_mapping.unwrap_or_default()
+                let mut tone = render_world.tone_mapping.unwrap_or_default();
+                tone.exposure *= options.exposure;
+                tone
             }
             _ => ToneMapping::default(),
         };
@@ -11455,6 +11461,7 @@ mod tests {
                     effects: SceneEffects::default(),
                     camera: None,
                     grading: None,
+                    exposure: 1.0,
                 },
                 &scene.render_world,
                 &scene.assets,
@@ -14236,6 +14243,7 @@ mod tests {
                 update_every: 1,
                 enabled: true,
                 grading: None,
+                exposure: 1.0,
             });
         // Specular light on the screen keeps green and blue above 0.
         let [blue, green, red, _] = frame(&mut scene);
@@ -14393,6 +14401,7 @@ mod tests {
                 update_every: 1,
                 enabled: true,
                 grading: None,
+                exposure: 1.0,
             });
         let frame = |scene: &mut SlabScene| {
             let before = scene.now();
@@ -14413,8 +14422,16 @@ mod tests {
                 .unwrap();
             scene.pixels()
         };
-        frame(&mut scene);
+        let plain = frame(&mut scene);
         let off = assert_golden(&scene, "screen_crt_off", 12);
+        // A low exposure darkens the feed and brightens nothing.
+        scene.render_world.screens[0].exposure = 0.25;
+        let dim = frame(&mut scene);
+        let darker = plain.iter().zip(&dim).filter(|(a, b)| b < a).count();
+        let brighter = plain.iter().zip(&dim).filter(|(a, b)| b > a).count();
+        assert!(darker > 64 * 4, "only {darker} channels got darker");
+        assert_eq!(brighter, 0);
+        scene.render_world.screens[0].exposure = 1.0;
         let crt = ColorGrading {
             grain: 0.5,
             chromatic_aberration: 1.0,

@@ -131,6 +131,9 @@ rear-view screen:
   grain and color bleed for a VHS security-camera look. Without it the
   feed uses the scene's `rusting.color_grading`. The effects are listed in
   [look-and-feel.md](look-and-feel.md#film-and-crtvhs-effects).
+- `exposure` multiplies the scene's tone mapping exposure for the feed
+  only (default 1). At 4 a dark aisle reads on a security monitor while
+  the player still sees it dark, with no extra lights.
 - Feeds reuse the main view's GPU physics instead of simulating again, so
   GPU bodies in a feed lag the main view by one frame.
 

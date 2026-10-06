@@ -750,6 +750,10 @@ crate::reflect! {
         grading: Option<ColorGrading> {
             doc: "the feed's own color grading; none uses the scene's",
         },
+        exposure: f32 {
+            unit: "factor", min: 0.0, max: 64.0,
+            doc: "multiplies the scene's exposure for this feed; 1 matches the player's view",
+        },
     }
 }
 

@@ -308,6 +308,7 @@ impl EditorWindowRunner {
                     effects: editor_scene_effects(world),
                     camera: None,
                     grading: None,
+                    exposure: 1.0,
                 },
                 world.resource::<RenderWorld>(),
                 world.resource::<AssetServer>(),

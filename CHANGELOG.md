@@ -27,6 +27,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting check` warns `SCENE_COLLIDER_WITHOUT_BODY` when a collider has no `physics_body`, because physics, raycasts and `aim` skip such a collider
 - A scenario fails when no tick finishes for 60 seconds, for example after a deadlock, and names the last finished tick, so `rusting test` no longer hangs (`RUSTING_TEST_STALL_SECS` changes the limit)
 - The game binary warns when its cooked scene is older than the scene file, so `cargo run` after a scene edit no longer plays the old level silently
+- `camera_screen` `exposure`: brighten or darken one monitor's feed without changing the scene's lights or the player's view
 
 ### Fixed
 

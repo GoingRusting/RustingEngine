@@ -621,6 +621,10 @@ pub struct CameraScreen {
     /// The feed's own color grading, such as scanlines and grain for a CCTV
     /// look. Without one the feed uses the scene's.
     pub grading: Option<ColorGrading>,
+    /// Multiplies the scene's tone mapping exposure for this feed only, so
+    /// dark rooms read on a monitor without lighting them for the player.
+    /// 1 shows the feed as the player would see it.
+    pub exposure: f32,
 }
 
 impl Default for CameraScreen {
@@ -631,6 +635,7 @@ impl Default for CameraScreen {
             update_every: 1,
             enabled: true,
             grading: None,
+            exposure: 1.0,
         }
     }
 }
