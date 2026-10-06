@@ -525,7 +525,7 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "camera",
-        summary: "A view. Among active cameras without a viewport the highest priority fills the window; on a tie the one spawned first wins. Every active camera with a viewport then draws into its part of the window, lower priority first, so split screen is two active cameras with viewports. Game code switches with `scene.set_active_camera(name)`, which makes that camera the only active one, or `scene.set_camera(name, active, viewport)`.",
+        summary: "A view. Among active cameras without a viewport the highest priority fills the window; on a tie the one spawned first wins. Every active camera with a viewport then draws into its part of the window, lower priority first, so split screen is two active cameras with viewports. Game code switches with `scene.set_active_camera(name)`, which makes that camera the only active one, or `scene.set_camera(name, active, viewport)`; `scene.set_camera_fov(name, radians)` and `scene.camera_fov(name)` zoom a perspective camera.",
         gpu: "one scene render per drawn camera; inactive cameras cost nothing",
         example: || json!({"projection": {"Perspective": {"vertical_fov_radians": 1.0, "near": 0.1, "far": 500.0}}, "active": true, "priority": 1, "viewport": [0.0, 0.0, 0.5, 1.0]}),
         fields: &[

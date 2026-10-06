@@ -1498,6 +1498,47 @@ impl GameScene<'_> {
         true
     }
 
+    /// Sets the vertical field of view, in radians, of the named
+    /// perspective camera, for a zoom or a sprint effect. Returns false,
+    /// changing nothing, when no camera has that name or it is
+    /// orthographic.
+    pub fn set_camera_fov(
+        &mut self,
+        name: &str,
+        vertical_fov_radians: f32,
+    ) -> bool {
+        let Some(mut camera) =
+            find_named_entity(self.world, name).and_then(|entity| {
+                self.world.get_mut::<crate::runtime::Camera>(entity)
+            })
+        else {
+            return false;
+        };
+        match &mut camera.projection {
+            crate::runtime::Projection::Perspective {
+                vertical_fov_radians: fov,
+                ..
+            } => {
+                *fov = vertical_fov_radians;
+                true
+            }
+            crate::runtime::Projection::Orthographic { .. } => false,
+        }
+    }
+
+    /// The vertical field of view, in radians, of the named perspective
+    /// camera; `None` when there is no such camera or it is orthographic.
+    pub fn camera_fov(&mut self, name: &str) -> Option<f32> {
+        let entity = find_named_entity(self.world, name)?;
+        match self.world.get::<crate::runtime::Camera>(entity)?.projection {
+            crate::runtime::Projection::Perspective {
+                vertical_fov_radians,
+                ..
+            } => Some(vertical_fov_radians),
+            crate::runtime::Projection::Orthographic { .. } => None,
+        }
+    }
+
     /// Turns the named camera on or off and sets the part of the window it
     /// draws into (`[x, y, width, height]` fractions, `None` for all of
     /// it), leaving other cameras alone; two active cameras with
@@ -4791,6 +4832,11 @@ mod tests {
             "Back Camera"
         );
         assert_eq!(hit.name, "Right");
+
+        assert!(scene.set_camera_fov("Back Camera", 0.5));
+        assert_eq!(scene.camera_fov("Back Camera"), Some(0.5));
+        assert!(!scene.set_camera_fov("Right", 0.5), "not a camera");
+        assert_eq!(scene.camera_fov("Right"), None);
     }
 
     #[test]

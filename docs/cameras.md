@@ -45,6 +45,19 @@ scene.set_active_camera("Cutscene Camera"); // the only active camera
 `set_camera` leaves other cameras alone. `set_active_camera` turns every
 other camera off.
 
+`set_camera_fov` changes a perspective camera's vertical field of view in
+radians, for a zoom; `camera_fov` reads it. Ease toward the target every
+tick for a smooth zoom:
+
+```rust
+let fov = scene.camera_fov("Seat Camera").unwrap_or(1.0);
+let target = if focused { 0.45 } else { 1.0 };
+scene.set_camera_fov("Seat Camera", fov + (target - fov) * (8.0 * time.fixed_delta).min(1.0));
+```
+
+Both return false or `None` for an orthographic camera or a name that is
+not a camera.
+
 ## Aiming a camera
 
 Rotation is Euler angles in radians. X applies first, then Y, then Z.
