@@ -286,7 +286,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "asset reimport",
         usage: "asset reimport <project-root> <asset-id-or-path> [--from FILE] [--author A] [--license L] [--url U] [--generator G] [--notes N] [--max-size PIXELS] [--dry-run] [--json]",
-        summary: "Replace an imported asset and keep its ID: from --from, else the recorded original file if it still exists, else revalidate the asset in place. Given provenance flags and settings replace the recorded ones. Reports the scenes that use it; a running game or editor hot-reloads the file. --dry-run previews the replacement without writing.",
+        summary: "Replace an imported asset and keep its ID: from --from, else the recorded original file if it still exists, else revalidate the asset in place. A file under assets/ with no .rmeta yet, such as a model added by `scene add-model`, is given a new ID and registered; a glTF also re-cooks its .rmesh files. Given provenance flags and settings replace the recorded ones. Reports the scenes that use it; a running game or editor hot-reloads the file. --dry-run previews the replacement without writing.",
         gpu: NO_GPU,
         defaults: &[("--from", "the recorded original, else the asset itself")],
         example: "asset reimport my_game assets/props/crate.png --from art/crate_v2.png --json",

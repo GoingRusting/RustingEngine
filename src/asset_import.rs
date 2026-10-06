@@ -625,7 +625,13 @@ pub fn reimport_asset(
     settings: Option<&ImportSettings>,
     dry_run: bool,
 ) -> Result<ImportReport, AssetImportError> {
-    let (path, mut meta) = find_asset(project_root, asset)?;
+    let (path, mut meta) = match find_asset(project_root, asset) {
+        Err(AssetImportError::NotFound(_)) => {
+            unregistered_asset(project_root, asset)
+                .ok_or_else(|| AssetImportError::NotFound(asset.to_owned()))?
+        }
+        found => found?,
+    };
     if let Some(settings) = settings {
         meta.settings = settings.clone();
     }
@@ -808,6 +814,32 @@ fn metas(
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
     found
+}
+
+/// A file under `assets/` that has no `.rmeta` yet, such as a model brought
+/// in by `scene add-model`, gets fresh metadata so it can be reimported.
+fn unregistered_asset(
+    project_root: &Path,
+    asset: &str,
+) -> Option<(PathBuf, AssetMeta)> {
+    let relative = Path::new(asset);
+    if !is_plain_relative(relative) || !relative.starts_with("assets") {
+        return None;
+    }
+    let path = project_root.join(relative);
+    let kind = ImportedKind::from_path(&path).filter(|_| path.is_file())?;
+    Some((
+        path,
+        AssetMeta {
+            format_version: META_FORMAT_VERSION,
+            id: Uuid::new_v4(),
+            kind,
+            settings: ImportSettings::default(),
+            dependencies: Vec::new(),
+            content_hash: String::new(),
+            source: AssetProvenance::default(),
+        },
+    ))
 }
 
 fn find_asset(
@@ -1440,6 +1472,61 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(escaped.code(), "ASSET_INVALID", "{escaped}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "gltf")]
+    #[test]
+    fn a_model_without_metadata_is_registered_by_reimport() {
+        let root = project();
+        let models = root.join("assets/models");
+        std::fs::create_dir_all(&models).unwrap();
+        let positions: Vec<u8> =
+            [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+        std::fs::write(models.join("tri.bin"), &positions).unwrap();
+        std::fs::write(
+            models.join("tri.gltf"),
+            r#"{"asset": {"version": "2.0"},
+              "buffers": [{"uri": "tri.bin", "byteLength": 36}],
+              "bufferViews": [{"buffer": 0, "byteLength": 36}],
+              "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3,
+                "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}],
+              "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}]}"#,
+        )
+        .unwrap();
+
+        let report = reimport_asset(
+            &root,
+            "assets/models/tri.gltf",
+            None,
+            &AssetProvenance::default(),
+            None,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(report.kind, ImportedKind::Gltf);
+        assert_eq!(report.dependencies, [PathBuf::from("tri.bin")]);
+        assert!(models.join("tri.gltf.rmeta").is_file());
+        let codes: Vec<_> = list_assets(&root)
+            .issues
+            .iter()
+            .map(|issue| issue.code)
+            .collect();
+        assert_eq!(codes, ["ASSET_NO_LICENSE"]);
+        let missing = reimport_asset(
+            &root,
+            "assets/models/none.gltf",
+            None,
+            &AssetProvenance::default(),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(missing.code(), "ASSET_NOT_FOUND");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
