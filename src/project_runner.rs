@@ -455,7 +455,10 @@ impl GameScene<'_> {
     /// Puts every scene object back as the game started: objects spawned
     /// since are removed, and moved, hidden or despawned ones return with
     /// their starting components. [`Self::once`] blocks run again. Time,
-    /// input and resources carry on. Returns false when the game was not
+    /// input and resources carry on, and so do playing sounds: restart
+    /// stops none, so a loop started in a `once` block would play twice.
+    /// Call [`Self::stop_all_sounds`] (or stop the loop by its ID) before
+    /// restarting. Returns false when the game was not
     /// started from a scene file, or when that file no longer loads (the
     /// error is logged and the scene stays as it was).
     pub fn restart(&mut self) -> bool {
@@ -466,7 +469,8 @@ impl GameScene<'_> {
     /// the project folder (the one holding `project.json`), for example
     /// `"scenes/level_2.rscene"`. The new scene becomes the one
     /// [`Self::restart`] returns to, and [`Self::once`] blocks run again.
-    /// Time, input and resources carry on. Counters are scene objects, so
+    /// Time, input, resources and playing sounds carry on (see
+    /// [`Self::restart`]). Counters are scene objects, so
     /// read any value to keep before loading and set it again after.
     ///
     /// # Errors
@@ -4188,6 +4192,7 @@ mod tests {
                     Transform::default(),
                     &CubeSpawn::new(),
                 );
+                scene.play_sound_looped("hum.wav", 1.0);
             });
             scene.despawn("Gate");
             scene.object("Ball").move_x(1.0);
@@ -4218,6 +4223,22 @@ mod tests {
         assert_eq!(count_named(world, "Gate"), 0);
         let ball = find_named_entity(world, "Ball").unwrap();
         assert_eq!(world.get::<Transform>(ball).unwrap().position[0], 1.0);
+        // Restart stops no sound: the looped hum from setup is started a
+        // second time, as the restart docs warn.
+        let commands =
+            world.resource_mut::<crate::runtime::AudioQueue>().drain();
+        let plays = commands
+            .iter()
+            .filter(|command| {
+                matches!(command, crate::runtime::AudioCommand::Play { .. })
+            })
+            .count();
+        assert_eq!(plays, 2);
+        assert!(!commands.iter().any(|command| matches!(
+            command,
+            crate::runtime::AudioCommand::Stop(..)
+                | crate::runtime::AudioCommand::StopAll
+        )));
 
         let mut world = World::new();
         assert!(!GameScene { world: &mut world }.restart());

@@ -37,6 +37,7 @@ Engine features for the horror game FOREVER BEAR.
 - Game code can zoom a camera: `scene.set_camera_fov(name, radians)` and `scene.camera_fov(name)`
 - `rusting.player_controller` has `pitch_limits` and `yaw_limits` for seated and turret views
 - `rusting check` reports a CLI built before the latest engine source edit once a day per project instead of on every run
+- The `restart` and `load_scene` docs say that playing sounds carry on and how to stop them first
 
 ### Fixed
 

@@ -28,6 +28,9 @@ scene.stop_sound(hit);
   duck the music under an alarm: `set_bus_volume("music", 0.3, 0.2)`, then
   back to 1 when the alarm ends.
 - `set_master_volume(volume)` sets the main track.
+- `restart()` and `load_scene(...)` stop no sound. A loop started in a
+  `once` block would play twice after a restart, so call
+  `stop_all_sounds()` (or `stop_sound(id)` on the loop) first.
 
 ## Speed and pitch
 
