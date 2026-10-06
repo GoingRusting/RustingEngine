@@ -307,6 +307,7 @@ impl EditorWindowRunner {
                     debug_view: editor_debug_view(world),
                     effects: editor_scene_effects(world),
                     camera: None,
+                    grading: None,
                 },
                 world.resource::<RenderWorld>(),
                 world.resource::<AssetServer>(),

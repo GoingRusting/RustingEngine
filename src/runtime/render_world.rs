@@ -44,6 +44,13 @@ pub struct ExtractedScreen {
     pub material: crate::assets::Handle<crate::assets::MaterialAsset>,
     pub camera: ExtractedCamera,
     pub size: [u32; 2],
+    /// The screen's own mesh and placement, to skip feeds nobody sees.
+    pub mesh: Handle<MeshAsset>,
+    pub transform: GlobalTransform,
+    pub update_every: u32,
+    pub enabled: bool,
+    /// The feed's own color grading; `None` uses the scene's.
+    pub grading: Option<super::ColorGrading>,
 }
 
 /// Optional camera selected by a tool such as the editor Scene viewport.
@@ -682,12 +689,16 @@ fn collect_screens(world: &mut World) -> Vec<ExtractedScreen> {
             )
         })
         .collect();
-    let mut query =
-        world.query::<(Entity, &super::CameraScreen, &MeshRenderer)>();
+    let mut query = world.query::<(
+        Entity,
+        &super::CameraScreen,
+        &MeshRenderer,
+        &GlobalTransform,
+    )>();
     let mut screens: Vec<_> = query
         .iter(world)
-        .filter(|(_, screen, _)| !screen.size.contains(&0))
-        .filter_map(|(entity, screen, renderer)| {
+        .filter(|(_, screen, ..)| !screen.size.contains(&0))
+        .filter_map(|(entity, screen, renderer, transform)| {
             let (_, camera) =
                 cameras.iter().find(|(name, _)| *name == screen.camera)?;
             Some((
@@ -696,6 +707,11 @@ fn collect_screens(world: &mut World) -> Vec<ExtractedScreen> {
                     material: renderer.material,
                     camera: *camera,
                     size: screen.size,
+                    mesh: renderer.mesh,
+                    transform: *transform,
+                    update_every: screen.update_every,
+                    enabled: screen.enabled,
+                    grading: screen.grading,
                 },
             ))
         })
@@ -825,6 +841,7 @@ mod tests {
         let screen = |name: &str, size| super::super::CameraScreen {
             camera: name.into(),
             size,
+            ..Default::default()
         };
         app.spawn((Transform::default(), renderer, screen("Cam B", [64, 32])));
         app.spawn((Transform::default(), renderer, screen("Nobody", [64, 32])));

@@ -62,6 +62,7 @@ teaches any agent how to do the same.
 | `hammer_run`    | Third-person obstacle course                   |
 | `night_vault`   | Stealth game with patrolling guards            |
 | `ember_arena`   | Third-person arena survival                    |
+| `forever_bear_booth` | Horror night shift with CCTV monitors     |
 
 ## Quick start
 

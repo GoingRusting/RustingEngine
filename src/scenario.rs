@@ -59,8 +59,11 @@ pub const COUNTER_PREFIX: &str = "counter:";
 /// `/clips/sfx~1hit.wav`. `level` is the RMS of the mix during the last
 /// tick per speaker, `peak` the largest sample magnitude that tick (1.0 is
 /// full scale), `clipped` the samples at or over full scale since tick 0,
-/// and `playing` lists the sounds that have not ended, all from an offline
-/// kira mix of what the game asked for.
+/// `playing` lists the sounds that have not ended, `buses` each bus's
+/// voices, limit, dropped and stolen sounds and active effects, and
+/// `dropped` the sounds voice limits refused or stopped, all from an
+/// offline kira mix of what the game asked for. `captions` lists the
+/// caption lines showing.
 pub const AUDIO_ENTITY: &str = "audio:";
 
 /// The offline mix as `audio:` reports it after the last tick.
@@ -70,6 +73,7 @@ struct AudioMix {
     peak: [f32; 2],
     clipped: u64,
     playing: Vec<crate::audio_output::PlayingSound>,
+    buses: std::collections::BTreeMap<String, crate::audio_output::BusReport>,
 }
 
 /// Appends the state hashes recorded since the last call, so the report
@@ -118,6 +122,11 @@ fn mix_tick(
     for command in commands {
         mixer.run(&assets, command, delay);
     }
+    if let Some(mut queue) =
+        world.get_resource_mut::<crate::runtime::AudioQueue>()
+    {
+        queue.retain_sounds(|id| mixer.has_sound(id.0));
+    }
     let frames =
         (step * f64::from(crate::audio_output::MIX_RATE)).round() as usize;
     let block = mixer.render(frames);
@@ -142,6 +151,7 @@ fn mix_tick(
         peak: [peak(0), peak(1)],
         clipped,
         playing: mixer.playing(),
+        buses: mixer.buses(),
     };
     world.insert_resource(mix);
     samples.extend_from_slice(&block);
@@ -357,6 +367,20 @@ impl CameraView {
     }
 }
 
+/// A stored mix a scenario's audio must match.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AudioReference {
+    /// WAV file, relative to the scenario file.
+    pub path: PathBuf,
+    /// Largest RMS of the sample-by-sample difference that still passes.
+    #[serde(default = "default_audio_tolerance")]
+    pub tolerance: f32,
+}
+
+fn default_audio_tolerance() -> f32 {
+    0.01
+}
+
 /// A scripted run: named inputs, checks and captures at fixed ticks.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Scenario {
@@ -393,6 +417,10 @@ pub struct Scenario {
     /// relative to the scenario file.
     #[serde(default)]
     pub audio_out: Option<PathBuf>,
+    /// Compares the whole mix with a reference WAV, as `golden` does for
+    /// images; `rusting test --update-golden` writes it.
+    #[serde(default)]
+    pub audio_reference: Option<AudioReference>,
     /// Limits on the run's cost; each one exceeded fails the run. Timing
     /// limits depend on the machine, so set them with headroom and read
     /// `perf.environment` before comparing runs.
@@ -1126,6 +1154,62 @@ fn compare_golden(
     ))
 }
 
+/// Compares a run's mix with a reference WAV by the RMS of their
+/// difference, or writes the reference when `update` is set.
+fn compare_mix(
+    mixed: &[f32],
+    reference: &Path,
+    tolerance: f32,
+    update: bool,
+) -> Check {
+    if update {
+        crate::audio_output::write_wav(reference, mixed)
+            .map_err(|error| (error.to_string(), Value::Null))?;
+        return Ok(format!("wrote audio reference {}", reference.display()));
+    }
+    let stored = crate::audio_output::read_wav(reference).map_err(|error| {
+        (
+            format!(
+                "cannot read audio reference {}: {error}; `rusting test \
+                 --update-golden` writes it",
+                reference.display()
+            ),
+            Value::Null,
+        )
+    })?;
+    if stored.len() != mixed.len() {
+        return Err((
+            format!(
+                "audio reference {} has {} samples, the mix has {}",
+                reference.display(),
+                stored.len(),
+                mixed.len()
+            ),
+            Value::Null,
+        ));
+    }
+    let sum: f32 = mixed
+        .iter()
+        .zip(&stored)
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum();
+    let rms = (sum / mixed.len().max(1) as f32).sqrt();
+    if rms > tolerance {
+        return Err((
+            format!(
+                "mix differs from audio reference {}: RMS difference \
+                 {rms:.5}, tolerance {tolerance}",
+                reference.display()
+            ),
+            json!({"rms_difference": rms}),
+        ));
+    }
+    Ok(format!(
+        "matches audio reference {} (RMS difference {rms:.5})",
+        reference.display()
+    ))
+}
+
 /// Mean `[r, g, b]` and brightness standard deviation of a pixel
 /// rectangle `[x0, y0, x1, y1]`, end exclusive.
 fn region_stats(pixels: &[u8], width: u32, rect: [u32; 4]) -> ([f64; 3], f64) {
@@ -1723,6 +1807,25 @@ pub fn run_scenario(
             }),
         }
     }
+    if let Some(reference) = &scenario.audio_reference {
+        let path = base.join(&reference.path);
+        let (ok, message, actual) = match compare_mix(
+            &mixed,
+            &path,
+            reference.tolerance,
+            scenario.update_golden,
+        ) {
+            Ok(message) => (true, message, Value::Null),
+            Err((message, actual)) => (false, message, actual),
+        };
+        report.steps.push(StepResult {
+            tick: report.ticks_run as u32,
+            step: 0,
+            ok,
+            message,
+            actual,
+        });
+    }
     let render = match capture.as_mut() {
         Some(Ok(capture)) => Some(capture.metadata(app)),
         _ => None,
@@ -1999,6 +2102,10 @@ pub(crate) fn reflected(
             "peak": mix.peak,
             "clipped": mix.clipped,
             "playing": mix.playing,
+            "buses": mix.buses,
+            "dropped": mix.buses.values()
+                .map(|bus| bus.dropped + bus.stolen).sum::<u64>(),
+            "captions": queue.captions(),
         }));
     }
     let entity = find_entity(world, wanted, |_, _| true)
@@ -3194,6 +3301,412 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
+    /// A project folder holding `assets/tone.wav`: a 440 Hz sine at half
+    /// scale, `seconds` long.
+    #[cfg(feature = "audio")]
+    fn tone_project(seconds: f32) -> PathBuf {
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-audio-{}", Uuid::new_v4()));
+        let frames = (seconds * 48_000.0) as usize;
+        let tone: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let s = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0)
+                    .sin()
+                    * 0.5;
+                [s, s]
+            })
+            .collect();
+        crate::audio_output::write_wav(
+            &directory.join("assets/tone.wav"),
+            &tone,
+        )
+        .unwrap();
+        directory
+    }
+
+    /// [`game`] in `directory`, with `play` run as game code every tick and
+    /// an active camera at `[0, 2, 0]` looking down -Z.
+    #[cfg(feature = "audio")]
+    fn audio_game(
+        directory: &Path,
+        play: impl Fn(u64, &mut crate::project_runner::GameScene<'_>)
+            + Send
+            + Sync
+            + 'static,
+    ) -> App {
+        let mut app = game();
+        app.world_mut()
+            .insert_resource(crate::project_runner::ProjectFolder(
+                directory.to_path_buf(),
+            ));
+        app.world_mut().spawn((
+            Name("Eye".into()),
+            Transform::new([0.0, 2.0, 0.0]),
+            crate::runtime::Camera {
+                active: true,
+                ..Default::default()
+            },
+        ));
+        app.add_system(ScheduleStage::Update, move |world: &mut World| {
+            let tick = world.resource::<FrameTime>().fixed_tick;
+            play(tick, &mut crate::project_runner::GameScene { world });
+        });
+        app
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn rate_pause_resume_and_seek_show_in_playing() {
+        use crate::runtime::{Sound, SoundId};
+        let directory = tone_project(4.0);
+        let mut app = audio_game(&directory, |tick, scene| match tick {
+            1 => {
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        bus: "tape".into(),
+                        ..Sound::default()
+                    },
+                );
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        rate: 0.5,
+                        ..Sound::default()
+                    },
+                );
+            }
+            // Two seconds after the tape started.
+            121 => scene.pause_sound(SoundId(0)),
+            181 => scene.resume_sound(SoundId(0)),
+            200 => scene.seek_sound(SoundId(1), 0.25),
+            _ => {}
+        });
+        let near = |tick: u32, path: &str, value: f64| {
+            json!({"tick": tick, "expect": {"entity": "audio:", "path": path,
+                "equals": value, "tolerance": 0.05}})
+        };
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                241,
+                json!([
+                    near(2, "/playing/1/rate", 0.5),
+                    near(2, "/playing/0/remaining", 4.0),
+                    // Half speed: the same clip takes twice as long.
+                    near(2, "/playing/1/remaining", 8.0),
+                    {"tick": 150, "expect": {"entity": "audio:",
+                        "path": "/playing/0/paused", "equals": true}},
+                    near(150, "/playing/0/position", 2.0),
+                    near(181, "/playing/0/position", 2.0),
+                    near(241, "/playing/0/position", 3.0),
+                    near(201, "/playing/1/position", 0.25),
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn an_attached_sound_pans_as_its_entity_moves_and_the_listener_can_move() {
+        use crate::runtime::Sound;
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| match tick {
+            1 => {
+                scene.play_sound_on("Walker", "tone.wav", Sound::default());
+            }
+            10 => {
+                scene.object("Walker").set_position([5.0, 2.0, 0.0]);
+            }
+            20 => {
+                assert!(scene.set_listener(Some("Booth")));
+            }
+            _ => {}
+        });
+        app.world_mut()
+            .spawn((Name("Walker".into()), Transform::new([-5.0, 2.0, 0.0])));
+        app.world_mut()
+            .spawn((Name("Booth".into()), Transform::new([10.0, 2.0, 0.0])));
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                22,
+                json!([
+                    {"tick": 5, "expect": {"entity": "audio:",
+                        "path": "/playing/0/pan", "less_than": -0.9}},
+                    {"tick": 5, "expect": {"entity": "audio:",
+                        "path": "/playing/0/volume", "equals": 0.4,
+                        "tolerance": 0.01}},
+                    {"tick": 12, "expect": {"entity": "audio:",
+                        "path": "/playing/0/pan", "greater_than": 0.9}},
+                    // The booth is right of the walker.
+                    {"tick": 22, "expect": {"entity": "audio:",
+                        "path": "/playing/0/pan", "less_than": -0.9}},
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn bus_effects_show_change_the_mix_and_leave_state_hashes_alone() {
+        use crate::runtime::{BusEffect, Sound};
+        let directory = tone_project(2.0);
+        let play = |effects: bool| {
+            move |tick: u64,
+                  scene: &mut crate::project_runner::GameScene<'_>| {
+                if tick == 1 {
+                    scene.play_sound_with(
+                        "tone.wav",
+                        Sound {
+                            bus: "world".into(),
+                            ..Sound::default()
+                        },
+                    );
+                }
+                if effects && tick == 10 {
+                    let muffle = BusEffect::LowPass { cutoff_hz: 100.0 };
+                    scene.set_bus_effect("world", muffle, 0.0);
+                    let room = BusEffect::Reverb {
+                        room: 0.9,
+                        damping: 0.3,
+                        mix: 0.4,
+                    };
+                    scene.set_bus_effect("world", room, 0.0);
+                    let tape = BusEffect::Distortion {
+                        drive: 12.0,
+                        mix: 0.0,
+                    };
+                    scene.set_bus_effect("tape", tape, 0.0);
+                }
+            }
+        };
+        let steps = json!([
+            {"tick": 5, "expect": {"entity": "audio:",
+                "path": "/level/0", "greater_than": 0.3}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/world/effects/0/kind", "equals": "Reverb"}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/world/effects/1/cutoff_hz", "equals": 100.0}},
+            // A distortion with no mix is off.
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/tape/effects", "equals": []}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/level/0", "less_than": 0.2}},
+        ]);
+        let with = run_scenario(
+            &mut audio_game(&directory, play(true)),
+            &scenario(20, steps),
+            &directory,
+        );
+        assert!(with.passed, "{with:#?}");
+        let without = run_scenario(
+            &mut audio_game(&directory, play(false)),
+            &scenario(20, json!([])),
+            &directory,
+        );
+        assert!(!with.state_hashes.is_empty());
+        assert_eq!(with.state_hashes, without.state_hashes);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn a_thousand_sounds_in_one_tick_stay_within_the_voice_limit() {
+        use crate::runtime::Sound;
+        let directory = tone_project(1.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick != 1 {
+                return;
+            }
+            scene.set_bus_voice_limit("chorus", 32);
+            let echo = Sound {
+                bus: "chorus".into(),
+                volume: 0.01,
+                ..Sound::default()
+            };
+            for _ in 0..1000 {
+                scene.play_sound_with("tone.wav", echo.clone());
+            }
+            // Outranks every echo, so it replaces one.
+            let mascot = Sound {
+                priority: 255,
+                ..echo
+            };
+            scene.play_sound_with("tone.wav", mascot);
+        });
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                3,
+                json!([
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/buses/chorus/voices", "equals": 32}},
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/buses/chorus/dropped", "equals": 968}},
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/buses/chorus/stolen", "equals": 1}},
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/dropped", "equals": 969}},
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/requested", "equals": 1001}},
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn captions_show_while_their_sound_plays() {
+        use crate::runtime::{Caption, Sound};
+        let directory = tone_project(1.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 1 {
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        captions: vec![
+                            Caption::new(0.0, 0.5, "one bear"),
+                            Caption::new(0.5, 1.0, "two bears"),
+                        ],
+                        ..Sound::default()
+                    },
+                );
+            }
+        });
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                70,
+                json!([
+                    {"tick": 0, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": []}},
+                    {"tick": 10, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": ["one bear"]}},
+                    {"tick": 45, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": ["two bears"]}},
+                    {"tick": 45, "expect": {"entity": "audio:",
+                        "path": "/playing/0/clip", "equals": "tone.wav"}},
+                    {"tick": 70, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": []}},
+                    {"tick": 70, "expect": {"entity": "audio:",
+                        "path": "/playing", "equals": []}},
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn a_wall_between_listener_and_sound_lowers_its_volume() {
+        use crate::runtime::{Sound, SoundId};
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| match tick {
+            1 => {
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        position: Some([0.0, 2.0, -5.0]),
+                        occlude: true,
+                        ..Sound::default()
+                    },
+                );
+            }
+            10 => scene.set_sound_position(SoundId(0), [5.0, 2.0, 0.0]),
+            _ => {}
+        });
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Shelf".into()),
+            Transform::new([2.5, 2.0, 0.0]),
+            PhysicsBody::default(),
+            RigidBody {
+                kind: RigidBodyKind::Fixed,
+                ..RigidBody::default()
+            },
+            Collider {
+                shape: ColliderShape::Box {
+                    half_extents: [0.2, 2.0, 2.0],
+                },
+                ..Collider::default()
+            },
+        ));
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                14,
+                json!([
+                    {"tick": 5, "expect": {"entity": "audio:",
+                        "path": "/playing/0/volume", "equals": 0.4,
+                        "tolerance": 0.01}},
+                    {"tick": 14, "expect": {"entity": "audio:",
+                        "path": "/playing/0/occlusion", "equals": 1.0}},
+                    {"tick": 14, "expect": {"entity": "audio:",
+                        "path": "/playing/0/volume", "equals": 0.12,
+                        "tolerance": 0.01}},
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
+    fn the_mix_matches_its_stored_reference_within_tolerance() {
+        use crate::runtime::Sound;
+        let directory = tone_project(1.0);
+        let run = |volume: f32, update: bool| {
+            let mut app = audio_game(&directory, move |tick, scene| {
+                if tick == 1 {
+                    let tone = Sound {
+                        volume,
+                        pan: -0.5,
+                        ..Sound::default()
+                    };
+                    scene.play_sound_with("tone.wav", tone);
+                }
+            });
+            let mut run = scenario(30, json!([]));
+            run.update_golden = update;
+            run.audio_reference = Some(AudioReference {
+                path: "reference.wav".into(),
+                tolerance: 0.01,
+            });
+            run_scenario(&mut app, &run, &directory)
+        };
+        let missing = run(1.0, false);
+        assert!(!missing.passed);
+        assert!(run(1.0, true).passed);
+        let same = run(1.0, false);
+        assert!(same.passed, "{same:#?}");
+        let quieter = run(0.8, false);
+        assert!(!quieter.passed);
+        assert!(
+            quieter
+                .steps
+                .last()
+                .unwrap()
+                .message
+                .contains("RMS difference"),
+            "{quieter:#?}"
+        );
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     fn scenario_from(step: Value) -> Scenario {
         scenario(2, json!([step]))
     }
@@ -3527,5 +4040,64 @@ mod tests {
         };
         assert_eq!(ground_x(1), ground_x(1));
         assert_ne!(ground_x(1), ground_x(2));
+    }
+
+    #[test]
+    fn five_hundred_of_five_thousand_bears_move_in_one_tick() {
+        use crate::runtime::{
+            render_benchmark_bear, spawn_render_benchmark_extras,
+            RenderBenchmarkExtras,
+        };
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let bears = spawn_render_benchmark_extras(
+            app.world_mut(),
+            RenderBenchmarkExtras {
+                bears: 5000,
+                ..Default::default()
+            },
+        );
+        // Scenario checks find entities by persistent ID.
+        for &bear in &bears {
+            app.world_mut()
+                .entity_mut(bear)
+                .insert(SceneId(Uuid::new_v4()));
+        }
+        app.add_system(ScheduleStage::Update, move |world: &mut World| {
+            if world.resource::<FrameTime>().fixed_tick != 2 {
+                return;
+            }
+            for &bear in &bears[..500] {
+                world.get_mut::<Transform>(bear).unwrap().position[1] = 5.0;
+            }
+        });
+        let bear = |index| render_benchmark_bear(index);
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                3,
+                json!([
+                    {"tick": 1, "expect": {"entity": bear(0),
+                        "path": "/transform/position/1", "less_than": 1.0}},
+                    {"tick": 3, "expect": {"entity": bear(0),
+                        "path": "/transform/position/1", "equals": 5.0}},
+                    {"tick": 3, "expect": {"entity": bear(499),
+                        "path": "/transform/position/1", "equals": 5.0}},
+                    {"tick": 3, "expect": {"entity": bear(500),
+                        "path": "/transform/position/1", "less_than": 1.0}},
+                ]),
+            ),
+            Path::new("."),
+        );
+        assert!(report.passed, "{report:#?}");
+        // The renderer sees exactly the moved instances.
+        let render = app.world().resource::<RenderWorld>();
+        let raised = render
+            .renderables
+            .iter()
+            .filter(|r| r.transform.matrix[3][1] > 4.0)
+            .count();
+        assert_eq!((render.renderables.len(), raised), (5000, 500));
     }
 }

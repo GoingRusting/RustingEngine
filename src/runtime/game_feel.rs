@@ -612,6 +612,15 @@ pub struct CameraScreen {
     pub camera: String,
     /// Feed resolution in pixels.
     pub size: [u32; 2],
+    /// Draws the feed every this many frames; 2 halves its cost. Screens
+    /// with the same value take turns, so they do not all draw together.
+    pub update_every: u32,
+    /// Off keeps the last image without drawing; swap the material to show
+    /// a dark monitor. A feed is drawn once when it first appears either way.
+    pub enabled: bool,
+    /// The feed's own color grading, such as scanlines and grain for a CCTV
+    /// look. Without one the feed uses the scene's.
+    pub grading: Option<ColorGrading>,
 }
 
 impl Default for CameraScreen {
@@ -619,13 +628,17 @@ impl Default for CameraScreen {
         Self {
             camera: String::new(),
             size: [640, 360],
+            update_every: 1,
+            enabled: true,
+            grading: None,
         }
     }
 }
 
 /// Color grading applied after tone mapping: contrast, saturation, a tint
-/// for dark and for bright tones, and a vignette. The defaults change
-/// nothing. The one on the entity with the lowest ID is used.
+/// for dark and for bright tones, a vignette, and film and CRT/VHS effects
+/// (grain, chromatic aberration, scanlines, color bleed, a rolling noise
+/// band, distortion). The defaults change nothing. The one on the entity with the lowest ID is used.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorGrading {
@@ -640,17 +653,44 @@ pub struct ColorGrading {
     pub highlights: [f32; 3],
     /// How much the corners darken. 0 is none, 1 makes them black.
     pub vignette: f32,
+    /// Film grain strength, 0 to 1. The pattern changes every fixed tick
+    /// and is the same for the same tick, so captures stay repeatable.
+    pub grain: f32,
+    /// Splits red and blue toward the edges like a cheap lens, 0 to 1.
+    pub chromatic_aberration: f32,
+    /// Darkens every other pixel row like a CRT, 0 to 1. Clearest on small
+    /// camera-screen feeds.
+    pub scanlines: f32,
+    /// Smears color sideways while keeping the brightness sharp, like VHS
+    /// tape, 0 to 1.
+    pub color_bleed: f32,
+    /// A band of static that rolls down the image, 0 to 1.
+    pub noise_band: f32,
+    /// Bulges the image like a curved tube and wobbles its rows over time,
+    /// 0 to 1. Corners pushed off the image turn black.
+    pub distortion: f32,
+}
+
+impl ColorGrading {
+    /// The default, which changes nothing; usable in constants.
+    pub const DEFAULT: Self = Self {
+        contrast: 1.0,
+        saturation: 1.0,
+        shadows: [1.0; 3],
+        highlights: [1.0; 3],
+        vignette: 0.0,
+        grain: 0.0,
+        chromatic_aberration: 0.0,
+        scanlines: 0.0,
+        color_bleed: 0.0,
+        noise_band: 0.0,
+        distortion: 0.0,
+    };
 }
 
 impl Default for ColorGrading {
     fn default() -> Self {
-        Self {
-            contrast: 1.0,
-            saturation: 1.0,
-            shadows: [1.0; 3],
-            highlights: [1.0; 3],
-            vignette: 0.0,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -947,8 +987,43 @@ pub(super) fn update_burst_particles(
     }
 }
 
+/// Caption lines of the sounds playing, bottom center over a dark band.
+#[cfg(feature = "ui")]
+fn draw_captions(
+    context: &egui::Context,
+    audio: Option<&super::AudioQueue>,
+    settings: &super::CaptionSettings,
+) {
+    let lines = audio.map(super::AudioQueue::captions).unwrap_or_default();
+    if !settings.enabled || lines.is_empty() {
+        return;
+    }
+    let screen = context.screen_rect();
+    egui::Area::new(egui::Id::new("rusting.captions"))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
+        .fade_in(false)
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            ui.set_max_width(screen.width() * 0.8);
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(170))
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    for line in lines {
+                        ui.label(
+                            egui::RichText::new(line)
+                                .size(settings.size)
+                                .color(egui::Color32::WHITE),
+                        );
+                    }
+                });
+        });
+}
+
 /// Per frame: draws HUD elements in `SceneId` order and reports clicks.
 #[cfg(feature = "ui")]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_hud(
     ui: Res<super::RuntimeUi>,
     mut pressed: ResMut<EventQueue<HudButtonPressed>>,
@@ -957,7 +1032,14 @@ pub(super) fn draw_hud(
     visibility: Query<&super::Visibility>,
     parents: Query<&super::Parent>,
     cameras: Query<(&super::Name, &super::Camera)>,
+    audio: Option<Res<super::AudioQueue>>,
+    caption_settings: Option<Res<super::CaptionSettings>>,
 ) {
+    draw_captions(
+        ui.context(),
+        audio.as_deref(),
+        &caption_settings.as_deref().cloned().unwrap_or_default(),
+    );
     // Hidden like a mesh: by itself or by any parent.
     let visible = |entity: Entity| {
         std::iter::successors(Some(entity), |&entity| {

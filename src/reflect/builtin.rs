@@ -742,6 +742,14 @@ crate::reflect! {
     struct CameraScreen {
         camera: String { doc: "name of the camera whose image this mesh shows" },
         size: [u32; 2] { unit: "px", doc: "feed width and height" },
+        update_every: u32 {
+            unit: "frames", min: 1.0, max: 60.0,
+            doc: "draws the feed every this many frames",
+        },
+        enabled: bool { doc: "off keeps the last image without drawing" },
+        grading: Option<ColorGrading> {
+            doc: "the feed's own color grading; none uses the scene's",
+        },
     }
 }
 
@@ -766,6 +774,30 @@ crate::reflect! {
         vignette: f32 {
             unit: "factor", min: 0.0, max: 1.0,
             doc: "how much the corners darken; 0 is none",
+        },
+        grain: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "film grain, changing every fixed tick",
+        },
+        chromatic_aberration: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "red and blue split toward the edges",
+        },
+        scanlines: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "darkens every other pixel row",
+        },
+        color_bleed: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "smears color sideways like VHS tape",
+        },
+        noise_band: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "a band of static rolling down the image",
+        },
+        distortion: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "tube bulge and row wobble over time",
         },
     }
 }

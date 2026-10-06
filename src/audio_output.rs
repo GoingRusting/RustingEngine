@@ -4,23 +4,131 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::runtime::AudioCommand;
+use crate::runtime::{AudioCommand, BusEffect};
 
 /// Sample rate of the offline mix.
 pub const MIX_RATE: u32 = 48_000;
+
+/// Files larger than this stream from disk in a window instead of loading
+/// whole: tapes, ambience and radio of a few minutes. The offline mixer
+/// always loads whole, so test mixes do not depend on disk speed.
+pub const STREAM_OVER_BYTES: u64 = 1 << 20;
+
+/// How far an occluded sound falls: its volume times `1 - OCCLUDED_DROP`.
+pub const OCCLUDED_DROP: f32 = 0.7;
+
+/// Low-pass cutoff of a fully occluded sound, in Hz.
+pub const OCCLUDED_CUTOFF_HZ: f32 = 800.0;
 
 /// One sound that has not ended, as scenarios see it under `audio:/playing`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct PlayingSound {
     pub id: u64,
     pub clip: String,
-    /// The volume it was asked for, or the target of its last fade.
+    /// Linear gain it plays at: the volume asked for (or the target of its
+    /// last fade), times distance and occlusion.
     pub volume: f32,
     pub pan: f32,
     pub bus: String,
     pub looped: bool,
     /// Fixed tick it starts on.
     pub tick: u64,
+    /// Speed and pitch, 1 as recorded.
+    pub rate: f32,
+    /// Seconds into the clip.
+    pub position: f64,
+    /// Seconds of real time until it ends at the current rate; `None` when
+    /// looped.
+    pub remaining: Option<f64>,
+    pub paused: bool,
+    pub priority: u8,
+    /// Where it is in the world, for positioned sounds.
+    pub world_position: Option<[f32; 3]>,
+    /// 0 clear to 1 behind a wall.
+    pub occlusion: f32,
+    /// Read from disk while it plays instead of loaded whole.
+    pub streamed: bool,
+}
+
+/// One bus as scenarios see it under `audio:/buses/<name>`; the main
+/// output is `""`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct BusReport {
+    /// Sounds playing or scheduled on the bus.
+    pub voices: usize,
+    pub limit: usize,
+    /// New sounds refused because the bus was full.
+    pub dropped: u64,
+    /// Playing sounds stopped to make room for higher-ranked ones.
+    pub stolen: u64,
+    /// Effects that change the sound, in processing order.
+    pub effects: Vec<BusEffect>,
+}
+
+#[cfg(feature = "audio")]
+enum Handle {
+    Static(kira::sound::static_sound::StaticSoundHandle),
+    Stream(
+        kira::sound::streaming::StreamingSoundHandle<
+            kira::sound::FromFileError,
+        >,
+    ),
+}
+
+#[cfg(feature = "audio")]
+macro_rules! each_handle {
+    ($handle:expr, $inner:ident => $body:expr) => {
+        match $handle {
+            Handle::Static($inner) => $body,
+            Handle::Stream($inner) => $body,
+        }
+    };
+}
+
+#[cfg(feature = "audio")]
+struct Voice {
+    handle: Handle,
+    info: PlayingSound,
+    /// Volume asked for, before distance and occlusion.
+    volume: f32,
+    /// Clip length in seconds.
+    duration: f64,
+    reverse: bool,
+    /// Own track with a low-pass filter, for occluded sounds.
+    muffle:
+        Option<(kira::track::TrackHandle, kira::effect::filter::FilterHandle)>,
+}
+
+#[cfg(feature = "audio")]
+struct Bus {
+    /// `None` is the main track.
+    track: Option<kira::track::TrackHandle>,
+    distortion: kira::effect::distortion::DistortionHandle,
+    reverb: kira::effect::reverb::ReverbHandle,
+    filter: kira::effect::filter::FilterHandle,
+    /// Active effects by kind: distortion, reverb, low-pass.
+    effects: [Option<BusEffect>; 3],
+    limit: usize,
+    dropped: u64,
+    stolen: u64,
+}
+
+/// Adds a bus's effects to a track builder, all off: tape saturation,
+/// then the room, then a wall's low-pass.
+#[cfg(feature = "audio")]
+macro_rules! bus_effects {
+    ($builder:expr) => {{
+        use kira::effect::{distortion, filter, reverb};
+        let distortion = $builder.add_effect(
+            distortion::DistortionBuilder::new()
+                .kind(distortion::DistortionKind::SoftClip)
+                .mix(0.0),
+        );
+        let reverb = $builder.add_effect(reverb::ReverbBuilder::new().mix(0.0));
+        let filter = $builder
+            .add_effect(filter::FilterBuilder::new().cutoff(20_000.0).mix(0.0));
+        (distortion, reverb, filter)
+    }};
 }
 
 #[cfg(feature = "audio")]
@@ -30,18 +138,19 @@ pub struct AudioOutput<B: kira::backend::Backend = kira::DefaultBackend> {
         std::path::PathBuf,
         kira::sound::static_sound::StaticSoundData,
     >,
-    voices: std::collections::BTreeMap<
-        u64,
-        (kira::sound::static_sound::StaticSoundHandle, PlayingSound),
-    >,
-    buses: std::collections::HashMap<String, kira::track::TrackHandle>,
+    voices: std::collections::BTreeMap<u64, Voice>,
+    buses: std::collections::BTreeMap<String, Bus>,
+    /// Ear position and unit right vector.
+    listener: ([f32; 3], [f32; 3]),
+    /// Files over this many bytes stream; `None` loads every file whole.
+    stream_over: Option<u64>,
 }
 
 #[cfg(feature = "audio")]
 impl AudioOutput {
     /// `None` when there is no audio device; the game runs silent.
     pub fn open() -> Option<Self> {
-        AudioOutput::with_backend(Default::default())
+        AudioOutput::with_backend(Default::default(), Some(STREAM_OVER_BYTES))
             .inspect_err(|error| {
                 eprintln!("audio: no output device, running silent: {error}");
             })
@@ -83,7 +192,13 @@ pub type OfflineMixer = AudioOutput;
 #[cfg(feature = "audio")]
 impl AudioOutput<OfflineBackend> {
     pub fn offline() -> Option<Self> {
-        Self::with_backend(()).ok()
+        Self::with_backend((), None).ok()
+    }
+
+    /// An offline mixer that streams files over `bytes`, as a window does.
+    #[cfg(test)]
+    pub fn offline_streaming(bytes: u64) -> Option<Self> {
+        Self::with_backend((), Some(bytes)).ok()
     }
 
     /// Mixes the next `frames` stereo frames, as `[left, right, ...]`.
@@ -102,16 +217,40 @@ impl<B: kira::backend::Backend> AudioOutput<B>
 where
     B::Settings: Default,
 {
-    fn with_backend(backend_settings: B::Settings) -> Result<Self, B::Error> {
+    fn with_backend(
+        backend_settings: B::Settings,
+        stream_over: Option<u64>,
+    ) -> Result<Self, B::Error> {
+        let mut main = kira::track::MainTrackBuilder::new()
+            .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
+        let (distortion, reverb, filter) = bus_effects!(main);
         let manager = kira::AudioManager::new(kira::AudioManagerSettings {
             backend_settings,
+            main_track_builder: main,
+            capacities: kira::Capacities {
+                // Buses plus one track per occluded sound.
+                sub_track_capacity: 1024,
+                ..Default::default()
+            },
             ..Default::default()
         })?;
+        let main = Bus {
+            track: None,
+            distortion,
+            reverb,
+            filter,
+            effects: [None; 3],
+            limit: crate::runtime::DEFAULT_VOICE_LIMIT,
+            dropped: 0,
+            stolen: 0,
+        };
         Ok(Self {
             manager,
             clips: Default::default(),
             voices: Default::default(),
-            buses: Default::default(),
+            buses: [(String::new(), main)].into_iter().collect(),
+            listener: ([0.0; 3], [1.0, 0.0, 0.0]),
+            stream_over,
         })
     }
 
@@ -123,70 +262,21 @@ where
         command: AudioCommand,
         delay: impl Fn(u64) -> Duration,
     ) {
-        use kira::sound::static_sound::StaticSoundData;
         match command {
             AudioCommand::Play {
                 id,
                 clip,
-                volume,
-                looped,
-                pan,
-                bus,
                 tick,
-            } => {
-                let path = assets.join(&clip);
-                if !self.clips.contains_key(&path) {
-                    match StaticSoundData::from_file(&path) {
-                        Ok(data) => {
-                            self.clips.insert(path.clone(), data);
-                        }
-                        Err(error) => {
-                            eprintln!("audio: cannot play `{clip}`: {error}");
-                            return;
-                        }
-                    }
-                }
-                let mut data = self.clips[&path]
-                    .volume(decibels(volume))
-                    .panning(pan)
-                    .start_time(kira::StartTime::Delayed(delay(tick)));
-                if looped {
-                    data = data.loop_region(..);
-                }
-                let played = if bus.is_empty() {
-                    self.manager.play(data)
-                } else {
-                    match self.bus(&bus) {
-                        Some(track) => track.play(data),
-                        None => return,
-                    }
-                };
-                match played {
-                    Ok(handle) => {
-                        let info = PlayingSound {
-                            id: id.0,
-                            clip,
-                            volume,
-                            pan,
-                            bus,
-                            looped,
-                            tick,
-                        };
-                        self.voices.insert(id.0, (handle, info));
-                    }
-                    Err(error) => {
-                        eprintln!("audio: cannot play `{clip}`: {error}")
-                    }
-                }
-            }
+                sound,
+            } => self.play(assets, id.0, clip, tick, sound, delay(tick)),
             AudioCommand::Stop(id) => {
-                if let Some((mut handle, _)) = self.voices.remove(&id.0) {
-                    handle.stop(kira::Tween::default());
+                if let Some(mut voice) = self.voices.remove(&id.0) {
+                    each_handle!(&mut voice.handle, h => h.stop(kira::Tween::default()));
                 }
             }
             AudioCommand::StopAll => {
-                for (_, (mut handle, _)) in std::mem::take(&mut self.voices) {
-                    handle.stop(kira::Tween::default());
+                for (_, mut voice) in std::mem::take(&mut self.voices) {
+                    each_handle!(&mut voice.handle, h => h.stop(kira::Tween::default()));
                 }
             }
             AudioCommand::SetMasterVolume(volume) => {
@@ -195,32 +285,372 @@ where
                     .set_volume(decibels(volume), kira::Tween::default());
             }
             AudioCommand::SetVolume { id, volume, fade } => {
-                if let Some((handle, info)) = self.voices.get_mut(&id.0) {
-                    handle.set_volume(decibels(volume), tween(fade));
-                    info.volume = volume;
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    voice.volume = volume;
+                }
+                self.place(id.0, tween(fade));
+            }
+            AudioCommand::SetRate { id, rate, fade } => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    let rate = rate.max(1e-3);
+                    each_handle!(&mut voice.handle, h => h.set_playback_rate(f64::from(rate), tween(fade)));
+                    voice.info.rate = rate;
+                }
+            }
+            AudioCommand::SetPosition { id, position } => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    voice.info.world_position = Some(position);
+                }
+                self.place(id.0, tween(0.02));
+            }
+            AudioCommand::SetOcclusion { id, amount } => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    let amount = amount.clamp(0.0, 1.0);
+                    voice.info.occlusion = amount;
+                    if let Some((_, filter)) = &mut voice.muffle {
+                        filter
+                            .set_cutoff(f64::from(cutoff(amount)), tween(0.1));
+                    }
+                }
+                self.place(id.0, tween(0.1));
+            }
+            AudioCommand::SetListener { position, right } => {
+                self.listener = (position, right);
+                let ids: Vec<u64> = self.voices.keys().copied().collect();
+                for id in ids {
+                    self.place(id, tween(0.02));
+                }
+            }
+            AudioCommand::Pause(id) => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    each_handle!(&mut voice.handle, h => h.pause(tween(0.0)));
+                    voice.info.paused = true;
+                }
+            }
+            AudioCommand::Resume(id) => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    each_handle!(&mut voice.handle, h => h.resume(tween(0.0)));
+                    voice.info.paused = false;
+                }
+            }
+            AudioCommand::Seek { id, seconds } => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    let seconds = f64::from(seconds.max(0.0));
+                    each_handle!(&mut voice.handle, h => h.seek_to(seconds));
                 }
             }
             AudioCommand::SetBusVolume { bus, volume, fade } => {
-                if let Some(track) = self.bus(&bus) {
+                if bus.is_empty() {
+                    self.manager
+                        .main_track()
+                        .set_volume(decibels(volume), tween(fade));
+                } else if let Some(Bus {
+                    track: Some(track), ..
+                }) = self.bus(&bus)
+                {
                     track.set_volume(decibels(volume), tween(fade));
                 }
+            }
+            AudioCommand::SetBusEffect { bus, effect, fade } => {
+                if let Some(bus) = self.bus(&bus) {
+                    bus.set_effect(effect, tween(fade));
+                }
+            }
+            AudioCommand::SetBusVoiceLimit { bus, limit } => {
+                if let Some(bus) = self.bus(&bus) {
+                    bus.limit = limit.clamp(1, crate::runtime::MAX_VOICE_LIMIT);
+                }
+            }
+        }
+    }
+
+    fn play(
+        &mut self,
+        assets: &Path,
+        id: u64,
+        clip: String,
+        tick: u64,
+        sound: crate::runtime::Sound,
+        delay: Duration,
+    ) {
+        let path = assets.join(&clip);
+        let streamed = !sound.reverse
+            && self.stream_over.is_some_and(|limit| {
+                std::fs::metadata(&path).is_ok_and(|file| file.len() > limit)
+            });
+        if !streamed && !self.clips.contains_key(&path) {
+            match kira::sound::static_sound::StaticSoundData::from_file(&path) {
+                Ok(data) => {
+                    self.clips.insert(path.clone(), data);
+                }
+                Err(error) => {
+                    eprintln!("audio: cannot play `{clip}`: {error}");
+                    return;
+                }
+            }
+        }
+        let rate = sound.rate.max(1e-3);
+        let mut info = PlayingSound {
+            id,
+            clip,
+            volume: sound.volume,
+            pan: sound.pan,
+            bus: sound.bus,
+            looped: sound.looped,
+            tick,
+            rate,
+            position: 0.0,
+            remaining: None,
+            paused: false,
+            priority: sound.priority,
+            world_position: sound.position.or(sound.follow.map(|_| [0.0; 3])),
+            occlusion: 0.0,
+            streamed,
+        };
+        (info.pan, info.volume) = self.heard(&info, sound.volume);
+        if !self.make_room(&info) {
+            return;
+        }
+        let start = kira::StartTime::Delayed(delay);
+        let mut muffle = None;
+        if sound.occlude {
+            let mut builder = kira::track::TrackBuilder::new();
+            let filter = builder.add_effect(
+                kira::effect::filter::FilterBuilder::new().cutoff(20_000.0),
+            );
+            let track = match &mut self.buses.get_mut(&info.bus).unwrap().track
+            {
+                Some(parent) => parent.add_sub_track(builder),
+                None => self.manager.add_sub_track(builder),
+            };
+            match track {
+                Ok(track) => muffle = Some((track, filter)),
+                Err(error) => {
+                    eprintln!("audio: cannot occlude `{}`: {error}", info.clip);
+                }
+            }
+        }
+        let bus = self.buses.get_mut(&info.bus).unwrap();
+        let (handle, duration) = if streamed {
+            let data =
+                match kira::sound::streaming::StreamingSoundData::from_file(
+                    &path,
+                ) {
+                    Ok(data) => data,
+                    Err(error) => {
+                        eprintln!(
+                            "audio: cannot play `{}`: {error}",
+                            info.clip
+                        );
+                        return;
+                    }
+                };
+            let duration = data.duration().as_secs_f64();
+            let mut data = data
+                .volume(decibels(info.volume))
+                .panning(info.pan)
+                .playback_rate(f64::from(rate))
+                .start_time(start);
+            if info.looped {
+                data = data.loop_region(..);
+            }
+            let played = match (&mut muffle, &mut bus.track) {
+                (Some((track, _)), _) | (None, Some(track)) => {
+                    track.play(data).map_err(|error| error.to_string())
+                }
+                (None, None) => {
+                    self.manager.play(data).map_err(|error| error.to_string())
+                }
+            };
+            (played.map(Handle::Stream), duration)
+        } else {
+            let data = &self.clips[&path];
+            let duration = data.duration().as_secs_f64();
+            let mut data = data
+                .volume(decibels(info.volume))
+                .panning(info.pan)
+                .playback_rate(f64::from(rate))
+                .reverse(sound.reverse)
+                .start_time(start);
+            if info.looped {
+                data = data.loop_region(..);
+            }
+            let played = match (&mut muffle, &mut bus.track) {
+                (Some((track, _)), _) | (None, Some(track)) => {
+                    track.play(data).map_err(|error| error.to_string())
+                }
+                (None, None) => {
+                    self.manager.play(data).map_err(|error| error.to_string())
+                }
+            };
+            (played.map(Handle::Static), duration)
+        };
+        match handle {
+            Ok(handle) => {
+                info.remaining =
+                    (!info.looped).then_some(duration / f64::from(rate));
+                self.voices.insert(
+                    id,
+                    Voice {
+                        handle,
+                        info,
+                        volume: sound.volume,
+                        duration,
+                        reverse: sound.reverse,
+                        muffle,
+                    },
+                );
+            }
+            Err(error) => {
+                eprintln!("audio: cannot play `{}`: {error}", info.clip)
+            }
+        }
+    }
+
+    /// Pan and volume a sound plays at: its own pan, or its side and
+    /// distance from the listener, lowered by occlusion.
+    fn heard(&self, info: &PlayingSound, volume: f32) -> (f32, f32) {
+        let (pan, gain) = match info.world_position {
+            Some(position) => crate::runtime::spatialize(
+                self.listener.0,
+                self.listener.1,
+                position,
+            ),
+            None => (info.pan, 1.0),
+        };
+        (pan, volume * gain * (1.0 - OCCLUDED_DROP * info.occlusion))
+    }
+
+    /// Moves a voice to its current pan and volume.
+    fn place(&mut self, id: u64, tween: kira::Tween) {
+        let Some(voice) = self.voices.get(&id) else {
+            return;
+        };
+        let (pan, volume) = self.heard(&voice.info, voice.volume);
+        let voice = self.voices.get_mut(&id).unwrap();
+        voice.info.pan = pan;
+        voice.info.volume = volume;
+        each_handle!(&mut voice.handle, h => {
+            h.set_panning(pan, tween);
+            h.set_volume(decibels(volume), tween);
+        });
+    }
+
+    /// Whether a new sound may play on its bus, stopping the lowest-ranked
+    /// playing one when the bus is full and the new one outranks it.
+    /// Ranks are priority, then volume.
+    fn make_room(&mut self, new: &PlayingSound) -> bool {
+        if self.bus(&new.bus).is_none() {
+            return false;
+        }
+        let limit = self.buses[&new.bus].limit;
+        let rank = |info: &PlayingSound| (info.priority, info.volume);
+        let mut count = 0;
+        let mut lowest: Option<(u64, (u8, f32))> = None;
+        for (id, voice) in &self.voices {
+            if voice.info.bus != new.bus || voice.stopped() {
+                continue;
+            }
+            count += 1;
+            let ranked = rank(&voice.info);
+            if lowest.is_none_or(|(_, low)| {
+                ranked.0 < low.0 || (ranked.0 == low.0 && ranked.1 < low.1)
+            }) {
+                lowest = Some((*id, ranked));
+            }
+        }
+        let bus = self.buses.get_mut(&new.bus).unwrap();
+        if count < limit {
+            return true;
+        }
+        let ranked = rank(new);
+        match lowest {
+            Some((victim, low))
+                if ranked.0 > low.0
+                    || (ranked.0 == low.0 && ranked.1 > low.1) =>
+            {
+                bus.stolen += 1;
+                if let Some(mut voice) = self.voices.remove(&victim) {
+                    each_handle!(&mut voice.handle, h => h.stop(kira::Tween::default()));
+                }
+                true
+            }
+            _ => {
+                bus.dropped += 1;
+                false
             }
         }
     }
 
     /// Sounds that have not ended, in the order they were asked for.
     pub fn playing(&mut self) -> Vec<PlayingSound> {
-        self.voices.retain(|_, (handle, _)| {
-            handle.state() != kira::sound::PlaybackState::Stopped
-        });
-        self.voices.values().map(|(_, info)| info.clone()).collect()
+        self.voices.retain(|_, voice| !voice.stopped());
+        self.voices
+            .values()
+            .map(|voice| {
+                let position = each_handle!(&voice.handle, h => h.position());
+                let left = if voice.reverse {
+                    position
+                } else {
+                    voice.duration - position
+                };
+                PlayingSound {
+                    position,
+                    remaining: (!voice.info.looped)
+                        .then(|| left.max(0.0) / f64::from(voice.info.rate)),
+                    ..voice.info.clone()
+                }
+            })
+            .collect()
     }
 
-    fn bus(&mut self, name: &str) -> Option<&mut kira::track::TrackHandle> {
+    /// Whether sound `id` is playing or scheduled.
+    pub fn has_sound(&self, id: u64) -> bool {
+        self.voices.get(&id).is_some_and(|voice| !voice.stopped())
+    }
+
+    /// Every bus by name, the main output as `""`.
+    pub fn buses(&mut self) -> std::collections::BTreeMap<String, BusReport> {
+        self.voices.retain(|_, voice| !voice.stopped());
+        self.buses
+            .iter()
+            .map(|(name, bus)| {
+                let report = BusReport {
+                    voices: self
+                        .voices
+                        .values()
+                        .filter(|voice| voice.info.bus == *name)
+                        .count(),
+                    limit: bus.limit,
+                    dropped: bus.dropped,
+                    stolen: bus.stolen,
+                    effects: bus.effects.iter().flatten().copied().collect(),
+                };
+                (name.clone(), report)
+            })
+            .collect()
+    }
+
+    fn bus(&mut self, name: &str) -> Option<&mut Bus> {
         if !self.buses.contains_key(name) {
-            match self.manager.add_sub_track(Default::default()) {
+            let mut builder = kira::track::TrackBuilder::new()
+                .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
+            let (distortion, reverb, filter) = bus_effects!(builder);
+            match self.manager.add_sub_track(builder) {
                 Ok(track) => {
-                    self.buses.insert(name.to_owned(), track);
+                    self.buses.insert(
+                        name.to_owned(),
+                        Bus {
+                            track: Some(track),
+                            distortion,
+                            reverb,
+                            filter,
+                            effects: [None; 3],
+                            limit: crate::runtime::DEFAULT_VOICE_LIMIT,
+                            dropped: 0,
+                            stolen: 0,
+                        },
+                    );
                 }
                 Err(error) => {
                     eprintln!("audio: cannot add bus `{name}`: {error}");
@@ -230,6 +660,52 @@ where
         }
         self.buses.get_mut(name)
     }
+}
+
+#[cfg(feature = "audio")]
+impl Voice {
+    fn stopped(&self) -> bool {
+        each_handle!(&self.handle, h => h.state())
+            == kira::sound::PlaybackState::Stopped
+    }
+}
+
+#[cfg(feature = "audio")]
+impl Bus {
+    fn set_effect(&mut self, effect: BusEffect, tween: kira::Tween) {
+        let on = if effect.active() { 1.0 } else { 0.0 };
+        let slot = match effect {
+            BusEffect::Distortion { drive, mix } => {
+                self.distortion
+                    .set_drive(kira::Decibels(drive.clamp(0.0, 48.0)), tween);
+                self.distortion.set_mix(mix.clamp(0.0, 1.0), tween);
+                0
+            }
+            BusEffect::Reverb { room, damping, mix } => {
+                self.reverb
+                    .set_feedback(f64::from(room.clamp(0.0, 0.99)), tween);
+                self.reverb
+                    .set_damping(f64::from(damping.clamp(0.0, 1.0)), tween);
+                self.reverb.set_mix(mix.clamp(0.0, 1.0), tween);
+                1
+            }
+            BusEffect::LowPass { cutoff_hz } => {
+                self.filter.set_cutoff(
+                    f64::from(cutoff_hz.clamp(20.0, 20_000.0)),
+                    tween,
+                );
+                self.filter.set_mix(on, tween);
+                2
+            }
+        };
+        self.effects[slot] = effect.active().then_some(effect);
+    }
+}
+
+/// Low-pass cutoff for an occlusion amount, falling evenly in octaves.
+#[cfg(feature = "audio")]
+fn cutoff(amount: f32) -> f32 {
+    20_000.0 * (OCCLUDED_CUTOFF_HZ / 20_000.0).powf(amount)
 }
 
 #[cfg(feature = "audio")]
@@ -278,6 +754,14 @@ impl AudioOutput {
     pub fn playing(&mut self) -> Vec<PlayingSound> {
         Vec::new()
     }
+
+    pub fn has_sound(&self, _id: u64) -> bool {
+        false
+    }
+
+    pub fn buses(&mut self) -> std::collections::BTreeMap<String, BusReport> {
+        Default::default()
+    }
 }
 
 /// Writes interleaved stereo samples as a 16-bit WAV file.
@@ -304,4 +788,90 @@ pub fn write_wav(path: &Path, samples: &[f32]) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, bytes)
+}
+
+/// Reads a WAV file [`write_wav`] wrote back into samples.
+pub fn read_wav(path: &Path) -> std::io::Result<Vec<f32>> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < 44 || &bytes[..4] != b"RIFF" || &bytes[36..40] != b"data" {
+        return Err(std::io::Error::other("not a WAV file from write_wav"));
+    }
+    Ok(bytes[44..]
+        .chunks_exact(2)
+        .map(|pair| {
+            f32::from(i16::from_le_bytes([pair[0], pair[1]]))
+                / f32::from(i16::MAX)
+        })
+        .collect())
+}
+
+#[cfg(all(test, feature = "audio"))]
+mod tests {
+    use super::*;
+    use crate::runtime::{AudioQueue, Sound};
+
+    /// Plays one second of a rising ramp from a fresh WAV with `sound`,
+    /// then mixes `frames`.
+    fn mix(mixer: &mut OfflineMixer, sound: Sound, frames: usize) -> Vec<f32> {
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-mix-{}", uuid::Uuid::new_v4()));
+        let ramp: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let s = i as f32 / 48_000.0 * 0.5;
+                [s, s]
+            })
+            .collect();
+        write_wav(&directory.join("ramp.wav"), &ramp).unwrap();
+        let mut queue = AudioQueue::default();
+        queue.play("ramp.wav", &sound, 0);
+        for command in queue.drain() {
+            mixer.run(&directory, command, |_| Duration::ZERO);
+        }
+        let out = mixer.render(frames);
+        std::fs::remove_dir_all(&directory).unwrap();
+        out
+    }
+
+    #[test]
+    fn large_files_stream_and_still_mix() {
+        let mut mixer = OfflineMixer::offline_streaming(1024).unwrap();
+        // A streamed sound starts once its decoder thread fills a buffer.
+        let mut heard = false;
+        for _ in 0..200 {
+            let block = mix_more(&mut mixer);
+            if block.iter().any(|s| s.abs() > 1e-3) {
+                heard = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(heard);
+        assert!(mixer.playing()[0].streamed);
+
+        fn mix_more(mixer: &mut OfflineMixer) -> Vec<f32> {
+            if mixer.playing().is_empty() {
+                mix(mixer, Sound::default(), 480)
+            } else {
+                mixer.render(480)
+            }
+        }
+    }
+
+    #[test]
+    fn reversed_sounds_start_from_the_end() {
+        let forward =
+            mix(&mut OfflineMixer::offline().unwrap(), Sound::default(), 480);
+        let backward = mix(
+            &mut OfflineMixer::offline().unwrap(),
+            Sound {
+                reverse: true,
+                ..Sound::default()
+            },
+            480,
+        );
+        let tail = |block: &[f32]| block[block.len() - 2];
+        // The ramp rises forward and starts near its top reversed.
+        assert!(tail(&forward) < 0.01, "{}", tail(&forward));
+        assert!(tail(&backward) > 0.4, "{}", tail(&backward));
+    }
 }

@@ -1,0 +1,12 @@
+{"name": "night", "ticks": 1210, "audio_out": "shots/night.wav",
+ "steps": [
+  {"tick": 2, "expect": {"entity": "Big Button", "path": "/transform/position", "equals": [-0.04, 1.3, -4.0], "tolerance": 0.001}},
+  {"tick": 2, "expect": {"entity": "Bear 191/Head", "path": "/visible", "equals": true}},
+  {"tick": 600, "expect": {"entity": "Big Button", "path": "/transform/position", "equals": [-5.0, 1.3, -11.0], "tolerance": 0.001}},
+  {"tick": 1200, "expect": {"entity": "Big Button", "path": "/transform/position", "equals": [-5.0, 1.3, -23.0], "tolerance": 0.001}},
+  {"tick": 1200, "expect": {"entity": "audio:", "path": "/clips/bears~1hello.wav", "equals": 101}},
+  {"tick": 1200, "expect": {"entity": "audio:", "path": "/clips/mascot~1step.wav", "equals": 41}},
+  {"tick": 1200, "expect": {"entity": "audio:", "path": "/buses/bears/effects/0/kind", "equals": "Reverb"}},
+  {"tick": 1200, "expect": {"entity": "audio:", "path": "/dropped", "equals": 0}},
+  {"tick": 1201, "capture": {"path": "shots/booth.png"}}
+ ]}

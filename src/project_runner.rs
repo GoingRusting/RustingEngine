@@ -290,26 +290,19 @@ impl GameScene<'_> {
     ///
     /// Every sound starts a fixed delay after the fixed tick it belongs to,
     /// whatever the frame rate, so sounds keep in time with fixed ticks.
-    /// With `position`, the active camera is the listener: the sound pans
-    /// to its side and its volume falls as `2 / distance` past 2 m.
+    /// With `position` or `follow`, the listener (the active camera unless
+    /// [`Self::set_listener`] names one) hears the sound from its side, and
+    /// its volume falls as `2 / distance` past 2 m.
     pub fn play_sound_with(
         &mut self,
         clip: &str,
         mut sound: crate::runtime::Sound,
     ) -> crate::runtime::SoundId {
-        if let Some(position) = sound.position {
-            if let Some((camera, _)) = self.active_camera() {
-                let matrix = world_matrix(self.world, camera);
-                let ear = matrix.transform_point(&nalgebra::Point3::origin());
-                let right = matrix
-                    .transform_vector(&nalgebra::Vector3::x())
-                    .normalize();
-                let offset = nalgebra::Point3::from(position) - ear;
-                let distance = offset.norm();
-                if distance > 1e-4 {
-                    sound.pan = offset.dot(&right) / distance;
-                }
-                sound.volume *= (2.0 / distance).min(1.0);
+        if let Some(entity) = sound.follow {
+            if self.world.get_entity(entity).is_ok() {
+                let matrix = world_matrix(self.world, entity);
+                let at = matrix.transform_point(&nalgebra::Point3::origin());
+                sound.position = Some(at.coords.into());
             }
         }
         let tick = self
@@ -317,6 +310,102 @@ impl GameScene<'_> {
             .get_resource::<FrameTime>()
             .map_or(0, |time| time.fixed_tick);
         self.audio().play(clip, &sound, tick)
+    }
+
+    /// Plays a clip that follows the named object every frame, like
+    /// footsteps. `None` when no object has that name.
+    pub fn play_sound_on(
+        &mut self,
+        name: &str,
+        clip: &str,
+        sound: crate::runtime::Sound,
+    ) -> Option<crate::runtime::SoundId> {
+        let entity = find_named_entity(self.world, name)?;
+        Some(self.play_sound_with(
+            clip,
+            crate::runtime::Sound {
+                follow: Some(entity),
+                ..sound
+            },
+        ))
+    }
+
+    /// Changes a sound's speed and pitch together, like a tape, over `fade`
+    /// seconds: 0.5 is half speed and an octave lower.
+    pub fn set_sound_rate(
+        &mut self,
+        id: crate::runtime::SoundId,
+        rate: f32,
+        fade: f32,
+    ) {
+        self.audio().set_rate(id, rate, fade);
+    }
+
+    /// Moves a positioned sound to a world position.
+    pub fn set_sound_position(
+        &mut self,
+        id: crate::runtime::SoundId,
+        position: [f32; 3],
+    ) {
+        self.audio().set_position(id, position);
+    }
+
+    /// Pauses a sound where it is; [`Self::resume_sound`] continues it.
+    pub fn pause_sound(&mut self, id: crate::runtime::SoundId) {
+        self.audio().pause(id);
+    }
+
+    /// Continues a paused sound from where it stopped.
+    pub fn resume_sound(&mut self, id: crate::runtime::SoundId) {
+        self.audio().resume(id);
+    }
+
+    /// Jumps a sound to `seconds` into its clip.
+    pub fn seek_sound(&mut self, id: crate::runtime::SoundId, seconds: f32) {
+        self.audio().seek(id, seconds);
+    }
+
+    /// Hears positioned sounds from the named object instead of the active
+    /// camera; `None` goes back to the camera. Returns false when no object
+    /// has that name.
+    pub fn set_listener(&mut self, name: Option<&str>) -> bool {
+        let entity = match name {
+            Some(name) => match find_named_entity(self.world, name) {
+                Some(entity) => Some(entity),
+                None => return false,
+            },
+            None => None,
+        };
+        self.audio().set_listener(entity);
+        true
+    }
+
+    /// Sets one of a bus's effects over `fade` seconds; `""` is the main
+    /// output. A low-pass behind glass, a reverb for a big room:
+    ///
+    /// ```ignore
+    /// scene.set_bus_effect("world", BusEffect::LowPass { cutoff_hz: 900.0 }, 0.3);
+    /// ```
+    pub fn set_bus_effect(
+        &mut self,
+        bus: &str,
+        effect: crate::runtime::BusEffect,
+        fade: f32,
+    ) {
+        self.audio().set_bus_effect(bus, effect, fade);
+    }
+
+    /// Most sounds a bus plays at once (64 by default). Past it, a new
+    /// sound replaces the lowest-priority, then quietest, playing one, or
+    /// is dropped when it ranks lowest itself.
+    pub fn set_bus_voice_limit(&mut self, bus: &str, limit: usize) {
+        self.audio().set_bus_voice_limit(bus, limit);
+    }
+
+    /// Shows or hides sound captions on the HUD, at `size` logical pixels.
+    pub fn set_captions(&mut self, enabled: bool, size: f32) {
+        self.world
+            .insert_resource(crate::runtime::CaptionSettings { enabled, size });
     }
 
     /// Moves a playing sound's volume to `volume` over `fade` seconds; 0 is
@@ -1432,20 +1521,7 @@ impl GameScene<'_> {
     /// The camera that aims: the highest-priority active one, preferring
     /// one that fills the window.
     fn active_camera(&mut self) -> Option<(Entity, crate::runtime::Camera)> {
-        let mut cameras =
-            self.world.query::<(Entity, &crate::runtime::Camera)>();
-        cameras
-            .iter(self.world)
-            .filter(|(_, camera)| camera.active)
-            .max_by_key(|(entity, camera)| {
-                // Same tie-break as the renderer, so aim matches the screen.
-                (
-                    camera.viewport.is_none(),
-                    camera.priority,
-                    std::cmp::Reverse(entity.to_bits()),
-                )
-            })
-            .map(|(entity, camera)| (entity, *camera))
+        crate::runtime::active_camera(self.world)
     }
 
     /// Removes the named object and its children. Returns false when no
@@ -2981,6 +3057,9 @@ impl ProjectApplication {
         for command in commands {
             audio.run(&root, command, delay);
         }
+        world
+            .resource_mut::<crate::runtime::AudioQueue>()
+            .retain_sounds(|id| audio.has_sound(id.0));
     }
 
     /// Prints `[rusting] perf` once a second when `RUSTING_PERF` is set.
@@ -3829,7 +3908,10 @@ mod tests {
         assert_eq!(commands.len(), 4);
         assert!(matches!(
             &commands[1],
-            crate::runtime::AudioCommand::Play { looped: true, .. }
+            crate::runtime::AudioCommand::Play {
+                sound: crate::runtime::Sound { looped: true, .. },
+                ..
+            }
         ));
     }
 

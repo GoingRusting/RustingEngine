@@ -29,6 +29,124 @@ scene.stop_sound(hit);
   back to 1 when the alarm ends.
 - `set_master_volume(volume)` sets the main track.
 
+## Speed and pitch
+
+`rate` changes speed and pitch together, like a tape: 0.5 plays at half
+speed an octave lower and takes twice as long; 2 is double speed.
+
+```rust
+let voice = scene.play_sound_with("bears/hello.ogg", Sound {
+    rate: 1.6,          // a child's voice from an adult recording
+    ..Sound::default()
+});
+scene.set_sound_rate(voice, 0.4, 2.0); // the tape winds down over 2 s
+```
+
+`reverse: true` plays the clip backwards from its end. A reversed clip is
+always loaded whole, never streamed.
+
+## Pause, resume and seek
+
+```rust
+scene.pause_sound(tape);
+scene.resume_sound(tape);      // continues where it paused
+scene.seek_sound(tape, 12.5);  // seconds into the clip
+```
+
+`/playing` reports each sound's `position` (seconds into the clip),
+`paused`, and `remaining` (real seconds left at the current rate, `null`
+when looped).
+
+## Moving sounds and the listener
+
+A sound with `position` is heard from the listener: it pans to the
+listener's side and falls off as `2 / distance` past 2 m. The listener is
+the active camera unless you name one:
+
+```rust
+// The booth stays the ear while a monitor camera fills the screen.
+scene.set_listener(Some("Booth"));
+scene.set_listener(None); // back to the active camera
+
+// Moves with its object every frame, like footsteps.
+let steps = scene.play_sound_on("Big Button", "mascot/steps.ogg", Sound::default());
+// Or move a sound yourself.
+scene.set_sound_position(id, [3.0, 1.0, -8.0]);
+```
+
+`Sound { follow: Some(entity), .. }` does the same as `play_sound_on` from
+system code.
+
+## Occlusion
+
+`occlude: true` raycasts from the listener to the sound every frame. When a
+physics collider is in the way, the sound drops to 30% volume and through
+an 800 Hz low-pass filter, so a bear behind a shelf sounds muffled.
+`/playing/<n>/occlusion` is 0 when clear and 1 when blocked. Colliders on
+the listener's and the followed object's own entities do not count.
+
+## Bus effects
+
+Every bus, and the main track (`""`), has a low-pass filter, a reverb and a
+distortion, all off until you set them. Setting an effect again replaces
+its settings; the fade is in seconds.
+
+```rust
+// Muffle the shelf bears and put them in a big room.
+scene.set_bus_effect("bears", BusEffect::LowPass { cutoff_hz: 900.0 }, 0.5);
+scene.set_bus_effect("bears", BusEffect::Reverb { room: 0.85, damping: 0.4, mix: 0.35 }, 0.0);
+// Break up the radio.
+scene.set_bus_effect("radio", BusEffect::Distortion { drive: 18.0, mix: 0.6 }, 0.1);
+// Off again.
+scene.set_bus_effect("bears", BusEffect::LowPass { cutoff_hz: 20_000.0 }, 0.5);
+```
+
+- `LowPass`: `cutoff_hz`; 20 000 or more is off.
+- `Reverb`: `room` 0 to 1 is how long the tail rings, `damping` 0 to 1
+  dulls it, `mix` 0 dry to 1 wet.
+- `Distortion`: `drive` in decibels, `mix` 0 to 1. A soft clip.
+
+An effect with `mix` 0 is off. `/buses/<bus>/effects` lists the effects
+that are on, distortion first, then reverb, then the filter: the order the
+signal goes through them.
+
+## Voice limits
+
+A bus plays at most 64 sounds at once; `set_bus_voice_limit(bus, n)`
+changes that, up to 256. Past the limit, a new sound replaces the playing
+sound with the lowest `priority` (0 to 255, default 128), then the
+quietest, counting distance and occlusion. When the new sound ranks lowest
+itself, it is dropped. Give the mascot `priority: 255` and the shelf
+chorus a lower one, and a thousand bears cannot drown it out.
+
+`/buses/<bus>` reports `voices`, `limit`, `dropped` and `stolen`;
+`/dropped` is the total of dropped and stolen sounds on every bus.
+
+## Captions
+
+```rust
+scene.play_sound_with("bears/song.ogg", Sound {
+    captions: vec![
+        Caption::new(0.0, 1.5, "[bear, singing] One little bear..."),
+        Caption::new(1.5, 3.0, "...went to sleep."),
+    ],
+    ..Sound::default()
+});
+scene.set_captions(true, 26.0); // on, 26 logical pixels
+```
+
+Caption times are seconds into the clip, so they follow `rate`, pause and
+seek. The HUD shows the current lines at the bottom center (`ui` feature).
+`CaptionSettings { enabled, size }` is the resource behind the settings
+toggle. `/captions` lists the lines showing now.
+
+## Long files
+
+In a window, files over 1 MiB stream from disk while they play instead of
+loading whole, so 5-minute ambience tracks do not stall a load. Scenario
+mixes load every file whole, so they stay deterministic.
+`/playing/<n>/streamed` reports which way a sound plays.
+
 ## Timing
 
 Every sound belongs to a fixed tick. It starts one fixed step after that
@@ -72,8 +190,15 @@ Headless runs have no audio device. Read the entity `audio:` instead:
 - `/clips/<clip>`: plays of one clip. Write `/` in the clip path as `~1`:
   `/clips/sfx~1hit.wav`.
 - `/level`: `[left, right]` RMS of the offline mix over the last tick.
-- `/playing`: every sound that has not ended, with `clip`, `volume`, `pan`,
-  `bus`, `looped` and the `tick` it starts on.
+- `/peak`: `[left, right]` largest sample over the last tick, and
+  `/clipped`: how many samples went past full scale.
+- `/playing`: every sound that has not ended, with `id`, `clip`, `volume`,
+  `pan`, `bus`, `looped`, the `tick` it starts on, `rate`, `position`,
+  `remaining`, `paused`, `priority`, `world_position`, `occlusion` and
+  `streamed`.
+- `/buses/<bus>`: `voices`, `limit`, `dropped`, `stolen` and `effects`.
+- `/dropped`: sounds the voice limits dropped or replaced.
+- `/captions`: caption lines showing now.
 
 ```json
 {"name": "rock pans left", "ticks": 30, "audio_out": "mix.wav",
@@ -88,6 +213,19 @@ Headless runs have no audio device. Read the entity `audio:` instead:
 scenario file, so you can listen to a run afterwards. The level and the
 file come from kira's own mixer, so buses, fades, pans and scheduled starts
 show in them. A start lands up to 1 ms early, because kira mixes in chunks.
+
+### Reference mixes
+
+`audio_reference` compares the whole mix with a stored WAV, the way
+`golden` compares images. It fails when the RMS of the sample-by-sample
+difference is over `tolerance` (default 0.01). `rusting test
+--update-golden` writes the reference.
+
+```json
+{"name": "lullaby mix", "ticks": 240,
+ "audio_reference": {"path": "golden/lullaby.wav", "tolerance": 0.005},
+ "steps": [{"tick": 1, "tap": "start_tape"}]}
+```
 
 `rusting asset import` prints a WAV's `channels`: 1 is mono, which cannot
 carry a stereo pan.

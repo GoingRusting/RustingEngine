@@ -28,8 +28,9 @@ use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, BlitImageInfo, BufferCopy, CommandBufferUsage,
     CopyBufferInfo, CopyBufferToImageInfo, CopyImageInfo,
-    DrawIndexedIndirectCommand, ImageBlit, PrimaryAutoCommandBuffer,
-    RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+    DispatchIndirectCommand, DrawIndexedIndirectCommand, ImageBlit,
+    PrimaryAutoCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo,
+    SubpassContents,
 };
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::layout::DescriptorSetLayout;
@@ -930,6 +931,7 @@ struct PreparedVisibility {
     culled: usize,
 }
 
+#[derive(Clone)]
 struct PreparedGpuPhysics {
     source_revision: u64,
     source: Vec<crate::runtime::ExtractedGpuPhysicsBody>,
@@ -958,6 +960,10 @@ struct PhysicsContactGrid {
     slots: Subbuffer<[u32]>,
     fallback: Subbuffer<[u32]>,
     snapshot: Subbuffer<[GpuBodyState]>,
+    /// Count and indices of the bodies too big for one cell.
+    oversized: Subbuffer<[u32]>,
+    /// One workgroup per oversized body, written by the contact pass.
+    oversized_dispatch: Subbuffer<[DispatchIndirectCommand]>,
 }
 
 impl PhysicsContactGrid {
@@ -979,9 +985,8 @@ impl PhysicsContactGrid {
             memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
             ..Default::default()
         };
-        let error = |error: vulkano::Validated<_>| {
-            SceneRenderError(format!("{error:?}"))
-        };
+        let error =
+            |error: vulkano::Validated<_>| SceneRenderError(error.to_string());
         Ok(Self {
             capacity,
             counts: Buffer::new_slice(
@@ -1010,6 +1015,24 @@ impl PhysicsContactGrid {
                 info(),
                 device(),
                 capacity as u64,
+            )
+            .map_err(error)?,
+            oversized: Buffer::new_slice(
+                allocator.clone(),
+                info(),
+                device(),
+                capacity as u64 + 1,
+            )
+            .map_err(error)?,
+            oversized_dispatch: Buffer::new_slice(
+                allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER
+                        | BufferUsage::INDIRECT_BUFFER,
+                    ..Default::default()
+                },
+                device(),
+                1,
             )
             .map_err(error)?,
         })
@@ -1166,6 +1189,9 @@ pub struct SceneRenderOptions<'a> {
     pub effects: SceneEffects,
     /// Draws through this camera instead of the render world's active one.
     pub camera: Option<ExtractedCamera>,
+    /// Replaces the render world's color grading, as a camera screen's
+    /// own look does.
+    pub grading: Option<crate::runtime::ColorGrading>,
 }
 
 /// Atmosphere effects a view may leave out, like Blender's viewport
@@ -1222,6 +1248,7 @@ impl<'a> SceneRenderOptions<'a> {
             debug_view: SceneDebugView::Lit,
             effects: SceneEffects::default(),
             camera: None,
+            grading: None,
         }
     }
 }
@@ -1319,6 +1346,8 @@ pub struct SceneRenderer {
     /// each step.
     physics_grid_pipeline: Arc<ComputePipeline>,
     physics_contact_pipeline: Arc<ComputePipeline>,
+    /// Contacts of bodies too big for one grid cell, a workgroup each.
+    physics_oversized_pipeline: Arc<ComputePipeline>,
     /// Hashes GPU body state after each step (`physics_hash.comp`).
     physics_hash_pipeline: Arc<ComputePipeline>,
     physics_contact_grid: Option<PhysicsContactGrid>,
@@ -1370,6 +1399,10 @@ pub struct SceneRenderer {
     prepared_materials: HashMap<u64, PreparedMaterial>,
     /// Camera images by the key of the material they replace maps of.
     screen_feeds: HashMap<u64, ScreenFeed>,
+    /// Calls of [`Self::render_screens`], for `update_every`.
+    screen_frame: u64,
+    /// Feeds the last [`Self::render_screens`] drew.
+    screens_drawn: usize,
     /// 1x1 white texture bound in place of every missing material map.
     white_texture: (Arc<ImageView>, Arc<Sampler>),
     /// Per-slot stand-ins for a map that is referenced but missing or
@@ -1487,6 +1520,10 @@ impl SceneRenderer {
         let physics_contact_pipeline = create_compute_pipeline(
             &queue,
             physics_contact_shader::load(queue.device().clone()),
+        )?;
+        let physics_oversized_pipeline = create_compute_pipeline(
+            &queue,
+            physics_oversized_shader::load(queue.device().clone()),
         )?;
         let physics_hash_pipeline = create_compute_pipeline(
             &queue,
@@ -1633,6 +1670,8 @@ impl SceneRenderer {
             &tonemap_pipeline,
             &hdr,
             &bloom_chain,
+            &scene_color,
+            &scene_color_sampler,
         )?;
         let depth_pyramid = create_depth_pyramid(
             &memory_allocator,
@@ -1648,6 +1687,10 @@ impl SceneRenderer {
         name_object(&*physics_pipeline, "GPU physics");
         name_object(&*physics_grid_pipeline, "GPU physics contact grid");
         name_object(&*physics_contact_pipeline, "GPU physics contacts");
+        name_object(
+            &*physics_oversized_pipeline,
+            "GPU physics oversized contacts",
+        );
         name_object(&*physics_hash_pipeline, "GPU physics state hash");
         name_object(&*cull_pipeline, "Culling");
         name_object(&*depth_pyramid_copy_pipeline, "Depth pyramid copy");
@@ -1675,6 +1718,8 @@ impl SceneRenderer {
             prepared_textures: HashMap::new(),
             prepared_materials: HashMap::new(),
             screen_feeds: HashMap::new(),
+            screen_frame: 0,
+            screens_drawn: 0,
             white_texture,
             missing_textures,
             white_material,
@@ -1694,6 +1739,7 @@ impl SceneRenderer {
             physics_pipeline,
             physics_grid_pipeline,
             physics_contact_pipeline,
+            physics_oversized_pipeline,
             physics_hash_pipeline,
             physics_contact_grid: None,
             cull_pipeline,
@@ -1945,9 +1991,21 @@ impl SceneRenderer {
         self.last_culling_path
     }
 
+    /// Feeds the last [`Self::render_screens`] drew; skipped ones keep
+    /// their previous image.
+    #[must_use]
+    pub fn screens_drawn(&self) -> usize {
+        self.screens_drawn
+    }
+
     /// Draws the camera of each screen in the render world into its own image, which
     /// the next [`Self::render`] shows on the screen's material. Call it
     /// before the frame's views.
+    ///
+    /// A feed is drawn on its first frame, then every `update_every`
+    /// frames (staggered by screen order) while it is enabled and its mesh
+    /// is inside the view of the active camera or of a viewport camera
+    /// drawn into `extent`. Otherwise it keeps its last image.
     // ponytail: a full child renderer per screen (own pipelines and targets);
     // share pipelines between them if scenes with many screens cost too much.
     pub fn render_screens(
@@ -1955,6 +2013,7 @@ impl SceneRenderer {
         before: Box<dyn GpuFuture>,
         render_world: &RenderWorld,
         assets: &AssetServer,
+        extent: [u32; 2],
     ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
         use crate::rendering::swapchain::OFFSCREEN_COLOR_FORMAT;
         let failed =
@@ -1965,9 +2024,55 @@ impl SceneRenderer {
             })
         });
         let mut future = before;
-        for screen in &render_world.screens {
+        // Feeds draw GPU bodies from this renderer's states, one frame
+        // behind, instead of simulating every body again per screen.
+        let shared_physics = self
+            .prepared_physics
+            .as_ref()
+            .filter(|physics| {
+                physics.source_revision == render_world.gpu_physics_revision
+            })
+            .map(|physics| PreparedGpuPhysics {
+                carry: None,
+                ..physics.clone()
+            });
+        let mut views: Vec<_> = render_world
+            .views
+            .iter()
+            .map(|(camera, rect)| {
+                let size = [
+                    (extent[0] as f32 * rect[2]).max(1.0) as u32,
+                    (extent[1] as f32 * rect[3]).max(1.0) as u32,
+                ];
+                frustum_planes(&view_projection(Some(*camera), size))
+            })
+            .collect();
+        if let Some(camera) = render_world.active_camera {
+            views.push(frustum_planes(&view_projection(Some(camera), extent)));
+        }
+        let frame = self.screen_frame;
+        self.screen_frame += 1;
+        self.screens_drawn = 0;
+        for (index, screen) in render_world.screens.iter().enumerate() {
             let key = screen.material.key();
-            if !self.screen_feeds.contains_key(&key) {
+            let fresh = !self.screen_feeds.contains_key(&key);
+            let due = (frame + index as u64)
+                .is_multiple_of(u64::from(screen.update_every.max(1)));
+            let seen = || {
+                let Some((min, max)) = assets.mesh_bounds(screen.mesh) else {
+                    return true;
+                };
+                let bounds = world_aabb(screen.transform.matrix, min, max);
+                views.is_empty()
+                    || views
+                        .iter()
+                        .any(|planes| bounds_in_frustum(planes, &bounds))
+            };
+            if !fresh && (!screen.enabled || !due || !seen()) {
+                continue;
+            }
+            self.screens_drawn += 1;
+            if fresh {
                 let image = Image::new(
                     self.memory_allocator.clone(),
                     ImageCreateInfo {
@@ -2006,8 +2111,13 @@ impl SceneRenderer {
                 self.screen_feeds.insert(key, feed);
             }
             let feed = self.screen_feeds.get_mut(&key).expect("inserted above");
+            if let Some(physics) = &shared_physics {
+                feed.renderer.prepared_physics = Some(physics.clone());
+                feed.renderer.last_physics_tick = render_world.physics_tick;
+            }
             let options = SceneRenderOptions {
                 camera: Some(screen.camera),
+                grading: screen.grading,
                 ..SceneRenderOptions::game(screen.size)
             };
             future = feed.renderer.render(
@@ -2384,6 +2494,19 @@ impl SceneRenderer {
         let bloom = render_world
             .bloom
             .filter(|bloom| lit && effects.bloom && bloom.intensity > 0.0);
+        let grade = if lit {
+            options
+                .grading
+                .or(render_world.color_grading)
+                .unwrap_or_default()
+        } else {
+            crate::runtime::ColorGrading::default()
+        };
+        // Effects that read neighboring pixels sample a copy of the HDR
+        // image, made after the render pass is split as for bloom.
+        let sampled = grade.chromatic_aberration > 0.0
+            || grade.color_bleed > 0.0
+            || grade.distortion > 0.0;
         let ambient_occlusion =
             render_world.ambient_occlusion.filter(|occlusion| {
                 lit && effects.ambient_occlusion
@@ -2828,46 +2951,42 @@ impl SceneRenderer {
                 )?);
             }
             let grid = self.physics_contact_grid.as_ref().unwrap();
-            let contact_sets =
-                [&self.physics_grid_pipeline, &self.physics_contact_pipeline]
-                    .map(|pipeline| {
-                        let layout = pipeline.layout().set_layouts()[0].clone();
-                        let writes = [
-                            WriteDescriptorSet::buffer(
-                                0,
-                                physics.states.clone(),
-                            ),
-                            WriteDescriptorSet::buffer(3, event_header.clone()),
-                            WriteDescriptorSet::buffer(
-                                6,
-                                physics.shapes.clone(),
-                            ),
-                            WriteDescriptorSet::buffer(8, grid.counts.clone()),
-                            WriteDescriptorSet::buffer(9, grid.slots.clone()),
-                            WriteDescriptorSet::buffer(
-                                10,
-                                grid.fallback.clone(),
-                            ),
-                            WriteDescriptorSet::buffer(
-                                11,
-                                grid.snapshot.clone(),
-                            ),
-                        ]
-                        .into_iter()
-                        .filter(|write| {
-                            layout.bindings().contains_key(&write.binding())
-                        });
-                        DescriptorSet::new(
-                            self.descriptor_allocator.clone(),
-                            layout.clone(),
-                            writes,
-                            [],
-                        )
-                        .map(|set| (pipeline.clone(), set))
-                        .map_err(|error| SceneRenderError(error.to_string()))
-                    });
-            let [grid_set, contact_set] = contact_sets;
-            let contact_sets = [grid_set?, contact_set?];
+            let contact_sets = [
+                &self.physics_grid_pipeline,
+                &self.physics_contact_pipeline,
+                &self.physics_oversized_pipeline,
+            ]
+            .map(|pipeline| {
+                let layout = pipeline.layout().set_layouts()[0].clone();
+                let writes = [
+                    WriteDescriptorSet::buffer(0, physics.states.clone()),
+                    WriteDescriptorSet::buffer(3, event_header.clone()),
+                    WriteDescriptorSet::buffer(6, physics.shapes.clone()),
+                    WriteDescriptorSet::buffer(8, grid.counts.clone()),
+                    WriteDescriptorSet::buffer(9, grid.slots.clone()),
+                    WriteDescriptorSet::buffer(10, grid.fallback.clone()),
+                    WriteDescriptorSet::buffer(11, grid.snapshot.clone()),
+                    WriteDescriptorSet::buffer(
+                        13,
+                        grid.oversized_dispatch.clone(),
+                    ),
+                    WriteDescriptorSet::buffer(14, grid.oversized.clone()),
+                ]
+                .into_iter()
+                .filter(|write| {
+                    layout.bindings().contains_key(&write.binding())
+                });
+                DescriptorSet::new(
+                    self.descriptor_allocator.clone(),
+                    layout.clone(),
+                    writes,
+                    [],
+                )
+                .map(|set| (pipeline.clone(), set))
+                .map_err(|error| SceneRenderError(error.to_string()))
+            });
+            let [grid_set, contact_set, oversized_set] = contact_sets;
+            let contact_sets = [grid_set?, contact_set?, oversized_set?];
             // A custom shader's layout holds only the bindings it uses.
             let condition_sets = condition_pipelines
                 .iter()
@@ -3032,8 +3151,14 @@ impl SceneRenderer {
                         .fill_buffer(grid.counts.clone(), 0)
                         .map_err(|error| SceneRenderError(error.to_string()))?
                         .fill_buffer(grid.fallback.clone().slice(0..1), 0)
+                        .map_err(|error| SceneRenderError(error.to_string()))?
+                        .fill_buffer(grid.oversized.clone().slice(0..1), 0)
                         .map_err(|error| SceneRenderError(error.to_string()))?;
-                    for (pipeline, set) in &resources.5 {
+                    // Grid, contacts, then the oversized bodies through the
+                    // workgroup count the contact pass wrote.
+                    for (index, (pipeline, set)) in
+                        resources.5.iter().enumerate()
+                    {
                         commands
                             .bind_pipeline_compute(pipeline.clone())
                             .map_err(|error| {
@@ -3054,11 +3179,18 @@ impl SceneRenderer {
                             })?;
                         count_work(&recorded, 0, 1, 0);
                         self.counters.physics_dispatches += 1;
-                        unsafe {
-                            commands.dispatch([groups, 1, 1]).map_err(
-                                |error| SceneRenderError(error.to_string()),
-                            )?;
-                        }
+                        let dispatch = if index == 2 {
+                            unsafe {
+                                commands.dispatch_indirect(
+                                    grid.oversized_dispatch.clone(),
+                                )
+                            }
+                        } else {
+                            unsafe { commands.dispatch([groups, 1, 1]) }
+                        };
+                        dispatch.map_err(|error| {
+                            SceneRenderError(error.to_string())
+                        })?;
                     }
                 }
                 let passes =
@@ -3592,7 +3724,7 @@ impl SceneRenderer {
                 .begin_render_pass(
                     RenderPassBeginInfo {
                         // Bloom ends this pass again after the blended draws.
-                        render_pass: if bloom.is_some() {
+                        render_pass: if bloom.is_some() || sampled {
                             active.middle_render_pass.clone()
                         } else {
                             active.late_render_pass.clone()
@@ -3728,16 +3860,10 @@ impl SceneRenderer {
             }
             _ => ToneMapping::default(),
         };
-        let grade = match options.debug_view {
-            SceneDebugView::Lit => {
-                render_world.color_grading.unwrap_or_default()
-            }
-            _ => crate::runtime::ColorGrading::default(),
-        };
         // The whole target is tone mapped, so area outside the viewport shows
         // the background like the old clear did.
         passes.end(&mut commands)?;
-        if let Some(settings) = bloom {
+        if bloom.is_some() || sampled {
             // Bloom samples the finished HDR outside the render pass, then
             // an empty late pass continues to tone mapping.
             commands
@@ -3749,14 +3875,26 @@ impl SceneRenderer {
                 .map_err(|error| SceneRenderError(error.to_string()))?
                 .end_render_pass(Default::default())
                 .map_err(|error| SceneRenderError(error.to_string()))?;
-            passes.begin(&mut commands, FramePass::Bloom)?;
-            let dispatches = self.bloom_chain.record(
-                &mut commands,
-                &self.post_pipelines,
-                &settings,
-            )?;
-            count_work(&recorded, 0, dispatches, 0);
-            passes.end(&mut commands)?;
+            if let Some(settings) = bloom {
+                passes.begin(&mut commands, FramePass::Bloom)?;
+                let dispatches = self.bloom_chain.record(
+                    &mut commands,
+                    &self.post_pipelines,
+                    &settings,
+                )?;
+                count_work(&recorded, 0, dispatches, 0);
+                passes.end(&mut commands)?;
+            }
+            if sampled {
+                passes.begin(&mut commands, FramePass::SceneColor)?;
+                commands
+                    .copy_image(CopyImageInfo::images(
+                        self.hdr.image().clone(),
+                        self.scene_color.image().clone(),
+                    ))
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                passes.end(&mut commands)?;
+            }
             commands
                 .begin_render_pass(
                     RenderPassBeginInfo {
@@ -3811,6 +3949,22 @@ impl SceneRenderer {
                         grade.highlights[2],
                         1.0,
                     ],
+                    film: [
+                        grade.grain,
+                        grade.chromatic_aberration,
+                        grade.scanlines,
+                        grade.color_bleed,
+                    ],
+                    // Effects move with the fixed tick, so a replay or
+                    // capture at the same tick looks the same.
+                    tape: [
+                        grade.noise_band,
+                        grade.distortion,
+                        render_world.physics_tick as f32
+                            * render_world.fixed_delta_seconds,
+                        (render_world.physics_tick % (1 << 24)) as f32,
+                    ],
+                    sampled: u32::from(sampled),
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -5456,6 +5610,8 @@ impl SceneRenderer {
                 &self.passes.tonemap_pipeline,
                 &self.hdr,
                 &self.bloom_chain,
+                &self.scene_color,
+                &self.scene_color_sampler,
             )?;
             self.depth_extent = extent;
             // Cached framebuffers still point at the old depth and HDR images.
@@ -5612,6 +5768,33 @@ fn frustum_planes(clip: &Matrix4<f32>) -> [[f32; 4]; 6] {
     let add = |a: [f32; 4], b: [f32; 4]| std::array::from_fn(|i| a[i] + b[i]);
     let sub = |a: [f32; 4], b: [f32; 4]| std::array::from_fn(|i| a[i] - b[i]);
     [add(w, x), sub(w, x), add(w, y), sub(w, y), z, sub(w, z)]
+}
+
+/// World box around the local box `min..max` under `matrix`.
+fn world_aabb(
+    matrix: [[f32; 4]; 4],
+    min: [f32; 3],
+    max: [f32; 3],
+) -> RenderBounds {
+    let matrix = matrix_from_array(matrix);
+    let mut low = [f32::INFINITY; 3];
+    let mut high = [f32::NEG_INFINITY; 3];
+    for corner in 0..8 {
+        let local = nalgebra::Point3::new(
+            if corner & 1 == 0 { min[0] } else { max[0] },
+            if corner & 2 == 0 { min[1] } else { max[1] },
+            if corner & 4 == 0 { min[2] } else { max[2] },
+        );
+        let world = matrix.transform_point(&local);
+        for axis in 0..3 {
+            low[axis] = low[axis].min(world[axis]);
+            high[axis] = high[axis].max(world[axis]);
+        }
+    }
+    RenderBounds::Aabb {
+        min: low,
+        max: high,
+    }
 }
 
 /// False only when the bounds lie wholly outside one plane: conservative,
@@ -6334,6 +6517,8 @@ fn create_tonemap_set(
     pipeline: &Arc<GraphicsPipeline>,
     hdr: &Arc<ImageView>,
     bloom: &BloomChain,
+    scene_color: &Arc<ImageView>,
+    scene_color_sampler: &Arc<Sampler>,
 ) -> Result<Arc<DescriptorSet>, SceneRenderError> {
     DescriptorSet::new(
         allocator.clone(),
@@ -6344,6 +6529,11 @@ fn create_tonemap_set(
                 1,
                 bloom.view.clone(),
                 bloom.sampler.clone(),
+            ),
+            WriteDescriptorSet::image_view_sampler(
+                2,
+                scene_color.clone(),
+                scene_color_sampler.clone(),
             ),
         ],
         [],
@@ -8673,6 +8863,12 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 // target size in pixels.
 // contrast, saturation, shadows, highlights and vignette follow
 // ColorGrading; the defaults leave the color unchanged.
+// A copy of the HDR image in `scene`, for effects that read other pixels;
+// up to date only when `sampled` is 1.
+layout(set = 0, binding = 2) uniform sampler2D scene_image;
+// film: grain, chromatic aberration, scanlines, color bleed. tape: noise
+// band, distortion, seconds and frame number from the fixed tick. sampled is
+// 1 when scene_image may be read.
 layout(push_constant) uniform ToneMap {
     float exposure;
     uint mapper;
@@ -8683,13 +8879,61 @@ layout(push_constant) uniform ToneMap {
     float vignette;
     vec4 shadows;
     vec4 highlights;
+    vec4 film;
+    vec4 tape;
+    uint sampled;
 } tone;
 layout(location = 0) out vec4 f_color;
+// Uniform 0..1 from a pixel and a frame number, the same on every GPU.
+float noise(uvec2 pixel, uint frame) {
+    uint h = pixel.x * 1973u + pixel.y * 9277u + frame * 26699u;
+    h = (h ^ 61u) ^ (h >> 16u);
+    h *= 9u;
+    h ^= h >> 4u;
+    h *= 0x27d4eb2du;
+    h ^= h >> 15u;
+    return float(h) / 4294967295.0;
+}
+vec3 hdr_at(vec2 uv) {
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+        return vec3(0.0);
+    }
+    vec3 c = textureLod(scene_image, uv, 0.0).rgb;
+    if (tone.bloom > 0.0) {
+        c += textureLod(bloom, uv, 0.0).rgb * tone.bloom;
+    }
+    return c;
+}
+float luma_of(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
 void main() {
     vec4 hdr = subpassLoad(scene);
-    if (tone.bloom > 0.0) {
-        hdr.rgb += textureLod(bloom, gl_FragCoord.xy * tone.inv_extent, 0.0).rgb
-            * tone.bloom;
+    vec2 uv = gl_FragCoord.xy * tone.inv_extent;
+    if (tone.sampled == 1u) {
+        if (tone.tape.y > 0.0) {
+            // Tube bulge, plus rows that sway slowly with time.
+            vec2 centered = uv - 0.5;
+            uv = 0.5 + centered * (1.0 - tone.tape.y * 0.25
+                + tone.tape.y * 0.5 * dot(centered, centered));
+            uv.x += tone.tape.y * 0.004
+                * sin(uv.y * 60.0 + tone.tape.z * 5.0);
+        }
+        vec2 split = (uv - 0.5) * tone.film.y * 0.02;
+        hdr.rgb = vec3(
+            hdr_at(uv + split).r,
+            hdr_at(uv).g,
+            hdr_at(uv - split).b
+        );
+        if (tone.film.w > 0.0) {
+            // Color smears to the right; brightness stays sharp.
+            vec2 step_x = vec2(tone.film.w * 8.0 * tone.inv_extent.x, 0.0);
+            vec3 smear = (hdr.rgb + hdr_at(uv - step_x) + hdr_at(uv - 2.0 * step_x)
+                + hdr_at(uv - 3.0 * step_x)) * 0.25;
+            hdr.rgb = max(smear - luma_of(smear) + luma_of(hdr.rgb), 0.0);
+        }
+    } else if (tone.bloom > 0.0) {
+        hdr.rgb += textureLod(bloom, uv, 0.0).rgb * tone.bloom;
     }
     vec3 c = max(hdr.rgb * tone.exposure, 0.0);
     if (tone.mapper == 1u) {
@@ -8709,6 +8953,23 @@ void main() {
     if (tone.vignette > 0.0) {
         vec2 centered = gl_FragCoord.xy * tone.inv_extent - 0.5;
         c *= 1.0 - tone.vignette * smoothstep(0.25, 0.75, length(centered));
+    }
+    uint frame = uint(tone.tape.w);
+    if (tone.film.z > 0.0) {
+        // Every other pixel row darkens.
+        c *= 1.0 - tone.film.z * 0.6 * float(uint(gl_FragCoord.y) & 1u);
+    }
+    if (tone.tape.x > 0.0) {
+        // A band of static an eighth of the height, rolling down once
+        // every four seconds.
+        float row = gl_FragCoord.y * tone.inv_extent.y;
+        float away = abs(fract(row - tone.tape.z * 0.25 + 0.5) - 0.5);
+        float band = tone.tape.x * (1.0 - smoothstep(0.0, 0.0625, away));
+        float hiss = noise(uvec2(gl_FragCoord.xy) / uvec2(2u, 1u), frame + 7u);
+        c = mix(c, vec3(hiss), band * 0.7);
+    }
+    if (tone.film.x > 0.0) {
+        c += tone.film.x * 0.3 * (noise(uvec2(gl_FragCoord.xy), frame) - 0.5);
     }
     f_color = vec4(clamp(c, 0.0, 1.0), hdr.a);
 }
@@ -9060,6 +9321,15 @@ mod physics_contact_shader {
         ty: "compute",
         include: ["src/shaders"],
         path: "src/shaders/compute/physics_contacts.comp",
+    }
+}
+
+mod physics_oversized_shader {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        include: ["src/shaders"],
+        path: "src/shaders/compute/physics_contacts.comp",
+        define: [("OVERSIZED_PASS", "1")],
     }
 }
 
@@ -11184,6 +11454,7 @@ mod tests {
                     debug_view: SceneDebugView::Lit,
                     effects: SceneEffects::default(),
                     camera: None,
+                    grading: None,
                 },
                 &scene.render_world,
                 &scene.assets,
@@ -12240,10 +12511,10 @@ mod tests {
             )
         };
         let (states, diagnostics, counters) = run(DeviceSize::MAX);
-        // CONTACT_ROUNDS grid and contact passes, the built-in step, and
-        // the state hash; frame 119's readback (an empty event header)
-        // landed in frame 120's counters.
-        assert_eq!(counters.physics_dispatches, 2 * CONTACT_ROUNDS + 2);
+        // CONTACT_ROUNDS grid, contact and oversized-body passes, the
+        // built-in step, and the state hash; frame 119's readback (an empty
+        // event header) landed in frame 120's counters.
+        assert_eq!(counters.physics_dispatches, 3 * CONTACT_ROUNDS + 2);
         assert_eq!(counters.physics_event_bytes, 32);
         // The test blocks on each frame, so nothing waits a frame.
         assert_eq!(counters.physics_readback_latency_frames, 0);
@@ -13933,7 +14204,12 @@ mod tests {
             let before = scene.now();
             let screens = scene
                 .renderer
-                .render_screens(before, &scene.render_world, &scene.assets)
+                .render_screens(
+                    before,
+                    &scene.render_world,
+                    &scene.assets,
+                    scene.extent,
+                )
                 .unwrap();
             scene
                 .render(screens)
@@ -13955,6 +14231,11 @@ mod tests {
                 material: scene.render_world.renderables[1].material,
                 camera,
                 size: [8, 8],
+                mesh: scene.render_world.renderables[1].mesh,
+                transform: scene.render_world.renderables[1].transform,
+                update_every: 1,
+                enabled: true,
+                grading: None,
             });
         // Specular light on the screen keeps green and blue above 0.
         let [blue, green, red, _] = frame(&mut scene);
@@ -13962,6 +14243,282 @@ mod tests {
             red > 200 && blue < 120 && green < 120,
             "screen: {blue} {green} {red}"
         );
+        assert_eq!(scene.renderer.screens_drawn(), 1);
+        // Every other frame; skipped frames keep the last image.
+        scene.render_world.screens[0].update_every = 2;
+        let drawn: Vec<_> = (0..4)
+            .map(|_| {
+                let [_, _, red, _] = frame(&mut scene);
+                assert!(red > 200, "feed lost: {red}");
+                scene.renderer.screens_drawn()
+            })
+            .collect();
+        assert_eq!(drawn.iter().sum::<usize>(), 2, "{drawn:?}");
+        assert_ne!(drawn[0], drawn[1], "{drawn:?}");
+        scene.render_world.screens[0].update_every = 1;
+        scene.render_world.screens[0].enabled = false;
+        let [_, _, red, _] = frame(&mut scene);
+        assert!(red > 200 && scene.renderer.screens_drawn() == 0);
+        // A screen mesh outside the view is not drawn.
+        scene.render_world.screens[0].enabled = true;
+        scene.render_world.screens[0].transform.matrix =
+            Matrix4::new_translation(&nalgebra::Vector3::new(1000.0, 0.0, 0.0))
+                .into();
+        frame(&mut scene);
+        assert_eq!(scene.renderer.screens_drawn(), 0);
+        // A wall of six monitors: every new feed draws on its first frame,
+        // then at update_every 2 they take turns, three per frame.
+        let mut wall = scene.render_world.screens[0];
+        wall.transform = scene.render_world.renderables[1].transform;
+        wall.update_every = 2;
+        scene.render_world.screens = (0..6)
+            .map(|index| crate::runtime::ExtractedScreen {
+                material: scene.assets.materials.insert(MaterialAsset {
+                    name: format!("Monitor {index}"),
+                    ..Default::default()
+                }),
+                ..wall
+            })
+            .collect();
+        frame(&mut scene);
+        assert_eq!(scene.renderer.screens_drawn(), 6);
+        for _ in 0..2 {
+            frame(&mut scene);
+            assert_eq!(scene.renderer.screens_drawn(), 3);
+        }
+    }
+
+    /// Compares `scene`'s image with `src/rendering/golden/<name>.png`, or
+    /// writes it when `RUSTING_UPDATE_GOLDEN` is set.
+    /// `tolerance` is the largest per-channel difference allowed; drivers pick
+    /// slightly different mip levels on minified, tilted textures.
+    fn assert_golden(
+        scene: &SlabScene,
+        name: &str,
+        tolerance: u8,
+    ) -> image::RgbaImage {
+        let [width, height] = scene.extent;
+        let mut rgba = scene.pixels();
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let image = image::RgbaImage::from_raw(width, height, rgba).unwrap();
+        let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("src/rendering/golden/{name}.png"));
+        if std::env::var_os(crate::scenario::UPDATE_GOLDEN_ENV).is_some() {
+            std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+            image.save(&golden).unwrap();
+        }
+        crate::rendering::test_support::assert_matches_golden_image(
+            &image,
+            &golden,
+            &std::env::temp_dir().join(format!("rusting-golden-{name}")),
+            tolerance,
+        );
+        image
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_screen_feed_takes_a_crt_look_with_repeatable_grain() {
+        use crate::runtime::ColorGrading;
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A screen slab in front of an unlit red and white checkerboard.
+        let mut scene = SlabScene::with_extent(
+            &[
+                (0.0, MaterialAsset::default()),
+                (
+                    1.0,
+                    MaterialAsset {
+                        model: MaterialModel::Unlit,
+                        ..Default::default()
+                    },
+                ),
+            ],
+            [64, 64],
+        );
+        let checker = scene.assets.textures.insert(TextureAsset {
+            size: [8, 8],
+            rgba8: (0..64)
+                .flat_map(|i| {
+                    if (i % 8 + i / 8) % 2 == 0 {
+                        [255, 0, 0, 255]
+                    } else {
+                        [255, 255, 255, 255]
+                    }
+                })
+                .collect(),
+            color_space: TextureColorSpace::Linear,
+            sampler: TextureSampler {
+                mag_filter: TextureFilter::Nearest,
+                min_filter: TextureFilter::Nearest,
+                mipmap_filter: TextureFilter::Nearest,
+                ..TextureSampler::default()
+            },
+        });
+        scene.render_world.renderables[0].material =
+            scene.assets.materials.insert(MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color_texture: Some(checker),
+                ..Default::default()
+            });
+        scene.render_world.renderables_revision += 1;
+        scene.render_world.physics_tick = 30;
+        scene.render_world.fixed_delta_seconds = 1.0 / 60.0;
+        let mut camera = scene.render_world.active_camera.unwrap();
+        camera.transform = crate::runtime::GlobalTransform {
+            matrix: (Matrix4::new_translation(&nalgebra::Vector3::new(
+                0.0, 0.0, -5.0,
+            )) * Matrix4::from_axis_angle(
+                &nalgebra::Vector3::y_axis(),
+                std::f32::consts::PI,
+            ))
+            .into(),
+        };
+        scene
+            .render_world
+            .screens
+            .push(crate::runtime::ExtractedScreen {
+                material: scene.render_world.renderables[1].material,
+                camera,
+                size: [32, 32],
+                mesh: scene.render_world.renderables[1].mesh,
+                transform: scene.render_world.renderables[1].transform,
+                update_every: 1,
+                enabled: true,
+                grading: None,
+            });
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            let screens = scene
+                .renderer
+                .render_screens(
+                    before,
+                    &scene.render_world,
+                    &scene.assets,
+                    scene.extent,
+                )
+                .unwrap();
+            scene
+                .render(screens)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        frame(&mut scene);
+        let off = assert_golden(&scene, "screen_crt_off", 12);
+        let crt = ColorGrading {
+            grain: 0.5,
+            chromatic_aberration: 1.0,
+            scanlines: 1.0,
+            color_bleed: 0.5,
+            vignette: 0.5,
+            noise_band: 1.0,
+            distortion: 1.0,
+            ..ColorGrading::default()
+        };
+        scene.render_world.screens[0].grading = Some(crt);
+        let on_pixels = frame(&mut scene);
+        let on = assert_golden(&scene, "screen_crt_on", 12);
+        let changed = off
+            .pixels()
+            .zip(on.pixels())
+            .filter(|(a, b)| {
+                a.0.iter().zip(b.0).any(|(a, b)| a.abs_diff(b) > 40)
+            })
+            .count();
+        assert!(changed > 64 * 64 / 4, "only {changed} pixels changed");
+        // The same tick draws the same grain and band; the next one moves
+        // them.
+        assert_eq!(frame(&mut scene), on_pixels);
+        scene.render_world.physics_tick += 1;
+        assert_ne!(frame(&mut scene), on_pixels);
+        // The scene's own grading takes the film effects too.
+        scene.render_world.screens.clear();
+        scene.render_world.color_grading = Some(ColorGrading {
+            grain: 0.5,
+            chromatic_aberration: 1.0,
+            ..ColorGrading::default()
+        });
+        let graded = frame(&mut scene);
+        assert_eq!(frame(&mut scene), graded);
+        scene.render_world.color_grading = None;
+        assert_ne!(frame(&mut scene), graded);
+    }
+
+    #[test]
+    #[cfg(feature = "ui")]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn text_reads_on_a_tilted_panel() {
+        use crate::text_texture::{text_texture, TextStyle};
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let mut scene = SlabScene::with_extent(
+            &[(0.0, MaterialAsset::default())],
+            [256, 128],
+        );
+        let text = scene.assets.textures.insert(text_texture(
+            "CAM 3  REC",
+            TextStyle {
+                size: 48.0,
+                color: [255, 240, 200, 255],
+                background: [20, 30, 60, 255],
+                ..TextStyle::default()
+            },
+        ));
+        let panel = &mut scene.render_world.renderables[0];
+        panel.material = scene.assets.materials.insert(MaterialAsset {
+            model: MaterialModel::Unlit,
+            base_color_texture: Some(text),
+            ..Default::default()
+        });
+        // A sign turned away to the right and leaning back.
+        panel.transform = crate::runtime::GlobalTransform {
+            matrix: (Matrix4::from_axis_angle(
+                &nalgebra::Vector3::y_axis(),
+                0.6,
+            ) * Matrix4::from_axis_angle(
+                &nalgebra::Vector3::x_axis(),
+                -0.3,
+            ) * Matrix4::new_nonuniform_scaling(
+                &nalgebra::Vector3::new(3.0, 0.75, 0.02),
+            ))
+            .into(),
+        };
+        scene.render_world.renderables_revision += 1;
+        scene
+            .render_world
+            .active_camera
+            .as_mut()
+            .unwrap()
+            .projection = Projection::Perspective {
+            vertical_fov_radians: 0.5,
+            near: 0.1,
+            far: 100.0,
+        };
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let image = assert_golden(&scene, "text_panel_tilted", 48);
+        let lit = image.pixels().filter(|pixel| pixel.0[0] > 160).count();
+        assert!(lit > 200, "only {lit} text pixels");
     }
 
     #[test]

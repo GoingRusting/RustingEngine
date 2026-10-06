@@ -1,0 +1,14 @@
+[package]
+name = "forever_bear_booth"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rusting_engine = { path = "../..", default-features = false, features = ["ui"] }
+
+[workspace]
+
+# Debug builds of the engine are too slow to play: optimize dependencies
+# and keep the game's own code quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 3

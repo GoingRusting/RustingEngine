@@ -65,6 +65,9 @@ gltf = ["dep:gltf"]
 validation = []
 experimental-gpu-physics = []
 gpu-tests = []
+# Reserved for the Steamworks backend; see `src/steam.rs`. It adds nothing
+# until the owner approves the `steamworks` dependency.
+steam = []
 
 [dependencies]
 rusting-core = { version = "0.1.6", path = "crates/rusting-core" }

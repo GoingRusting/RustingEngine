@@ -6,6 +6,9 @@
 // only the snapshot, so the result does not depend on invocation order.
 // Bodies whose cell is full, and bodies too big for one cell, go to the
 // fallback list instead, which every body tests: no body is ever left out.
+// A body too big for one cell tests every body itself. One thread doing that
+// alone stalls the whole step, so OVERSIZED_PASS gives each such body a
+// workgroup that splits the bodies between its threads.
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 #include <physics_abi.glsl>
@@ -21,6 +24,12 @@ layout(set = 0, binding = 9) buffer GridSlots { uint data[]; } grid_slots;
 // data[0] = fallback count, then the fallback body indices.
 layout(set = 0, binding = 10) buffer Fallback { uint data[]; } fallback;
 layout(set = 0, binding = 11) buffer Snapshot { PhysicsState data[]; } snapshot;
+// Indirect dispatch size of OVERSIZED_PASS: one workgroup per oversized body.
+layout(set = 0, binding = 13) buffer OversizedDispatch { uint data[3]; } oversized_dispatch;
+// data[0] = oversized body count, then the oversized body indices.
+layout(set = 0, binding = 14) buffer BigBodies { uint data[]; } big_bodies;
+// The smallest maxComputeWorkGroupCount[0] Vulkan allows.
+const uint MAX_GROUPS = 65535u;
 
 // Full, Simplified and Space bodies with a solid shape touch each other;
 // NoCollision (2) and Custom (3) bodies do not.
@@ -67,6 +76,8 @@ void main() {
     if (oversized(shape)) {
         atomicAdd(event_header.contacts.y, 1u);
         add_to_fallback(body_index);
+        uint slot = atomicAdd(big_bodies.data[0], 1u);
+        big_bodies.data[1u + slot] = body_index;
         return;
     }
     uint cell = hash_cell(cell_of(body.model[3].xyz));
@@ -169,9 +180,8 @@ void touch_fallback(uint other_index) {
     touch(other_index);
 }
 
-void main() {
-    own_index = gl_GlobalInvocationID.x;
-    if (own_index >= pc.body_count) return;
+void begin_body(uint body_index) {
+    own_index = body_index;
     own = snapshot.data[own_index];
     own_shape = body_shapes.data[own_index];
     touched = false;
@@ -181,43 +191,108 @@ void main() {
     push_down = vec3(0.0);
     change_up = vec3(0.0);
     change_down = vec3(0.0);
-    if (takes_part(own, own_shape)) {
-        own_rotation = rotation_of(own.model);
-        own_inverse_mass = inverse_mass(own);
-        if (oversized(own_shape)) {
-            // Too big for the grid: test every body.
-            for (uint other = 0u; other < pc.body_count; other++) {
-                if (takes_part(snapshot.data[other], body_shapes.data[other])) touch_fallback(other);
-            }
-        } else {
-            ivec3 cell = cell_of(own.model[3].xyz);
-            uint visited[27];
-            uint visited_count = 0u;
-            for (int z = -1; z <= 1; z++) {
-                for (int y = -1; y <= 1; y++) {
-                    for (int x = -1; x <= 1; x++) {
-                        uint hash = hash_cell(cell + ivec3(x, y, z));
-                        // Two neighbour cells can share a hash; visit it once.
-                        bool seen = false;
-                        for (uint index = 0u; index < visited_count; index++) seen = seen || visited[index] == hash;
-                        if (seen) continue;
-                        visited[visited_count++] = hash;
-                        uint count = min(grid_counts.data[hash], CELL_SLOTS);
-                        for (uint entry = 0u; entry < count; entry++) touch_in_cell(grid_slots.data[hash * CELL_SLOTS + entry], cell + ivec3(x, y, z));
-                    }
-                }
-            }
-            for (uint entry = 0u; entry < fallback.data[0]; entry++) touch_fallback(fallback.data[1u + entry]);
-        }
-    }
-    if (hash_collisions > 0u) atomicAdd(event_header.contacts.z, hash_collisions);
-    if (fallback_tests > 0u) atomicAdd(event_header.contacts.w, fallback_tests);
-    // Every body is written so the contact flag starts each step fresh; the
-    // main pass adds collider contacts to it.
+    own_rotation = rotation_of(own.model);
+    own_inverse_mass = inverse_mass(own);
+}
+
+// Every body is written so the contact flag starts each step fresh; the
+// main pass adds collider contacts to it.
+void write_body() {
     precise vec3 position = own.model[3].xyz + push_up + push_down;
     precise vec3 velocity = own.velocity.xyz + change_up + change_down;
     bodies.data[own_index].model[3].xyz = position;
     bodies.data[own_index].velocity = vec4(velocity, touched ? 1.0 : 0.0);
 }
+
+#ifdef OVERSIZED_PASS
+
+shared vec3 shared_push_up[256];
+shared vec3 shared_push_down[256];
+shared vec3 shared_change_up[256];
+shared vec3 shared_change_down[256];
+shared bool shared_touched[256];
+
+void main() {
+    uint lane = gl_LocalInvocationID.x;
+    uint total_tests = 0u;
+    // Every lane reads the same count, so the barriers below are uniform.
+    uint count = big_bodies.data[0];
+    for (uint entry = gl_WorkGroupID.x; entry < count; entry += gl_NumWorkGroups.x) {
+        begin_body(big_bodies.data[1u + entry]);
+        for (uint other = lane; other < pc.body_count; other += gl_WorkGroupSize.x) {
+            if (takes_part(snapshot.data[other], body_shapes.data[other])) touch_fallback(other);
+        }
+        total_tests += fallback_tests;
+        shared_push_up[lane] = push_up;
+        shared_push_down[lane] = push_down;
+        shared_change_up[lane] = change_up;
+        shared_change_down[lane] = change_down;
+        shared_touched[lane] = touched;
+        barrier();
+        // Max, min and or give the same result in any order, so this tree
+        // matches one thread testing every body in turn.
+        for (uint stride = gl_WorkGroupSize.x / 2u; stride > 0u; stride /= 2u) {
+            if (lane < stride) {
+                shared_push_up[lane] = max(shared_push_up[lane], shared_push_up[lane + stride]);
+                shared_push_down[lane] = min(shared_push_down[lane], shared_push_down[lane + stride]);
+                shared_change_up[lane] = max(shared_change_up[lane], shared_change_up[lane + stride]);
+                shared_change_down[lane] = min(shared_change_down[lane], shared_change_down[lane + stride]);
+                shared_touched[lane] = shared_touched[lane] || shared_touched[lane + stride];
+            }
+            barrier();
+        }
+        if (lane == 0u) {
+            push_up = shared_push_up[0];
+            push_down = shared_push_down[0];
+            change_up = shared_change_up[0];
+            change_down = shared_change_down[0];
+            touched = shared_touched[0];
+            write_body();
+        }
+        // The next body reuses the shared arrays.
+        barrier();
+    }
+    if (total_tests > 0u) atomicAdd(event_header.contacts.w, total_tests);
+}
+
+#else
+
+void main() {
+    // The grid pass has filed every oversized body by now.
+    if (gl_GlobalInvocationID.x == 0u) {
+        oversized_dispatch.data[0] = min(big_bodies.data[0], MAX_GROUPS);
+        oversized_dispatch.data[1] = 1u;
+        oversized_dispatch.data[2] = 1u;
+    }
+    if (gl_GlobalInvocationID.x >= pc.body_count) return;
+    begin_body(gl_GlobalInvocationID.x);
+    if (takes_part(own, own_shape)) {
+        // OVERSIZED_PASS moves this body.
+        if (oversized(own_shape)) return;
+        ivec3 cell = cell_of(own.model[3].xyz);
+        uint visited[27];
+        uint visited_count = 0u;
+        for (int z = -1; z <= 1; z++) {
+            for (int y = -1; y <= 1; y++) {
+                for (int x = -1; x <= 1; x++) {
+                    uint hash = hash_cell(cell + ivec3(x, y, z));
+                    // Two neighbour cells can share a hash; visit it once.
+                    bool seen = false;
+                    for (uint index = 0u; index < visited_count; index++) seen = seen || visited[index] == hash;
+                    if (seen) continue;
+                    visited[visited_count++] = hash;
+                    uint count = min(grid_counts.data[hash], CELL_SLOTS);
+                    for (uint entry = 0u; entry < count; entry++) touch_in_cell(grid_slots.data[hash * CELL_SLOTS + entry], cell + ivec3(x, y, z));
+                }
+            }
+        }
+        for (uint entry = 0u; entry < fallback.data[0]; entry++) touch_fallback(fallback.data[1u + entry]);
+    }
+    if (hash_collisions > 0u) atomicAdd(event_header.contacts.z, hash_collisions);
+    if (fallback_tests > 0u) atomicAdd(event_header.contacts.w, fallback_tests);
+    write_body();
+}
+
+#endif
 
 #endif

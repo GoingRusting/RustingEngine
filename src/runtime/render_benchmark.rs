@@ -197,6 +197,152 @@ pub fn spawn_render_benchmark(world: &mut World) -> Entity {
         .id()
 }
 
+/// Optional additions to the benchmark scene, for horror-game sized loads:
+/// CCTV screens, and a shelf of small identical props ("bears").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderBenchmarkExtras {
+    /// Camera screens on a ring facing the centre, each with its own camera
+    /// and material.
+    pub screens: usize,
+    /// Feed size of each screen.
+    pub screen_size: [u32; 2],
+    /// `CameraScreen::update_every` of each screen; 0 counts as 1.
+    pub screen_every: u32,
+    /// Static spheres sharing one mesh and material, in a grid 0.6 m apart.
+    pub bears: usize,
+    /// Bears whose transform changes every frame.
+    pub bear_updates: usize,
+    /// Removes the GPU physics bodies, leaving a scene that only renders.
+    pub without_bodies: bool,
+}
+
+/// Name of bear `index` in [`spawn_render_benchmark_extras`].
+#[must_use]
+pub fn render_benchmark_bear(index: usize) -> String {
+    format!("Benchmark Bear {index}")
+}
+
+/// Adds `extras` to a scene from [`spawn_render_benchmark`] and returns
+/// the bears in index order.
+pub fn spawn_render_benchmark_extras(
+    world: &mut World,
+    extras: RenderBenchmarkExtras,
+) -> Vec<Entity> {
+    let (cube, sphere, bear_material, screen_materials) = {
+        let mut assets =
+            world.get_resource_or_insert_with(AssetServer::default);
+        let sphere = assets.meshes.insert(procedural_sphere_mesh(8));
+        let bear = assets.materials.insert(MaterialAsset {
+            base_color: [0.6, 0.4, 0.3, 1.0],
+            roughness: 0.8,
+            ..MaterialAsset::default()
+        });
+        let screens: Vec<_> = (0..extras.screens)
+            .map(|index| {
+                assets.materials.insert(MaterialAsset {
+                    name: format!("Benchmark Screen {index}"),
+                    base_color: [0.0, 0.0, 0.0, 1.0],
+                    emissive: [1.0; 3],
+                    ..MaterialAsset::default()
+                })
+            })
+            .collect();
+        (assets.fallback_mesh, sphere, bear, screens)
+    };
+    for (index, material) in screen_materials.into_iter().enumerate() {
+        let angle = TAU * index as f32 / extras.screens as f32;
+        let (sin, cos) = angle.sin_cos();
+        let camera = format!("Benchmark Feed {index}");
+        world.spawn((
+            Name(camera.clone()),
+            Transform {
+                position: [6.0 * sin, 4.0, 6.0 * cos],
+                rotation: crate::engine::rotation_facing([sin, -0.3, cos]),
+                ..Transform::default()
+            },
+            Camera::default(),
+        ));
+        world.spawn((
+            Name(format!("Benchmark Screen {index}")),
+            Transform {
+                position: [20.0 * sin, 4.0, 20.0 * cos],
+                rotation: crate::engine::rotation_facing([-sin, 0.0, -cos]),
+                scale: [3.2, 1.8, 0.1],
+            },
+            MeshRenderer {
+                mesh: cube,
+                material,
+                cast_shadows: false,
+                receive_shadows: false,
+            },
+            Visibility::default(),
+            super::CameraScreen {
+                camera,
+                size: extras.screen_size,
+                update_every: extras.screen_every.max(1),
+                ..Default::default()
+            },
+        ));
+    }
+    if extras.without_bodies {
+        let mut bodies = world.query::<(Entity, &ObjectClasses)>();
+        let bodies: Vec<_> = bodies
+            .iter(world)
+            .filter(|(_, classes)| {
+                classes.contains(RENDER_BENCHMARK_BODY_CLASS)
+            })
+            .map(|(entity, _)| entity)
+            .collect();
+        for body in bodies {
+            world.despawn(body);
+        }
+    }
+    let side = (extras.bears as f32).sqrt().ceil() as usize;
+    (0..extras.bears)
+        .map(|index| {
+            world
+                .spawn((
+                    Name(render_benchmark_bear(index)),
+                    bear_transform(index, side, 0),
+                    MeshRenderer {
+                        mesh: sphere,
+                        material: bear_material,
+                        cast_shadows: true,
+                        receive_shadows: true,
+                    },
+                    Visibility::default(),
+                ))
+                .id()
+        })
+        .collect()
+}
+
+/// Moves the first `extras.bear_updates` bears for `frame`: each one bobs,
+/// so every frame changes that many transforms.
+pub fn update_render_benchmark_bears(
+    world: &mut World,
+    bears: &[Entity],
+    extras: RenderBenchmarkExtras,
+    frame: u32,
+) {
+    let side = (bears.len() as f32).sqrt().ceil() as usize;
+    for (index, &bear) in bears.iter().take(extras.bear_updates).enumerate() {
+        if let Some(mut transform) = world.get_mut::<Transform>(bear) {
+            *transform = bear_transform(index, side, frame);
+        }
+    }
+}
+
+fn bear_transform(index: usize, side: usize, frame: u32) -> Transform {
+    let [x, z] = grid(index, side.max(1), 0.6);
+    let bob = 0.05 * (frame as f32 * 0.2 + index as f32).sin();
+    Transform {
+        position: [x, 0.2 + bob, z],
+        scale: [0.4; 3],
+        ..Transform::default()
+    }
+}
+
 /// Camera transform at `frame` of the benchmark path. The path is closed:
 /// frame [`RENDER_BENCHMARK_FRAMES`] matches frame 0.
 #[must_use]

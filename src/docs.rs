@@ -110,6 +110,7 @@ const SAMPLES: &[(&str, &str, &str)] = samples![
     "core_defense",
     "crate_keeper",
     "ember_arena",
+    "forever_bear_booth",
     "hammer_run",
     "lantern_grid",
     "night_vault",

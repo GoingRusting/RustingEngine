@@ -25,8 +25,11 @@ pub mod runtime;
 pub mod scenario;
 pub mod scene_patch;
 pub mod schema;
+pub mod steam;
 #[cfg(test)]
 pub mod tests;
+#[cfg(feature = "ui")]
+pub mod text_texture;
 
 pub use assets::{
     spawn_gltf_nodes, spawn_gltf_nodes_in_world, AlphaMode, AssetPlugin,
@@ -61,16 +64,17 @@ pub mod prelude {
         GpuBodySettings, InitialState, RayHit, SphereSpawn,
     };
     pub use crate::runtime::{
-        BeatClock, FrameTime, GpuCondition, GpuConditionShader,
-        GpuConditionShaders, GpuEventMode, GpuEventPayload, GpuFieldCondition,
-        GpuPhysicsEvent, GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch,
-        GpuStateField, HudAnchor, HudElement, Name, ObjectClasses,
-        ParticleCommand, PhysicsSolver, PhysicsSyncMode, PhysicsWorld,
-        PlayerController, RigidBody, RigidBodyKind, Sound, SoundId, Stick,
+        BeatClock, BusEffect, Caption, FrameTime, GpuCondition,
+        GpuConditionShader, GpuConditionShaders, GpuEventMode, GpuEventPayload,
+        GpuFieldCondition, GpuPhysicsEvent, GpuPhysicsEventsLost,
+        GpuPhysicsRule, GpuPhysicsWatch, GpuStateField, HudAnchor, HudElement,
+        Name, ObjectClasses, ParticleCommand, PhysicsSolver, PhysicsSyncMode,
+        PhysicsWorld, PlayerController, RigidBody, RigidBodyKind, Sound,
+        SoundId, Stick, WaypointGraph,
     };
     pub use crate::rusting_game;
-    pub use crate::Transform;
     pub use crate::{AlphaMode, MaterialAsset, MaterialModel};
+    pub use crate::{AssetServer, Transform};
     pub use bevy_ecs::entity::Entity;
     pub use bevy_ecs::world::World;
 }

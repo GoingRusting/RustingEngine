@@ -328,8 +328,11 @@ The engine meets `Local` today and does not meet `CrossPlatform` yet:
   atomics, so which body lands where changes between runs. That never
   changes the result. A body that is not oversized reaches no further than
   one cell, so every touching pair is found whether a body sits in a cell
-  or in the fallback list. Each body sums its pushes in integers, and
-  integer addition gives the same result in any order.
+  or in the fallback list. Each body keeps the largest push and velocity
+  change each way per axis, and max and min give the same result in any
+  order. A body too big for one cell gets its own workgroup: its threads
+  split the bodies to test, then merge their max and min in shared memory,
+  which matches one thread testing every body in turn bit for bit.
   `gpu_bodies_collide_with_each_other_through_grid_and_fallback` checks that two
   runs, and a run with no hash memory at all, match bit for bit.
 - Each fixed step sees its own `FrameTime::fixed_tick` (the ticks

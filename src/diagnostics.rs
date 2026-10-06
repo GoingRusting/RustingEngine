@@ -433,7 +433,7 @@ mod tests {
             .any(|prefix| {
                 literal.starts_with(prefix) && literal != "RUST_BUILD_ERROR"
             })
-            || ["GRID_PASS", "D32_SFLOAT"].contains(&literal)
+            || ["GRID_PASS", "OVERSIZED_PASS", "D32_SFLOAT"].contains(&literal)
     }
 
     fn scan(folder: &Path, found: &mut BTreeSet<String>) {

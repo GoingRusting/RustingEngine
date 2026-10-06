@@ -26,9 +26,10 @@ use super::scene_renderer::{SceneRenderOptions, SceneRenderer};
 use super::swapchain::OFFSCREEN_COLOR_FORMAT;
 use crate::assets::{AssetPlugin, AssetServer};
 use crate::runtime::{
-    render_benchmark_camera, spawn_render_benchmark, App, CpuFrameTimings,
-    HybridPhysicsPlugin, PhysicsBody, QualityProfile, RenderExtractPlugin,
-    RenderSettings, RenderWorld,
+    render_benchmark_camera, spawn_render_benchmark,
+    spawn_render_benchmark_extras, update_render_benchmark_bears, App,
+    CpuFrameTimings, HybridPhysicsPlugin, PhysicsBody, QualityProfile,
+    RenderBenchmarkExtras, RenderExtractPlugin, RenderSettings, RenderWorld,
 };
 use crate::Transform;
 
@@ -104,9 +105,34 @@ pub struct RenderBenchmarkReport {
     pub dropped_lights: usize,
     pub physics_events_dropped: u64,
     pub physics_commands_rejected: u64,
+    /// Scene additions on top of the fixed scene; runs with different
+    /// extras do not compare.
+    #[serde(default)]
+    pub screens: usize,
+    #[serde(default)]
+    pub screen_size: [u32; 2],
+    #[serde(default)]
+    pub bears: usize,
+    #[serde(default)]
+    pub bear_updates: usize,
+    #[serde(default)]
+    pub screen_every: u32,
+    #[serde(default)]
+    pub without_bodies: bool,
 }
 
 impl RenderBenchmarkReport {
+    fn extras(&self) -> RenderBenchmarkExtras {
+        RenderBenchmarkExtras {
+            screens: self.screens,
+            screen_size: self.screen_size,
+            bears: self.bears,
+            bear_updates: self.bear_updates,
+            screen_every: self.screen_every,
+            without_bodies: self.without_bodies,
+        }
+    }
+
     /// Material regressions of `self` against `baseline`, one line each.
     ///
     /// Work counters are compared when both runs used the same extent and
@@ -119,6 +145,7 @@ impl RenderBenchmarkReport {
         if self.extent != baseline.extent
             || self.quality != baseline.quality
             || self.frames != baseline.frames
+            || self.extras() != baseline.extras()
         {
             found.push(format!(
                 "run {:?} {:?} {} frames does not match baseline {:?} {:?} {} frames",
@@ -226,6 +253,24 @@ pub fn run_render_benchmark(
     quality: QualityProfile,
     frames: u32,
 ) -> Result<RenderBenchmarkReport, String> {
+    run_render_benchmark_with(
+        queue,
+        extent,
+        quality,
+        frames,
+        RenderBenchmarkExtras::default(),
+    )
+}
+
+/// [`run_render_benchmark`] with camera screens and bears added to the
+/// scene; screens render before each frame, as in the game window.
+pub fn run_render_benchmark_with(
+    queue: Arc<Queue>,
+    extent: [u32; 2],
+    quality: QualityProfile,
+    frames: u32,
+    extras: RenderBenchmarkExtras,
+) -> Result<RenderBenchmarkReport, String> {
     let device = queue.device().clone();
     let memory_allocator =
         Arc::new(StandardMemoryAllocator::new_default(device.clone()));
@@ -257,6 +302,7 @@ pub fn run_render_benchmark(
         .map_err(|error| format!("benchmark plugins: {error}"))?;
     app.world_mut().resource_mut::<RenderSettings>().quality = quality;
     let camera = spawn_render_benchmark(app.world_mut());
+    let bears = spawn_render_benchmark_extras(app.world_mut(), extras);
     let physics_bodies = app
         .world_mut()
         .query::<&PhysicsBody>()
@@ -271,6 +317,12 @@ pub fn run_render_benchmark(
         quality,
         frames,
         physics_bodies,
+        screens: extras.screens,
+        screen_size: extras.screen_size,
+        bears: extras.bears,
+        bear_updates: extras.bear_updates,
+        screen_every: extras.screen_every,
+        without_bodies: extras.without_bodies,
         ..RenderBenchmarkReport::default()
     };
     let mut frame_times = Vec::with_capacity(frames as usize);
@@ -285,12 +337,21 @@ pub fn run_render_benchmark(
         renderer.take_physics_events_lost();
         *app.world_mut().get_mut::<Transform>(camera).unwrap() =
             render_benchmark_camera(frame);
+        update_render_benchmark_bears(app.world_mut(), &bears, extras, frame);
         app.update(RENDER_BENCHMARK_FRAME_TIME)
             .map_err(|error| format!("frame {frame} update: {error}"))?;
         let world = app.world();
+        let screens = renderer
+            .render_screens(
+                vulkano::sync::now(device.clone()).boxed(),
+                world.resource::<RenderWorld>(),
+                world.resource::<AssetServer>(),
+                extent,
+            )
+            .map_err(|error| format!("frame {frame} screens: {error}"))?;
         renderer
             .render(
-                vulkano::sync::now(device.clone()).boxed(),
+                screens,
                 target.clone(),
                 extent,
                 SceneRenderOptions::game(extent),

@@ -246,6 +246,53 @@ state is lost.
   `hot reload failed:` with the reason, and the editor's Console shows it.
 - Unique copies have no file, so reloads never change them.
 
+## Waypoint graphs
+
+`WaypointGraph` moves a monster between hand-placed points, such as the
+aisles and doors a mascot patrols. It is plain data: positions and two-way
+edges. A node's ID is its index.
+
+```rust
+use rusting_engine::runtime::WaypointGraph;
+
+let mut graph = WaypointGraph::default();
+let booth = graph.add_node([0.0, 0.0, 0.0]);
+let hall = graph.add_node([0.0, 0.0, 8.0]);
+let aisle = graph.add_node([6.0, 0.0, 8.0]);
+graph.connect(booth, hall);
+graph.connect(hall, aisle);
+
+let start = graph.nearest(monster_position).unwrap();
+let route = graph.path(start, booth); // Some(vec![aisle, hall, booth])
+```
+
+- `path` returns the shortest route by straight-line edge length, both ends
+  included, or `None` when nothing joins them. `length` sums a route.
+- `disconnect` removes an edge, for a door that closes, and `connect` adds it
+  back.
+- Ties resolve the same way every run: `nearest` picks the lowest ID among
+  equal distances, and `path` prefers lower IDs among equal-cost routes. A
+  path chosen in a fixed tick stays in step with replays.
+- The graph serializes with serde, so it can be a field of a data asset or a
+  component.
+- There is no navmesh, no automatic graph building and no obstacle
+  avoidance between nodes. Place nodes where a straight walk between
+  neighbors is clear.
+
+## Steam achievements
+
+`rusting_engine::steam` holds the calls a game makes to Steam:
+`unlock_achievement("night_5")`, `set_stat("nights_survived", 5)` and
+`is_running()`. Call them from game code now. Today they do nothing and
+return `false`, in every build, so the game runs the same with or without
+Steam installed.
+
+- The optional `steam` cargo feature is reserved for the real Steamworks
+  backend. That backend needs the `steamworks` crate, which waits on the
+  owner's approval, so the feature adds nothing yet.
+- Unlocks are presentation, like audio. Never read their result back into
+  simulation state, or replays stop matching.
+
 ## Frames and fixed ticks
 
 The engine separates **frames** from **fixed ticks**:

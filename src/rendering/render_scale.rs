@@ -162,7 +162,7 @@ pub fn render_game(
     let extent = [width, height];
     let active = world.active_camera.map(|camera| camera.entity);
     let mut future = renderer
-        .render_screens(before, world, assets)
+        .render_screens(before, world, assets, extent)
         .map_err(failed)?;
     let can_blit = scratch.is_some();
     let mut scaled = |always| match scratch.as_deref_mut() {

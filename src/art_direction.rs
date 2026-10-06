@@ -67,7 +67,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 60.0,
         font_size: 20.0,
         text_color: [1.0, 1.0, 1.0, 1.0],
-        grading: ColorGrading { contrast: 1.05, saturation: 1.05, shadows: [0.97, 0.99, 1.04], highlights: [1.03, 1.01, 0.97], vignette: 0.15 },
+        grading: ColorGrading { contrast: 1.05, saturation: 1.05, shadows: [0.97, 0.99, 1.04], highlights: [1.03, 1.01, 0.97], vignette: 0.15, ..ColorGrading::DEFAULT },
         palette: [[0.08, 0.1, 0.12], [0.35, 0.45, 0.3], [0.85, 0.82, 0.75], [0.9, 0.35, 0.1], [0.1, 0.4, 0.8]],
     },
     ArtPreset {
@@ -88,7 +88,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 50.0,
         font_size: 22.0,
         text_color: [1.0, 0.93, 0.8, 1.0],
-        grading: ColorGrading { contrast: 1.1, saturation: 1.1, shadows: [0.9, 0.92, 1.1], highlights: [1.08, 1.0, 0.88], vignette: 0.25 },
+        grading: ColorGrading { contrast: 1.1, saturation: 1.1, shadows: [0.9, 0.92, 1.1], highlights: [1.08, 1.0, 0.88], vignette: 0.25, ..ColorGrading::DEFAULT },
         palette: [[0.12, 0.06, 0.08], [0.6, 0.3, 0.18], [0.95, 0.8, 0.6], [0.95, 0.5, 0.1], [0.25, 0.2, 0.5]],
     },
     ArtPreset {
@@ -109,7 +109,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 55.0,
         font_size: 20.0,
         text_color: [0.75, 0.85, 1.0, 1.0],
-        grading: ColorGrading { contrast: 1.15, saturation: 0.9, shadows: [0.85, 0.9, 1.15], highlights: [1.1, 1.0, 0.85], vignette: 0.35 },
+        grading: ColorGrading { contrast: 1.15, saturation: 0.9, shadows: [0.85, 0.9, 1.15], highlights: [1.1, 1.0, 0.85], vignette: 0.35, ..ColorGrading::DEFAULT },
         palette: [[0.02, 0.025, 0.05], [0.12, 0.15, 0.25], [0.45, 0.5, 0.6], [1.0, 0.6, 0.2], [0.3, 0.8, 0.9]],
     },
     ArtPreset {
@@ -130,7 +130,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 45.0,
         font_size: 26.0,
         text_color: [0.15, 0.15, 0.2, 1.0],
-        grading: ColorGrading { contrast: 1.0, saturation: 1.15, shadows: [1.0, 1.0, 1.0], highlights: [1.0, 1.0, 1.0], vignette: 0.0 },
+        grading: ColorGrading { contrast: 1.0, saturation: 1.15, shadows: [1.0, 1.0, 1.0], highlights: [1.0, 1.0, 1.0], vignette: 0.0, ..ColorGrading::DEFAULT },
         palette: [[0.15, 0.15, 0.2], [0.85, 0.3, 0.3], [0.95, 0.9, 0.8], [0.2, 0.55, 0.9], [0.95, 0.75, 0.15]],
     },
     ArtPreset {
@@ -151,7 +151,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 65.0,
         font_size: 20.0,
         text_color: [0.95, 0.85, 0.65, 1.0],
-        grading: ColorGrading { contrast: 1.2, saturation: 0.85, shadows: [0.85, 0.92, 1.15], highlights: [1.12, 1.0, 0.82], vignette: 0.45 },
+        grading: ColorGrading { contrast: 1.2, saturation: 0.85, shadows: [0.85, 0.92, 1.15], highlights: [1.12, 1.0, 0.82], vignette: 0.45, ..ColorGrading::DEFAULT },
         palette: [[0.03, 0.03, 0.04], [0.18, 0.15, 0.13], [0.55, 0.5, 0.42], [1.0, 0.55, 0.15], [0.8, 0.1, 0.08]],
     },
     ArtPreset {
@@ -172,7 +172,7 @@ pub const PRESETS: &[ArtPreset] = &[
         field_of_view_degrees: 50.0,
         font_size: 26.0,
         text_color: [1.0, 1.0, 1.0, 1.0],
-        grading: ColorGrading { contrast: 1.05, saturation: 1.25, shadows: [0.92, 0.95, 1.1], highlights: [1.04, 1.02, 0.96], vignette: 0.1 },
+        grading: ColorGrading { contrast: 1.05, saturation: 1.25, shadows: [0.92, 0.95, 1.1], highlights: [1.04, 1.02, 0.96], vignette: 0.1, ..ColorGrading::DEFAULT },
         palette: [[0.12, 0.1, 0.2], [0.25, 0.65, 0.3], [0.98, 0.95, 0.88], [1.0, 0.4, 0.3], [0.2, 0.5, 1.0]],
     },
 ];

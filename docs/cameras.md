@@ -102,8 +102,40 @@ rear-view screen:
 - The image replaces the material's base color and emissive maps. Give
   the material some `emissive` so the screen glows, and give each screen
   its own material; screens sharing one material show one feed.
-- Each screen renders the whole scene once more per frame. Keep to a few
-  screens and small sizes.
+- Each screen that draws renders the whole scene once more. Keep sizes
+  small, and use the options below to skip work.
+
+### Keeping screens cheap
+
+```json
+"rusting.camera_screen": {"camera": "Cam B", "size": [320, 180], "update_every": 2, "enabled": true}
+```
+
+- `update_every` draws the feed every this many frames (default 1). At 2
+  the feed costs half as much and looks like a low-frame-rate CCTV camera.
+  Screens with the same value take turns, so a wall of six screens at 2
+  draws three per frame.
+- `enabled: false` stops drawing the feed and keeps its last image. Swap
+  the material too if the monitor should go dark.
+- A screen whose mesh is outside the view of every camera drawing to the
+  window keeps its last image and does not draw. Turning around to face
+  it draws it again on that frame.
+- A new feed always draws once, even when disabled or off-screen, so it
+  never shows an empty image.
+- `grading` gives the feed its own color grading, such as scanlines,
+  grain and color bleed for a VHS security-camera look. Without it the
+  feed uses the scene's `rusting.color_grading`. The effects are listed in
+  [look-and-feel.md](look-and-feel.md#film-and-crtvhs-effects).
+- Feeds reuse the main view's GPU physics instead of simulating again, so
+  GPU bodies in a feed lag the main view by one frame.
+
+Measured with `render_bench` on an RTX 3060 at 1920x1080 (balanced
+quality, 600 frames), six 320x180 screens over the benchmark scene with
+its 1,000 GPU bodies: 134.9 ms per frame before these changes (every feed
+re-simulated physics), 24.9 ms after, against 22.2 ms with no screens.
+Without the GPU bodies, no screens take 3.1 ms, six screens 5.2 ms.
+Run `cargo run --release --example render_bench -- balanced --screens 6`
+to measure your own scene size.
 
 
 - Pointer clicks, `pointer_ray()` and the sound listener use the

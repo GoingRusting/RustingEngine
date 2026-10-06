@@ -10,13 +10,14 @@ A Rusting game is a folder with `project.json`, JSON scenes, a small Rust
 without the editor: every step below is a `rusting` command, and every
 command takes `--json`.
 
-Twelve sample games were built this way. Read the closest one before
+Thirteen sample games were built this way. Read the closest one before
 starting with `rusting docs show sample/<name>` (its README and
 `src/main.rs`): `hammer_run` (obstacle course), `sky_hop` (platformer),
 `ember_arena` and `night_vault` (third person), `target_range` and
 `tower_topple` (first person, shooting), `putt_course` (physics ball, mouse
 aim), `core_defense` (top-down, mouse), `lantern_grid` (click puzzle),
-`crate_keeper` (grid puzzle), `snake_trail` and `brick_bounce` (2D).
+`crate_keeper` (grid puzzle), `snake_trail` and `brick_bounce` (2D),
+`forever_bear_booth` (horror: camera screens, 3D sound, waypoints).
 
 ## Loop
 

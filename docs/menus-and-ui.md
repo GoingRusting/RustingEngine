@@ -146,3 +146,56 @@ Scenarios drive egui the same way a player does:
 - Gamepad presses go through actions: bind `PadSouth` or `PadDpadDown` in a
   `rusting.input_action`, then `tap` the action. `left_stick` and
   `right_stick` steps tilt a stick.
+
+## Text on meshes
+
+Signs, monitor labels and notes on a desk are text that sits in the 3D world
+and tilts, lights and fogs with it. `rusting_engine::text_texture::text_texture`
+draws a string into an ordinary texture on the CPU with egui's built-in
+fonts (the `ui` feature, on by default). Use the texture as a material's base
+color on any mesh, usually a thin box or a plane:
+
+```rust
+use rusting_engine::assets::{AssetServer, MaterialAsset, MaterialModel};
+use rusting_engine::text_texture::{text_texture, TextStyle};
+
+fn make_sign(assets: &mut AssetServer) {
+    let texture = assets.textures.insert(text_texture(
+        "CAM 3  REC",
+        TextStyle {
+            size: 48.0,
+            color: [255, 240, 200, 255],
+            background: [20, 30, 60, 255],
+            ..TextStyle::default()
+        },
+    ));
+    let material = assets.materials.insert(MaterialAsset {
+        model: MaterialModel::Unlit,
+        base_color_texture: Some(texture),
+        ..Default::default()
+    });
+    // Put `material` on a mesh scaled to the texture's aspect ratio.
+}
+```
+
+- `size` is the glyph height in texels; `padding` adds empty texels around
+  the text; `monospace` picks egui's monospace font. Lines split on `\n` and
+  never wrap.
+- The texture is exactly as large as the text, so scale the mesh to
+  `texture.size[0] / texture.size[1]` to keep letters undistorted.
+- To change the text, overwrite the texture through
+  `assets.textures.get_mut(handle)`. That bumps its revision, and the renderer
+  uploads it again on the next frame. Do this when the text changes, not every
+  frame.
+- Use `MaterialModel::Unlit` for a glowing screen or sign, and the default
+  PBR model for printed paper that should darken in shadow.
+- A camera screen with a CRT `grading` (see
+  [Cameras](cameras.md#keeping-screens-cheap)) only grades its feed. For an
+  overlay such as a timestamp on a monitor, put a text panel just in front of
+  the screen mesh.
+- There is no separate world-space text component: this helper covers it.
+  Rich egui widgets on a mesh (buttons you can click in 3D) are not supported.
+
+The GPU test `text_reads_on_a_tilted_panel` renders this texture on a panel
+turned away from the camera and compares it with
+`src/rendering/golden/text_panel_tilted.png`.

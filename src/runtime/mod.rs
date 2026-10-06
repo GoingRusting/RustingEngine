@@ -44,14 +44,16 @@ mod two_d;
 #[cfg(feature = "ui")]
 mod ui;
 pub mod water;
+mod waypoints;
 
 pub use actions::{
     bind_input_actions, parse_input, ActionMap, InputAction, InputBinding,
 };
 pub use animation::*;
 pub use audio::{
-    route_sound_events, AudioCommand, AudioQueue, BeatClock, Sound, SoundId,
-    QUEUE_LIMIT,
+    active_camera, end_tick, route_sound_events, spatialize, AudioCommand,
+    AudioQueue, BeatClock, BusEffect, Caption, CaptionSettings, Sound, SoundId,
+    DEFAULT_VOICE_LIMIT, MAX_VOICE_LIMIT, QUEUE_LIMIT,
 };
 pub use classes::ClassIndex;
 pub use components::*;
@@ -110,6 +112,7 @@ pub use two_d::*;
 #[cfg(feature = "ui")]
 pub use ui::RuntimeUi;
 pub use water::{WaterBody, WaterMesh};
+pub use waypoints::WaypointGraph;
 
 use std::hash::Hasher;
 use std::time::{Duration, Instant};

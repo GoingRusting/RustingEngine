@@ -77,6 +77,41 @@ five-color palette.
   with warm highlights is the classic film look.
 - `vignette` 0..1 darkens the corners and leads the eye to the center.
 
+### Film and CRT/VHS effects
+
+The same component carries film and old-screen effects. Each one is 0..1
+and off at 0:
+
+```json
+"rusting.color_grading": {"grain": 0.15, "chromatic_aberration": 0.2}
+```
+
+- `grain` adds film grain. The pattern comes from the fixed tick, so the
+  same tick always gives the same grain: replays and golden images stay
+  repeatable.
+- `chromatic_aberration` splits red and blue toward the edges.
+- `scanlines` darkens every other pixel row.
+- `color_bleed` smears color to the right while brightness stays sharp,
+  like VHS tape.
+- `noise_band` rolls a band of static down the image, once every four
+  seconds.
+- `distortion` bulges the image like a curved tube and sways its rows over
+  time. The corners turn black.
+
+`chromatic_aberration`, `color_bleed` and `distortion` read neighboring
+pixels, so they add a copy of the HDR image to the frame (about one
+full-screen copy; small next to bloom). The others cost nearly nothing.
+
+For CCTV monitors, give each `rusting.camera_screen` its own `grading`
+(see [cameras.md](cameras.md#screens-a-camera-on-a-material)) so only the
+feeds look like old tape and the room stays clean:
+
+```json
+"rusting.camera_screen": {"camera": "Cam 3", "size": [320, 180],
+  "grading": {"scanlines": 0.8, "grain": 0.3, "color_bleed": 0.4,
+    "vignette": 0.4, "noise_band": 0.3, "distortion": 0.3, "saturation": 0.6}}
+```
+
 ## Mesh kit
 
 Built-in primitives (`{"BuiltinPrimitive": "<name>"}`): `Cube`, `Sphere`,
@@ -130,6 +165,34 @@ leg parts from game code each fixed tick (swing them with
 clip (`rusting docs show guide/animation`). A rigged glTF character keeps
 its skin and clips through `scene add-model` (see "Skinned meshes" there).
 Rename the parts for each copy, or use `spawn_copy` on a hidden template.
+
+## Crowds of one object
+
+Thousands of copies of one mesh and material, like shelves of identical toys,
+draw in one instanced batch with GPU culling. No special component is needed:
+give every copy the same mesh and the same material handle. Copies with
+different materials batch separately, so vary a crowd with a handful of
+shared materials, not one per object.
+
+Moving some of them each frame is cheap: change their `Transform` as usual.
+Measured with `render_bench` on an RTX 3060 at
+1920x1080 (balanced quality, 600 frames, no GPU bodies), mean and 95th
+percentile frame time:
+
+| Scene | Mean | p95 |
+| --- | --- | --- |
+| 5,000 copies | 7.4 ms | 8.2 ms |
+| 5,000 copies, 500 moved every frame | 8.8 ms | 9.4 ms |
+| 10,000 copies, 500 moved every frame | 12.4 ms | 13.4 ms |
+| 5,000 copies, 500 moved, six 320x180 camera screens | 16.5 ms | 19.0 ms |
+| the same, screens updating every other frame | 12.4 ms | 13.5 ms |
+
+All of these hold 60 fps except the full scene with screens updating every
+frame, which needs `update_every: 2` on the screens. Measure your own scene
+with `cargo run --release --example render_bench -- balanced --no-bodies
+--bears 5000 --bear-updates 500 --screens 6 --screen-every 2`. There is no
+per-instance custom value yet; give a copy that must look different its own
+material.
 
 ## Free models
 

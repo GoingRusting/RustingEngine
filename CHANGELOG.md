@@ -1,5 +1,59 @@
 # Changelog
 
+## [Unreleased]
+
+Engine features for the horror game FOREVER BEAR.
+
+### Added
+
+- Sound pitch and speed: play a sound at any rate, change it with a fade, and see it in the playing list
+- Pause, resume and seek playing sounds; the playing list shows where each sound is
+- Moving 3D sounds: move a sound or attach it to an object, and pick which object listens
+- Bus effects without new libraries: low-pass, reverb and distortion on any volume group, with fades
+- Voice limits and priorities: a thousand sounds at once stay within the limit, the lowest-priority and then quietest sounds give way, and the dropped count is reported
+- Captions tied to sounds, with a settings toggle and text size
+- Walls muffle sounds: a physics ray between listener and sound lowers the volume and the high frequencies
+- Long music and ambience files stream from disk instead of loading whole
+- Sounds can play backwards
+- Game tests can compare the sound mix with a stored reference file
+- Camera screens can update every few frames, switch off, and skip themselves when out of view
+- CRT and VHS look for screens: scanlines, film grain, color bleed, a rolling noise band and wobble, plus film grain and color fringing for the whole picture; grain repeats exactly for the same tick
+- Text on 3D objects: draw any text into a texture for signs, labels and monitor overlays
+- Waypoint graphs: shortest path and nearest point for monsters that patrol
+- Steam achievement and stat calls that do nothing yet, so games can call them today (see below)
+- Render benchmark options for many instanced objects and camera screens
+- Sample game `forever_bear_booth`: a night-shift booth with six CRT monitors, a shelf of pitched bear voices and a mascot that walks the aisles
+- `BusEffect`, `Caption`, `WaypointGraph` and `AssetServer` are in the prelude
+
+### Fixed
+
+- The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060
+- Each camera screen ran the GPU physics again; screens now reuse the frame's physics, so six screens cost about 3 ms instead of 113 ms
+
+### Performance
+
+Measured with `render_bench` on an RTX 3060, 1920x1080, balanced quality, 600 frames. Times are mean and 95th percentile frame time.
+
+- Six 320x180 camera screens, with the base scene's 1,000 GPU bodies: 134.91 / 151.07 ms before, 24.86 / 26.48 ms after (the base scene alone is 22.18 / 24.54 ms, most of it GPU physics).
+- Six 320x180 camera screens without bodies: 5.24 / 6.11 ms (scene alone 3.06 / 3.60 ms).
+- Instanced bears, without bodies: 5,000 at 7.40 / 8.20 ms; 5,000 with 500 moved per frame at 8.81 / 9.36 ms; 10,000 with 500 moved at 12.37 / 13.38 ms.
+- 5,000 bears, 500 moved per frame and six screens: 16.47 / 18.96 ms; with screens updating every other frame, 12.37 / 13.47 ms.
+- The same bear counts with 1,000 GPU bodies: 25.55 / 27.59 ms (5,000), 30.77 / 33.16 ms (10,000 with 500 moved).
+- GPU physics: a body too big for one contact-grid cell (the benchmark's ground) tested every other body on a single GPU thread, four times a step, and stalled the whole physics pass. Each such body now gets a workgroup of 256 threads. The benchmark's physics pass fell from 20.83 ms to 1.4-1.8 ms of GPU time, and the base scene with 1,000 bodies from 22.18 ms to 5.63-6.27 ms mean frame time. Body positions and velocities match the old code bit for bit on the RTX 3060 and on lavapipe.
+
+### Needs owner approval
+
+- `steamworks` crate, for the real Steam backend behind the new `steam` feature.
+- `cpal` as a direct dependency, for microphone level input (today it is only pulled in by kira).
+- A video decoder crate, for video on textures.
+
+### Not done
+
+- Microphone input and video on textures wait on the approvals above.
+- The Windows build was checked under Wine only: it builds, opens a window, renders on the GPU and opens the sound device. Gamepads, the save folder and real Windows hardware are not checked yet.
+
+---
+
 ## [2.0.3] - 2026-10-05
 
 ### Added

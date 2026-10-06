@@ -1,0 +1,179 @@
+# Agent guide
+
+This is a Rusting game project. You can build the whole game from the command
+line: scenes are JSON files, game code is plain Rust, and every `rusting`
+command takes `--json` for output a program can read.
+
+## Files
+
+- `project.json`: project manifest; `main_scene` is the scene the game loads.
+- `scenes/main.rscene`: the scene, as JSON. Edit it with `rusting scene patch`
+  rather than by hand, so every change is validated before it is written.
+- `src/main.rs`: game code. `update` runs once per frame.
+- `assets/`: imported models, textures and sounds.
+- `tests/`: scenario files for `rusting test` (create the folder when needed).
+- `rusting add scenario <name>` and `rusting add system <name>` scaffold a failing scenario (and a stub function in `src/main.rs`) to fill in.
+
+## Workflow
+
+1. `rusting schema --json` lists every scene section and component with its
+   default, fields, units and an example. Read it before writing scene JSON.
+2. `rusting scene query scenes/main.rscene --json` lists the entities with
+   their IDs. Patches address entities by ID or by unique name.
+3. `rusting scene patch scenes/main.rscene patch.json [--dry-run]` applies a
+   batch of operations: `create`, `set`, `remove`, `reparent`, `duplicate`,
+   `delete` and `set_scene` (scene-level fields). Built-in sections and
+   components may be partial; missing fields take their defaults.
+4. `rusting check` builds the game code and validates the scene. Project
+   commands default to the current folder.
+5. `rusting test` runs every scenario in `tests/`, and
+   `rusting test tests/name.json` runs one. A scenario presses inputs on given
+   ticks, sets values, and checks values; `"exists": false` checks that an
+   object is gone, and `tolerance` applies to every number in a position or
+   other array. Use `set` to place the player or
+   fill a counter before a check, `within` for "eventually by tick N" and
+   `until` for "holds every tick through N". Both take an absolute tick,
+   not a count. A `pointer` step puts the mouse cursor at a point of the
+   view, given as fractions: `{"tick": 1, "pointer": [0.5, 0.5]}` is the
+   center.
+6. `rusting capture scenes/main.rscene shot.png --tick 60` renders a frame so
+   you can look at the result. Scenario files can capture frames too.
+   A working game is not done until it looks good: run the polish loop and
+   checklist in `rusting docs show guide/look-and-feel` (lighting, palette,
+   HUD, shapes, free CC0 models with `rusting scene add-model`).
+7. `rusting run` opens the game window. `--ticks N` runs it headless and
+   saves the end state to `build/final.rscene`; inspect it with
+   `rusting scene query build/final.rscene --json`. Game output (`eprintln!`)
+   is in the `--json` result under `game.stderr`.
+8. Every error has a code such as `SCENE_CONFLICT`.
+   `rusting explain SCENE_CONFLICT` prints what it means, how to fix it and
+   an example; `rusting explain` lists every code. A `--json` diagnostic
+   also names where the problem is: `file`, `line` and `column` for text
+   that did not parse, `scene_location` (a JSON pointer into `file`, such as
+   `/entities/3` or `/operations/1` of a patch) and `entity` (`id`, `name`).
+   `rusting docs search <words>` and `rusting docs show <id>` read the
+   manual and every command offline, for this engine version.
+   `skills/rusting-game/SKILL.md` (also `rusting docs show guide/agent-skill`)
+   is the full guide for building a game; read it first.
+   `rusting docs show sample/<name>` prints a sample game's README and code.
+   A diagnostic with a `fix` (a misspelled scene key) is certain:
+   `rusting fix --dry-run` lists the fixes and `rusting fix` applies them.
+
+9. A project that points `rusting_engine` at a local `path` builds against
+   whatever is in that folder now. If the engine is being edited while you
+   work, a build can fail inside the engine or a GPU state hash can change
+   between two runs. Run `rusting --version` and rerun before you report a
+   failure as a game bug. To hold one engine version, depend on a git `rev`
+   or `tag` instead of a `path`.
+
+## Scene basics
+
+- +Y is up and -Z is forward. Units are metres, radians and seconds.
+- A mesh is scaled by `transform.scale`, and so is its collider: a unit box
+  collider on an entity scaled `[6, 1, 6]` is a 6 x 1 x 6 slab.
+- Physics needs `physics_body`, `rigid_body` (`Fixed`, `Dynamic` or
+  `Kinematic`) and `collider`. A `sensor` collider only reports touches.
+- Gameplay components need no code: `rusting.counter`, `rusting.pickup`,
+  `rusting.hud` (text with `{counter}` placeholders), `rusting.tween`,
+  `rusting.sound_cue`, `rusting.burst_emitter`, `rusting.player_controller`,
+  `rusting.joint`. Components with `requires` wait for that counter to reach
+  its target.
+- Quads are one-sided: a sprite turned more than 90 degrees about Y
+  disappears. Animate 2D sprites with a `Scale` tween instead.
+- Player and platformer controllers ride moving platforms (kinematic bodies
+  moved by `rusting.tween` or game code).
+- The player controller is kinematic: moving bodies do not push it, but it
+  pushes dynamic bodies it walks into (`push_bodies`). Handle hazards in game
+  code with `touching`, as below; it includes the floor and the wall the
+  player stands on or pushes.
+- Input actions for the player controller: `player.forward`, `player.back`,
+  `player.left`, `player.right`, `player.jump`, `player.sprint`.
+- Add your own actions with `rusting.input_action`, for example
+  `{"action": "fire", "inputs": ["MouseLeft", "KeyF"]}`. Key names are winit
+  `KeyCode` names; gamepad inputs are `PadSouth` (A), `PadEast`, `PadStart`,
+  `PadDpadUp`, `PadLeftStickUp` and so on. Scenarios press the action by name. `pressed` is true
+  only on the tick an action goes down; a scenario `tap` step presses and
+  releases, so several taps give several edges.
+- Menus use egui through `scene.ui()`. A scenario `click` step clicks a
+  button by its label. Saves go through `scene.save_data` and
+  `scene.load_data`. `rusting docs show guide/menus-and-ui` covers menus,
+  pause, quit, saves, rebinding and their tests.
+- `rusting docs show api/PlayerController` lists the controller's fields.
+  `turn_speed` turns the body's non-camera children (the visible rig)
+  toward the walking direction.
+- A `rusting.particle_emitter` is the full particle effect (fire, smoke,
+  snow, sparks); `rusting effect list` lists ready presets and
+  `rusting docs show guide/effects` covers its fields.
+- A `rusting.burst_emitter` with `rate` emits continuously over its `area`
+  box; `stretch` makes tall particles such as rain streaks.
+- A dynamic body with a `ConvexMesh` collider collides as the convex hull
+  of its mesh: a `Cylinder` mesh makes a rolling barrel.
+- `rusting.animation` plays keyframe clips (position, rotation, scale,
+  color, emissive, visible, numeric fields) on an object and its named
+  children, with `transitions` between clips driven by
+  `set_animation_parameter`, 1D/2D blend spaces, masked override or
+  additive `layers`, `root_motion` (`scene retarget` copies clips between
+  skeletons), `rusting.ik` makes a joint look at or
+  reach a target object, and `rusting.ragdoll` hands bones to physics on
+  a hit or `set_ragdoll` and blends them back (`muscle` above 0 keeps
+  them physical and following the clips: an active ragdoll); `rusting docs show guide/animation` covers it. `scene
+  add-model` keeps a glTF's node animations as clips, and a skinned
+  glTF's skin as `rusting.skin` and blend shapes as `rusting.morph` (both
+  on the CPU; keep to a few characters).
+  Without a rigged model, build characters from child entities and key
+  them.
+
+## Game code
+
+```rust
+use rusting_engine::prelude::*;
+
+fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
+    // Objects are found by their scene name.
+    let hit = scene.touching("Player").iter().any(|name| name == "Spikes");
+    let mut player = scene.object("Player");
+    // FrameTime: delta_seconds() and elapsed_seconds() are methods;
+    // fixed_tick and frame are fields.
+    player.rotate_y(1.5 * time.delta_seconds());
+    if hit || player.position()[1] < -5.0 {
+        player.set_position([0.0, 1.0, 0.0]);
+    }
+}
+
+rusting_game!(update);
+```
+
+`GameScene` finds objects by name (`object`, `try_object`), moves them
+(`set_position`, `move_by`, `set_rotation`, `set_scale`; `position`,
+`rotation` and `scale` read them back), reports contacts (`touching`), reads
+and changes counters (`counter`, or the shorthands `counter_value`,
+`set_counter`, `add_to_counter` and `counter_complete`), reads input actions
+(`pressed` for this frame, `held`), casts rays (`raycast`, and `aim` along the
+active camera; `camera_ray` gives that camera's position and forward
+direction, `pointer_ray` the ray through the mouse cursor), launches bodies
+(`set_body_kind`, `set_linear_velocity`, `set_angular_velocity`; each wakes a
+sleeping body, and a body made `Kinematic` or `Fixed` stops) and reads their
+velocity (`linear_velocity`, `angular_velocity`), stops a body completely
+(`reset_body`), turns a player controller (`set_look`) and reads its
+state (`player`: grounded, floor, wall, velocity), reparents objects
+(`reparent`), changes a light (`set_light`), removes objects
+(`despawn`), shows and
+hides them and their HUD text (`set_visible`), recolors one object without
+touching others that share its material (`color`, `set_color`,
+`set_emissive`), reloads the starting scene for a new round (`restart`;
+physics after it repeats the first run exactly), reads an object's starting
+transform, color and body kind (`initial`), saves and puts back the whole
+scene mid-game (`snapshot`, `restore`), hashes the state of one class to
+compare rounds (`state_hash`), reads
+and writes `rusting.tile_map` cells under a world position (`tile`,
+`set_tile`), plays sounds (`play_sound`, `play_sound_looped`,
+`stop_sound`, `set_master_volume`; clips are WAV, Ogg, MP3 or FLAC paths under
+`assets/`), fires sound cues and burst emitters (`trigger`), spawns shapes
+(`spawn_cube`, `spawn_sphere`), copies a hidden template object with its
+children (`spawn_copy`; a copied child is named `"<copy>/<child>"`), lists the
+objects in a class (`in_class`), runs setup once per round (`once`; `restart`
+runs it again), draws random numbers that repeat for a scenario's seed
+(`random`), switches to another scene file such as a next level
+(`load_scene`, with a path relative to the project folder) and draws UI (`ui`,
+an egui context). `world()` gives the ECS world for anything else.
+`cargo doc --open` documents the full API.
