@@ -94,7 +94,10 @@ Hello Cube/
 A game is an ordinary Rust program. You can add any crate to its
 `Cargo.toml` and debug it with your usual tools. The game loads the cooked
 scene from `build/`, so cook first (`rusting cook`, or Play once); after
-that, plain `cargo run` in the project folder works too.
+that, plain `cargo run` in the project folder works too. After you edit the scene,
+cook again: `cargo run` and the built binary print a warning when the
+cooked scene is older than the scene file. `rusting run` and `rusting test`
+cook for you.
 
 ## Next
 

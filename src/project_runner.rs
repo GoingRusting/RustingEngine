@@ -2590,9 +2590,45 @@ fn load_project_runtime<P: Plugin>(
         .find(|folder| folder.join("project.json").is_file())
         .or_else(|| scene_path.parent())
         .unwrap_or(Path::new("."));
+    if let Some(warning) = stale_cooked_scene_warning(folder, scene_path) {
+        eprintln!("{warning}");
+    }
     runtime.insert_resource(ProjectFolder(folder.to_path_buf()));
     crate::runtime::check_determinism(runtime.world_mut())?;
     Ok(runtime)
+}
+
+/// A warning when `scene_path` is the project's cooked main scene and the
+/// source scene changed after the last cook. Running the binary directly
+/// after `scene patch` otherwise plays the old level without a word.
+fn stale_cooked_scene_warning(
+    folder: &Path,
+    scene_path: &Path,
+) -> Option<String> {
+    // An exported game has no Cargo.toml, and copying sets its file times.
+    if !folder.join("Cargo.toml").is_file() {
+        return None;
+    }
+    let manifest: crate::project::ProjectManifest = serde_json::from_slice(
+        &std::fs::read(folder.join("project.json")).ok()?,
+    )
+    .ok()?;
+    let cooked = folder.join(&manifest.cooked_scene).canonicalize().ok()?;
+    if cooked != scene_path.canonicalize().ok()? {
+        return None;
+    }
+    let source = folder.join(&manifest.main_scene);
+    let modified =
+        |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    (modified(&source)? > modified(&cooked)?).then(|| {
+        format!(
+            "warning: {} is older than {}, so the game runs the scene as it \
+             was at the last cook. Run `rusting cook .` first (`rusting run` \
+             and `rusting test` cook for you).",
+            manifest.cooked_scene.display(),
+            manifest.main_scene.display()
+        )
+    })
 }
 
 /// egui input translation and painting for [`crate::runtime::RuntimeUi`].
@@ -3708,6 +3744,44 @@ macro_rules! rusting_game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cooked_scene_older_than_its_source_is_reported() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-stale-cook-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(folder.join("scenes")).unwrap();
+        std::fs::create_dir_all(folder.join("build")).unwrap();
+        std::fs::write(
+            folder.join("project.json"),
+            r#"{"name": "g", "main_scene": "scenes/main.rscene", "cooked_scene": "build/main.rscene.bin"}"#,
+        )
+        .unwrap();
+        let source = folder.join("scenes/main.rscene");
+        let cooked = folder.join("build/main.rscene.bin");
+        std::fs::write(&source, "{}").unwrap();
+        std::fs::write(&cooked, "").unwrap();
+        let age = |path: &Path, seconds: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::UNIX_EPOCH
+                        + std::time::Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
+        age(&cooked, 1_000);
+        age(&source, 2_000);
+        // No Cargo.toml: an exported folder, whose file times mean nothing.
+        assert_eq!(stale_cooked_scene_warning(&folder, &cooked), None);
+        std::fs::write(folder.join("Cargo.toml"), "").unwrap();
+        let warning = stale_cooked_scene_warning(&folder, &cooked).unwrap();
+        assert!(warning.contains("rusting cook"), "{warning}");
+        age(&cooked, 3_000);
+        assert_eq!(stale_cooked_scene_warning(&folder, &cooked), None);
+        let _ = std::fs::remove_dir_all(folder);
+    }
 
     #[test]
     fn headless_simulation_runs_exact_ticks_from_a_cooked_scene() {
