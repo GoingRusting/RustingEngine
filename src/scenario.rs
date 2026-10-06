@@ -906,8 +906,10 @@ pub struct Expectation {
     /// Fails when the value equals this (with `tolerance` for numbers).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_equals: Option<Value>,
+    /// Passes when the number is greater; an array compares its length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greater_than: Option<f64>,
+    /// Passes when the number is less; an array compares its length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub less_than: Option<f64>,
     /// Allowed difference when `equals` compares numbers, also each number
@@ -2590,7 +2592,11 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
             Value::Null,
         )
     })?;
-    let number = actual.as_f64();
+    // An array compares by its length: `/playing` greater_than 2 means at
+    // least three sounds.
+    let number = actual
+        .as_f64()
+        .or_else(|| actual.as_array().map(|items| items.len() as f64));
     if expect.finite && has_null_number(&actual) {
         return Err((
             format!("{subject} is {actual}, expected finite numbers"),
@@ -3610,6 +3616,11 @@ mod tests {
                         "tolerance": 0.01}},
                     {"tick": 12, "expect": {"entity": "audio:",
                         "path": "/playing/0/pan", "greater_than": 0.9}},
+                    // An array compares its length: one sound plays.
+                    {"tick": 12, "expect": {"entity": "audio:",
+                        "path": "/playing", "greater_than": 0.0}},
+                    {"tick": 12, "expect": {"entity": "audio:",
+                        "path": "/playing", "less_than": 2.0}},
                     // The booth is right of the walker.
                     {"tick": 22, "expect": {"entity": "audio:",
                         "path": "/playing/0/pan", "less_than": -0.9}},

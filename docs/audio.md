@@ -198,7 +198,9 @@ Headless runs have no audio device. Read the entity `audio:` instead:
 - `/playing`: every sound that has not ended, with `id`, `clip`, `volume`,
   `pan`, `bus`, `looped`, the `tick` it starts on, `rate`, `position`,
   `remaining`, `paused`, `priority`, `world_position`, `occlusion` and
-  `streamed`.
+  `streamed`. `greater_than` and `less_than` on an array compare its
+  length: `{"entity": "audio:", "path": "/playing", "greater_than": 2}`
+  means at least three sounds are playing.
 - `/buses/<bus>`: `voices`, `limit`, `dropped`, `stolen` and `effects`.
 - `/dropped`: sounds the voice limits dropped or replaced.
 - `/captions`: caption lines showing now.

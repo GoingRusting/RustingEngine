@@ -38,6 +38,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting.player_controller` has `pitch_limits` and `yaw_limits` for seated and turret views
 - `rusting check` reports a CLI built before the latest engine source edit once a day per project instead of on every run
 - The `restart` and `load_scene` docs say that playing sounds carry on and how to stop them first
+- Scenario `greater_than` and `less_than` compare an array's length, so `/playing` can be counted
 
 ### Fixed
 
