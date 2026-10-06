@@ -302,6 +302,10 @@ fn execute(args: &[String]) -> CliResult {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
                         _ => return usage("--ticks requires a tick count"),
                     },
+                    "--bench" => match flags.next().map(|v| v.parse()) {
+                        Some(Ok(frames)) => options.bench = Some(frames),
+                        _ => return usage("--bench requires a frame count"),
+                    },
                     "--timeout" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(seconds)) => {
                             options.timeout =
@@ -572,6 +576,19 @@ fn render_human(result: &CliResult) -> String {
         let data = &result.data;
         if let Some(version) = data["engine_version"].as_str() {
             lines.push(format!("RustingEngine {version}"));
+        }
+        let bench = &data["timings"]["bench"];
+        if bench.is_object() {
+            let ms = |key: &str| bench[key].as_f64().unwrap_or(0.0);
+            lines.push(format!(
+                "bench: {} frames, mean {:.2} ms, p50 {:.2}, p95 {:.2}, p99 {:.2}, max {:.2}",
+                bench["frames"],
+                ms("mean_ms"),
+                ms("p50_ms"),
+                ms("p95_ms"),
+                ms("p99_ms"),
+                ms("max_ms")
+            ));
         }
         if let Some(root) = data.get("root").and_then(|v| v.as_str()) {
             lines.push(format!("Project: {root}"));

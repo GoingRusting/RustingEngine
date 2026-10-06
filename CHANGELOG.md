@@ -49,6 +49,7 @@ Engine features for the horror game FOREVER BEAR.
 - `RUSTING_PERF=1` adds the p50, p95, p99 and largest frame time of each second to its `[rusting] perf` line
 - `project.json` takes `"window": [width, height]`, the window size a game asks for when it runs from the project folder
 - `perf.render.cameras` in a test report also lists each camera screen drawn that frame, with its GPU time, draws and triangles
+- `rusting run --bench FRAMES` measures that many windowed frames after a 60-frame warm-up, closes the game, and reports mean, p50, p95, p99 and max frame time
 
 ### Fixed
 

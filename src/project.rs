@@ -112,6 +112,46 @@ pub fn first_frame_ms(output: &str) -> Option<u64> {
 /// Printed by a headless run with the mean wall time of one fixed tick.
 pub const TICK_TIME_MARKER: &str = "[rusting] headless ms per tick";
 
+/// Frames a windowed game measures before it closes itself and prints
+/// [`BENCH_MARKER`]; set by `rusting run --bench FRAMES`.
+pub const BENCH_FRAMES_ENV: &str = "RUSTING_BENCH_FRAMES";
+
+/// Frames a bench run skips before measuring: the first frames build
+/// pipelines and upload assets.
+pub const BENCH_WARMUP_FRAMES: u32 = 60;
+
+/// Prefix of the line holding a bench run's frame times as JSON.
+pub const BENCH_MARKER: &str = "[rusting] bench";
+
+/// A bench line for frame lengths in milliseconds: frame count, mean, p50,
+/// p95, p99 and max (nearest rank). Sorts `lengths`.
+#[must_use]
+pub fn bench_line(lengths: &mut [f64]) -> String {
+    lengths.sort_by(f64::total_cmp);
+    let rank = |p: f64| {
+        let index = (p * lengths.len() as f64).ceil() as usize;
+        lengths.get(index.saturating_sub(1)).copied().unwrap_or(0.0)
+    };
+    let mean = lengths.iter().sum::<f64>() / lengths.len().max(1) as f64;
+    let summary = serde_json::json!({
+        "frames": lengths.len(),
+        "mean_ms": mean,
+        "p50_ms": rank(0.5),
+        "p95_ms": rank(0.95),
+        "p99_ms": rank(0.99),
+        "max_ms": rank(1.0),
+    });
+    format!("{BENCH_MARKER} {summary}")
+}
+
+/// The frame times a game printed with [`BENCH_MARKER`].
+#[must_use]
+pub fn bench_result(output: &str) -> Option<serde_json::Value> {
+    output.lines().find_map(|line| {
+        serde_json::from_str(line.strip_prefix(BENCH_MARKER)?.trim()).ok()
+    })
+}
+
 /// Milliseconds per tick the game reported with [`TICK_TIME_MARKER`].
 #[must_use]
 pub fn tick_time_ms(output: &str) -> Option<f64> {
@@ -1534,6 +1574,21 @@ pub fn built_executable(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bench_line_round_trips_its_frame_times() {
+        let mut lengths: Vec<f64> = (1..=100).rev().map(f64::from).collect();
+        let line = bench_line(&mut lengths);
+        assert!(line.starts_with(BENCH_MARKER), "{line}");
+        let summary = bench_result(&format!("noise\n{line}\nmore")).unwrap();
+        assert_eq!(summary["frames"], 100);
+        assert_eq!(summary["mean_ms"], 50.5);
+        assert_eq!(summary["p50_ms"], 50.0);
+        assert_eq!(summary["p95_ms"], 95.0);
+        assert_eq!(summary["p99_ms"], 99.0);
+        assert_eq!(summary["max_ms"], 100.0);
+        assert!(bench_result("no bench here").is_none());
+    }
 
     #[test]
     fn reload_output_is_split_into_file_diagnostics_and_first_frame_time() {

@@ -2294,6 +2294,8 @@ pub struct RunOptions {
     pub update_golden: bool,
     /// Run the scenario to its last tick after a failed check.
     pub keep_going: bool,
+    /// Measure this many windowed frames, report their times, and close.
+    pub bench: Option<u32>,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -2402,6 +2404,9 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
         game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
             .env(crate::project::FINAL_SCENE_OUT_ENV, &final_scene);
     }
+    if let Some(frames) = options.bench {
+        game.env(crate::project::BENCH_FRAMES_ENV, frames.to_string());
+    }
     for (path, variable) in [
         (&options.record, crate::project::REPLAY_OUT_ENV),
         (&options.replay, crate::project::REPLAY_PLAY_ENV),
@@ -2474,6 +2479,8 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
             "game_first_frame_ms": first_frame,
             // Includes loading the scene; a debug build shows here first.
             "headless_ms_per_tick": crate::project::tick_time_ms(&run.stderr),
+            // Windowed frame times from `--bench`, after the warm-up.
+            "bench": crate::project::bench_result(&run.stderr),
             "command_to_first_frame_ms": first_frame
                 .map(|ms| launched_after.as_millis() as u64 + ms),
         },

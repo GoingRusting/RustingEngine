@@ -3157,6 +3157,9 @@ struct ProjectApplication {
     audio: Option<crate::audio_output::AudioOutput>,
     /// Set by [`crate::project::QUIT_AFTER_MS_ENV`]: close at this time.
     quit_at: Option<Instant>,
+    /// Set by [`crate::project::BENCH_FRAMES_ENV`]: frames still to skip,
+    /// frames to measure, and the lengths measured so far in milliseconds.
+    bench: Option<(u32, usize, Vec<f64>)>,
 }
 
 /// Environment variable that makes a running game print, once a second, its
@@ -3196,6 +3199,13 @@ impl ProjectApplication {
                 .and_then(|ms| ms.parse().ok())
                 .map(|ms| {
                     Instant::now() + std::time::Duration::from_millis(ms)
+                }),
+            bench: std::env::var(crate::project::BENCH_FRAMES_ENV)
+                .ok()
+                .and_then(|frames| frames.parse().ok())
+                .map(|frames: usize| {
+                    let warmup = crate::project::BENCH_WARMUP_FRAMES;
+                    (warmup, frames.max(1), Vec::with_capacity(frames))
                 }),
         }
     }
@@ -3432,6 +3442,17 @@ impl ApplicationHandler for ProjectApplication {
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
+                if let Some((warmup, frames, lengths)) = &mut self.bench {
+                    match warmup.checked_sub(1) {
+                        Some(left) => *warmup = left,
+                        None => lengths.push(delta.as_secs_f64() * 1000.0),
+                    }
+                    if lengths.len() >= *frames {
+                        eprintln!("{}", crate::project::bench_line(lengths));
+                        event_loop.exit();
+                        return;
+                    }
+                }
                 self.gamepads.poll(
                     &mut self
                         .runtime

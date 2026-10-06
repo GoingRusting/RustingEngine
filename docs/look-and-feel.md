@@ -233,6 +233,12 @@ use them as a regression guard, not as the frame budget.
 To measure at a set size, put `"window": [1920, 1080]` in `project.json`:
 the game asks for that window size when it runs from the project folder.
 
+For one number to compare runs, use `rusting run --release --bench 1000
+--json`. The game opens its window, skips 60 warm-up frames (pipeline
+builds and uploads), measures the next 1000, closes itself, and reports
+`timings.bench` with `frames`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms` and
+`max_ms`. Without `--json` it prints one `bench:` line.
+
 ## Free models
 
 A real model beats any pile of primitives. Many good game models are free
