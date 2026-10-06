@@ -381,11 +381,11 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "schema",
-        usage: "schema [--json-schema] [--json]",
-        summary: "Print this catalog: operations, scene sections and components with defaults, examples, units, ranges, and GPU cost. With --json-schema, print JSON Schema (draft 2020-12) for scene, scene_patch, scenario, project and asset_meta files instead.",
+        usage: "schema [NAME] [--json-schema] [--json]",
+        summary: "Print this catalog: operations, scene sections and components with defaults, examples, units, ranges, and GPU cost. With --json-schema, print JSON Schema (draft 2020-12) for scene, scene_patch, scenario, project and asset_meta files instead. With NAME, print only that part: a component, resource or asset type (`player_controller` or `rusting.player_controller`), an operation, or a top-level section such as `scenario`; an unknown NAME lists the known ones.",
         gpu: NO_GPU,
         defaults: &[],
-        example: "schema --json-schema",
+        example: "schema camera_screen --json",
     },
 ];
 
@@ -1206,6 +1206,67 @@ pub fn json_schemas() -> Value {
 
 const JSON_SCHEMA_DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
+/// The parts of [`catalog`] named `name`: a top-level section such as
+/// `scenario`, or every component, resource, asset type or operation whose
+/// `key` or `name` is `name` (the `rusting.` prefix is optional). The error
+/// lists the names that exist.
+pub fn catalog_entry(name: &str) -> Result<Value, String> {
+    let catalog = catalog();
+    if let Some(section) = catalog.get(name) {
+        return Ok(section.clone());
+    }
+    let full = format!("rusting.{name}");
+    let mut found = Vec::new();
+    let mut names = Vec::new();
+    fn walk(
+        value: &Value,
+        wanted: [&str; 2],
+        found: &mut Vec<Value>,
+        names: &mut Vec<String>,
+    ) {
+        match value {
+            Value::Object(fields) => {
+                let id = fields
+                    .get("key")
+                    .or_else(|| fields.get("name"))
+                    .and_then(Value::as_str);
+                if let Some(id) = id {
+                    if wanted.contains(&id) {
+                        found.push(value.clone());
+                    }
+                    names.push(id.to_owned());
+                }
+                fields
+                    .values()
+                    .for_each(|field| walk(field, wanted, found, names));
+            }
+            Value::Array(items) => items
+                .iter()
+                .for_each(|item| walk(item, wanted, found, names)),
+            _ => {}
+        }
+    }
+    walk(&catalog, [name, &full], &mut found, &mut names);
+    match found.len() {
+        0 => {
+            let mut sections: Vec<String> = catalog
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(key, _)| key.clone())
+                .collect();
+            sections.extend(names);
+            sections.dedup();
+            Err(format!(
+                "no catalog entry `{name}`; known: {}",
+                sections.join(", ")
+            ))
+        }
+        1 => Ok(found.remove(0)),
+        _ => Ok(Value::Array(found)),
+    }
+}
+
 /// The full catalog as JSON.
 #[must_use]
 pub fn catalog() -> Value {
@@ -1597,6 +1658,17 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("{}: {error}", section.key));
         }
+    }
+
+    #[test]
+    fn catalog_entry_finds_one_component_or_section() {
+        let player = catalog_entry("player_controller").unwrap();
+        assert_eq!(player["key"], "rusting.player_controller");
+        assert!(catalog_entry("rusting.player_controller").is_ok());
+        assert!(catalog_entry("scenario").unwrap().get("audio").is_some());
+        assert_eq!(catalog_entry("doctor").unwrap()["name"], "doctor");
+        let error = catalog_entry("nope").unwrap_err();
+        assert!(error.contains("rusting.camera_screen"), "{error}");
     }
 
     #[test]

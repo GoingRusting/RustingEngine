@@ -260,6 +260,12 @@ fn execute(args: &[String]) -> CliResult {
             CliResult::success(rusting_engine::schema::json_schemas())
         }
         ["schema"] => CliResult::success(rusting_engine::schema::catalog()),
+        ["schema", name] if !name.starts_with("--") => {
+            match rusting_engine::schema::catalog_entry(name) {
+                Ok(entry) => CliResult::success(entry),
+                Err(error) => usage(error),
+            }
+        }
         ["inspect", root, flags @ ..] => {
             let (mut tick, mut entities) = (None, Vec::new());
             let mut flags = flags.iter();

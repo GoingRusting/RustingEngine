@@ -18,6 +18,8 @@ command takes `--json` for output a program can read.
 
 1. `rusting schema --json` lists every scene section and component with its
    default, fields, units and an example. Read it before writing scene JSON.
+   `rusting schema camera_screen --json` prints one component, operation or
+   section (`scenario`) instead of the whole catalog.
 2. `rusting scene query scenes/main.rscene --json` lists the entities with
    their IDs. Patches address entities by ID or by unique name.
 3. `rusting scene patch scenes/main.rscene patch.json [--dry-run]` applies a
