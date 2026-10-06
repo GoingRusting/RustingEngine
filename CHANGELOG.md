@@ -31,6 +31,7 @@ Engine features for the horror game FOREVER BEAR.
 - The `dark_interior` preset's moonlight is bright enough to see (30000 lux instead of 3000), and the docs explain how lux, point light intensity and ambient intensity compare
 - Game code can draw text onto an object (`scene.set_text`) and put any material on one (`set_material`, `create_texture`); `docs search` snippets show the line that best matches the query
 - `asset reimport` by path registers a file under `assets/` that has no `.rmeta` yet, such as a model added by `scene add-model`, instead of failing with ASSET_NOT_FOUND
+- The docs list every built-in primitive's size and axis (`docs/look-and-feel.md` "Mesh kit" and the `mesh` schema entry)
 
 ### Fixed
 

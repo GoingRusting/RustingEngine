@@ -2977,6 +2977,47 @@ impl Plugin for AssetPlugin {
 
 #[cfg(test)]
 mod tests {
+    /// Matches the size table in docs/look-and-feel.md "Mesh kit".
+    #[test]
+    fn primitive_sizes_match_the_documented_table() {
+        let size = |shape| {
+            let mesh = procedural_primitive_mesh(shape);
+            let mut low = [f32::MAX; 3];
+            let mut high = [f32::MIN; 3];
+            for vertex in &mesh.vertices {
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(vertex.position[axis]);
+                    high[axis] = high[axis].max(vertex.position[axis]);
+                }
+            }
+            assert!(
+                (0..3).all(|axis| (low[axis] + high[axis]).abs() < 1e-5),
+                "{shape:?} is not centered"
+            );
+            [0, 1, 2]
+                .map(|axis| ((high[axis] - low[axis]) * 100.0).round() / 100.0)
+        };
+        use PrimitiveShape::*;
+        for (shape, expected) in [
+            (Cube, [1.0, 1.0, 1.0]),
+            (RoundedCube, [1.0, 1.0, 1.0]),
+            (Sphere, [1.0, 1.0, 1.0]),
+            (Cylinder, [1.0, 1.0, 1.0]),
+            (Cone, [1.0, 1.0, 1.0]),
+            (Capsule, [1.0, 2.0, 1.0]),
+            (Pyramid, [1.0, 1.0, 1.0]),
+            (Torus, [1.0, 0.28, 1.0]),
+            (Plane, [1.0, 0.0, 1.0]),
+            (Quad, [1.0, 1.0, 0.0]),
+            (Triangle, [1.0, 1.0, 0.0]),
+            (Tetrahedron, [1.0, 1.0, 1.0]),
+            (Octahedron, [1.0, 1.0, 1.0]),
+            (Dodecahedron, [0.93, 0.93, 0.93]),
+            (Icosahedron, [0.85, 0.85, 0.85]),
+        ] {
+            assert_eq!(size(shape), expected, "{shape:?}");
+        }
+    }
     use super::*;
 
     #[test]

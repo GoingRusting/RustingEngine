@@ -501,7 +501,7 @@ const ENTITY_SECTIONS: &[Section] = &[
             "cast_shadows": true, "receive_shadows": true
         }),
         fields: &[
-            field("/mesh/BuiltinPrimitive", "", "Cube, Sphere, Triangle, Plane, Tetrahedron, Octahedron, Dodecahedron, Icosahedron, Pyramid, Cylinder, Cone, Torus, Quad", "other variants: \"BuiltinCube\", \"BuiltinSphere\", {\"AssetPath\": \"assets/model.gltf\"}"),
+            field("/mesh/BuiltinPrimitive", "", "Cube, Sphere, Triangle, Plane, Tetrahedron, Octahedron, Dodecahedron, Icosahedron, Pyramid, Cylinder, Cone, Torus, Quad, RoundedCube, Capsule", "centered on the origin; at scale 1 Cube, RoundedCube, Sphere, Cylinder, Cone and Pyramid fill a 1 m box; Cylinder, Cone, Capsule and Pyramid run along Y (cone and pyramid tip at +Y); Capsule is 1 x 2 x 1; Torus lies in XZ, 1 x 0.28 x 1; Plane is flat in XZ facing +Y; Quad and Triangle are flat in XY facing +Z; table in docs/look-and-feel.md \"Mesh kit\". Other variants: \"BuiltinCube\", \"BuiltinSphere\", {\"AssetPath\": \"assets/model.gltf\"}"),
             field("/material/Inline/name", "", "text", "label shown in the editor; may be empty"),
             field("/material/Inline/model", "", "Pbr | Unlit", "other variant: \"BuiltinError\""),
             field("/material/Inline/alpha_mode", "", "Opaque | {\"Mask\": {\"cutoff\": 0..1}} | Blend", ""),

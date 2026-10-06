@@ -126,6 +126,28 @@ Built-in primitives (`{"BuiltinPrimitive": "<name>"}`): `Cube`, `Sphere`,
 `Triangle`, `Tetrahedron`, `Octahedron`, `Dodecahedron`, `Icosahedron`,
 `Pyramid`. Cylinder, cone, capsule and sphere are smooth shaded.
 
+Every primitive is centered on its origin. At scale 1:
+
+| Primitive | Size in meters (x, y, z) | Shape and axis |
+|---|---|---|
+| `Cube`, `RoundedCube` | 1 x 1 x 1 | box |
+| `Sphere` | 1 x 1 x 1 | diameter 1 |
+| `Cylinder` | 1 x 1 x 1 | diameter 1, runs along Y |
+| `Cone` | 1 x 1 x 1 | base diameter 1 at y = -0.5, tip at y = +0.5 |
+| `Capsule` | 1 x 2 x 1 | diameter 1, runs along Y |
+| `Pyramid` | 1 x 1 x 1 | square base at y = -0.5, tip at y = +0.5 |
+| `Torus` | 1 x 0.28 x 1 | ring lies flat in XZ around Y; tube radius 0.14 |
+| `Plane` | 1 x 0 x 1 | flat in XZ, faces +Y |
+| `Quad` | 1 x 1 x 0 | flat in XY, faces +Z |
+| `Triangle` | 1 x 1 x 0 | flat in XY, tip at y = +0.5 |
+| `Tetrahedron`, `Octahedron` | 1 x 1 x 1 | fits the unit box |
+| `Dodecahedron` | 0.93 x 0.93 x 0.93 | |
+| `Icosahedron` | 0.85 x 0.85 x 0.85 | |
+
+So a scale of `[0.1, 2.0, 0.1]` on a `Cylinder` is a pole 2 m tall and
+10 cm thick. To lay a cylinder on its side (a roller), rotate it by 1.5708
+around X or Z.
+
 - `RoundedCube` is a unit box with edges rounded by 0.1. Edges catch the
   light, so crates, furniture and buttons stop looking like placeholders.
   Large scales stretch the rounding; for a wall, keep a plain `Cube`.
