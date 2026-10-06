@@ -2203,6 +2203,11 @@ fn outdated_cli(root: &Path) -> Option<Diagnostic> {
             .ok()
             .filter(|later| !later.is_zero())?
             .as_secs();
+        // Expected while the engine is being edited, so it shows once a
+        // day per project instead of hiding real warnings on every check.
+        if !once_a_day(&root.join("build/cli-outdated-shown")) {
+            return None;
+        }
         let later = match later {
             0..3600 => format!("{} min", later / 60),
             3600..86_400 => format!("{} h", later / 3600),
@@ -2221,6 +2226,24 @@ fn outdated_cli(root: &Path) -> Option<Diagnostic> {
         ),
         ..Diagnostic::default()
     })
+}
+
+/// True, and touches `marker`, when `marker` is missing or older than a
+/// day.
+fn once_a_day(marker: &Path) -> bool {
+    let recent = std::fs::metadata(marker)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < 86_400);
+    if recent {
+        return false;
+    }
+    if let Some(folder) = marker.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    let _ = std::fs::write(marker, "");
+    true
 }
 
 /// The newest file under `folder` and when it changed.
@@ -3235,6 +3258,26 @@ mod shape_tests {
             if path.starts_with("../assets/models"))
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn once_a_day_lets_one_call_through_per_day() {
+        let marker = std::env::temp_dir()
+            .join(format!("rusting-once-{}", uuid::Uuid::new_v4()))
+            .join("build/cli-outdated-shown");
+        assert!(once_a_day(&marker));
+        assert!(!once_a_day(&marker));
+        let yesterday = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(90_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(yesterday)
+            .unwrap();
+        assert!(once_a_day(&marker));
+        std::fs::remove_dir_all(marker.parent().unwrap().parent().unwrap())
+            .unwrap();
     }
 
     #[test]

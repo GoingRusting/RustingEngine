@@ -146,7 +146,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     code(
         "CLI_OUTDATED",
-        "The `rusting` CLI is older than the engine the game builds against, so its docs, schema and checks may miss new features.",
+        "The `rusting` CLI is older than the engine the game builds against, so its docs, schema and checks may miss new features. A version mismatch is reported on every check; engine source edited after the CLI was built is reported once a day per project (the marker is build/cli-outdated-shown).",
         "Reinstall the CLI from the engine the game uses, then run the command again.",
         "cargo install --path <engine folder> --locked",
     ),

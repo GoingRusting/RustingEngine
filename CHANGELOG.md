@@ -36,6 +36,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenario `expect_screen` and pick checks are much faster on large scenes: a check on a 3,895-entity scene takes about 0.3 s instead of 15-20 s
 - Game code can zoom a camera: `scene.set_camera_fov(name, radians)` and `scene.camera_fov(name)`
 - `rusting.player_controller` has `pitch_limits` and `yaw_limits` for seated and turret views
+- `rusting check` reports a CLI built before the latest engine source edit once a day per project instead of on every run
 
 ### Fixed
 
