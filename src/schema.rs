@@ -1258,6 +1258,9 @@ pub fn catalog() -> Value {
                 "delete": "{\"op\": \"delete\", \"id\": UUID, \"missing_ok\": true}: also deletes descendants; missing_ok skips a missing entity",
                 "set_scene": "{\"op\": \"set_scene\", \"path\": \"/render/quality\", \"value\": \"High\"}: scene fields (name, render, simulation); expected is optional",
             },
+            "create_entity": "An entity is {\"name\", \"parent\" (UUID, unique name or null), \"id\" (optional)}, plus built-in sections such as transform, mesh_renderer, collider, physics_body, camera and lights at its top level, plus \"components\": {\"rusting.<name>\": {...}} for registered components. Sections and components may be partial.",
+            "create_example": serde_json::from_str::<Value>(crate::scene_patch::CREATE_EXAMPLE)
+                .expect("the create example is JSON"),
             "errors": "SCENE_CONFLICT (revision or expected value differs), PATCH_OPERATION, PATCH_INVALID",
         },
         "scenario": {

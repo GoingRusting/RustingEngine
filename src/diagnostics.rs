@@ -249,13 +249,13 @@ pub const CODES: &[CodeInfo] = &[
     code(
         "PATCH_JSON",
         "The patch file is not valid JSON or does not match the patch format.",
-        "Read the patch format in `rusting schema --json` and fix the file.",
-        "{\"operations\": [{\"op\": \"set\", \"id\": \"Player\", \"path\": \"/transform/position\", \"value\": [0, 1, 0]}]}",
+        "Read the patch format under scene_patch in `rusting schema --json` and fix the file. The example is a full patch with `create` operations.",
+        crate::scene_patch::CREATE_EXAMPLE,
     ),
     code(
         "PATCH_OPERATION",
         "One patch operation could not be applied (unknown entity, bad path, or wrong value type); nothing was written.",
-        "Query the scene for the entity's current form and fix the operation the message numbers.",
+        "Query the scene for the entity's current form and fix the operation the message numbers. For `create`, built-in sections sit at the top level of the entity and `rusting.*` components under `components`; `rusting explain PATCH_JSON` shows a full example.",
         "rusting scene query scenes/main.rscene --name Player --json",
     ),
     code(

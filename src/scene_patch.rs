@@ -32,6 +32,20 @@ pub struct ScenePatch {
     pub operations: Vec<PatchOperation>,
 }
 
+/// A complete patch file with `create` operations: a parent, a child that
+/// names it, built-in sections at the top level of the entity and a
+/// `rusting.*` component under `components`. Shown by `rusting schema` and
+/// by `rusting explain` for patch errors.
+pub const CREATE_EXAMPLE: &str = r#"{"operations": [
+  {"op": "create", "entity": {"name": "Shelf", "parent": null,
+    "transform": {"position": [0.0, 0.0, -4.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]}}},
+  {"op": "create", "entity": {"name": "Shelf Board", "parent": "Shelf",
+    "transform": {"position": [0.0, 1.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [2.0, 0.05, 0.4]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+      "material": {"Inline": {"base_color": [0.4, 0.3, 0.2, 1.0], "roughness": 0.8}}},
+    "components": {"rusting.counter": {"name": "boards"}}}}
+]}"#;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PatchOperation {
@@ -1107,6 +1121,22 @@ mod tests {
             true,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn the_documented_create_example_applies() {
+        let path = scene_file("create-example");
+        let example: Value = serde_json::from_str(CREATE_EXAMPLE).unwrap();
+        patch_scene_file(&path, &patch(example), false).unwrap();
+        let scene =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let shelf = entity_form(&scene.entities[2]);
+        let board = entity_form(&scene.entities[3]);
+        assert_eq!(board["parent"], shelf["id"]);
+        assert_eq!(
+            board["components"]["rusting.counter"]["name"],
+            json!("boards")
+        );
     }
 
     #[test]

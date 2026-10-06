@@ -32,6 +32,7 @@ Engine features for the horror game FOREVER BEAR.
 - Game code can draw text onto an object (`scene.set_text`) and put any material on one (`set_material`, `create_texture`); `docs search` snippets show the line that best matches the query
 - `asset reimport` by path registers a file under `assets/` that has no `.rmeta` yet, such as a model added by `scene add-model`, instead of failing with ASSET_NOT_FOUND
 - The docs list every built-in primitive's size and axis (`docs/look-and-feel.md` "Mesh kit" and the `mesh` schema entry)
+- `rusting schema` and `rusting explain PATCH_JSON` show a full `create` patch with a parent, built-in sections and a component
 
 ### Fixed
 
