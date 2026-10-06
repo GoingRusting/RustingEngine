@@ -45,6 +45,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting schema NAME` prints one component, operation or section of the catalog
 - `rusting docs show scenario` lists every scenario file field and step kind on one page
 - The scenario and camera docs show turning a player's view with `set` on the controller's `yaw` and `pitch`
+- The `audio:` scenario probe reports each bus's own `level` and `peak` under `/buses/<bus>`, measured after the bus's effects and volume
 
 ### Fixed
 

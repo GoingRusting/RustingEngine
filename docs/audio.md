@@ -213,7 +213,13 @@ Headless runs have no audio device. Read the entity `audio:` instead:
   `streamed`. `greater_than` and `less_than` on an array compare its
   length: `{"entity": "audio:", "path": "/playing", "greater_than": 2}`
   means at least three sounds are playing.
-- `/buses/<bus>`: `voices`, `limit`, `dropped`, `stolen` and `effects`.
+- `/buses/<bus>`: `voices`, `limit`, `dropped`, `stolen`, `effects`, and
+  the bus's own `level` and `peak` over the last tick, measured after its
+  effects and its `set_bus_volume`. The main bus is `""`, so its level is
+  `/buses//level`: the whole mix before the master volume. To prove a
+  voice line is heard over the ambience, compare the two buses in one tick:
+  `{"entity": "audio:", "path": "/buses/voice/level/0", "greater_than": 0.2}`
+  and `{"entity": "audio:", "path": "/buses/ambience/level/0", "less_than": 0.08}`.
 - `/dropped`: sounds the voice limits dropped or replaced.
 - `/captions`: caption lines showing now.
 

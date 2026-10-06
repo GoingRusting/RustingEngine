@@ -105,7 +105,10 @@ pub const COUNTER_PREFIX: &str = "counter:";
 /// tick per speaker, `peak` the largest sample magnitude that tick (1.0 is
 /// full scale), `clipped` the samples at or over full scale since tick 0,
 /// `playing` lists the sounds that have not ended, `buses` each bus's
-/// voices, limit, dropped and stolen sounds and active effects, and
+/// voices, limit, dropped and stolen sounds, active effects and its own
+/// `level` and `peak` over the last tick (after its effects and volume;
+/// the main bus `""`, written `/buses//level`, is the mix before the
+/// master volume), and
 /// `dropped` the sounds voice limits refused or stopped, all from an
 /// offline kira mix of what the game asked for. `captions` lists the
 /// caption lines showing.
@@ -3490,6 +3493,20 @@ mod tests {
                     "equals": 0}},
                 {"tick": 3, "expect": {"entity": "audio:",
                     "path": "/playing/0/bus", "equals": "music"}},
+                {"tick": 3, "expect": {"entity": "audio:",
+                    "path": "/buses/music/level/0", "greater_than": 0.1}},
+                {"tick": 3, "expect": {"entity": "audio:",
+                    "path": "/buses/music/level/1", "less_than": 0.001}},
+                {"tick": 3, "expect": {"entity": "audio:",
+                    "path": "/buses/music/peak/0", "greater_than": 0.1}},
+                {"tick": 3, "expect": {"entity": "audio:",
+                    "path": "/buses//level/0", "greater_than": 0.1}},
+                {"tick": 12, "expect": {"entity": "audio:",
+                    "path": "/buses/music/level/0", "less_than": 0.001}},
+                {"tick": 20, "expect": {"entity": "audio:",
+                    "path": "/buses//level/1", "greater_than": 0.1}},
+                {"tick": 20, "expect": {"entity": "audio:",
+                    "path": "/buses/music/level/0", "less_than": 0.001}},
                 {"tick": 12, "expect": {"entity": "audio:", "path": "/level/0",
                     "less_than": 0.001}},
                 {"tick": 18, "expect": {"entity": "audio:", "path": "/level/1",

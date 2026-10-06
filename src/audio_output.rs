@@ -76,6 +76,70 @@ pub struct BusReport {
     pub stolen: u64,
     /// Effects that change the sound, in processing order.
     pub effects: Vec<BusEffect>,
+    /// `[left, right]` RMS of the bus's output since the last report,
+    /// after its effects and volume. On `""` it is the whole mix before
+    /// the master volume.
+    pub level: [f32; 2],
+    /// `[left, right]` largest sample magnitude since the last report.
+    pub peak: [f32; 2],
+}
+
+/// Sums a bus's output between two reports.
+#[cfg(feature = "audio")]
+#[derive(Default)]
+struct MeterTotals {
+    squares: [f64; 2],
+    peak: [f32; 2],
+    frames: u64,
+}
+
+#[cfg(feature = "audio")]
+impl MeterTotals {
+    /// Level and peak so far, then starts over.
+    fn take(&mut self) -> ([f32; 2], [f32; 2]) {
+        let totals = std::mem::take(self);
+        let frames = totals.frames.max(1) as f64;
+        (
+            totals.squares.map(|sum| (sum / frames).sqrt() as f32),
+            totals.peak,
+        )
+    }
+}
+
+/// A kira effect that leaves the sound alone and meters it.
+#[cfg(feature = "audio")]
+struct Meter(std::sync::Arc<std::sync::Mutex<MeterTotals>>);
+
+#[cfg(feature = "audio")]
+impl kira::effect::Effect for Meter {
+    fn process(
+        &mut self,
+        input: &mut [kira::Frame],
+        _dt: f64,
+        _info: &kira::info::Info,
+    ) {
+        let Ok(mut totals) = self.0.lock() else {
+            return;
+        };
+        for frame in input.iter() {
+            for (side, sample) in
+                [frame.left, frame.right].into_iter().enumerate()
+            {
+                totals.squares[side] += f64::from(sample * sample);
+                totals.peak[side] = totals.peak[side].max(sample.abs());
+            }
+        }
+        totals.frames += input.len() as u64;
+    }
+}
+
+#[cfg(feature = "audio")]
+impl kira::effect::EffectBuilder for Meter {
+    type Handle = ();
+
+    fn build(self) -> (Box<dyn kira::effect::Effect>, ()) {
+        (Box::new(self), ())
+    }
 }
 
 #[cfg(feature = "audio")]
@@ -119,6 +183,10 @@ struct Bus {
     distortion: kira::effect::distortion::DistortionHandle,
     reverb: kira::effect::reverb::ReverbHandle,
     filter: kira::effect::filter::FilterHandle,
+    /// The bus volume, before the meter so the level includes it. The
+    /// main output's volume stays on its track.
+    volume: kira::effect::volume_control::VolumeControlHandle,
+    meter: std::sync::Arc<std::sync::Mutex<MeterTotals>>,
     /// Active effects by kind: distortion, reverb, low-pass.
     effects: [Option<BusEffect>; 3],
     limit: usize,
@@ -127,7 +195,7 @@ struct Bus {
 }
 
 /// Adds a bus's effects to a track builder, all off: tape saturation,
-/// then the room, then a wall's low-pass.
+/// then the room, then a wall's low-pass, then the bus volume and a meter.
 #[cfg(feature = "audio")]
 macro_rules! bus_effects {
     ($builder:expr) => {{
@@ -140,7 +208,12 @@ macro_rules! bus_effects {
         let reverb = $builder.add_effect(reverb::ReverbBuilder::new().mix(0.0));
         let filter = $builder
             .add_effect(filter::FilterBuilder::new().cutoff(20_000.0).mix(0.0));
-        (distortion, reverb, filter)
+        let volume = $builder.add_effect(
+            kira::effect::volume_control::VolumeControlBuilder::default(),
+        );
+        let meter = std::sync::Arc::<std::sync::Mutex<MeterTotals>>::default();
+        $builder.add_effect(Meter(meter.clone()));
+        (distortion, reverb, filter, volume, meter)
     }};
 }
 
@@ -236,7 +309,7 @@ where
     ) -> Result<Self, B::Error> {
         let mut main = kira::track::MainTrackBuilder::new()
             .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
-        let (distortion, reverb, filter) = bus_effects!(main);
+        let (distortion, reverb, filter, volume, meter) = bus_effects!(main);
         let manager = kira::AudioManager::new(kira::AudioManagerSettings {
             backend_settings,
             main_track_builder: main,
@@ -252,6 +325,8 @@ where
             distortion,
             reverb,
             filter,
+            volume,
+            meter,
             effects: [None; 3],
             limit: crate::runtime::DEFAULT_VOICE_LIMIT,
             dropped: 0,
@@ -357,11 +432,8 @@ where
                     self.manager
                         .main_track()
                         .set_volume(decibels(volume), tween(fade));
-                } else if let Some(Bus {
-                    track: Some(track), ..
-                }) = self.bus(&bus)
-                {
-                    track.set_volume(decibels(volume), tween(fade));
+                } else if let Some(bus) = self.bus(&bus) {
+                    bus.volume.set_volume(decibels(volume), tween(fade));
                 }
             }
             AudioCommand::SetBusEffect { bus, effect, fade } => {
@@ -625,12 +697,18 @@ where
         self.voices.get(&id).is_some_and(|voice| !voice.stopped())
     }
 
-    /// Every bus by name, the main output as `""`.
+    /// Every bus by name, the main output as `""`. Levels and peaks cover
+    /// the audio rendered since the previous call.
     pub fn buses(&mut self) -> std::collections::BTreeMap<String, BusReport> {
         self.voices.retain(|_, voice| !voice.stopped());
         self.buses
             .iter()
             .map(|(name, bus)| {
+                let (level, peak) = bus
+                    .meter
+                    .lock()
+                    .map(|mut totals| totals.take())
+                    .unwrap_or_default();
                 let report = BusReport {
                     voices: self
                         .voices
@@ -641,6 +719,8 @@ where
                     dropped: bus.dropped,
                     stolen: bus.stolen,
                     effects: bus.effects.iter().flatten().copied().collect(),
+                    level,
+                    peak,
                 };
                 (name.clone(), report)
             })
@@ -651,7 +731,8 @@ where
         if !self.buses.contains_key(name) {
             let mut builder = kira::track::TrackBuilder::new()
                 .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
-            let (distortion, reverb, filter) = bus_effects!(builder);
+            let (distortion, reverb, filter, volume, meter) =
+                bus_effects!(builder);
             match self.manager.add_sub_track(builder) {
                 Ok(track) => {
                     self.buses.insert(
@@ -661,6 +742,8 @@ where
                             distortion,
                             reverb,
                             filter,
+                            volume,
+                            meter,
                             effects: [None; 3],
                             limit: crate::runtime::DEFAULT_VOICE_LIMIT,
                             dropped: 0,
