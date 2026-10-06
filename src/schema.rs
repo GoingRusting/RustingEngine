@@ -714,9 +714,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction. pitch_limits and yaw_limits ([low, high] radians; yaw_limits null turns freely) bound the view, for a seated or turret camera.",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "pitch_limits": [-1.55, 1.55], "yaw_limits": null, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0}),
     },
     ComponentSection {
         key: "rusting.tween",

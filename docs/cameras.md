@@ -85,6 +85,18 @@ children. It sets their pitch, and it sets their orbit offset when
 over-the-shoulder view. `mouse_look: false` stops the controller from
 capturing the mouse, so a second player can use it.
 
+`pitch_limits` and `yaw_limits` bound the view, in radians, for a seated or
+turret camera. A booth seat that turns ±100° and looks ±40° up and down:
+
+```json
+"rusting.player_controller": {"walk_speed": 0.0, "jump_speed": 0.0,
+  "pitch_limits": [-0.7, 0.7], "yaw_limits": [-1.75, 1.75]}
+```
+
+The limits apply after mouse, stick and `set_look` changes in the same
+frame, so the view never shows past them. `yaw_limits` is absolute yaw;
+`null` (the default) turns freely.
+
 ## HUD per camera
 
 `"camera": "P2 Camera"` on a `rusting.hud` element anchors the element to

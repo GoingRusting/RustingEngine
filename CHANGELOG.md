@@ -35,6 +35,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting schema` and `rusting explain PATCH_JSON` show a full `create` patch with a parent, built-in sections and a component
 - Scenario `expect_screen` and pick checks are much faster on large scenes: a check on a 3,895-entity scene takes about 0.3 s instead of 15-20 s
 - Game code can zoom a camera: `scene.set_camera_fov(name, radians)` and `scene.camera_fov(name)`
+- `rusting.player_controller` has `pitch_limits` and `yaw_limits` for seated and turret views
 
 ### Fixed
 

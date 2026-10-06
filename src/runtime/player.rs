@@ -87,8 +87,15 @@ pub struct PlayerController {
     pub collision_mask: u32,
     /// Heading in radians around +Y; 0 looks toward -Z.
     pub yaw: f32,
-    /// Up/down look in radians, kept within ±89°.
+    /// Up/down look in radians, kept within `pitch_limits`.
     pub pitch: f32,
+    /// Lowest and highest pitch in radians, within ±89°. `[-0.7, 0.7]`
+    /// limits a seated view to ±40°.
+    pub pitch_limits: [f32; 2],
+    /// Lowest and highest yaw in radians, for a seated or turret view;
+    /// `None` turns freely. Applied after every mouse, stick and `set_look`
+    /// change, before the view is drawn.
+    pub yaw_limits: Option<[f32; 2]>,
     /// 0 is first person. Above 0, the `Camera` children orbit behind the
     /// body at this distance in metres. The controller owns the transform
     /// of its direct `Camera` children: it sets their rotation to the pitch
@@ -145,6 +152,8 @@ impl Default for PlayerController {
             collision_mask: u32::MAX,
             yaw: 0.0,
             pitch: 0.0,
+            pitch_limits: [-MAX_PITCH, MAX_PITCH],
+            yaw_limits: None,
             camera_distance: 0.0,
             camera_height: 0.6,
             camera_offset: [0.0; 3],
@@ -252,13 +261,19 @@ pub(super) fn player_look(
         if input.cursor_captured() && player.mouse_look {
             let sensitivity = player.look_sensitivity;
             player.yaw -= motion[0] * sensitivity;
-            player.pitch = (player.pitch - motion[1] * sensitivity)
-                .clamp(-MAX_PITCH, MAX_PITCH);
+            player.pitch -= motion[1] * sensitivity;
         }
         // Stick up looks up; it needs no captured cursor.
         player.yaw -= stick[0] * pad_turn;
-        player.pitch =
-            (player.pitch + stick[1] * pad_turn).clamp(-MAX_PITCH, MAX_PITCH);
+        player.pitch += stick[1] * pad_turn;
+        let [low, high] = player.pitch_limits;
+        player.pitch = player
+            .pitch
+            .max(low.max(-MAX_PITCH))
+            .min(high.min(MAX_PITCH));
+        if let Some([low, high]) = player.yaw_limits {
+            player.yaw = player.yaw.max(low).min(high);
+        }
         player.jump_requested |= jump;
         transform.rotation = [0.0, player.yaw, 0.0];
         // Behind the orbit center along the view direction, which is -Z

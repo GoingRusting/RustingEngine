@@ -99,6 +99,12 @@ crate::reflect! {
         },
         yaw: f32 { unit: "rad", doc: "0 looks toward -Z" },
         pitch: f32 { unit: "rad", min: -1.55, max: 1.55 },
+        pitch_limits: [f32; 2] {
+            unit: "rad", doc: "lowest, highest pitch; within ±1.55",
+        },
+        yaw_limits: Option<[f32; 2]> {
+            unit: "rad", doc: "lowest, highest yaw for a seated or turret view; null turns freely",
+        },
         camera_distance: f32 {
             unit: "m", min: 0.0,
             doc: "0 is first person; above 0 the camera orbits behind",

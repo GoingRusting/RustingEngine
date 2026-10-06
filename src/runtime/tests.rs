@@ -1984,6 +1984,26 @@ fn player_look_needs_captured_cursor_and_clamps_pitch() {
     assert!((yaw + 0.2).abs() < 1e-6 && pitch == 0.0);
     let (_, pitch) = look(&mut app, [0.0, -10_000.0]);
     assert!((pitch - 89.0_f32.to_radians()).abs() < 1e-6);
+    {
+        let world = app.world_mut();
+        let mut seated = world.get_mut::<PlayerController>(player).unwrap();
+        seated.pitch_limits = [-0.7, 0.7];
+        seated.yaw_limits = Some([-1.0, 1.0]);
+    }
+    assert_eq!(look(&mut app, [10_000.0, 0.0]), (-1.0, 0.7));
+    assert_eq!(look(&mut app, [-20_000.0, 10_000.0]), (1.0, -0.7));
+    let camera_pitch =
+        app.world().get::<Transform>(camera).unwrap().rotation[0];
+    assert_eq!(camera_pitch, -0.7, "the clamp lands before the view moves");
+    {
+        let world = app.world_mut();
+        let mut free = world.get_mut::<PlayerController>(player).unwrap();
+        free.pitch_limits = PlayerController::default().pitch_limits;
+        free.yaw_limits = None;
+    }
+    let (yaw, pitch) = look(&mut app, [-6_000.0, -10_000.0]);
+    assert!((yaw - 13.0).abs() < 1e-4, "{yaw}");
+    assert!((pitch - 89.0_f32.to_radians()).abs() < 1e-6);
     // Yaw turns the body; pitch tilts only the camera child.
     let world = app.world();
     assert_eq!(
