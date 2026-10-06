@@ -29,6 +29,9 @@ pub struct PlayingSound {
     /// last fade), times distance and occlusion.
     pub volume: f32,
     pub pan: f32,
+    /// `[left, right]` gain from `volume` and `pan` together, before bus
+    /// and master volume: see [`pan_gains`].
+    pub gain: [f32; 2],
     pub bus: String,
     pub looped: bool,
     /// Fixed tick it starts on.
@@ -48,6 +51,16 @@ pub struct PlayingSound {
     pub occlusion: f32,
     /// Read from disk while it plays instead of loaded whole.
     pub streamed: bool,
+}
+
+/// `[left, right]` gain of a sound at `pan`, kira's constant-power law:
+/// both sides 1 at pan 0, and at pan 1 the right side √2 (+3 dB) and the
+/// left silent. A hard-panned sound is louder on its side than at centre.
+#[must_use]
+pub fn pan_gains(pan: f32) -> [f32; 2] {
+    let right = (pan.clamp(-1.0, 1.0) + 1.0) * 0.5;
+    [(1.0 - right).sqrt(), right.sqrt()]
+        .map(|side| side * std::f32::consts::SQRT_2)
 }
 
 /// One bus as scenarios see it under `audio:/buses/<name>`; the main
@@ -395,6 +408,7 @@ where
             clip,
             volume: sound.volume,
             pan: sound.pan,
+            gain: [0.0; 2],
             bus: sound.bus,
             looped: sound.looped,
             tick,
@@ -596,6 +610,8 @@ where
                 };
                 PlayingSound {
                     position,
+                    gain: pan_gains(voice.info.pan)
+                        .map(|side| side * voice.info.volume),
                     remaining: (!voice.info.looped)
                         .then(|| left.max(0.0) / f64::from(voice.info.rate)),
                     ..voice.info.clone()
@@ -855,6 +871,30 @@ mod tests {
                 mixer.render(480)
             }
         }
+    }
+
+    #[test]
+    fn pan_gains_match_the_mix() {
+        let [left, right] = pan_gains(0.0);
+        assert!((left - 1.0).abs() < 1e-6 && (right - 1.0).abs() < 1e-6);
+        let [left, right] = pan_gains(1.0);
+        assert!(left.abs() < 1e-6);
+        assert!((right - std::f32::consts::SQRT_2).abs() < 1e-6);
+        let pan = |pan: f32| {
+            mix(
+                &mut OfflineMixer::offline().unwrap(),
+                Sound {
+                    pan,
+                    ..Sound::default()
+                },
+                480,
+            )
+        };
+        let (centre, hard) = (pan(0.0), pan(1.0));
+        let at = centre.len() - 1;
+        assert!(hard[at - 1].abs() < 1e-4, "left is silent");
+        let ratio = hard[at] / centre[at];
+        assert!((ratio - pan_gains(1.0)[1]).abs() < 0.01, "{ratio}");
     }
 
     #[test]

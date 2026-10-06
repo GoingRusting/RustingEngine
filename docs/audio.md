@@ -80,6 +80,18 @@ scene.set_sound_position(id, [3.0, 1.0, -8.0]);
 `Sound { follow: Some(entity), .. }` does the same as `play_sound_on` from
 system code.
 
+A named listener stays fixed: it does not turn when another camera becomes
+active. If the player switches to a camera that looks somewhere else, a
+sound in front of that camera can come out hard left or right. Name a
+listener only when it should not follow the view, and use
+`set_listener(None)` otherwise.
+
+Panning is constant power. At pan 0 each side plays at the sound's volume.
+At pan 1 the right side plays at √2 times the volume (+3 dB) and the left
+side is silent, so a hard-panned sound is louder on its side than at the
+centre and can clip there first. `audio:/playing/N/gain` shows the
+`[left, right]` gain of each sound, before bus and master volume.
+
 ## Occlusion
 
 `occlude: true` raycasts from the listener to the sound every frame. When a
@@ -196,7 +208,7 @@ Headless runs have no audio device. Read the entity `audio:` instead:
 - `/peak`: `[left, right]` largest sample over the last tick, and
   `/clipped`: how many samples went past full scale.
 - `/playing`: every sound that has not ended, with `id`, `clip`, `volume`,
-  `pan`, `bus`, `looped`, the `tick` it starts on, `rate`, `position`,
+  `pan`, `gain` (`[left, right]`), `bus`, `looped`, the `tick` it starts on, `rate`, `position`,
   `remaining`, `paused`, `priority`, `world_position`, `occlusion` and
   `streamed`. `greater_than` and `less_than` on an array compare its
   length: `{"entity": "audio:", "path": "/playing", "greater_than": 2}`

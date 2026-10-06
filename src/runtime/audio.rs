@@ -108,7 +108,10 @@ pub const MAX_VOICE_LIMIT: usize = 256;
 pub struct Sound {
     /// Linear gain, 1 is the clip's own level.
     pub volume: f32,
-    /// -1 is the left speaker only, 0 both, 1 the right only.
+    /// -1 is the left speaker only, 0 both, 1 the right only. Constant
+    /// power: each side plays at 1 at pan 0, and the near side at √2
+    /// (+3 dB) at pan ±1, so a hard-panned sound is louder on its side.
+    /// Scenarios see the result as `gain` under `audio:/playing`.
     pub pan: f32,
     /// Bus the sound plays on (`"music"`, `"sfx"`); empty is the main
     /// output. A bus is created the first time it is named.
