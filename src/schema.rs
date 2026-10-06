@@ -597,7 +597,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         example: || json!({"color": [1.0, 0.95, 0.9], "illuminance": 50000.0, "shadows": true}),
         fields: &[
             field("/color", RGB, "0..1", ""),
-            field("/illuminance", "lux", ">= 0", "100000 is direct sunlight"),
+            field("/illuminance", "lux, renderer scale", ">= 0", "100000 lights a white surface facing it as brightly as a point_light of 1000 up close, or ambient intensity 1, before exposure. Below about 10000 it barely shows over dark ambient. Daylight: 70000-100000; moonlight shafts through windows: 20000-40000"),
             field("/shadows", "", "", ""),
         ],
     },

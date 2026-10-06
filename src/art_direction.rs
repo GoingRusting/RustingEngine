@@ -137,7 +137,9 @@ pub const PRESETS: &[ArtPreset] = &[
         name: "dark_interior",
         summary: "Almost no ambient, warm practical lights carry the scene, heavy vignette: horror, night shifts, dungeons. Add point lights.",
         sun_color: [0.5, 0.6, 0.9],
-        sun_illuminance: 3_000.0,
+        // Moonlight through windows: bright enough to throw readable
+        // shafts, while the room around stays dark.
+        sun_illuminance: 30_000.0,
         sun_shadows: true,
         sun_rotation: [-1.0, 0.6, 0.0],
         ambient_color: [0.35, 0.4, 0.6],
@@ -357,6 +359,16 @@ mod tests {
         ToneMapping,
     };
     use crate::scene_patch::patch_scene_file;
+
+    #[test]
+    fn every_preset_sun_lights_a_surface_visibly() {
+        for preset in PRESETS {
+            let lit = preset.sun_illuminance
+                / crate::runtime::DirectionalLight::LUX_PER_UNIT
+                * preset.exposure;
+            assert!(lit >= 0.25, "{}: the sun gives {lit}", preset.name);
+        }
+    }
 
     #[test]
     fn presets_patch_lighting_camera_text_and_background_and_reapply_in_place()

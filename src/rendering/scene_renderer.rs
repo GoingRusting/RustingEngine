@@ -4558,7 +4558,8 @@ impl SceneRenderer {
                     extracted.light.color[0],
                     extracted.light.color[1],
                     extracted.light.color[2],
-                    extracted.light.illuminance / 100_000.0,
+                    extracted.light.illuminance
+                        / crate::runtime::DirectionalLight::LUX_PER_UNIT,
                 ],
                 spot_angles: [0.0; 4],
             });

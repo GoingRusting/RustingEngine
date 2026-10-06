@@ -63,6 +63,13 @@ night shifts) and `bright_stylized` (cartoon). `--only` limits it to some
 parts. `rusting preset list --json` prints each preset's values and its
 five-color palette.
 
+Light units are on one renderer scale, not physical ones. A white surface
+facing the light reflects 1 before exposure for a directional light of
+100000 lux, a point or spot light of 1000 up close, or ambient intensity
+1. A 3000 lux sun is therefore only 0.03 and almost invisible; moonlight
+shafts through windows need 20000-40000 lux. Exposure multiplies
+everything.
+
 `rusting.color_grading` runs after tone mapping:
 
 ```json

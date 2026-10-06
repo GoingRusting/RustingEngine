@@ -28,6 +28,7 @@ Engine features for the horror game FOREVER BEAR.
 - A scenario fails when no tick finishes for 60 seconds, for example after a deadlock, and names the last finished tick, so `rusting test` no longer hangs (`RUSTING_TEST_STALL_SECS` changes the limit)
 - The game binary warns when its cooked scene is older than the scene file, so `cargo run` after a scene edit no longer plays the old level silently
 - `camera_screen` `exposure`: brighten or darken one monitor's feed without changing the scene's lights or the player's view
+- The `dark_interior` preset's moonlight is bright enough to see (30000 lux instead of 3000), and the docs explain how lux, point light intensity and ambient intensity compare
 
 ### Fixed
 

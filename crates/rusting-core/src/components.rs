@@ -149,6 +149,12 @@ pub struct DirectionalLight {
     pub shadows: bool,
 }
 
+impl DirectionalLight {
+    /// Illuminance that lights a white surface facing the light at 1 before
+    /// exposure, like a point light of 1000 up close or ambient intensity 1.
+    pub const LUX_PER_UNIT: f32 = 100_000.0;
+}
+
 impl Default for DirectionalLight {
     fn default() -> Self {
         Self {
