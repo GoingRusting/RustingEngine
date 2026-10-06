@@ -37,6 +37,51 @@ pub const KEEP_GOING_ENV: &str = "RUSTING_KEEP_GOING";
 /// Environment variable naming where the game writes its
 /// [`ScenarioReport`] as JSON.
 pub const TEST_REPORT_ENV: &str = "RUSTING_TEST_REPORT";
+/// Seconds a scenario run may go without finishing a tick before the game
+/// reports a stall and exits; `0` turns the watchdog off. Default
+/// [`DEFAULT_STALL_SECS`].
+pub const STALL_SECS_ENV: &str = "RUSTING_TEST_STALL_SECS";
+/// Default for [`STALL_SECS_ENV`]: long enough for a first capture to build
+/// its pipelines on a software device.
+pub const DEFAULT_STALL_SECS: u64 = 60;
+
+/// Ticks the running scenario has finished, for the stall watchdog only.
+/// Never read by simulation code.
+pub(crate) static TICKS_FINISHED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Polls `ticks_finished` every `poll` and returns its value once it has
+/// not changed for `limit`: the run is stuck after that many ticks.
+pub(crate) fn wait_for_stall(
+    limit: Duration,
+    poll: Duration,
+    ticks_finished: impl Fn() -> u64,
+) -> u64 {
+    let mut last = ticks_finished();
+    let mut since = std::time::Instant::now();
+    loop {
+        std::thread::sleep(poll);
+        let now = ticks_finished();
+        if now != last {
+            last = now;
+            since = std::time::Instant::now();
+        } else if since.elapsed() >= limit {
+            return last;
+        }
+    }
+}
+
+/// The failure a stalled run reports after `finished` ticks.
+pub(crate) fn stall_message(limit: Duration, finished: u64) -> String {
+    let last = match finished {
+        0 => "tick 0 never finished".to_owned(),
+        ticks => format!("the last finished tick is {}", ticks - 1),
+    };
+    format!(
+        "no tick finished in {} s; {last}. Look for a deadlock (a Mutex locked twice) or an endless loop in game code; raise the limit with {STALL_SECS_ENV}",
+        limit.as_secs()
+    )
+}
 
 /// Time to advance before tick `tick`: nothing for tick 0, which only
 /// extracts the loaded scene, then exactly one fixed step per tick.
@@ -1498,6 +1543,8 @@ pub fn run_scenario(
         }
         tick_ms.push(started.elapsed().as_secs_f64() * 1000.0);
         report.ticks_run = app.world().resource::<FrameTime>().fixed_tick;
+        TICKS_FINISHED
+            .store(u64::from(tick) + 1, std::sync::atomic::Ordering::Relaxed);
         let world = app.world_mut();
         let collisions: Vec<_> = world
             .resource::<EventQueue<CollisionEvent>>()
@@ -2582,6 +2629,33 @@ mod tests {
         ScheduleStage,
     };
 
+    #[test]
+    fn a_stalled_run_reports_its_last_finished_tick() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let ticks = Arc::new(AtomicU64::new(0));
+        let worker = Arc::clone(&ticks);
+        // Ten ticks finish, then the game hangs.
+        let game = std::thread::spawn(move || {
+            for _ in 0..10 {
+                worker.fetch_add(1, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let finished = wait_for_stall(
+            Duration::from_millis(150),
+            Duration::from_millis(10),
+            || ticks.load(Ordering::Relaxed),
+        );
+        game.join().unwrap();
+        assert_eq!(finished, 10);
+        let message = stall_message(Duration::from_secs(60), finished);
+        assert!(message.starts_with("no tick finished in 60 s"), "{message}");
+        assert!(message.contains("last finished tick is 9"), "{message}");
+        assert!(message.contains(STALL_SECS_ENV), "{message}");
+        assert!(stall_message(Duration::from_secs(60), 0)
+            .contains("tick 0 never finished"));
+    }
     #[test]
     fn set_reaches_built_in_components() {
         let mut world = World::new();

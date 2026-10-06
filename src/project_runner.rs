@@ -3576,6 +3576,7 @@ pub fn run_project_scenario<P: Plugin>(
         std::env::var_os(crate::scenario::UPDATE_GOLDEN_ENV).is_some();
     scenario.keep_going |=
         std::env::var_os(crate::scenario::KEEP_GOING_ENV).is_some();
+    start_stall_watchdog(&scenario, report_path.clone());
     let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
     let base = scenario_path.parent().unwrap_or(Path::new("."));
     let report = crate::scenario::run_scenario(&mut runtime, &scenario, base);
@@ -3592,6 +3593,60 @@ pub fn run_project_scenario<P: Plugin>(
         )
         .into()),
     }
+}
+
+/// Starts a thread that, when no scenario tick finishes within
+/// [`crate::scenario::STALL_SECS_ENV`] seconds, writes a failed report
+/// naming the last finished tick and exits the process with code 1. A game
+/// that deadlocks then fails its test instead of hanging `rusting test`.
+fn start_stall_watchdog(
+    scenario: &crate::scenario::Scenario,
+    report_path: Option<PathBuf>,
+) {
+    use crate::scenario::{ScenarioReport, StepResult, TICKS_FINISHED};
+    let secs = std::env::var(crate::scenario::STALL_SECS_ENV)
+        .ok()
+        .and_then(|secs| secs.parse().ok())
+        .unwrap_or(crate::scenario::DEFAULT_STALL_SECS);
+    if secs == 0 {
+        return;
+    }
+    let limit = std::time::Duration::from_secs(secs);
+    let (name, seed) = (scenario.name.clone(), scenario.seed);
+    std::thread::spawn(move || {
+        let finished = crate::scenario::wait_for_stall(
+            limit,
+            std::time::Duration::from_millis(200),
+            || TICKS_FINISHED.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        let failure = StepResult {
+            tick: u32::try_from(finished.saturating_sub(1)).unwrap_or(u32::MAX),
+            step: 0,
+            ok: false,
+            message: crate::scenario::stall_message(limit, finished),
+            actual: serde_json::Value::Null,
+        };
+        eprintln!("scenario `{name}`: {}", failure.message);
+        let report = ScenarioReport {
+            name,
+            seed,
+            passed: false,
+            ticks_run: finished,
+            first_failure: Some(failure.clone()),
+            steps: vec![failure],
+            captures: Vec::new(),
+            trace: Vec::new(),
+            perf: Default::default(),
+            gpu_state_hashes: Vec::new(),
+            state_hashes: Vec::new(),
+        };
+        if let (Some(path), Ok(text)) =
+            (report_path, serde_json::to_string_pretty(&report))
+        {
+            let _ = std::fs::write(path, text);
+        }
+        std::process::exit(1);
+    });
 }
 
 /// Runs a cooked scene using one short native Rust update function.

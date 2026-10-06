@@ -390,6 +390,10 @@ bodies; bodies that game code moves to the GPU later are not counted.
 Vulkan (lavapipe) works but is slow. Without both, a scenario's GPU bodies
 stay where they spawned.
 
+A scenario fails when no tick finishes for 60 seconds, for example after a
+deadlock in game code. The failure names the last tick that finished. Set
+`RUSTING_TEST_STALL_SECS` to change the limit, or to `0` to turn it off.
+
 ## Determinism
 
 `determinism` in `project.json` is `Off`, `Local` (reproduces on one
