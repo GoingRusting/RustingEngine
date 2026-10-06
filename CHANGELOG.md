@@ -44,6 +44,7 @@ Engine features for the horror game FOREVER BEAR.
 - The camera docs say where a player controller's eye sits in first and third person
 - `rusting schema NAME` prints one component, operation or section of the catalog
 - `rusting docs show scenario` lists every scenario file field and step kind on one page
+- The scenario and camera docs show turning a player's view with `set` on the controller's `yaw` and `pitch`
 
 ### Fixed
 

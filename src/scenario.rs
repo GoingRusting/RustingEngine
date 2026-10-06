@@ -2949,6 +2949,38 @@ mod tests {
     }
 
     #[test]
+    fn set_turns_a_player_controllers_look() {
+        let mut app = game();
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Seat".into()),
+            Transform::new([0.0, 5.0, 0.0]),
+            crate::runtime::PlayerController::default(),
+        ));
+        let look = "/components/rusting.player_controller";
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                3,
+                json!([
+                    {"tick": 1, "set": {"entity": "Seat",
+                        "path": format!("{look}/yaw"), "value": 1.0}},
+                    {"tick": 1, "set": {"entity": "Seat",
+                        "path": format!("{look}/pitch"), "value": -0.3}},
+                    {"tick": 2, "expect": {"entity": "Seat",
+                        "path": "/transform/rotation/1", "equals": 1.0,
+                        "tolerance": 1e-5}},
+                    {"tick": 2, "expect": {"entity": "Seat",
+                        "path": format!("{look}/pitch"), "equals": -0.3,
+                        "tolerance": 1e-5}},
+                ]),
+            ),
+            Path::new("."),
+        );
+        assert!(report.passed, "{:#?}", report.steps);
+    }
+
+    #[test]
     fn keep_going_reports_every_failed_check() {
         let mut scenario = scenario(
             5,

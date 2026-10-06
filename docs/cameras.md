@@ -105,6 +105,17 @@ click, and draw a crosshair or aim dot at the centre of the screen.
 `pointer_ray()` is for views where the cursor stays free: set
 `mouse_look: false` for those.
 
+A scenario turns the view with `set` on the controller's `yaw` and `pitch`,
+then clicks what the centre now faces:
+
+```json
+{"tick": 10, "set": {"entity": "Player",
+  "path": "/components/rusting.player_controller/yaw", "value": 0.6}},
+{"tick": 10, "set": {"entity": "Player",
+  "path": "/components/rusting.player_controller/pitch", "value": -0.4}},
+{"tick": 11, "press": "click"}
+```
+
 `pitch_limits` and `yaw_limits` bound the view, in radians, for a seated or
 turret camera. A booth seat that turns ±100° and looks ±40° up and down:
 
