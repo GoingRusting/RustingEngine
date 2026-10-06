@@ -330,6 +330,48 @@ pub fn inspect_project(root: &Path) -> CliResult {
 }
 
 fn scene_warnings(path: &Path, document: &SceneDocument) -> Vec<Diagnostic> {
+    let mut diagnostics = missing_asset_diagnostics(path, document);
+    diagnostics.extend(bodiless_collider_diagnostics(document));
+    diagnostics
+}
+
+/// A `SCENE_COLLIDER_WITHOUT_BODY` per collider with no `physics_body`.
+/// Physics, raycasts and `aim` skip such a collider. Player and platformer
+/// controllers are exempt: their collider is only their own shape.
+fn bodiless_collider_diagnostics(document: &SceneDocument) -> Vec<Diagnostic> {
+    use crate::runtime::{
+        PLATFORMER_CONTROLLER_COMPONENT, PLAYER_CONTROLLER_COMPONENT,
+    };
+    document
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, entity)| {
+            entity.collider.is_some()
+                && entity.physics_body.is_none()
+                && !entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT)
+                && !entity
+                    .components
+                    .contains_key(PLATFORMER_CONTROLLER_COMPONENT)
+        })
+        .map(|(index, entity)| Diagnostic {
+            code: "SCENE_COLLIDER_WITHOUT_BODY",
+            severity: "warning",
+            message: format!(
+                "`{}` has a collider but no physics_body, so physics, raycasts and aim ignore it; add `\"physics_body\": {{\"simulation\": \"Static\", \"solver\": \"Full\"}}` (\"Cpu\" for a moving body)",
+                entity.name.as_deref().unwrap_or("unnamed entity")
+            ),
+            scene_location: Some(format!("/entities/{index}/collider")),
+            entity: Some(EntityRef::of(entity)),
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+fn missing_asset_diagnostics(
+    path: &Path,
+    document: &SceneDocument,
+) -> Vec<Diagnostic> {
     let base = path.parent().unwrap_or(Path::new("."));
     asset_references(document)
         .into_iter()

@@ -337,6 +337,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting test tests/win.json --json",
     ),
     code(
+        "SCENE_COLLIDER_WITHOUT_BODY",
+        "An entity has a collider but no `physics_body`, so physics, `raycast` and `aim` skip it.",
+        "Add a `physics_body`: `Static` for a collider that never moves, `Cpu` for one that does. Player and platformer controllers need none.",
+        "{\"operations\": [{\"op\": \"set\", \"id\": \"Monitor 1\", \"path\": \"/physics_body\", \"value\": {\"simulation\": \"Static\", \"solver\": \"Full\"}}]}",
+    ),
+    code(
         "SCENE_COMPONENT_FIELD",
         "A scene component has a field with the wrong name or type.",
         "Compare the component with its entry in `rusting schema --json`.",

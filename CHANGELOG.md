@@ -24,6 +24,7 @@ Engine features for the horror game FOREVER BEAR.
 - Render benchmark options for many instanced objects and camera screens
 - Sample game `forever_bear_booth`: a night-shift booth with six CRT monitors, a shelf of pitched bear voices and a mascot that walks the aisles
 - `BusEffect`, `Caption`, `WaypointGraph` and `AssetServer` are in the prelude
+- `rusting check` warns `SCENE_COLLIDER_WITHOUT_BODY` when a collider has no `physics_body`, because physics, raycasts and `aim` skip such a collider
 
 ### Fixed
 

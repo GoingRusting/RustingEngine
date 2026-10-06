@@ -1365,6 +1365,9 @@ impl GameScene<'_> {
     /// `max_distance` metres, sensors included. A ray starting inside a
     /// collider passes through it. The hit holds the object's `name`, the
     /// world `point`, the surface `normal` and the `distance` from `origin`.
+    /// Only colliders with a `physics_body` count (`Static` for one that
+    /// never moves); `rusting check` warns with `SCENE_COLLIDER_WITHOUT_BODY`
+    /// about a collider without one.
     #[must_use]
     pub fn raycast(
         &self,

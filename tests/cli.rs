@@ -175,6 +175,39 @@ fn malformed_and_missing_inputs_have_json_diagnostics_and_nonzero_exit() {
 }
 
 #[test]
+fn a_collider_without_a_physics_body_is_reported() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    let scene = root.join("scenes/main.rscene");
+    let (output, result) = run(&["validate", root.to_str().unwrap()]);
+    assert!(output.status.success(), "{result}");
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    document["entities"][0]["collider"] = serde_json::json!({
+        "shape": {"Box": {"half_extents": [0.5, 0.5, 0.5]}},
+        "friction": 0.5, "restitution": 0.0, "sensor": false
+    });
+    document["entities"][0]["physics_body"] = Value::Null;
+    std::fs::write(&scene, serde_json::to_vec_pretty(&document).unwrap())
+        .unwrap();
+    let (output, result) = run(&["validate", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{result}");
+    let diagnostic = &result["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "SCENE_COLLIDER_WITHOUT_BODY");
+    assert_eq!(diagnostic["scene_location"], "/entities/0/collider");
+    assert_eq!(diagnostic["entity"]["id"], document["entities"][0]["id"]);
+
+    // A player controller's collider is only its own shape.
+    document["entities"][0]["components"]["rusting.player_controller"] =
+        serde_json::json!("{}");
+    std::fs::write(&scene, serde_json::to_vec_pretty(&document).unwrap())
+        .unwrap();
+    let (output, result) = run(&["validate", root.to_str().unwrap()]);
+    assert!(output.status.success(), "{result}");
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
 fn missing_asset_reference_fails_validation_with_location() {
     let parent = temporary_parent();
     let root = generated_project(&parent);

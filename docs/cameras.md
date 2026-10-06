@@ -61,6 +61,11 @@ if let Some([_, _, forward]) = scene.basis("P1 Camera") {
 `raycast_skipping(eye, dir, 50.0, &["glass"])` passes through objects in
 those classes.
 
+Raycasts and `aim` only hit colliders that have a `physics_body`. Give a
+collider that never moves `{"simulation": "Static", "solver": "Full"}`.
+`rusting check` warns with `SCENE_COLLIDER_WITHOUT_BODY` when a collider has
+no body.
+
 A `rusting.player_controller` owns the transform of its direct camera
 children. It sets their pitch, and it sets their orbit offset when
 `camera_distance > 0`. `camera_offset` moves the camera off the body, for an
