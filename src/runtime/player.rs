@@ -47,14 +47,16 @@ pub const PLAYER_LEFT: &str = "player.left";
 pub const PLAYER_RIGHT: &str = "player.right";
 pub const PLAYER_JUMP: &str = "player.jump";
 pub const PLAYER_SPRINT: &str = "player.sprint";
+pub const PLAYER_CROUCH: &str = "player.crouch";
 /// Every action name the controller reads.
-pub const PLAYER_ACTIONS: [&str; 6] = [
+pub const PLAYER_ACTIONS: [&str; 7] = [
     PLAYER_FORWARD,
     PLAYER_BACK,
     PLAYER_LEFT,
     PLAYER_RIGHT,
     PLAYER_JUMP,
     PLAYER_SPRINT,
+    PLAYER_CROUCH,
 ];
 
 /// Shape of a player body without a `Collider`: 1.8 m tall.
@@ -120,6 +122,24 @@ pub struct PlayerController {
     /// Radians per second the body's non-camera children (the visible rig)
     /// turn toward the walking direction. 0 leaves them alone.
     pub turn_speed: f32,
+    /// Full body height in metres while `player.crouch` is held; 0 turns
+    /// crouching off. The body shrinks from the top, so its feet stay put,
+    /// and first-person cameras drop by the height it loses. Releasing the
+    /// action stands up only when there is room above. Works for capsule
+    /// and box shapes.
+    pub crouch_height: f32,
+    /// Speed factor while crouched, instead of sprinting.
+    pub crouch_multiplier: f32,
+    /// Whether the body is crouched now.
+    #[serde(skip)]
+    pub crouched: bool,
+    /// How far the crouch lowered the body center (0 standing); cameras
+    /// drop this much more.
+    #[serde(skip)]
+    pub crouch_drop: f32,
+    /// The part of `crouch_drop` already taken off first-person cameras.
+    #[serde(skip)]
+    pub camera_drop: f32,
     /// Current up/down speed in metres per second; negative while falling.
     #[serde(skip)]
     pub vertical_speed: f32,
@@ -164,6 +184,11 @@ impl Default for PlayerController {
             max_step_height: 0.3,
             push_bodies: true,
             turn_speed: 0.0,
+            crouch_height: 0.0,
+            crouch_multiplier: 0.5,
+            crouched: false,
+            crouch_drop: 0.0,
+            camera_drop: 0.0,
             vertical_speed: 0.0,
             grounded: false,
             jump_requested: false,
@@ -177,20 +202,21 @@ impl Default for PlayerController {
 const MAX_PITCH: f32 = 89.0_f32.to_radians();
 
 pub(super) fn bind_default_actions(map: &mut ActionMap) {
-    let bindings: [(&str, &[KeyCode]); 6] = [
+    let bindings: [(&str, &[KeyCode]); 7] = [
         (PLAYER_FORWARD, &[KeyCode::KeyW, KeyCode::ArrowUp]),
         (PLAYER_BACK, &[KeyCode::KeyS, KeyCode::ArrowDown]),
         (PLAYER_LEFT, &[KeyCode::KeyA, KeyCode::ArrowLeft]),
         (PLAYER_RIGHT, &[KeyCode::KeyD, KeyCode::ArrowRight]),
         (PLAYER_JUMP, &[KeyCode::Space]),
         (PLAYER_SPRINT, &[KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+        (PLAYER_CROUCH, &[KeyCode::KeyC, KeyCode::ControlLeft]),
     ];
     for (action, keys) in bindings {
         for key in keys {
             map.bind(action, InputBinding::Key(*key));
         }
     }
-    let pads: [(&str, &[PadButton]); 6] = [
+    let pads: [(&str, &[PadButton]); 7] = [
         (PLAYER_FORWARD, &[PadButton::LeftStickUp, PadButton::DpadUp]),
         (
             PLAYER_BACK,
@@ -206,6 +232,7 @@ pub(super) fn bind_default_actions(map: &mut ActionMap) {
         ),
         (PLAYER_JUMP, &[PadButton::South]),
         (PLAYER_SPRINT, &[PadButton::LeftStick]),
+        (PLAYER_CROUCH, &[PadButton::East]),
     ];
     for (action, buttons) in pads {
         for button in buttons {
@@ -315,9 +342,50 @@ pub(super) fn player_look(
                     ];
                 } else if player.camera_offset != [0.0; 3] {
                     camera.position = player.camera_offset;
+                    camera.position[1] -= player.crouch_drop;
+                } else {
+                    camera.position[1] -=
+                        player.crouch_drop - player.camera_drop;
                 }
             }
         }
+        if !orbit && player.camera_offset == [0.0; 3] {
+            player.camera_drop = player.crouch_drop;
+        }
+    }
+}
+
+/// The shape of a body crouched to `height` metres tall and how far its
+/// center drops to keep the feet in place, or `None` when the shape cannot
+/// crouch or is already that low.
+fn crouch_shape(
+    shape: ColliderShape,
+    height: f32,
+) -> Option<(ColliderShape, f32)> {
+    let half = height / 2.0;
+    match shape {
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } if half_height + radius > half.max(radius) => {
+            let half = half.max(radius);
+            Some((
+                ColliderShape::Capsule {
+                    half_height: half - radius,
+                    radius,
+                },
+                half_height + radius - half,
+            ))
+        }
+        ColliderShape::Box { half_extents } if half_extents[1] > half => {
+            Some((
+                ColliderShape::Box {
+                    half_extents: [half_extents[0], half, half_extents[2]],
+                },
+                half_extents[1] - half,
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -380,7 +448,45 @@ pub(super) fn player_move(
         axis(PLAYER_RIGHT, PLAYER_LEFT),
     );
     let sprint = actions.held(&input, PLAYER_SPRINT);
+    let crouch = actions.held(&input, PLAYER_CROUCH);
     for (entity, mut player, mut transform, collider) in &mut players {
+        let mut shape =
+            collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
+        match (player.crouch_height > 0.0)
+            .then(|| crouch_shape(shape, player.crouch_height))
+            .flatten()
+        {
+            Some((low, drop)) => {
+                if crouch && !player.crouched {
+                    player.crouched = true;
+                    transform.position[1] -= drop;
+                } else if !crouch && player.crouched {
+                    // Stand only when the full shape fits above.
+                    let blocked = physics
+                        .shape_cast(
+                            low,
+                            transform.position,
+                            [0.0, 1.0, 0.0],
+                            2.0 * drop,
+                            player.collision_mask,
+                            Some(entity),
+                        )
+                        .is_some();
+                    if !blocked {
+                        player.crouched = false;
+                        transform.position[1] += drop;
+                    }
+                }
+                if player.crouched {
+                    shape = low;
+                }
+                player.crouch_drop = if player.crouched { drop } else { 0.0 };
+            }
+            None => {
+                player.crouched = false;
+                player.crouch_drop = 0.0;
+            }
+        }
         let (sin, cos) = sim_math::sin_cos(player.yaw);
         // Forward is -Z turned by yaw; right is +X turned by yaw.
         let mut motion = [
@@ -390,7 +496,9 @@ pub(super) fn player_move(
         ];
         let length = motion[0].hypot(motion[2]);
         let speed = player.walk_speed
-            * if sprint {
+            * if player.crouched {
+                player.crouch_multiplier
+            } else if sprint {
                 player.sprint_multiplier
             } else {
                 1.0
@@ -398,14 +506,12 @@ pub(super) fn player_move(
         if length > 0.0 {
             motion = motion.map(|value| value / length * speed * dt);
         }
-        if player.grounded && player.jump_requested {
+        if player.grounded && player.jump_requested && !player.crouched {
             player.vertical_speed = player.jump_speed;
         }
         player.jump_requested = false;
         player.vertical_speed -= player.gravity * dt;
         motion[1] = player.vertical_speed * dt;
-        let shape =
-            collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
         let start = CharacterMove::ride(
             &physics,
             shape,

@@ -211,7 +211,8 @@ Prefer these components over game code when they fit:
   one object with its materials. See `guide/look-and-feel`.
 
 Player actions are `player.forward`, `player.back`, `player.left`,
-`player.right`, `player.jump`, `player.sprint`. The player controller is
+`player.right`, `player.jump`, `player.sprint`, `player.crouch` (set
+`crouch_height` to the crouched body height). The player controller is
 kinematic: moving bodies do not push it, so handle hazards in code with
 `touching` (it includes the floor the player stands on and the wall or body
 it pushes). A player teleported a little into a floor or platform is lifted

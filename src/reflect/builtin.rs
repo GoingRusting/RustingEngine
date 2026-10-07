@@ -128,6 +128,16 @@ crate::reflect! {
             unit: "rad/s", min: 0.0,
             doc: "how fast non-camera children turn to the walk direction",
         },
+        crouch_height: f32 {
+            unit: "m", min: 0.0,
+            doc: "body height while player.crouch is held; 0 turns crouching off",
+        },
+        crouch_multiplier: f32 {
+            unit: "factor", min: 0.0, doc: "speed factor while crouched",
+        },
+        #[skip] crouched: bool,
+        #[skip] crouch_drop: f32,
+        #[skip] camera_drop: f32,
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_requested: bool,

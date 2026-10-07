@@ -383,7 +383,8 @@ Game code reads **actions**, not keys. The `ActionMap` resource binds action
 names to keys and mouse buttons; `RuntimeInput` holds this frame's raw
 state. The engine binds `player.forward`, `player.back`, `player.left`,
 `player.right` (WASD and arrows), `player.jump` (Space), and
-`player.sprint` (Shift). Scenario tests press and release actions by name,
+`player.sprint` (Shift), and `player.crouch` (C or left Ctrl; the
+controller crouches only with `crouch_height` above 0). Scenario tests press and release actions by name,
 so a game that uses actions is testable without a keyboard.
 
 ## Tests you can run without a screen

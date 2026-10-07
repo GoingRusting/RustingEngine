@@ -5015,3 +5015,81 @@ fn quaternion_of(app: &App, entity: Entity) -> nalgebra::UnitQuaternion<f32> {
         &sim_math::rotation_from_euler(roll, pitch, yaw),
     )
 }
+
+#[test]
+fn player_controller_crouches_under_a_table_and_stands_only_with_room() {
+    let mut app = App::new();
+    cpu_ground(app.world_mut());
+    // A table top 0.75 m above the floor, 2 m ahead.
+    cpu_body(
+        app.world_mut(),
+        [0.0, 0.8, -2.0],
+        ColliderShape::Box {
+            half_extents: [1.0, 0.05, 1.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let player = cpu_body(
+        app.world_mut(),
+        [0.0, 1.0, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Kinematic,
+    );
+    let camera = app
+        .world_mut()
+        .spawn((
+            Transform {
+                position: [0.0, 0.7, 0.0],
+                ..Transform::default()
+            },
+            Camera::default(),
+        ))
+        .id();
+    app.world_mut().entity_mut(player).insert(PlayerController {
+        crouch_height: 0.7,
+        ..PlayerController::default()
+    });
+    app.set_parent(camera, player).unwrap();
+    let body =
+        |app: &App| app.world().get::<Transform>(player).unwrap().position;
+    let state =
+        |app: &App| *app.world().get::<PlayerController>(player).unwrap();
+    let key = |app: &mut App, key, down| {
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_key(key, down);
+    };
+    run_fixed_steps(&mut app, 60);
+    assert!((body(&app)[1] - 0.91).abs() < 0.02, "{:?}", body(&app));
+
+    // Standing, the 1.8 m body stops at the table edge.
+    key(&mut app, KeyCode::KeyW, true);
+    run_fixed_steps(&mut app, 60);
+    assert!(body(&app)[2] > -0.8, "{:?}", body(&app));
+
+    // Crouched to 0.7 m it walks under; feet stay on the floor and the
+    // camera drops by the 1.1 m the body lost.
+    key(&mut app, KeyCode::KeyC, true);
+    run_fixed_steps(&mut app, 40);
+    assert!(state(&app).crouched);
+    assert!((body(&app)[2] + 2.0).abs() < 0.3, "{:?}", body(&app));
+    assert!((body(&app)[1] - 0.36).abs() < 0.02, "{:?}", body(&app));
+    app.update(Duration::ZERO).unwrap();
+    let eye = app.world().get::<Transform>(camera).unwrap().position[1];
+    assert!((eye - 0.15).abs() < 1e-4, "{eye}");
+
+    // Releasing crouch under the table keeps it crouched.
+    key(&mut app, KeyCode::KeyW, false);
+    key(&mut app, KeyCode::KeyC, false);
+    run_fixed_steps(&mut app, 10);
+    assert!(state(&app).crouched);
+
+    // Out the other side it stands up again and the camera comes back.
+    key(&mut app, KeyCode::KeyW, true);
+    run_fixed_steps(&mut app, 50);
+    assert!(!state(&app).crouched, "{:?}", body(&app));
+    assert!((body(&app)[1] - 0.91).abs() < 0.02, "{:?}", body(&app));
+    app.update(Duration::ZERO).unwrap();
+    let eye = app.world().get::<Transform>(camera).unwrap().position[1];
+    assert!((eye - 0.7).abs() < 1e-4, "{eye}");
+}

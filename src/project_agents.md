@@ -92,7 +92,9 @@ command takes `--json` for output a program can read.
   code with `touching`, as below; it includes the floor and the wall the
   player stands on or pushes.
 - Input actions for the player controller: `player.forward`, `player.back`,
-  `player.left`, `player.right`, `player.jump`, `player.sprint`.
+  `player.left`, `player.right`, `player.jump`, `player.sprint`,
+  `player.crouch` (needs `crouch_height` above 0; the body shrinks to that
+  height, so a 0.7 m crouch fits under a 0.75 m table).
 - Add your own actions with `rusting.input_action`, for example
   `{"action": "fire", "inputs": ["MouseLeft", "KeyF"]}`. Key names are winit
   `KeyCode` names; gamepad inputs are `PadSouth` (A), `PadEast`, `PadStart`,
