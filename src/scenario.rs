@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::rendering::capture::HeadlessCapture;
 use crate::runtime::{
-    picking, scene_document_lenient, set_registered_component,
+    picking, scene_entity_lenient, set_registered_component,
     set_registered_component_field, ActionMap, Camera, CollisionEvent,
     EventQueue, FrameTime, GlobalTransform, InputBinding, MeshRenderer,
     MouseButton, Name, RandomSeed, RenderWorld, RuntimeInput, SceneId,
@@ -611,6 +611,10 @@ pub struct PerfReport {
     pub tick_ms_mean: f64,
     pub tick_ms_p95: f64,
     pub tick_ms_max: f64,
+    /// Wall-clock milliseconds of the whole run per tick, including the
+    /// checks, captures and logs between ticks that `tick_ms_*` leave out.
+    #[serde(default)]
+    pub wall_ms_mean: f64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
     /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
     /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with GPU physics or a
@@ -1555,6 +1559,7 @@ pub fn run_scenario(
     let mut events = Vec::new();
     let mut frames: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut tick_ms: Vec<f64> = Vec::new();
+    let run_started = std::time::Instant::now();
     // Repeated checks report once; this holds their last passing result.
     let mut pending: Vec<Option<StepResult>> = vec![None; scenario.steps.len()];
     // `within` checks that already passed.
@@ -2020,6 +2025,8 @@ pub fn run_scenario(
         _ => None,
     };
     report.perf = perf_report(&tick_ms, render);
+    report.perf.wall_ms_mean = run_started.elapsed().as_secs_f64() * 1000.0
+        / tick_ms.len().max(1) as f64;
     collect_hashes(app.world(), &mut report);
     if let Some(budgets) = &scenario.budgets {
         for message in over_budget(budgets, &report.perf) {
@@ -2077,6 +2084,7 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         tick_ms_mean: sorted.iter().sum::<f64>() / sorted.len().max(1) as f64,
         tick_ms_p95: at(0.95),
         tick_ms_max: at(1.0),
+        wall_ms_mean: 0.0,
         render: counters,
     }
 }
@@ -2313,19 +2321,13 @@ pub(crate) fn reflected(
     }
     let entity = found
         .ok_or_else(|| format!("no entity has the ID or name `{wanted}`"))?;
-    let id = world
-        .get::<SceneId>(entity)
-        .ok_or_else(|| format!("`{wanted}` has no persistent ID"))?
-        .0;
     let gpu_state =
         world.get::<crate::runtime::GpuStateMirror>(entity).copied();
-    let document =
-        scene_document_lenient(world, "").map_err(|error| error.to_string())?;
-    let entity = document
-        .entities
-        .into_iter()
-        .find(|entity| entity.id == id)
-        .ok_or_else(|| format!("`{wanted}` is not part of the scene"))?;
+    // Only this entity: capturing the whole scene per check per tick
+    // dominated long runs of big scenes.
+    let entity = scene_entity_lenient(world, entity)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("`{wanted}` has no persistent ID"))?;
     let mut value =
         serde_json::to_value(entity).map_err(|error| error.to_string())?;
     if let Some(state) = gpu_state {
@@ -3193,6 +3195,7 @@ mod tests {
         let report = run(&passing);
         assert!(report.passed, "{:?}", report.steps);
         assert!(report.perf.tick_ms_max >= report.perf.tick_ms_mean);
+        assert!(report.perf.wall_ms_mean >= report.perf.tick_ms_mean);
         assert!(report.perf.tick_ms_p95 > 0.0);
         assert_eq!(report.perf.environment["os"], std::env::consts::OS);
         assert!(report.perf.render.is_null());

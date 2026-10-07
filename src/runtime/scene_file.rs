@@ -1655,7 +1655,7 @@ pub fn scene_document(
     world: &mut World,
     name: impl Into<String>,
 ) -> Result<SceneDocument, SceneIoError> {
-    scene_document_with(world, name, false)
+    scene_document_with(world, name, false, None)
 }
 
 /// Like [`scene_document`], but an entity whose mesh or textures were made in
@@ -1665,13 +1665,25 @@ pub fn scene_document_lenient(
     world: &mut World,
     name: impl Into<String>,
 ) -> Result<SceneDocument, SceneIoError> {
-    scene_document_with(world, name, true)
+    scene_document_with(world, name, true, None)
+}
+
+/// One entity as [`scene_document_lenient`] would write it, without
+/// capturing the rest of the scene. `None` when it has no `SceneId`.
+pub fn scene_entity_lenient(
+    world: &mut World,
+    entity: Entity,
+) -> Result<Option<SceneEntity>, SceneIoError> {
+    Ok(scene_document_with(world, "", true, Some(entity))?
+        .entities
+        .pop())
 }
 
 fn scene_document_with(
     world: &mut World,
     name: impl Into<String>,
     lenient: bool,
+    only: Option<Entity>,
 ) -> Result<SceneDocument, SceneIoError> {
     let registrations = world
         .resource::<SceneComponentRegistry>()
@@ -1716,6 +1728,7 @@ fn scene_document_with(
     )>();
     let mut raw = query
         .iter(world)
+        .filter(|item| only.is_none_or(|only| item.0 == only))
         .map(
             |(
                 entity,
@@ -1762,10 +1775,6 @@ fn scene_document_with(
             }
         }
     }
-    let ids = raw
-        .iter()
-        .map(|(entity, id, ..)| (*entity, id.0))
-        .collect::<HashMap<_, _>>();
     let assets = world
         .get_resource::<AssetServer>()
         .ok_or(SceneIoError::MissingAssetServer)?;
@@ -1789,8 +1798,9 @@ fn scene_document_with(
     {
         let parent = parent
             .map(|parent| {
-                ids.get(&parent.0)
-                    .copied()
+                world
+                    .get::<SceneId>(parent.0)
+                    .map(|parent| parent.0)
                     .ok_or(SceneIoError::MissingParent(id.0))
             })
             .transpose()?;
@@ -1867,7 +1877,10 @@ fn scene_document_with(
                 .unwrap_or_default(),
         },
     };
-    validate_scene_structure(&document)?;
+    // One entity's parent is not in its own document.
+    if only.is_none() {
+        validate_scene_structure(&document)?;
+    }
     Ok(document)
 }
 

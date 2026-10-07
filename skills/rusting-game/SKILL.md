@@ -366,7 +366,8 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
 - `rusting debug` runs the game paused and answers one JSON line per command: `{"id":1,"cmd":"step","ticks":5}`, `get`/`set` (`entity`, `path`, `value`), `press`/`release` (`action`), `capture` (`path`), `tick`, `quit`.
 - `rusting mcp [root]` exposes every command as an MCP tool (`scene_query`, args as `{"args":[...]}`); read-only tools carry `readOnlyHint`; paths with `..` or absolute are refused.
 - `rusting test --json` also gives each scenario a `perf` report (mean, p95
-  and max tick milliseconds; `render` has draws, triangles and `gpu_ms` of
+  and max tick milliseconds; `wall_ms_mean` is the whole run per tick,
+  checks included; `render` has draws, triangles and `gpu_ms` of
   the last rendered frame and per viewport camera under `cameras`; and the
   environment). A render budget renders even without a capture step. A scenario `budgets` object (`max_tick_ms`,
   `mean_tick_ms`, `p95_tick_ms`, `max_draws`, `max_triangles`) fails the run

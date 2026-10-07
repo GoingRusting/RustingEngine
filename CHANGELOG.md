@@ -77,6 +77,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenario `audio:` checks read a clip that never played as 0 plays at `/clips/<clip>`.
 - `asset import --to assets/sounds` now means `assets/sounds` instead of `assets/assets/sounds`.
 - New docs pages `api/GpuBodySettings`, `api/GpuConditionShader` and `api/MaterialAsset`, and a note on friction and jamming in dense GPU piles.
+- Scenario checks read one entity instead of capturing the whole scene each tick, which speeds up long runs of big scenes. `perf.wall_ms_mean` gives the whole run per tick.
 
 ### Fixed
 
