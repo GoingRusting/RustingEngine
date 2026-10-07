@@ -6,6 +6,7 @@ pub mod annotate;
 pub mod art_direction;
 pub mod asset_import;
 pub mod assets;
+pub mod cookbook;
 pub mod core;
 pub mod debug_session;
 pub mod demo;

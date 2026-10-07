@@ -3003,7 +3003,8 @@ Depends on: Milestones L1 and L2.
   - [ ] Generate the API table in SKILL.md and the project AGENTS.md from the API index and schema instead of writing it by hand.
 - [x] A pitfall catalog grown from every logged gap in the "Current focus" list, each with its diagnostic code and fix.
   - Evidence: `docs/pitfalls.md`, served as `rusting docs show guide/pitfalls` and linked from SKILL.md and the project AGENTS.md, has 26 entries from the friction logs and SKILL rules, each with a symptom, `Code:` and `Fix:`. Test `pitfall_catalog_names_only_real_codes_and_every_entry_has_a_fix` checks every named code is in the diagnostics registry (a fake `LINT_ZERO_SCALEX` fails it) and every entry has both lines.
-- [ ] A task cookbook of runnable snippets ("make an enemy follow the player", "add a level select"), each tested.
+- [x] A task cookbook of runnable snippets ("make an enemy follow the player", "add a level select"), each tested.
+  - Evidence: snippets live in `src/cookbook/` and are served as `rusting docs show cookbook/<name>` (header as the page, then the code); `rusting docs search cookbook` lists them. `src/cookbook.rs` compiles each one into the tests and runs it against a template project: `follow_player_walks_a_chaser_to_the_player_and_stops` (first- and third-person: 2.5 to 3.5 m in one second, facing the player, then waiting 1.5 m away; a flipped yaw fails at tick 60) and `level_select_loads_the_clicked_level_and_keeps_the_score` (clicking `Level 2` loads `scenes/level_2.rscene` with the score kept; dropping the score carry fails at tick 12). `every_snippet_has_a_title_and_usage` checks each header. New snippets go in `COOKBOOK` with a test.
 
 ### Exit gate
 

@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting docs show cookbook/<name>`: tested snippets for common tasks, starting with an enemy that follows the player and a level select.
 - The agent skill now lists every `GameScene` method, and a test fails when a guide misses one or names a method that does not exist.
 - `rusting docs show guide/pitfalls`: a catalog of mistakes games have made, each with the diagnostic code that catches it and the fix.
 - `rusting lint` warns `LINT_TEXT_SMALL` for HUD text under 14 px and `LINT_TEXT_OFFSCREEN` for HUD text anchored outside a 1280 x 720 view.

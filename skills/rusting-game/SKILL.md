@@ -326,6 +326,8 @@ works too.
 - Game code adds no dependencies beyond `rusting_engine`.
 - `rusting docs show guide/pitfalls` lists the mistakes games have made,
   each with the diagnostic code that catches it and the fix.
+- `rusting docs search cookbook` lists tested snippets for common tasks
+  (an enemy that follows the player, a level select).
 
 ## Multiple levels
 

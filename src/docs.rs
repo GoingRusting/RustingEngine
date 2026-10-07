@@ -261,6 +261,22 @@ pub fn items() -> Vec<DocItem> {
         });
     }
     items.push(scenario_reference());
+    for (name, source) in crate::cookbook::COOKBOOK {
+        // The snippet's `//!` header is the page; the code follows it.
+        let header: Vec<&str> = source
+            .lines()
+            .map_while(|line| line.strip_prefix("//!"))
+            .map(str::trim_start)
+            .collect();
+        let mut item = page(
+            &format!("cookbook/{name}"),
+            "cookbook",
+            &format!("# {}", header.join("\n")),
+        );
+        item.summary.clone_from(&item.title);
+        item.text += &format!("\n\n```rust\n{source}```\n");
+        items.push(item);
+    }
     for (name, readme, code) in SAMPLES {
         let mut item = page(&format!("sample/{name}"), "sample", readme);
         item.text += &format!("\n## src/main.rs\n\n```rust\n{code}```\n");
