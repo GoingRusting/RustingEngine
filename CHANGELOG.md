@@ -135,6 +135,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting lint` reports `LINT_COLLIDER_MISMATCH` when a solid collider is more than twice or less than half the size of its entity's built-in mesh on any axis.
 - `rusting recipe list` and `rusting recipe apply <root> <recipe>` write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch, and a passing scenario as `tests/<recipe>.json`. The recipes are `checkpoints`, `health` (hazards cost a point, a short safe window follows, 0 restarts the round), `double_jump` and `inventory` (items in class `item` count into `inventory_<kind>` counters; a key opens an object in class `locked`), `day_timer` (a `day` counter that goes up every 30 seconds, with a HUD clock), `pause_menu` (Escape pauses and shows Resume and Quit HUD buttons), `wave_spawner` (each wave copies a hidden enemy template, more each time, once the last wave is gone) and `turret` (shoots the nearest visible enemy in range on a cooldown).
 - `GameScene::clicked()` names the HUD buttons clicked since the last frame, so game code reads them without the event queue.
+- `rusting run --seed N` starts the game's random streams from N instead of 0.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
@@ -143,6 +144,7 @@ Engine features for the horror game FOREVER BEAR.
 
 - The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060
 - Each camera screen ran the GPU physics again; screens now reuse the frame's physics, so six screens cost about 3 ms instead of 113 ms
+- Parallel `rusting run`s of one project no longer fail at random with `SCENE_IO` "No such file or directory" while cooking the scene; atomic writes no longer share one temporary file name.
 
 ### Changed
 

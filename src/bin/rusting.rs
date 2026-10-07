@@ -308,6 +308,10 @@ fn execute(args: &[String]) -> CliResult {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
                         _ => return usage("--ticks requires a tick count"),
                     },
+                    "--seed" => match flags.next().map(|v| v.parse()) {
+                        Some(Ok(seed)) => options.seed = Some(seed),
+                        _ => return usage("--seed requires a whole number"),
+                    },
                     "--bench" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(frames)) => options.bench = Some(frames),
                         _ => return usage("--bench requires a frame count"),

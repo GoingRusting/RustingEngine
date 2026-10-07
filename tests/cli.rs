@@ -379,6 +379,8 @@ fn run_and_export_reject_malformed_flags_as_usage_errors() {
     for args in [
         &["run", "project", "--ticks"][..],
         &["run", "project", "--ticks", "many"],
+        &["run", "project", "--seed"],
+        &["run", "project", "--seed", "-1"],
         &["run", "project", "--fast"],
         &["export", "project"],
         &["export", "project", "out", "--target"],

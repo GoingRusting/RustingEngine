@@ -2862,6 +2862,8 @@ pub struct RunOptions {
     /// Scene components every scene load leaves out (`--without`); the run
     /// then passes only when its scenario fails.
     pub without: Vec<String>,
+    /// Seed for the game's random streams (`--seed`), 0 by default.
+    pub seed: Option<u64>,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -3106,6 +3108,9 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
     }
     if let Some(frames) = options.bench {
         game.env(crate::project::BENCH_FRAMES_ENV, frames.to_string());
+    }
+    if let Some(seed) = options.seed {
+        game.env(crate::project::SEED_ENV, seed.to_string());
     }
     for (path, variable) in [
         (&options.record, crate::project::REPLAY_OUT_ENV),

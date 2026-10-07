@@ -67,6 +67,11 @@ pub const FINAL_SCENE_OUT_ENV: &str = "RUSTING_FINAL_SCENE_OUT";
 /// `Replay` of the session as JSON when it exits.
 pub const REPLAY_OUT_ENV: &str = "RUSTING_REPLAY_OUT";
 
+/// Environment variable with the [`crate::runtime::RandomSeed`] a game run
+/// starts with, from `rusting run --seed`. A scenario's `seed` and a
+/// replay's recorded seed still win.
+pub const SEED_ENV: &str = "RUSTING_SEED";
+
 /// Milliseconds after which a windowed game closes itself as if its window
 /// closed, so `rusting run --record --timeout` still saves the replay.
 pub const QUIT_AFTER_MS_ENV: &str = "RUSTING_QUIT_AFTER_MS";

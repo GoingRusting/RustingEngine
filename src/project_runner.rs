@@ -3257,8 +3257,32 @@ fn load_project_runtime<P: Plugin>(
     }
     request_project_window(runtime.world_mut(), folder);
     runtime.insert_resource(ProjectFolder(folder.to_path_buf()));
+    apply_seed(
+        runtime.world_mut(),
+        std::env::var_os(crate::project::SEED_ENV),
+    )?;
     crate::runtime::check_determinism(runtime.world_mut())?;
     Ok(runtime)
+}
+
+/// Starts the game's random streams from `seed`, the value of
+/// [`crate::project::SEED_ENV`], when it is set.
+fn apply_seed(
+    world: &mut World,
+    seed: Option<std::ffi::OsString>,
+) -> Result<(), String> {
+    let Some(seed) = seed else {
+        return Ok(());
+    };
+    let seed =
+        seed.to_str()
+            .and_then(|seed| seed.parse().ok())
+            .ok_or(format!(
+                "{} must be a whole number",
+                crate::project::SEED_ENV
+            ))?;
+    world.insert_resource(crate::runtime::RandomSeed(seed));
+    Ok(())
 }
 
 /// Asks for the `window` size in the folder's `project.json`, if any. The
@@ -5681,6 +5705,18 @@ mod tests {
         let second =
             scene.spawn_cube("Shot", Transform::default(), &CubeSpawn::new());
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_run_seed_sets_the_random_seed() {
+        let mut world = World::new();
+        world.insert_resource(crate::runtime::RandomSeed(0));
+        super::apply_seed(&mut world, None).unwrap();
+        assert_eq!(world.resource::<crate::runtime::RandomSeed>().0, 0);
+        super::apply_seed(&mut world, Some("42".into())).unwrap();
+        assert_eq!(world.resource::<crate::runtime::RandomSeed>().0, 42);
+        let error = super::apply_seed(&mut world, Some("x".into()));
+        assert!(error.unwrap_err().contains("RUSTING_SEED"));
     }
 
     #[test]

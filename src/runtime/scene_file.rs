@@ -1975,21 +1975,32 @@ pub fn save_scene_variant(
 }
 
 /// Writes through a synced temporary file and renames it over `path`, so a
-/// crash mid-write never leaves a truncated file behind.
+/// crash mid-write never leaves a truncated file behind. Each call has its
+/// own temporary name, so parallel runs that cook the same scene do not
+/// rename one another's file away.
 pub fn write_atomic(
     path: impl AsRef<Path>,
     bytes: &[u8],
 ) -> std::io::Result<()> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = path.as_ref();
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
+    let call = NEXT.fetch_add(1, Ordering::Relaxed);
+    temporary.push(format!(".{}.{call}.tmp", std::process::id()));
     let temporary = std::path::PathBuf::from(temporary);
-    let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&temporary, path)
+    let written = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 pub fn load_scene(
@@ -2897,6 +2908,31 @@ fn runtime_camera(camera: SceneCamera) -> Camera {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parallel_atomic_writes_of_one_file_all_succeed() {
+        // Parallel `rusting run`s cook the same scene: a shared temporary
+        // name let one writer rename the other's file away (os error 2).
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-write-atomic-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("main.rscene");
+        std::thread::scope(|scope| {
+            for writer in 0..8u8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        super::write_atomic(path, &[writer; 4096]).unwrap();
+                    }
+                });
+            }
+        });
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() == 4096 && bytes.iter().all(|b| *b == bytes[0]));
+        let files = std::fs::read_dir(&folder).unwrap().count();
+        assert_eq!(files, 1, "temporary files left behind");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
     #[test]
     fn without_components_leaves_out_sections_and_registered_components() {
         let document: SceneDocument = serde_json::from_value(serde_json::json!({

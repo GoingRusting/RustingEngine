@@ -357,8 +357,9 @@ The engine meets `Local` today and does not meet `CrossPlatform` yet:
   frame that carries two ticks over.
 - Randomness: simulation code draws every random value with
   `RandomSeed::value(tick, RandomSeed::stream(subsystem, key))` (or
-  `unit`). The seed comes from the scene or scenario, the tick is the
-  fixed tick being simulated, and the subsystem name keeps streams apart.
+  `unit`). The seed is 0, `rusting run --seed N`, or the scenario's
+  `seed`; a replay restores the recorded one. The tick is the fixed tick
+  being simulated, and the subsystem name keeps streams apart.
   Bursts use `"bursts"` keyed by the emitter's `SceneId`, or by its entity
   when it has none. Simulation code never reads a global or thread-local
   generator, `Uuid::new_v4`, or `HashMap` iteration order; GPU physics
