@@ -214,7 +214,8 @@ Headless runs have no audio device. Read the entity `audio:` instead:
 
 - `/requested`: how many plays game code and sound cues asked for.
 - `/clips/<clip>`: plays of one clip. Write `/` in the clip path as `~1`:
-  `/clips/sfx~1hit.wav`.
+  `/clips/sfx~1hit.wav`. A clip that never played reads as 0, so
+  `"equals": 0` checks that a sound never played.
 - `/level`: `[left, right]` RMS of the offline mix over the last tick.
 - `/peak`: `[left, right]` largest sample over the last tick, and
   `/clipped`: how many samples went past full scale.

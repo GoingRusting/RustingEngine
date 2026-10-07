@@ -356,7 +356,7 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
 - Game code sees `time.fixed_tick == N` on scenario tick N.
 - `"entity": "audio:"` reads the sounds game code and sound cues asked for:
   `/requested` (all plays), `/clips/<clip>` (plays of one clip; write `/`
-  in the clip path as `~1`: `/clips/sfx~1hit.wav`), `/level` (`[l, r]` RMS
+  in the clip path as `~1`: `/clips/sfx~1hit.wav`; a clip never played reads 0), `/level` (`[l, r]` RMS
   of the offline mix), `/peak` (`[l, r]` max per tick), `/clipped` (samples at full scale so far) and `/playing` (clip, volume, pan, bus, tick of each
   sound still playing). Top-level `"audio_out": "mix.wav"` writes the mix.
   Headless runs have no audio device, so this is how a scenario checks

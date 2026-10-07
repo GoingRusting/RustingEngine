@@ -74,6 +74,7 @@ Engine features for the horror game FOREVER BEAR.
 - `--stderr` on `rusting run` and `rusting test` streams game output while the game runs.
 - New `guide/lighting` docs page: shadow support per light type, the light cap per quality and which lights are dropped first. Scenario perf reports include `dropped_lights`.
 - `rusting.player_controller` gains `crouch_height` and `crouch_multiplier`, and a `player.crouch` action bound to C, left Ctrl and pad East. Crouching is off by default (`crouch_height` 0). `PLAYER_ACTIONS` now has seven entries.
+- Scenario `audio:` checks read a clip that never played as 0 plays at `/clips/<clip>`.
 
 ### Fixed
 

@@ -101,7 +101,7 @@ pub const COUNTER_PREFIX: &str = "counter:";
 /// In place of an entity name: the sounds game code and sound cues asked
 /// for, as `{"requested": n, "clips": {"<clip path>": n}, "level": [l, r],
 /// "playing": [...]}`. A `/` in a clip path is `~1` in a JSON pointer:
-/// `/clips/sfx~1hit.wav`. `level` is the RMS of the mix during the last
+/// `/clips/sfx~1hit.wav`; a clip that never played reads as 0. `level` is the RMS of the mix during the last
 /// tick per speaker, `peak` the largest sample magnitude that tick (1.0 is
 /// full scale), `clipped` the samples at or over full scale since tick 0,
 /// `playing` lists the sounds that have not ended, `buses` each bus's
@@ -2643,7 +2643,15 @@ fn check_value(world: &mut World, expect: &Expectation) -> Check {
         }
     }
     let state = state.map_err(|error| (error, Value::Null))?;
-    let actual = state.pointer(&expect.path).cloned().ok_or_else(|| {
+    // A clip that never played has no entry; it reads as 0 plays.
+    let unplayed = expect.entity == AUDIO_ENTITY
+        && expect
+            .path
+            .strip_prefix("/clips/")
+            .is_some_and(|clip| !clip.is_empty() && !clip.contains('/'));
+    let actual = state.pointer(&expect.path).cloned();
+    let actual = actual.or_else(|| unplayed.then(|| json!(0)));
+    let actual = actual.ok_or_else(|| {
         (
             format!(
                 "{subject} does not exist{}",
@@ -3514,6 +3522,10 @@ mod tests {
                         "path": "/clips/sfx~1hit.wav", "equals": 1}},
                     {"tick": 4, "expect": {"entity": "audio:",
                         "path": "/requested", "equals": 1}},
+                    {"tick": 4, "expect": {"entity": "audio:",
+                        "path": "/clips/sfx~1miss.wav", "equals": 0}},
+                    {"tick": 4, "expect": {"entity": "audio:",
+                        "path": "/clips/sfx~1miss.wav", "exists": false}},
                 ]),
             ),
             Path::new("."),
