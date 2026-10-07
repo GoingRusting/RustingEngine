@@ -337,6 +337,7 @@ pub fn items() -> Vec<DocItem> {
         "PhysicsSyncMode",
         include_str!("runtime/hybrid_physics.rs"),
     ));
+    items.push(struct_item("BusEffect", include_str!("runtime/audio.rs")));
     items
 }
 
@@ -781,6 +782,26 @@ mod tests {
                 "{query}"
             );
         }
+    }
+
+    #[test]
+    fn bus_effects_and_press_tick_are_documented() {
+        let items = items();
+        let page = |id: &str| {
+            items
+                .iter()
+                .find(|item| item.id == id)
+                .unwrap_or_else(|| panic!("no {id}"))
+                .text
+                .clone()
+        };
+        let bus = page("api/BusEffect");
+        assert!(
+            bus.contains("LowPass") && bus.contains("cutoff_hz"),
+            "{bus}"
+        );
+        let press = page("api/GameScene::press_tick");
+        assert!(press.contains("\"at\""), "{press}");
     }
 
     #[test]

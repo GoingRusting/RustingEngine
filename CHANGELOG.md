@@ -88,6 +88,7 @@ Engine features for the horror game FOREVER BEAR.
 - GPU contact-grid overflow counts appear in `rusting test --json` perf and in the `RenderCapacityDiagnostics` resource during a game run; the concepts manual explains why crowded cells slow every GPU body.
 - The concepts manual has a "Many bodies" section: triangles per sphere `subdivisions` value, the cost of `state_hash` and where to read CPU and GPU time.
 - A settled GPU pile stays asleep: sleeping bodies ignore contact pushes below half a millimetre, so a deep pile no longer creeps, spreads and wakes up again.
+- `rusting docs show api/BusEffect` lists the bus effects and their fields, and `api/GameScene::press_tick` names the scenario `at` field.
 
 ### Fixed
 

@@ -1236,8 +1236,9 @@ impl GameScene<'_> {
     /// When `action` was pressed this frame, in fractional fixed ticks:
     /// `121.4` is 40% of a tick after tick 121. A window records the key or
     /// mouse event's own time, so a rhythm game can judge finer than a tick.
-    /// Scenario presses and gamepads give the frame's tick. `None` when the
-    /// action was not pressed this frame.
+    /// A scenario press or tap step with `"at": 0.4` gives `tick + 0.4`;
+    /// without `at`, and from gamepads, it is the frame's tick. `None` when
+    /// the action was not pressed this frame.
     #[must_use]
     pub fn press_tick(&self, action: &str) -> Option<f64> {
         if !self.pressed(action) {
