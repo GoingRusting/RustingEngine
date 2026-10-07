@@ -337,8 +337,13 @@ fn struct_item(name: &str, source: &str) -> DocItem {
     let doc: Vec<&str> = head
         .lines()
         .rev()
-        .skip_while(|line| !line.starts_with("///"))
-        .take_while(|line| line.starts_with("///") || line.starts_with("#["))
+        // Attributes, possibly over several lines, sit between the doc and
+        // the type; an undocumented type stops at the blank line or the end
+        // of the previous item rather than taking that item's doc.
+        .skip_while(|line| {
+            !line.starts_with("///") && !line.is_empty() && *line != "}"
+        })
+        .take_while(|line| line.starts_with("///"))
         .filter_map(|line| line.strip_prefix("///"))
         .map(str::trim)
         .collect::<Vec<_>>()
@@ -381,7 +386,7 @@ fn struct_item(name: &str, source: &str) -> DocItem {
 }
 
 /// Types whose public methods make the gameplay API index.
-const API_TYPES: [&str; 7] = [
+const API_TYPES: [&str; 8] = [
     "GameScene",
     "GameObject",
     "CubeSpawn",
@@ -389,13 +394,15 @@ const API_TYPES: [&str; 7] = [
     "GpuCondition",
     "GpuFieldCondition",
     "BeatClock",
+    "WaypointGraph",
 ];
 
 /// Source files the API index reads.
 const API_SOURCE: &str = concat!(
     include_str!("project_runner.rs"),
     include_str!("runtime/hybrid_physics.rs"),
-    include_str!("runtime/audio.rs")
+    include_str!("runtime/audio.rs"),
+    include_str!("runtime/waypoints.rs")
 );
 
 /// One item per public method of [`API_TYPES`], read from the doc comments
@@ -636,6 +643,10 @@ mod tests {
             .collect();
         assert!(api.len() > 30, "only {} api items", api.len());
         assert!(api.iter().all(|i| !i.summary.is_empty()), "undocumented");
+        let graph = super::find("api/WaypointGraph").expect("waypoints");
+        for wanted in ["nodes", "nearest", "disconnect", "path", "length"] {
+            assert!(graph.text.contains(wanted), "{wanted}: {}", graph.text);
+        }
         let player = super::find("api/PlayerController").expect("player");
         assert!(
             player.summary.starts_with("Walk, jump"),

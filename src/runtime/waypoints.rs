@@ -10,6 +10,10 @@ use std::collections::BinaryHeap;
 
 use serde::{Deserialize, Serialize};
 
+/// Hand-placed points joined by two-way edges, for a monster or NPC route:
+/// `nearest` finds the node next to a position, `path` the shortest route
+/// between two nodes, and `nodes[id]` gives a node's position back. It is
+/// in the prelude.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WaypointGraph {
     /// Node positions in world space; a node's ID is its index.
