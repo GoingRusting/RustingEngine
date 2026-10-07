@@ -17,6 +17,9 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 // Bodies per hash cell before the rest spill into the fallback list.
 const uint CELL_SLOTS = 8u;
 const float CONTACT_MARGIN = 0.002;
+// Pushes a sleeping body ignores. A larger slop (the contact margin) let a
+// pile pressed by sideways gravity squeeze a ball into a wall.
+const float SLEEP_SLOP = 0.0005;
 
 // Cell counts; the length is a power of two.
 layout(set = 0, binding = 8) buffer GridCounts { uint data[]; } grid_counts;
@@ -198,8 +201,18 @@ void begin_body(uint body_index) {
 // Every body is written so the contact flag starts each step fresh; the
 // main pass adds collider contacts to it.
 void write_body() {
-    precise vec3 position = own.model[3].xyz + push_up + push_down;
-    precise vec3 velocity = own.velocity.xyz + change_up + change_down;
+    precise vec3 push = push_up + push_down;
+    precise vec3 change = change_up + change_down;
+    // A sleeping body (REST_TICKS in physics.comp) shrugs off pushes and
+    // nudges smaller than SLEEP_SLOP and the rest speed. Without
+    // this, a deep pile's sleeping balls creep under their neighbours'
+    // tiny corrections, the pile spreads, and the creep wakes it again.
+    if (own.angular_velocity.w >= 20.0 && sim_length(push) < SLEEP_SLOP && sim_length(change) < 0.05) {
+        push = vec3(0.0);
+        change = vec3(0.0);
+    }
+    precise vec3 position = own.model[3].xyz + push;
+    precise vec3 velocity = own.velocity.xyz + change;
     bodies.data[own_index].model[3].xyz = position;
     bodies.data[own_index].velocity = vec4(velocity, touched ? 1.0 : 0.0);
 }

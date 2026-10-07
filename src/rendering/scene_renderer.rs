@@ -13085,6 +13085,40 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn a_settled_gpu_pile_stays_asleep() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let measure = |ticks| {
+            let states = run_ball_pit(0.0, ticks);
+            let asleep = states
+                .iter()
+                .filter(|state| state.linear_velocity == [0.0; 3])
+                .count();
+            let top = states
+                .iter()
+                .map(|state| state.transform.position[1])
+                .fold(0.0_f32, f32::max);
+            (asleep, top)
+        };
+        // Before sleeping balls ignored tiny pushes, the pile crept and
+        // woke: 3032 asleep at tick 200, 2181 at 300, the top rising.
+        let (early, early_top) = measure(240);
+        let (late, late_top) = measure(400);
+        assert!(early > 3500, "only {early} of 3600 asleep at tick 240");
+        assert!(late >= early, "{early} asleep at tick 240, {late} at 400");
+        assert!(
+            (late_top - early_top).abs() < 0.002,
+            "the pile top moved from {early_top} to {late_top}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn a_deep_gpu_ball_pit_settles_and_its_walls_hold() {
         if vulkano::VulkanLibrary::new().is_err() {
             eprintln!("skipping: no Vulkan driver present");
