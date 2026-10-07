@@ -4,6 +4,21 @@
 
 use crate::audio_output::MIX_RATE;
 
+/// Clip paths starting with this play a built-in sound instead of a file:
+/// `sfx:coin` or `sfx:coin 7` (preset, then an optional seed, default 1).
+pub const CLIP_PREFIX: &str = "sfx:";
+
+/// Samples for a built-in clip path such as `sfx:coin 7`, or `None` when
+/// the path is not one or names an unknown preset or a bad seed.
+#[must_use]
+pub fn clip(path: &str) -> Option<Vec<f32>> {
+    let mut words = path.strip_prefix(CLIP_PREFIX)?.split_whitespace();
+    let preset = words.next()?;
+    let seed = words.next().map_or(Some(1), |seed| seed.parse().ok())?;
+    words.next().is_none().then_some(())?;
+    synth(preset, seed)
+}
+
 /// Preset names `synth` accepts.
 pub const PRESETS: [&str; 7] = [
     "jump",
@@ -165,6 +180,16 @@ pub fn synth(preset: &str, seed: u64) -> Option<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sfx_clip_paths_name_a_preset_and_an_optional_seed() {
+        assert_eq!(clip("sfx:coin"), synth("coin", 1));
+        assert_eq!(clip("sfx:coin 7"), synth("coin", 7));
+        assert!(clip("sfx:coin 7").is_some());
+        for bad in ["sfx:", "sfx:nope", "sfx:coin x", "sfx:coin 7 8", "coin"] {
+            assert_eq!(clip(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn presets_are_seeded_short_and_quiet_enough() {

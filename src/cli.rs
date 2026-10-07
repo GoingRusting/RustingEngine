@@ -415,6 +415,9 @@ fn sound_clip_diagnostics(
                 entity.components.get("rusting.sound_cue")?,
             )
             .ok()?;
+            if crate::sfx::clip(&cue.clip).is_some() {
+                return None;
+            }
             let resolved = root.join("assets").join(&cue.clip);
             (!resolved.is_file()).then(|| Diagnostic {
                 code: "SCENE_MISSING_ASSET",

@@ -130,6 +130,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenarios read `"entity": "class:ball in -5,0,-5 5,10,5"` for a class's member count, the bounds of its GPU bodies and how many lie inside the box.
 - `rusting.flash` and `scene.flash(name)` tint an object and its children for a moment on a hit, without touching the shared material.
 - `scene.hit_stop(seconds)` freezes a windowed game for up to a second of real time on a heavy hit; fixed ticks then carry on unchanged, so simulation results and headless runs are not affected.
+- Clip paths `sfx:<preset> [seed]` (for example `sfx:coin 7` in `play_sound` or `rusting.sound_cue`) play a built-in synthesized sound with no file, and validation no longer reports them as missing assets.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

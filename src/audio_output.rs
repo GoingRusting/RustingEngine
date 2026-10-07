@@ -464,7 +464,14 @@ where
                 std::fs::metadata(&path).is_ok_and(|file| file.len() > limit)
             });
         if !streamed && !self.clips.contains_key(&path) {
-            match kira::sound::static_sound::StaticSoundData::from_file(&path) {
+            let loaded = match crate::sfx::clip(&clip) {
+                Some(samples) => Ok(builtin_clip(&samples)),
+                None => {
+                    kira::sound::static_sound::StaticSoundData::from_file(&path)
+                        .map_err(|error| error.to_string())
+                }
+            };
+            match loaded {
                 Ok(data) => {
                     self.clips.insert(path.clone(), data);
                 }
@@ -904,6 +911,20 @@ pub fn read_wav(path: &Path) -> std::io::Result<Vec<f32>> {
         .collect())
 }
 
+#[cfg(feature = "audio")]
+/// A built-in `sfx:` clip as sound data: interleaved stereo at [`MIX_RATE`].
+fn builtin_clip(samples: &[f32]) -> kira::sound::static_sound::StaticSoundData {
+    kira::sound::static_sound::StaticSoundData {
+        sample_rate: MIX_RATE,
+        frames: samples
+            .chunks_exact(2)
+            .map(|pair| kira::Frame::new(pair[0], pair[1]))
+            .collect(),
+        settings: Default::default(),
+        slice: None,
+    }
+}
+
 #[cfg(all(test, feature = "audio"))]
 mod tests {
     use super::*;
@@ -929,6 +950,21 @@ mod tests {
         let out = mixer.render(frames);
         std::fs::remove_dir_all(&directory).unwrap();
         out
+    }
+
+    #[test]
+    fn builtin_sfx_clips_play_with_no_file() {
+        let mut mixer = OfflineMixer::offline().unwrap();
+        let mut queue = AudioQueue::default();
+        queue.play("sfx:coin 7", &Sound::default(), 0);
+        let empty = std::env::temp_dir().join("rusting-no-assets");
+        for command in queue.drain() {
+            mixer.run(&empty, command, |_| Duration::ZERO);
+        }
+        let out = mixer.render(4800);
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.05, "silent: {peak}");
+        assert_eq!(mixer.playing()[0].clip, "sfx:coin 7");
     }
 
     #[test]

@@ -2908,7 +2908,7 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
   - [ ] Collider and mesh mismatch, and pickups or goals with no reachable path (the explorer bot can supply this). Capsule, cylinder and mesh colliders for the camera check.
   - [ ] HUD text contrast and off-screen text (needs a rendered frame), events with no audio or visual feedback, and games with no win or lose state.
 - [x] Controller feel metrics in physical units (jump apex height and time, time to top speed, stopping distance, air control), reported by `rusting inspect` and compared with documented genre ranges. Done 2026-10-07: `rusting inspect --tick N` adds `feel` to each entity with a player or platformer controller, with genre ranges (first or third person: 3 to 8 m/s, 0.4 to 1.6 m apex, 0.4 to 1.2 s air time; 2D platformer: 4 to 12 m/s, 1 to 5 m, 0.5 to 1.2 s) and `notes` for numbers outside them. Both controllers set their speed directly, so time to top speed is one fixed step, stopping distance 0 and air control full. Evidence: unit test `controller_feel_reports_jump_and_speed_in_physical_units` (default player 1.27 m apex and 1.02 s air time with no notes; a 20 m moon jump at 2 m/s gets three notes), and a real `rusting inspect` of a copy of `hammer_run` reported 1.27 m apex, 4.08 m jump distance and 7.2 m/s sprint for its player.
-- [ ] (Partly) More data-driven juice: screen shake, hit-stop, squash and stretch, camera trauma, flashes, and particle and sound presets, each a registered component with schema entries.
+- [x] More data-driven juice: screen shake, hit-stop, squash and stretch, camera trauma, flashes, and particle and sound presets, each a registered component with schema entries.
   - [x] Screen shake and camera trauma. Done 2026-10-07: `rusting.camera_shake` (`CameraShake`: trauma, decay, max_offset, max_roll, frequency) is registered with schema, reflect and snapshot entries; game code calls `scene.add_trauma(name, amount)`, strength is trauma squared, trauma decays on the fixed step, and render extraction moves and rolls only the drawn view, so the camera's `Transform` never drifts. Evidence: unit test `camera_shake_moves_the_drawn_view_and_fades_back_to_rest` (trauma moves the extracted view by more than 1 cm and less than 60 cm, the `Transform` is unchanged, and after 40 ticks the view is exactly at rest and trauma is 0).
   - [x] Squash and stretch: `rusting.squash` and `scene.squash(name, amount)`
     wobble an object's `Transform` scale on a damped spring and keep its
@@ -2935,7 +2935,18 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
     eats three 16 ms frames and 2 ms of the fourth, a shorter stop does not
     cut it short, and 9 s clamps to 1 s). How long it feels on screen is a
     real-hardware check.
-  - [ ] Particle and sound presets as registered components.
+  - [x] Particle and sound presets on registered components. Particle
+    presets already exist: `rusting effect apply` writes one of seven
+    `rusting.particle_emitter` presets (dust_motes to fire). Sound presets
+    are clip paths: `sfx:<preset> [seed]` in `rusting.sound_cue` or
+    `play_sound` plays one of the seven `sfx` generator presets, synthesized
+    in memory, with no file, and validation skips them. Verified by
+    `sfx_clip_paths_name_a_preset_and_an_optional_seed` (same samples as
+    the generator, seed default 1, bad presets, seeds and extra words
+    rejected), `builtin_sfx_clips_play_with_no_file` (the offline mixer
+    plays `sfx:coin 7` from an empty assets folder, peak above 0.05), and
+    the CLI test `friction_fixes_for_docs_new_and_scene_query` (validate
+    reports the misplaced `../assets/bell.wav` but not `sfx:coin 7`).
 - [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
 - [x] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency. `rusting asset generate <root> sfx "coin 7"` synthesizes one of seven presets (jump, coin, hit, explosion, laser, powerup, blip) with a seeded splitmix64 and imports the WAV as CC0 with its preset and seed in the `.rmeta` notes; a project hook named `sfx` still wins. Verified by `presets_are_seeded_short_and_quiet_enough` (each preset repeats for one seed, changes for another, lasts 0.05 to 1 s, peaks at 0.4 and fades to silence) and `the_builtin_sfx_generator_imports_a_seeded_cc0_wav` (same bytes on a second import, bad presets and seeds fail with `GENERATOR_FAILED`). Run on a sample copy, `coin 7` imported a 207 ms 48 kHz stereo WAV.
 - [ ] Accessibility checks from `missingFeatures.md` P2: contrast, text size, focus order, colour-only status, and missing captions, with locations and captures.

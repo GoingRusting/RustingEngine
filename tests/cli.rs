@@ -1334,11 +1334,13 @@ fn friction_fixes_for_docs_new_and_scene_query() {
     assert_eq!(bad["diagnostics"][0]["code"], "PRESET_SCOPE_UNKNOWN");
 
     // A sound clip written relative to the scene, not to assets/, fails
-    // validation.
+    // validation. A built-in `sfx:` clip needs no file.
     let patch_path = parent.join("cue.json");
     let patch = serde_json::json!({"operations": [{"op": "create", "entity": {
         "name": "Bell", "components": {"rusting.sound_cue":
-            {"clip": "../assets/bell.wav", "volume": 1.0, "on_collision": false}}}}]});
+            {"clip": "../assets/bell.wav", "volume": 1.0, "on_collision": false}}}},
+        {"op": "create", "entity": {"name": "Chime", "components": {"rusting.sound_cue":
+            {"clip": "sfx:coin 7", "volume": 1.0, "on_collision": false}}}}]});
     std::fs::write(&patch_path, patch.to_string()).unwrap();
     let (output, patched) =
         run(&["scene", "patch", main, patch_path.to_str().unwrap()]);
@@ -1352,6 +1354,7 @@ fn friction_fixes_for_docs_new_and_scene_query() {
             .contains("relative to assets/"),
         "{validated}"
     );
+    assert!(!validated.to_string().contains("sfx:coin"), "{validated}");
     std::fs::remove_dir_all(parent).unwrap();
 }
 

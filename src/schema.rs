@@ -782,7 +782,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.sound_cue",
-        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`).",
+        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`). A clip `sfx:<preset> [seed]` (jump, coin, hit, explosion, laser, powerup, blip; seed default 1) plays a built-in synthesized sound with no file.",
         gpu: NO_GPU,
         example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true}),
     },
