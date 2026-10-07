@@ -2801,10 +2801,24 @@ struct SimpleGamePlugin {
     update: GameUpdate,
     /// User function called once per fixed tick, before the frame's update.
     tick: Option<GameUpdate>,
+    /// Registers the game's own scene components (`components:` in
+    /// [`rusting_game!`]).
+    components: Option<GameComponents>,
 }
+
+/// Registers a game's own scene components; written by [`rusting_game!`]
+/// from its `components: [Type => "game.name"]` list.
+pub type GameComponents =
+    fn(&mut App) -> Result<(), crate::runtime::SceneIoError>;
 
 impl Plugin for SimpleGamePlugin {
     fn build(&self, app: &mut App) -> Result<(), AppError> {
+        if let Some(components) = self.components {
+            components(app).map_err(|error| AppError::PluginSetup {
+                plugin: "rusting_game",
+                message: error.to_string(),
+            })?;
+        }
         app.insert_resource(GameUpdateFunction(self.update));
         app.add_system(ScheduleStage::Update, run_simple_game_update);
         if let Some(tick) = self.tick {
@@ -4101,7 +4115,11 @@ pub fn run_game(
     run_project(
         "RustingEngine Game",
         scene_path,
-        SimpleGamePlugin { update, tick: None },
+        SimpleGamePlugin {
+            update,
+            tick: None,
+            components: None,
+        },
     )
 }
 
@@ -4125,6 +4143,34 @@ pub fn run_game_with_tick(
         SimpleGamePlugin {
             update,
             tick: Some(tick),
+            components: None,
+        },
+    )
+}
+
+/// Runs a cooked scene like [`run_game_with_tick`], after registering the
+/// game's own scene components. [`rusting_game!`] calls this for its
+/// `components:` list.
+///
+/// # Arguments
+/// * `scene_path` - Path to cooked `.rscene.bin` data.
+/// * `update` - Function called once per rendered frame.
+/// * `tick` - Optional function called once per fixed tick.
+/// * `components` - Registers the game's components with
+///   [`App::register_scene_component`].
+pub fn run_game_with_components(
+    scene_path: impl Into<PathBuf>,
+    update: GameUpdate,
+    tick: Option<GameUpdate>,
+    components: GameComponents,
+) -> GameResult {
+    run_project(
+        "RustingEngine Game",
+        scene_path,
+        SimpleGamePlugin {
+            update,
+            tick,
+            components: Some(components),
         },
     )
 }
@@ -4155,6 +4201,34 @@ pub fn resolve_game_scene_path(
 /// Rust. The scene path is relative to the game project's `Cargo.toml`.
 #[macro_export]
 macro_rules! rusting_game {
+    ($update:path, components: [$($component:ty => $name:literal),* $(,)?]) => {
+        $crate::rusting_game!(@components $update, None, [$($component => $name),*]);
+    };
+    ($update:path, tick: $tick:path, components: [$($component:ty => $name:literal),* $(,)?]) => {
+        $crate::rusting_game!(@components $update, Some($tick), [$($component => $name),*]);
+    };
+    (@components $update:path, $tick:expr, [$($component:ty => $name:literal),*]) => {
+        /// Registers this game's own scene components.
+        fn rusting_game_components(
+            app: &mut $crate::App,
+        ) -> Result<(), $crate::runtime::SceneIoError> {
+            $(app.register_scene_component::<$component>($name)?;)*
+            Ok(())
+        }
+
+        fn main() -> $crate::project_runner::GameResult {
+            let scene = $crate::project_runner::resolve_game_scene_path(
+                "build/main.rscene.bin",
+                env!("CARGO_MANIFEST_DIR"),
+            );
+            $crate::project_runner::run_game_with_components(
+                scene,
+                $update,
+                $tick,
+                rusting_game_components,
+            )
+        }
+    };
     ($update:path) => {
         $crate::rusting_game!("build/main.rscene.bin", $update);
     };
@@ -4268,6 +4342,7 @@ mod tests {
         app.add_plugin(SimpleGamePlugin {
             update: idle,
             tick: Some(tick),
+            components: None,
         })
         .unwrap();
         app.world_mut()
@@ -4334,6 +4409,7 @@ mod tests {
             SimpleGamePlugin {
                 update: idle,
                 tick: None,
+                components: None,
             },
             30,
         )
@@ -4411,6 +4487,7 @@ mod tests {
             app.add_plugin(SimpleGamePlugin {
                 update: self.update,
                 tick: None,
+                components: None,
             })?;
             app.add_system(ScheduleStage::Startup, |world: &mut World| {
                 world.spawn((
@@ -4420,6 +4497,68 @@ mod tests {
             });
             Ok(())
         }
+    }
+
+    /// A game written the way `rusting_game!` documents custom components.
+    #[allow(dead_code)]
+    mod component_game {
+        use crate::prelude::*;
+
+        #[derive(Component, Clone, Default, Serialize, Deserialize)]
+        #[serde(crate = "crate::serde")]
+        pub struct Night {
+            pub power: i32,
+        }
+
+        crate::reflect! {
+            struct Night {
+                power: i32 { doc: "power left" },
+            }
+        }
+
+        fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {}
+
+        crate::rusting_game!(update, components: [Night => "game.night"]);
+
+        pub(super) const COMPONENTS: super::GameComponents =
+            rusting_game_components;
+    }
+
+    #[test]
+    fn rusting_game_components_are_saved_in_scenes() {
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(SimpleGamePlugin {
+            update: |_, _| {},
+            tick: None,
+            components: Some(component_game::COMPONENTS),
+        })
+        .unwrap();
+        app.spawn((
+            crate::runtime::SceneId::new(),
+            Name("Clock".into()),
+            component_game::Night { power: 7 },
+        ));
+        let path = std::env::temp_dir().join(format!(
+            "rusting-components-{}.rscene",
+            uuid::Uuid::new_v4()
+        ));
+        crate::runtime::save_scene(app.world_mut(), &path, "main").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let document: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let clock = document["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["name"] == "Clock")
+            .unwrap();
+        // Scenes keep a game component as its JSON text.
+        let night: serde_json::Value = serde_json::from_str(
+            clock["components"]["game.night"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(night["power"], 7, "{text}");
     }
 
     fn count_named(world: &mut World, name: &str) -> usize {

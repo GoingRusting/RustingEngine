@@ -240,6 +240,30 @@ fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
 rusting_game!(update);
 ```
 
+Game state that is more than a few counters can live in your own
+component, with no extra crates in `Cargo.toml`:
+
+```rust
+#[derive(Component, Clone, Default, Serialize, Deserialize)]
+#[serde(crate = "rusting_engine::serde")]
+struct Night {
+    power: f32,
+}
+
+rusting_engine::reflect! {
+    struct Night {
+        power: f32 { unit: "W", doc: "power left" },
+    }
+}
+
+rusting_game!(update, components: [Night => "game.night"]);
+```
+
+Scenes save it as `game.night`, scenarios read and set it as
+`/components/game.night/power`, and code reads it through
+`scene.world().query::<&mut Night>()`. `tick: my_tick, components: [...]`
+works too.
+
 `update` runs once per rendered frame. The main `GameScene` calls:
 
 | Need | Call |

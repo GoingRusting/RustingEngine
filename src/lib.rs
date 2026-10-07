@@ -38,6 +38,8 @@ pub use assets::{
     PrimitiveShape, SceneAsset, TextureAsset, TextureFilter, TextureSampler,
     TextureWrap,
 };
+/// For game code that saves settings or state as JSON.
+pub use bevy_ecs;
 pub use core::collisions::CollisionType;
 pub use core::{Material, MaterialBuilder, Physics, Transform};
 #[cfg(feature = "editor")]
@@ -53,7 +55,7 @@ pub use runtime::{
     GpuPhysicsClassWatches, GpuPhysicsEvent, GpuPhysicsRule, GpuPhysicsWatch,
     HybridPhysicsPlugin, ObjectClasses, PhysicsId, Plugin, RenderSettings,
 };
-/// For game code that saves settings or state as JSON.
+pub use serde;
 pub use serde_json;
 
 /// Common imports for concise native Rust gameplay code.
@@ -77,4 +79,10 @@ pub mod prelude {
     pub use crate::{AssetServer, Transform};
     pub use bevy_ecs::entity::Entity;
     pub use bevy_ecs::world::World;
+    // A game's own components need `#[derive(Component, Serialize,
+    // Deserialize)]` without adding `bevy_ecs` or `serde` to its
+    // Cargo.toml. The `bevy_ecs` name lets the `Component` derive find its
+    // crate; serde's derive needs `#[serde(crate = "rusting_engine::serde")]`.
+    pub use bevy_ecs::{self, component::Component};
+    pub use serde::{self, Deserialize, Serialize};
 }

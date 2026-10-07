@@ -190,4 +190,9 @@ the JSON pointer scenario `set` steps use, for example
 serde_json::json!(0.08))`; it reaches every registered component such as
 `rusting.color_grading` and `rusting.player_controller`. `world()` gives
 the ECS world for anything else.
+Keep game state in your own component, not only counters:
+`#[derive(Component, Clone, Default, Serialize, Deserialize)]` with
+`#[serde(crate = "rusting_engine::serde")]`, a `rusting_engine::reflect!`
+block, and `rusting_game!(update, components: [Night => "game.night"])`.
+Scenarios then read `/components/game.night/<field>`; no extra crates.
 `cargo doc --open` documents the full API.

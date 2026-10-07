@@ -511,6 +511,62 @@ fn generated_game_passes_and_fails_scenarios_with_a_tick_trace() {
     let _ = std::fs::remove_dir_all(&parent);
 }
 
+#[test]
+#[ignore = "runs a real cargo build of a generated project"]
+fn rusting_game_registers_a_custom_component_without_extra_crates() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    // The generated Cargo.toml depends on rusting_engine alone.
+    std::fs::write(
+        root.join("src/main.rs"),
+        r#"use rusting_engine::prelude::*;
+
+#[derive(Component, Clone, Default, Serialize, Deserialize)]
+#[serde(crate = "rusting_engine::serde")]
+struct Night {
+    power: i32,
+}
+
+rusting_engine::reflect! {
+    struct Night {
+        power: i32 { doc: "power left" },
+    }
+}
+
+fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
+    let world = scene.world();
+    for mut night in world.query::<&mut Night>().iter_mut(world) {
+        night.power += 1;
+    }
+}
+
+rusting_game!(update, components: [Night => "game.night"]);
+"#,
+    )
+    .unwrap();
+    let file = parent.join("night.json");
+    let scenario = serde_json::json!({
+        "name": "night", "ticks": 10, "steps": [
+            {"tick": 1, "set": {"entity": "Cube",
+                "path": "/components/game.night", "value": {"power": 100}}},
+            {"tick": 9, "expect": {"entity": "Cube",
+                "path": "/components/game.night/power", "greater_than": 100}},
+        ]
+    });
+    std::fs::write(&file, scenario.to_string()).unwrap();
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/cli-games");
+    let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .args(["test", root.to_str().unwrap(), file.to_str().unwrap()])
+        .arg("--json")
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.status.success(), "{result}");
+    assert_eq!(result["data"]["scenario"]["passed"], true, "{result}");
+    let _ = std::fs::remove_dir_all(&parent);
+}
+
 /// A generated project whose cube falls under CPU physics.
 fn falling_cube_scene(parent: &Path) -> (PathBuf, String) {
     let scene = generated_project(parent).join("scenes/main.rscene");
