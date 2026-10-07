@@ -1891,6 +1891,10 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     let mut state = EditorState::default();
     let mut history = EditorHistory::default();
     save_editor_scene(world, &state, &path).unwrap();
+    // An unsaved GUI edit is not part of the agent's pending change.
+    let chair = uuid::Uuid::new_v4();
+    world.spawn((SceneId(chair), Name("Chair".into()), Transform::default()));
+    state.scene_dirty = true;
     world.resource_mut::<agent_panel::AgentJournal>().paused = true;
     let patch = serde_json::from_value(serde_json::json!({"operations": [
         {"op": "set", "id": cube, "path": "/name", "value": "Agent"},
@@ -1922,7 +1926,11 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
         .resource_mut::<agent_panel::AgentJournal>()
         .accept_entity = Some(lamp);
     reload_external_scene_change(world, &mut state, &mut history);
-    let mut expected = vec![(cube, "Cube".to_owned()), (lamp, "Lamp".into())];
+    let mut expected = vec![
+        (cube, "Cube".to_owned()),
+        (lamp, "Lamp".into()),
+        (chair, "Chair".into()),
+    ];
     expected.sort();
     assert_eq!(names(world), expected);
     assert!(state.scene_dirty);
@@ -1931,14 +1939,18 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     assert!(journal.pending_fields.iter().all(|(id, _)| *id == cube));
     // Undo's snapshot is the scene before that Accept.
     let before = history.undo.back().unwrap().clone();
-    assert_eq!(before.entities.len(), 1);
+    assert_eq!(before.entities.len(), 2);
 
     // Accepting the last entity clears the pending row.
     world
         .resource_mut::<agent_panel::AgentJournal>()
         .accept_entity = Some(cube);
     reload_external_scene_change(world, &mut state, &mut history);
-    let mut expected = vec![(cube, "Agent".to_owned()), (lamp, "Lamp".into())];
+    let mut expected = vec![
+        (cube, "Agent".to_owned()),
+        (lamp, "Lamp".into()),
+        (chair, "Chair".into()),
+    ];
     expected.sort();
     assert_eq!(names(world), expected);
     assert!(world

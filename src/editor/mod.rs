@@ -135,6 +135,9 @@ pub struct SceneFileRevision {
     path: Option<PathBuf>,
     revision: String,
     modified: Option<std::time::SystemTime>,
+    /// The file as loaded or saved, so a pending outside write is diffed
+    /// against it and the user's unsaved edits do not count as the agent's.
+    base: Option<SceneDocument>,
 }
 
 impl SceneFileRevision {
@@ -147,11 +150,16 @@ impl SceneFileRevision {
             modified: std::fs::metadata(path)
                 .and_then(|metadata| metadata.modified())
                 .ok(),
+            base: None,
         })
     }
 
     fn record(world: &mut World, path: &std::path::Path) {
-        world.insert_resource(Self::read(path).unwrap_or_default());
+        let base = crate::runtime::read_scene_document(path).ok();
+        world.insert_resource(Self {
+            base,
+            ..Self::read(path).unwrap_or_default()
+        });
     }
 }
 
@@ -264,7 +272,10 @@ fn reload_external_scene_change(
         Ok(()) => {
             history.redo.clear();
             let revision = disk.revision.clone();
-            world.insert_resource(disk);
+            world.insert_resource(SceneFileRevision {
+                base: crate::runtime::read_scene_document(&path).ok(),
+                ..disk
+            });
             let diff = history
                 .undo
                 .back()
@@ -305,9 +316,27 @@ fn set_pending(
     ours: Option<SceneDocument>,
     theirs: Option<SceneDocument>,
 ) {
+    let base = world
+        .get_resource::<SceneFileRevision>()
+        .and_then(|known| known.base.clone());
     let (diff, fields) = match (&ours, &theirs) {
         (Some(ours), Some(theirs)) => {
-            let diff = outside_change(ours, theirs);
+            // What the write changed since the file was loaded or saved,
+            // minus what the editor scene already matches.
+            let mut diff =
+                outside_change(base.as_ref().unwrap_or(ours), theirs);
+            let entity = |document: &SceneDocument, id| {
+                document
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == id)
+                    .map(|entity| serde_json::to_value(entity).ok())
+            };
+            let differs =
+                |id: &uuid::Uuid| entity(ours, *id) != entity(theirs, *id);
+            diff.added.retain(differs);
+            diff.changed.retain(differs);
+            diff.removed.retain(differs);
             let fields = pending_fields(ours, theirs, &diff.touched());
             (diff, fields)
         }
