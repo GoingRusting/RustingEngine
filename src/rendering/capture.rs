@@ -44,6 +44,8 @@ pub struct HeadlessCapture {
     )>,
     /// Second target for [`Self::view_rgba`], made on first use.
     alt: Option<(Arc<Image>, Arc<ImageView>)>,
+    /// GPU milliseconds of every frame [`Self::frame`] drew.
+    gpu_frames: Vec<f64>,
     #[cfg(feature = "ui")]
     ui: Option<super::egui_painter::EguiPainter>,
 }
@@ -74,6 +76,7 @@ impl HeadlessCapture {
             scaled,
             views: Vec::new(),
             alt: None,
+            gpu_frames: Vec::new(),
             #[cfg(feature = "ui")]
             ui: None,
         })
@@ -211,7 +214,18 @@ impl HeadlessCapture {
             .then_signal_fence_and_flush()
             .map_err(|error| format!("submit: {error}"))?
             .wait(None)
-            .map_err(|error| format!("wait: {error}"))
+            .map_err(|error| format!("wait: {error}"))?;
+        let gpu = self.gpu_time().as_secs_f64() * 1000.0;
+        self.gpu_frames.push(gpu);
+        Ok(())
+    }
+
+    /// GPU time of the last frame, summed over split-view cameras.
+    fn gpu_time(&mut self) -> Duration {
+        match self.views.is_empty() {
+            true => self.renderer.gpu_pass_times().total(),
+            false => self.views.iter().map(|(_, _, gpu)| *gpu).sum(),
+        }
     }
 
     /// Paints the runtime UI output of the last update over the frame.
@@ -284,6 +298,7 @@ impl HeadlessCapture {
     /// camera when viewport cameras split it and per camera screen drawn.
     #[must_use]
     pub fn metadata(&mut self, app: &App) -> Value {
+        let gpu = self.gpu_time();
         let properties = self.base.device.physical_device().properties();
         let counters = self.renderer.render_counters();
         let capacity = self.renderer.capacity_diagnostics();
@@ -320,12 +335,18 @@ impl HeadlessCapture {
                 "triangles": counters.triangles,
             }));
         }
-        let gpu = match self.views.is_empty() {
-            true => self.renderer.gpu_pass_times().total(),
-            false => self.views.iter().map(|(_, _, gpu)| *gpu).sum(),
+        let mut frames = self.gpu_frames.clone();
+        frames.sort_by(f64::total_cmp);
+        let rank = |p: f64| {
+            let index = (p * frames.len() as f64).ceil() as usize;
+            frames.get(index.saturating_sub(1)).copied()
         };
         json!({
             "gpu_ms": gpu.as_secs_f64() * 1000.0,
+            "gpu_frames": frames.len(),
+            "gpu_ms_p50": rank(0.5),
+            "gpu_ms_p95": rank(0.95),
+            "gpu_ms_max": rank(1.0),
             "cameras": cameras,
             "device": properties.device_name,
             "driver": properties.driver_info,

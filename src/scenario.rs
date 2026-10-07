@@ -612,7 +612,9 @@ pub struct PerfReport {
     pub tick_ms_p95: f64,
     pub tick_ms_max: f64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
-    /// of the last rendered frame, and `cameras`:
+    /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
+    /// `gpu_ms_max` over all `gpu_frames` frames drawn (one per tick, plus the first); and
+    /// `cameras`:
     /// `[{name, gpu_ms, draws, triangles}]`, one per viewport camera, then
     /// one per camera screen drawn that frame (with `"screen": true`). Null
     /// without a renderer (no capture step, `gpu`, or render budget).
@@ -2022,6 +2024,10 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
             "triangles": meta["triangles"],
             "visible_instances": meta["visible_instances"],
             "gpu_ms": meta["gpu_ms"],
+            "gpu_frames": meta["gpu_frames"],
+            "gpu_ms_p50": meta["gpu_ms_p50"],
+            "gpu_ms_p95": meta["gpu_ms_p95"],
+            "gpu_ms_max": meta["gpu_ms_max"],
             "cameras": meta["cameras"],
         });
     }
@@ -3203,6 +3209,11 @@ mod tests {
         let report = run_scenario(&mut app, &scenario, &std::env::temp_dir());
         assert!(report.perf.render["draws"].as_u64().unwrap() > 0);
         assert!(report.perf.render["gpu_ms"].is_number());
+        let render = &report.perf.render;
+        let frames = render["gpu_frames"].as_u64().unwrap();
+        assert!(frames >= report.ticks_run, "{render}");
+        let p95 = render["gpu_ms_p95"].as_f64().unwrap();
+        assert!(p95 <= render["gpu_ms_max"].as_f64().unwrap(), "{render}");
         assert!(report.perf.environment["device"].is_string());
         assert!(!report.passed);
         assert!(report

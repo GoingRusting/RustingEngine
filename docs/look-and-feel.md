@@ -239,6 +239,12 @@ builds and uploads), measures the next 1000, closes itself, and reports
 `timings.bench` with `frames`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms` and
 `max_ms`. Without `--json` it prints one `bench:` line.
 
+Without a window, `rusting test` gives GPU frame times. A scenario with
+`"gpu": true` and `"capture_size": [1920, 1080]` draws one offscreen frame
+per tick and reports `perf.render.gpu_ms_p50`, `gpu_ms_p95` and
+`gpu_ms_max` over those frames (`gpu_frames` counts them). These are GPU
+pass times only, without present or CPU work.
+
 ## Free models
 
 A real model beats any pile of primitives. Many good game models are free
