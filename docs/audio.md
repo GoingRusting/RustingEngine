@@ -56,9 +56,19 @@ scene.resume_sound(tape);      // continues where it paused
 scene.seek_sound(tape, 12.5);  // seconds into the clip
 ```
 
-`/playing` reports each sound's `position` (seconds into the clip),
-`paused`, and `remaining` (real seconds left at the current rate, `null`
-when looped).
+`pause_sounds(Some("music"))` pauses every sound on a bus, and
+`pause_sounds(None)` every sound, for a pause menu. `resume_sounds` takes
+the same argument and resumes only the sounds that are paused.
+
+`scene.playing_sounds()` lists the sounds started and not yet ended,
+oldest first, each with `id`, `clip`, `bus`, `looped` and `paused`. Use it
+to check for leaked loops. It follows the audio device, which ends a sound
+when its clip finishes, so do not branch the simulation on it: a headless
+replay has no device, and there a sound stays listed until it is stopped.
+
+In scenarios, `/playing` reports each sound's `position` (seconds into
+the clip), `paused`, and `remaining` (real seconds left at the current
+rate, `null` when looped).
 
 ## Moving sounds and the listener
 

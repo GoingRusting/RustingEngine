@@ -234,6 +234,18 @@ impl BusEffect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SoundId(pub u64);
 
+/// A sound game code started that has not ended, from
+/// [`AudioQueue::playing`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActiveSound {
+    pub id: SoundId,
+    pub clip: String,
+    /// Bus it plays on; empty is the main output.
+    pub bus: String,
+    pub looped: bool,
+    pub paused: bool,
+}
+
 /// One request for the audio device.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioCommand {
@@ -338,6 +350,8 @@ pub struct AudioQueue {
     /// Last listener sent to the device.
     heard_from: Option<([f32; 3], [f32; 3])>,
     tracked: std::collections::BTreeMap<SoundId, Tracked>,
+    /// Every sound started and not yet ended, stopped or dropped.
+    active: std::collections::BTreeMap<SoundId, ActiveSound>,
     /// Fixed tick captions were last advanced to.
     caption_tick: u64,
 }
@@ -351,6 +365,16 @@ impl AudioQueue {
         self.requested += 1;
         *self.clips.entry(clip.to_owned()).or_default() += 1;
         let start = sound.at_tick.unwrap_or(tick);
+        self.active.insert(
+            id,
+            ActiveSound {
+                id,
+                clip: clip.to_owned(),
+                bus: sound.bus.clone(),
+                looped: sound.looped,
+                paused: false,
+            },
+        );
         if sound.follow.is_some()
             || (sound.occlude && sound.position.is_some())
             || !sound.captions.is_empty()
@@ -391,11 +415,13 @@ impl AudioQueue {
 
     pub fn stop(&mut self, id: SoundId) {
         self.tracked.remove(&id);
+        self.active.remove(&id);
         self.push(AudioCommand::Stop(id));
     }
 
     pub fn stop_all(&mut self) {
         self.tracked.clear();
+        self.active.clear();
         self.push(AudioCommand::StopAll);
     }
 
@@ -428,6 +454,9 @@ impl AudioQueue {
         if let Some(tracked) = self.tracked.get_mut(&id) {
             tracked.paused = true;
         }
+        if let Some(active) = self.active.get_mut(&id) {
+            active.paused = true;
+        }
         self.push(AudioCommand::Pause(id));
     }
 
@@ -435,7 +464,41 @@ impl AudioQueue {
         if let Some(tracked) = self.tracked.get_mut(&id) {
             tracked.paused = false;
         }
+        if let Some(active) = self.active.get_mut(&id) {
+            active.paused = false;
+        }
         self.push(AudioCommand::Resume(id));
+    }
+
+    /// Pauses every playing sound on `bus`, or on every bus with `None`.
+    pub fn pause_bus(&mut self, bus: Option<&str>) {
+        for id in self.on_bus(bus, false) {
+            self.pause(id);
+        }
+    }
+
+    /// Resumes every paused sound on `bus`, or on every bus with `None`.
+    pub fn resume_bus(&mut self, bus: Option<&str>) {
+        for id in self.on_bus(bus, true) {
+            self.resume(id);
+        }
+    }
+
+    fn on_bus(&self, bus: Option<&str>, paused: bool) -> Vec<SoundId> {
+        self.active
+            .values()
+            .filter(|sound| sound.paused == paused)
+            .filter(|sound| bus.is_none_or(|bus| sound.bus == bus))
+            .map(|sound| sound.id)
+            .collect()
+    }
+
+    /// Sounds started and not yet ended, oldest first. Ended means the
+    /// audio device finished, stopped or dropped them. With no device a
+    /// sound stays listed until it is stopped.
+    #[must_use]
+    pub fn playing(&self) -> Vec<ActiveSound> {
+        self.active.values().cloned().collect()
     }
 
     /// Jumps to `seconds` into the clip.
@@ -505,9 +568,10 @@ impl AudioQueue {
             .collect()
     }
 
-    /// Forgets followed and captioned sounds the device says have ended.
+    /// Forgets the sounds the device says have ended.
     pub fn retain_sounds(&mut self, mut playing: impl FnMut(SoundId) -> bool) {
-        self.tracked.retain(|id, _| playing(*id));
+        self.active.retain(|id, _| playing(*id));
+        self.tracked.retain(|id, _| self.active.contains_key(id));
     }
 
     /// Takes the waiting commands; the runner calls this once per frame.
@@ -715,6 +779,46 @@ fn occlusion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playing_lists_live_sounds_and_pauses_them_by_bus() {
+        let mut queue = AudioQueue::default();
+        let on = |bus: &str| Sound {
+            bus: bus.to_owned(),
+            ..Sound::default()
+        };
+        let music = queue.play("music.ogg", &on("music"), 0);
+        let hum = queue.play("hum.ogg", &on("music"), 0);
+        let step = queue.play("step.ogg", &on("sfx"), 0);
+        queue.drain();
+        queue.pause_bus(Some("music"));
+        let paused = |queue: &AudioQueue| {
+            let sounds = queue.playing();
+            sounds
+                .iter()
+                .filter(|s| s.paused)
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paused(&queue), [music, hum]);
+        assert_eq!(
+            queue.drain(),
+            [AudioCommand::Pause(music), AudioCommand::Pause(hum)]
+        );
+        queue.pause_bus(None);
+        assert_eq!(queue.drain(), [AudioCommand::Pause(step)]);
+        queue.resume_bus(Some("sfx"));
+        assert_eq!(paused(&queue), [music, hum]);
+        queue.resume_bus(None);
+        assert_eq!(paused(&queue), []);
+        // The device finished `hum`; `step` is stopped by hand.
+        queue.retain_sounds(|id| id != hum);
+        queue.stop(step);
+        let live = queue.playing();
+        assert_eq!(live.len(), 1);
+        assert_eq!((live[0].id, live[0].clip.as_str()), (music, "music.ogg"));
+        assert_eq!(live[0].bus, "music");
+    }
 
     #[test]
     fn beat_clock_lands_on_whole_ticks() {

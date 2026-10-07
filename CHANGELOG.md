@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `scene.playing_sounds()` lists the sounds started and not yet ended with clip, bus and paused state, and `scene.pause_sounds(bus)` / `resume_sounds(bus)` pause and resume one bus or (with `None`) every sound. The `pause_menu` recipe pauses sounds with the game.
 - Sound pitch and speed: play a sound at any rate, change it with a fade, and see it in the playing list
 - Pause, resume and seek playing sounds; the playing list shows where each sound is
 - Moving 3D sounds: move a sound or attach it to an object, and pick which object listens

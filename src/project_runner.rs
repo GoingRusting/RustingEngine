@@ -372,6 +372,24 @@ impl GameScene<'_> {
         self.audio().resume(id);
     }
 
+    /// Pauses every playing sound on `bus`, or every sound with `None`:
+    /// `pause_sounds(None)` for a pause menu.
+    pub fn pause_sounds(&mut self, bus: Option<&str>) {
+        self.audio().pause_bus(bus);
+    }
+
+    /// Resumes the paused sounds on `bus`, or every one with `None`.
+    pub fn resume_sounds(&mut self, bus: Option<&str>) {
+        self.audio().resume_bus(bus);
+    }
+
+    /// Sounds started and not yet ended, oldest first, with clip, bus and
+    /// whether they are paused. It follows the audio device, so do not
+    /// branch simulation on it: a headless replay has no device.
+    pub fn playing_sounds(&mut self) -> Vec<crate::runtime::ActiveSound> {
+        self.audio().playing()
+    }
+
     /// Jumps a sound to `seconds` into its clip.
     pub fn seek_sound(&mut self, id: crate::runtime::SoundId, seconds: f32) {
         self.audio().seek(id, seconds);
