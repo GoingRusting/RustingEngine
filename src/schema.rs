@@ -393,7 +393,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "recipe list",
         usage: "recipe list [--limit N] [--fields a,b] [--summary] [--json]",
-        summary: "List the gameplay recipes (checkpoints) with a summary and the call `update` makes.",
+        summary: "List the gameplay recipes (checkpoints, health) with a summary and the call `update` makes.",
         gpu: NO_GPU,
         defaults: &[],
         example: "recipe list --json",

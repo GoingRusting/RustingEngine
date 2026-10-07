@@ -345,7 +345,7 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
 `rusting add scenario <name>` writes one that fails until you fill in a real check;
 `rusting add system <name>` also appends a documented stub function to
 `src/main.rs` (call it from `update`).
-`rusting recipe apply <root> checkpoints` writes a tested mechanic: its source
+`rusting recipe apply <root> checkpoints` (or `health`) writes a tested mechanic: its source
 as `src/checkpoints.rs`, its objects into the main scene and a passing scenario;
 add the `mod` line and call it reports to `src/main.rs` (`rusting recipe list`).
 

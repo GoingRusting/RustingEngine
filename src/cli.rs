@@ -1967,7 +1967,7 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
     result.data["source"] = json!(source);
     result.data["scenario"] = json!(scenario);
     result.data["next"] = json!(format!(
-        "Add `mod {name};` to src/main.rs, call `{}` from `update`, then run `rusting test`.",
+        "Add `mod {name};` to src/main.rs, call `{}` from `update` (`scene` and `time` are its arguments; drop the `_` from `_time`), then run `rusting test`.",
         recipe.call
     ));
     result

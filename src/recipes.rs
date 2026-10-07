@@ -27,6 +27,12 @@ pub const RECIPES: &[Recipe] = &[Recipe {
     source: include_str!("recipes/checkpoints.rs"),
     call: "checkpoints::checkpoints(scene);",
     build: checkpoint_scene,
+}, Recipe {
+    name: "health",
+    summary: "The counter `health` starts at 3; touching an object in class `hazard` costs one point, flashes the player and makes it safe for a second, and at 0 the round restarts. Adds a sensor `Hazard 1` 2.5 units along +X from the player.",
+    source: include_str!("recipes/health.rs"),
+    call: "health::health(scene, time);",
+    build: health_scene,
 }];
 
 /// The recipe called `name`.
@@ -63,9 +69,39 @@ fn checkpoint_scene(player: [f32; 3]) -> (Vec<Value>, Value) {
     (entities, scenario)
 }
 
+fn health_scene(player: [f32; 3]) -> (Vec<Value>, Value) {
+    let hazard = [player[0] + 2.5, player[1], player[2]];
+    let entities = vec![json!({
+        "name": "Hazard 1",
+        "classes": ["hazard"],
+        "transform": {"position": hazard, "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+        "physics_body": {"simulation": "Cpu", "solver": "Simplified", "custom_shader": null},
+        "rigid_body": {"kind": "Fixed", "mass": 1.0, "linear_velocity": [0.0, 0.0, 0.0], "angular_velocity": [0.0, 0.0, 0.0], "gravity_scale": 1.0},
+        "collider": {"shape": {"Box": {"half_extents": [0.5, 1.0, 0.5]}}, "friction": 0.0, "restitution": 0.0, "sensor": true},
+    })];
+    // One hit a second while the player stands in the hazard: 3, 2, 1, then
+    // the restart refills health and puts the player back at the start.
+    let scenario = json!({
+        "name": "health: a hazard costs one point a second and 0 health restarts the round",
+        "ticks": 160,
+        "steps": [
+            {"tick": 1, "set": {"entity": "Player", "path": "/transform/position", "value": hazard}},
+            {"tick": 30, "expect": {"counter": "health", "equals": 2}},
+            {"tick": 90, "expect": {"counter": "health", "equals": 1}},
+            {"tick": 160, "expect": {"counter": "health", "equals": 3}},
+            {"tick": 160, "expect": {"entity": "Player", "path": "/transform/position/0", "less_than": hazard[0] - 1.5}},
+        ]
+    });
+    (entities, scenario)
+}
+
 #[cfg(test)]
 #[path = "recipes/checkpoints.rs"]
 mod checkpoints;
+
+#[cfg(test)]
+#[path = "recipes/health.rs"]
+mod health;
 
 #[cfg(test)]
 mod tests {
@@ -75,23 +111,24 @@ mod tests {
 
     use crate::project::ProjectTemplate;
     use crate::project_runner::GameScene;
-    use crate::runtime::{AppError, Plugin, ScheduleStage};
+    use crate::runtime::{AppError, FrameTime, Plugin, ScheduleStage};
     use crate::App;
 
-    struct Checkpoints;
+    /// Runs a recipe's call as a game's `update` would.
+    struct RecipeUpdate(fn(&mut World));
 
-    impl Plugin for Checkpoints {
+    impl Plugin for RecipeUpdate {
         fn build(&self, app: &mut App) -> Result<(), AppError> {
-            app.add_system(ScheduleStage::Update, |world: &mut World| {
-                super::checkpoints::checkpoints(&mut GameScene { world });
-            });
+            app.add_system(ScheduleStage::Update, self.0);
             Ok(())
         }
     }
 
-    #[test]
-    fn checkpoint_recipe_applies_to_the_player_templates_and_its_scenario_passes(
-    ) {
+    /// Applies the recipe `name` to each player template (dry run first,
+    /// then for real, then again to see it refused) and runs its scenario
+    /// with `update` compiled in.
+    fn applies_and_passes(name: &str, update: fn(&mut World)) {
+        let recipe = super::recipe(name).unwrap();
         for template in [
             ProjectTemplate::FirstPerson3d,
             ProjectTemplate::ThirdPerson3d,
@@ -104,28 +141,44 @@ mod tests {
                 crate::project::create_project_from(&parent, "g", template)
                     .unwrap();
             let root = project.root.as_path();
-            let dry = crate::cli::apply_recipe(root, "checkpoints", true);
+            let source = root.join(format!("src/{name}.rs"));
+            let dry = crate::cli::apply_recipe(root, name, true);
             assert!(dry.ok, "{dry:?}");
-            assert!(!root.join("src/checkpoints.rs").exists());
-            let applied = crate::cli::apply_recipe(root, "checkpoints", false);
+            assert!(!source.exists());
+            let applied = crate::cli::apply_recipe(root, name, false);
             assert!(applied.ok, "{applied:?}");
             assert_eq!(
-                std::fs::read_to_string(root.join("src/checkpoints.rs"))
-                    .unwrap(),
-                super::RECIPES[0].source
+                std::fs::read_to_string(&source).unwrap(),
+                recipe.source
             );
-            let again = crate::cli::apply_recipe(root, "checkpoints", false);
+            let again = crate::cli::apply_recipe(root, name, false);
             assert_eq!(again.diagnostics[0].code, "PROJECT_EXISTS");
             crate::project_runner::run_project_scenario(
                 project.scene_path.clone(),
-                Checkpoints,
-                root.join("tests/checkpoints.json"),
+                RecipeUpdate(update),
+                root.join(format!("tests/{name}.json")),
                 Some(root.join("report.json")),
             )
-            .unwrap_or_else(|error| panic!("{template:?}: {error}"));
+            .unwrap_or_else(|error| panic!("{name} {template:?}: {error}"));
             let _ = std::fs::remove_dir_all(&parent);
         }
+    }
+
+    #[test]
+    fn checkpoint_recipe_applies_to_the_player_templates_and_its_scenario_passes(
+    ) {
+        applies_and_passes("checkpoints", |world| {
+            super::checkpoints::checkpoints(&mut GameScene { world });
+        });
         let unknown = crate::cli::apply_recipe(Path::new("."), "nope", false);
         assert_eq!(unknown.diagnostics[0].code, "RECIPE_UNKNOWN");
+    }
+
+    #[test]
+    fn health_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
+        applies_and_passes("health", |world| {
+            let time = *world.resource::<FrameTime>();
+            super::health::health(&mut GameScene { world }, &time);
+        });
     }
 }
