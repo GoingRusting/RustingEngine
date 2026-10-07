@@ -22,6 +22,34 @@ shadows: the first directional light with `shadows`, or, when there is none,
 the first spot light with `shadows`. A mesh's `cast_shadows` and
 `receive_shadows` apply to that one shadow.
 
+## Brightness and direction
+
+A directional light's `illuminance` is in lux: 100000 is the midday sun and
+lights a white surface facing it at full brightness before exposure. Point
+and spot light `intensity` is in renderer units on the same scale: 1000
+lights a surface up close as brightly as that sun, fading to nothing at
+`range` as `(1 - distance/range)^2`. The built-in art presets use:
+
+| Preset | Sun `illuminance` | Ambient `intensity` | Sky `intensity` |
+| --- | --- | --- | --- |
+| `daylight` | 100000 | 0.1 | 0.35 |
+| `golden_hour` (dusk) | 70000 | 0.08 | 0.3 |
+| `night` (blue moonlight) | 20000 | 0.06 | 0.2 |
+| `dark_interior` | 30000 | 0.02 | 0.05 |
+
+Lamps on top of them: a desk lamp in a dark room is 400 to 1500, a bright
+party light 3000 to 8000.
+
+`rusting preset list --json` prints every preset's full values, and
+`rusting preset apply <scene> <name>` writes one into a scene. Tone-mapping
+`exposure` scales everything at once.
+
+Directional and spot lights shine along their object's -Z axis, the same
+way a camera looks. An unrotated spot light points at the horizon toward
+-Z; to aim it straight down, rotate it -90 degrees (`-1.5708` radians)
+about X. Point lights shine in every direction, so their rotation does not
+matter.
+
 ## How many lights draw
 
 The renderer draws at most 64 lights a frame at `High` (and `Auto`)

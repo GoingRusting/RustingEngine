@@ -84,6 +84,7 @@ Engine features for the horror game FOREVER BEAR.
 - A game whose cooked scene was made by a `rusting` CLI from another engine build now warns and loads the source scene instead of failing with a bincode decode error (dev projects only).
 - The look-and-feel guide documents mesh level of detail (`.rlod` files beside a mesh).
 - Scenarios and `rusting capture` with GPU bodies no longer draw a frame every tick: ticks without an image step only advance GPU physics, with the same state hashes, so long GPU runs finish sooner.
+- The lighting guide explains light brightness units, the art presets' values and which way directional and spot lights point.
 
 ### Fixed
 

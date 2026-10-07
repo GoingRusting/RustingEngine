@@ -773,6 +773,17 @@ mod tests {
     }
 
     #[test]
+    fn the_lighting_guide_explains_brightness_and_direction() {
+        for query in ["illuminance intensity", "spot light axis"] {
+            let (found, _) = search(query, 50);
+            assert!(
+                found.iter().any(|item| item["id"] == "guide/lighting"),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
     fn budget_cuts_at_a_line_and_the_brief_fits_it() {
         let (cut, truncated) = within_budget("aaaa\nbbbb\ncccc\n", 3);
         assert!(truncated);
