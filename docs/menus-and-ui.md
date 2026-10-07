@@ -48,6 +48,12 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 }
 ```
 
+- `set_counter` and `add_to_counter` create a missing counter, so game
+  state needs no scene object per value. `counter_value` on a counter that
+  does not exist reads 0 and warns once, to catch typos; read state that
+  is only written later with `scene.counter_or("slot_3_item", 0)`, which
+  gives the default without a warning. `scene.counters()` lists them all,
+  for a save file.
 - `scene.set_paused(true)` stops fixed ticks: physics, tweens, player
   controllers and emitters. The update function keeps running every frame,
   so the pause menu still draws and reads input.

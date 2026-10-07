@@ -805,6 +805,12 @@ mod tests {
     }
 
     #[test]
+    fn counter_or_is_documented() {
+        let (found, _) = search("counter_or default without a warning", 50);
+        assert!(found.iter().any(|item| item["id"] == "guide/menus-and-ui"));
+    }
+
+    #[test]
     fn entity_order_effect_on_physics_is_documented() {
         let (found, _) = search("unrelated scene edit toppled", 50);
         assert!(found.iter().any(|item| item["id"] == "manual/determinism"));

@@ -1134,6 +1134,16 @@ impl GameScene<'_> {
             .unwrap_or_default()
     }
 
+    /// The value of the counter called `name`, or `default` when there is
+    /// none. Unlike [`Self::counter_value`] a missing counter does not warn,
+    /// so game state can live in counters that are created on first write
+    /// without creating each one at start.
+    #[must_use]
+    pub fn counter_or(&self, name: &str, default: i32) -> i32 {
+        self.find_counter(name, |counter| counter.value)
+            .unwrap_or(default)
+    }
+
     /// Applies `read` to the counter called `name`, or warns once and gives
     /// `None` when there is none.
     fn read_counter<T>(
@@ -1141,8 +1151,19 @@ impl GameScene<'_> {
         name: &str,
         read: impl FnOnce(&crate::runtime::Counter) -> T,
     ) -> Option<T> {
-        let found = self
-            .world
+        let found = self.find_counter(name, read);
+        if found.is_none() {
+            warn_missing_counter(name);
+        }
+        found
+    }
+
+    fn find_counter<T>(
+        &self,
+        name: &str,
+        read: impl FnOnce(&crate::runtime::Counter) -> T,
+    ) -> Option<T> {
+        self.world
             .try_query::<(
                 &crate::runtime::Counter,
                 Option<&crate::runtime::SceneId>,
@@ -1150,11 +1171,7 @@ impl GameScene<'_> {
             .and_then(|mut counters| {
                 crate::runtime::find_counter(counters.iter(self.world), name)
                     .map(read)
-            });
-        if found.is_none() {
-            warn_missing_counter(name);
-        }
-        found
+            })
     }
 
     /// Adds `amount` (which may be negative) to the counter called `name`
@@ -2517,7 +2534,9 @@ fn warn_missing_counter(name: &str) {
         eprintln!(
             "warning: game code read counter `{name}`, which does not exist; \
              it reads as 0. Add a `rusting.counter` named `{name}` to the \
-             scene, or create it with `set_counter` or `add_to_counter`."
+             scene, create it with `set_counter` or `add_to_counter`, or \
+             read it with `counter_or` to give a default without this \
+             warning."
         );
     }
 }
@@ -5332,6 +5351,13 @@ mod tests {
         assert_eq!(scene.counter_value("night"), 2);
         assert!(!scene.counter_complete("night"), "created with no target");
         assert!(MISSING_COUNTERS.lock().unwrap().contains("coins"));
+        // `counter_or` reads a default without warning (night-market F15).
+        assert_eq!(scene.counter_or("unset_queue_slot", 7), 7);
+        assert_eq!(scene.counter_or("gems", 7), 9);
+        assert!(!MISSING_COUNTERS
+            .lock()
+            .unwrap()
+            .contains("unset_queue_slot"));
     }
 
     #[test]

@@ -99,6 +99,7 @@ Engine features for the horror game FOREVER BEAR.
 - A scenario `click` with `index` counts copies of a text drawn within 4 px of each other, such as a drop shadow, as one place.
 - The `budgets` schema text no longer says draw and triangle limits need a capture step; it and docs/concepts.md say when `perf.render` is filled.
 - docs/determinism.md explains that an unrelated scene edit can move a chaotic physics result, because bodies solve in `Entity` order.
+- `GameScene::counter_or(name, default)` reads a counter that may not exist yet without the missing-counter warning.
 
 ### Fixed
 
