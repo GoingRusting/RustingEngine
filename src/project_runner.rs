@@ -3259,13 +3259,19 @@ fn load_project_runtime<P: Plugin>(
         .unwrap_or(Path::new("."));
     match load_scene(runtime.world_mut(), scene_path, SceneLoadMode::Replace) {
         // A `rusting` CLI built from another engine version cooks a layout
-        // this game cannot read. In a dev project the source scene is right
-        // there, so load it instead of failing every run.
+        // this game cannot read. When the source scene is there (a dev
+        // project or an export, which copies `scenes/`), load it instead of
+        // failing every run.
         Err(crate::runtime::SceneIoError::Compiled(error)) => {
             let Some(source) = project_source_scene(folder, scene_path) else {
-                return Err(
-                    crate::runtime::SceneIoError::Compiled(error).into()
-                );
+                return Err(format!(
+                    "{} was cooked by a different engine build than this \
+                     game, or is damaged ({error}), and its source scene is \
+                     not next to it. Recook it with a `rusting` CLI built \
+                     from the engine the game builds against.",
+                    scene_path.display()
+                )
+                .into());
             };
             eprintln!(
                 "warning: {} was cooked by a different engine build than this \
@@ -3339,6 +3345,10 @@ fn stale_cooked_scene_warning(
     folder: &Path,
     scene_path: &Path,
 ) -> Option<String> {
+    // An exported game has no Cargo.toml, and copying sets its file times.
+    if !folder.join("Cargo.toml").is_file() {
+        return None;
+    }
     let source = project_source_scene(folder, scene_path)?;
     let modified =
         |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -3353,13 +3363,9 @@ fn stale_cooked_scene_warning(
     })
 }
 
-/// The source of `scene_path` when it is the cooked main scene of a project
-/// that is still being developed (it has a `Cargo.toml`).
+/// The source of `scene_path` when it is the cooked main scene named in the
+/// project's `project.json`.
 fn project_source_scene(folder: &Path, scene_path: &Path) -> Option<PathBuf> {
-    // An exported game has no Cargo.toml, and copying sets its file times.
-    if !folder.join("Cargo.toml").is_file() {
-        return None;
-    }
     let manifest: crate::project::ProjectManifest = serde_json::from_slice(
         &std::fs::read(folder.join("project.json")).ok()?,
     )
@@ -4778,15 +4784,24 @@ mod tests {
             tick: None,
             components: None,
         };
-        // An exported game has no source to fall back to.
-        assert!(load_project_runtime(&cooked, plugin()).is_err());
-        std::fs::write(folder.join("Cargo.toml"), "").unwrap();
+        // An export (no Cargo.toml) carries `scenes/` too.
         let mut runtime = load_project_runtime(&cooked, plugin()).unwrap();
-        let _ = std::fs::remove_dir_all(&folder);
         let mut scene = GameScene {
             world: runtime.world_mut(),
         };
         assert!(scene.try_object("Ball").is_some());
+        // With no source, the error says what to do.
+        std::fs::remove_dir_all(folder.join("scenes")).unwrap();
+        let error = load_project_runtime(&cooked, plugin())
+            .err()
+            .unwrap()
+            .to_string();
+        let _ = std::fs::remove_dir_all(&folder);
+        assert!(
+            error.contains("cooked by a different engine build")
+                && error.contains("Recook it"),
+            "{error}"
+        );
     }
 
     #[test]
