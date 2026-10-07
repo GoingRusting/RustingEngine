@@ -235,6 +235,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting determinism --json",
     ),
     code(
+        "LINT_CAMERA_INSIDE",
+        "A camera starts inside another entity's box or sphere collider, so the first frame shows the inside of that geometry.",
+        "Move the camera or its parent out of the collider, or make the collider a sensor if it is not solid.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_LIGHT_OFF",
         "A light can never light anything: negative intensity, a zero range, or a black color. Intensity 0 is allowed, for lights game code switches on.",
         "Raise the intensity (illuminance for a directional light) and range, or remove the light.",

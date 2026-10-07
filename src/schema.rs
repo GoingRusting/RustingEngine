@@ -183,7 +183,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "lint",
         usage: "lint [project-root] [--json]",
-        summary: "Presentation and design checks on the main scene, as warnings with codes: a player body outside 0.5 to 3 m tall (LINT_PLAYER_SCALE), a zero scale axis (LINT_ZERO_SCALE), and lights that can never light anything: negative intensity, zero range or black color (LINT_LIGHT_OFF). Fails when any check warns.",
+        summary: "Presentation and design checks on the main scene, as warnings with codes: a player body outside 0.5 to 3 m tall (LINT_PLAYER_SCALE), a zero scale axis (LINT_ZERO_SCALE), a camera that starts inside another entity's box or sphere collider (LINT_CAMERA_INSIDE), and lights that can never light anything: negative intensity, zero range or black color (LINT_LIGHT_OFF). Fails when any check warns.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder")],
         example: "lint my_game --json",

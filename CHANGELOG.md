@@ -116,6 +116,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting run --record FILE.scenario.json` saves the windowed session as a scenario: press, release and tap steps for the named actions the player held, so a human can hand an agent a bug as a test.
 - Scenarios take an `explore` section: an explorer bot walks the `PlayerController` to each goal (every sensor by default), jumps when stuck, and fails naming the goals it could not reach; the report lists them as `explore`.
 - `rusting lint [project]` checks the main scene for a player body outside 0.5 to 3 m tall, zero scale axes, and lights that can never light anything, as `LINT_*` warnings.
+- `rusting lint` warns with `LINT_CAMERA_INSIDE` when a camera starts inside a solid box or sphere collider.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

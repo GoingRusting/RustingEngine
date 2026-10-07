@@ -1106,7 +1106,82 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             ..Diagnostic::default()
         });
     };
+    // World matrices from the parent chain, as the runtime composes them.
+    let world_matrix = |entity: &SceneEntity| {
+        let mut matrix = nalgebra::Matrix4::<f32>::identity();
+        let mut next = Some(entity);
+        for _ in 0..64 {
+            let Some(current) = next else { break };
+            if let Some(transform) = &current.transform {
+                let local = crate::runtime::sim_math::transform_matrix(
+                    &crate::Transform::from(*transform),
+                );
+                matrix = nalgebra::Matrix4::from(local) * matrix;
+            }
+            next = current.parent.and_then(|id| by_id.get(&id).copied());
+        }
+        matrix
+    };
+    let is_ancestor = |ancestor: uuid::Uuid, entity: &SceneEntity| {
+        let mut next = entity.parent;
+        for _ in 0..64 {
+            match next {
+                Some(id) if id == ancestor => return true,
+                Some(id) => next = by_id.get(&id).and_then(|e| e.parent),
+                None => break,
+            }
+        }
+        false
+    };
+    let solids: Vec<_> = document
+        .entities
+        .iter()
+        .filter_map(|entity| {
+            let collider = entity.collider.as_ref()?;
+            let inverse = world_matrix(entity).try_inverse()?;
+            (!collider.sensor).then_some((entity, collider.shape, inverse))
+        })
+        .collect();
+    let mut cameras_inside = Vec::new();
     for (index, entity) in document.entities.iter().enumerate() {
+        if entity.camera.is_none() {
+            continue;
+        }
+        let at = world_matrix(entity).column(3).xyz().push(1.0);
+        for (solid, shape, inverse) in &solids {
+            if solid.id == entity.id || is_ancestor(solid.id, entity) {
+                continue;
+            }
+            let local = (inverse * at).xyz();
+            // ponytail: boxes and spheres only; capsules and meshes are
+            // skipped until a camera is caught inside one.
+            let inside = match shape {
+                ColliderShape::Box { half_extents } => {
+                    (0..3).all(|axis| local[axis].abs() < half_extents[axis])
+                }
+                ColliderShape::Sphere { radius } => local.norm() < *radius,
+                _ => false,
+            };
+            if inside {
+                cameras_inside.push((index, solid.name.clone()));
+                break;
+            }
+        }
+    }
+    for (index, entity) in document.entities.iter().enumerate() {
+        if let Some((_, solid)) =
+            cameras_inside.iter().find(|(camera, _)| *camera == index)
+        {
+            warn(
+                "LINT_CAMERA_INSIDE",
+                index,
+                "/transform/position",
+                format!(
+                    "is a camera that starts inside the collider of `{}`, so the first frame shows its inside",
+                    solid.as_deref().unwrap_or("unnamed entity")
+                ),
+            );
+        }
         if let Some(transform) = &entity.transform {
             if transform.scale.contains(&0.0) {
                 warn(
@@ -3968,6 +4043,8 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
     #[test]
     fn lint_flags_giant_players_zero_scales_and_dead_lights() {
         let id = |n: u8| format!("00000000-0000-0000-0000-0000000000{n:02}");
+        let cam = json!({"projection": {"Perspective": {"vertical_fov_radians": 1.0,
+            "near": 0.1, "far": 100.0}}, "active": true, "priority": 0});
         let scale = |s: [f32; 3]| json!({"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": s});
         let player = json!({"rusting.player_controller": "{}"});
         let scene = json!({"format_version": 7, "name": "Lint", "entities": [
@@ -3984,7 +4061,25 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              {"color": [1.0, 1.0, 1.0], "intensity": 0.0, "range": 8.0}},
             {"id": id(7), "name": "Sun", "directional_light":
              {"color": [0.0, 0.0, 0.0], "illuminance": 1.0, "shadows": true}},
+            // A 4 m wall turned 90 degrees, so its long side runs along Z.
+            {"id": id(8), "name": "Wall", "transform": {"position": [10.0, 1.0, 0.0],
+             "rotation": [0.0, 1.5707964, 0.0], "scale": [1.0, 1.0, 1.0]},
+             "collider": {"shape": {"Box": {"half_extents": [2.0, 1.0, 0.2]}},
+              "friction": 0.5, "restitution": 0.0, "sensor": false}},
+            {"id": id(9), "name": "Stuck Cam", "camera": cam,
+             "transform": {"position": [10.0, 1.0, 1.5],
+              "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]}},
+            {"id": id(10), "name": "Clear Cam", "camera": cam,
+             "transform": {"position": [11.5, 1.0, 0.0],
+              "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]}},
+            // Inside its own player's collider: exempt.
+            {"id": id(11), "parent": id(3), "name": "Eye Cam", "camera": cam,
+             "transform": scale([1.0, 1.0, 1.0])},
         ]});
+        let mut scene = scene;
+        scene["entities"][2]["collider"] = json!({"shape": {"Box":
+            {"half_extents": [0.3, 0.9, 0.3]}}, "friction": 0.5,
+            "restitution": 0.0, "sensor": false});
         let document =
             crate::runtime::parse_scene_document(scene.to_string().as_bytes())
                 .unwrap();
@@ -3999,8 +4094,9 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_ZERO_SCALE", "Flat".to_owned()),
                 ("LINT_LIGHT_OFF", "Lamp".to_owned()),
                 ("LINT_LIGHT_OFF", "Sun".to_owned()),
+                ("LINT_CAMERA_INSIDE", "Stuck Cam".to_owned()),
             ],
-            "Kid (0.9 m) and Torch (switched on in code) pass"
+            "Kid (0.9 m), Torch (switched on in code), Clear Cam and Eye Cam pass"
         );
     }
 
