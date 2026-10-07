@@ -68,6 +68,7 @@ Engine features for the horror game FOREVER BEAR.
 - `scene add-model` help and `guide/look-and-feel` say a model's license and author live in the `.rmeta` from `asset import`
 - `GameScene::set_field(name, path, value)` sets any scene field by the scenario `set` JSON pointer, including registered components such as `rusting.fog`
 - `guide/menus-and-ui` explains why `Color32::from_white_alpha(8)` is grey 50 and how to draw a faint overlay
+- `rusting capture --at X,Y,Z` with `--look-at X,Y,Z` or `--look YAW,PITCH` shoots from any point without a camera in the scene.
 
 ### Fixed
 

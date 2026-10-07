@@ -269,8 +269,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "capture",
-        usage: "capture <scene-path> <output.png> [--camera ID|NAME] [--tick N] [--size WxH] [--pick X,Y]... [--pick-rect X,Y,W,H]... [--no-hud] [--json]",
-        summary: "Render one camera of a scene offscreen to a PNG after N fixed ticks. --no-hud leaves the HUD out. Each --pick maps a pixel to the persistent ID of the object under it. Each --pick-rect lists every object covering a rectangle with its share of the rectangle (sampled, at most 64x64 points). Game code is not run. Without Vulkan, camera data and picks are still reported with a VULKAN_UNAVAILABLE error.",
+        usage: "capture <scene-path> <output.png> [--camera ID|NAME] [--tick N] [--size WxH] [--pick X,Y]... [--pick-rect X,Y,W,H]... [--at X,Y,Z [--look-at X,Y,Z | --look YAW,PITCH]] [--no-hud] [--json]",
+        summary: "Render one camera of a scene offscreen to a PNG after N fixed ticks. --no-hud leaves the HUD out. --at renders from a camera placed at a point instead of a scene camera, facing a point (--look-at) or a yaw and pitch in radians (--look; default faces -Z); it takes its lens from --camera or the active camera. Each --pick maps a pixel to the persistent ID of the object under it. Each --pick-rect lists every object covering a rectangle with its share of the rectangle (sampled, at most 64x64 points). Game code is not run. Without Vulkan, camera data and picks are still reported with a VULKAN_UNAVAILABLE error.",
         gpu: "required for the PNG: renders every tick through N and reads back one frame (width x height x 4 bytes)",
         defaults: &[("--camera", "the scene's active camera"), ("--tick", "0"), ("--size", "1280x720")],
         example: "capture my_game/scenes/main.rscene shot.png --tick 60 --pick 640,360 --json",

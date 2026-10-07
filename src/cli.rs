@@ -3109,6 +3109,14 @@ pub struct CaptureOptions {
     pub pick_rects: Vec<[u32; 4]>,
     /// False leaves the HUD and other runtime UI out (`--no-hud`).
     pub hud: bool,
+    /// Renders from a camera placed here (`--at X,Y,Z`) instead of a scene
+    /// camera; its lens comes from `camera` or the scene's active camera.
+    pub at: Option<[f32; 3]>,
+    /// Point the `at` camera faces (`--look-at X,Y,Z`).
+    pub look_at: Option<[f32; 3]>,
+    /// Yaw and pitch in radians for the `at` camera (`--look YAW,PITCH`);
+    /// zero faces -Z and positive pitch looks up.
+    pub look: Option<[f32; 2]>,
 }
 
 /// Loads a scene, simulates `tick` fixed ticks, and renders one camera
@@ -3180,6 +3188,44 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
         app.world_mut()
             .resource_mut::<RenderCameraOverride>()
             .entity = Some(camera);
+    }
+    if let Some(at) = options.at {
+        let world = app.world_mut();
+        let lens = match world.resource::<RenderCameraOverride>().entity {
+            Some(entity) => {
+                world.get::<crate::runtime::Camera>(entity).copied()
+            }
+            None => world
+                .query::<&crate::runtime::Camera>()
+                .iter(world)
+                .filter(|camera| camera.active)
+                .max_by_key(|camera| camera.priority)
+                .copied(),
+        };
+        let [yaw, pitch] = match options.look_at {
+            Some(target) => {
+                let d =
+                    [target[0] - at[0], target[1] - at[1], target[2] - at[2]];
+                [(-d[0]).atan2(-d[2]), d[1].atan2(d[0].hypot(d[2]))]
+            }
+            None => options.look.unwrap_or_default(),
+        };
+        let camera = world
+            .spawn((
+                crate::runtime::Name("Capture Camera".into()),
+                crate::Transform {
+                    position: at,
+                    rotation: [pitch, yaw, 0.0],
+                    scale: [1.0; 3],
+                },
+                crate::runtime::Camera {
+                    active: true,
+                    viewport: None,
+                    ..lens.unwrap_or_default()
+                },
+            ))
+            .id();
+        world.resource_mut::<RenderCameraOverride>().entity = Some(camera);
     }
 
     let mut gpu_error = None;

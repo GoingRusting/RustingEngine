@@ -483,6 +483,16 @@ fn execute(args: &[String]) -> CliResult {
                 picks: Vec::new(),
                 pick_rects: Vec::new(),
                 hud: true,
+                at: None,
+                look_at: None,
+                look: None,
+            };
+            let floats = |value: &str| {
+                value
+                    .split(',')
+                    .map(|v| v.parse::<f32>().ok())
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap_or_default()
             };
             let pair = |value: &str, separator| {
                 let (a, b) = value.split_once(separator)?;
@@ -513,6 +523,18 @@ fn execute(args: &[String]) -> CliResult {
                         Some(pixel) => options.picks.push(pixel),
                         None => return usage("--pick requires X,Y"),
                     },
+                    ("--at", Some(value)) => match floats(value)[..] {
+                        [x, y, z] => options.at = Some([x, y, z]),
+                        _ => return usage("--at requires X,Y,Z"),
+                    },
+                    ("--look-at", Some(value)) => match floats(value)[..] {
+                        [x, y, z] => options.look_at = Some([x, y, z]),
+                        _ => return usage("--look-at requires X,Y,Z"),
+                    },
+                    ("--look", Some(value)) => match floats(value)[..] {
+                        [yaw, pitch] => options.look = Some([yaw, pitch]),
+                        _ => return usage("--look requires YAW,PITCH"),
+                    },
                     ("--pick-rect", Some(rect)) => {
                         let parts: Vec<u32> =
                             rect.split(',').filter_map(|v| v.parse().ok()).collect();
@@ -529,6 +551,11 @@ fn execute(args: &[String]) -> CliResult {
                         ))
                     }
                 }
+            }
+            if options.at.is_none()
+                && (options.look_at.is_some() || options.look.is_some())
+            {
+                return usage("--look-at and --look need --at X,Y,Z");
             }
             cli::capture_scene(Path::new(scene), &options)
         }

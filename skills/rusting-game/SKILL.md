@@ -392,6 +392,8 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
   frame in a grid, each labelled with its tick: one image shows motion.
 - `rusting capture` renders the scene file without running game code;
   for a state the code creates, add a `capture` step to a scenario.
+  `--at X,Y,Z --look-at X,Y,Z` (or `--look YAW,PITCH`) shoots from any
+  point without adding a camera to the scene.
 - `expect` takes `equals`, `not_equals`, `greater_than`, `less_than` or
   `exists`, plus `tolerance` for numbers and arrays. It does not take
   `value`.

@@ -554,6 +554,20 @@ fn capture(args: &[&str], device: Option<&str>) -> (Output, Value) {
 fn capture_without_vulkan_still_reports_camera_and_picks_per_tick() {
     let parent = temporary_parent();
     let (scene, cube) = falling_cube_scene(&parent);
+    let document: Value =
+        serde_json::from_slice(&std::fs::read(&scene).unwrap()).unwrap();
+    let cube_position = document["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["name"] == "Cube")
+        .unwrap()["transform"]["position"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let scene = scene.to_str().unwrap();
     let png = parent.join("shot.png");
     let png = png.to_str().unwrap();
@@ -590,6 +604,39 @@ fn capture_without_vulkan_still_reports_camera_and_picks_per_tick() {
     assert!(over["entities"][0]["share"].as_f64().unwrap() > 0.0);
     assert!(rect("0,0,20,10")["entities"].as_array().unwrap().is_empty());
     assert!(!Path::new(png).exists());
+
+    // A camera placed with --at and aimed with --look-at sees the cube at
+    // the center from a side the scene camera never shows.
+    let cube_at = |at: &str| {
+        let (_, placed) = capture(
+            &[
+                scene,
+                png,
+                "--size",
+                "320x180",
+                "--at",
+                at,
+                "--look-at",
+                &cube_position,
+                "--pick",
+                "160,90",
+            ],
+            Some("no-such-vulkan-device"),
+        );
+        assert_eq!(placed["data"]["camera"]["name"], "Capture Camera");
+        placed["data"]["picks"][0]["id"].clone()
+    };
+    assert_eq!(cube_at("6,1,0"), cube.as_str());
+    assert_eq!(cube_at("0,8,0.01"), cube.as_str());
+    let (_, away) = capture(
+        &[
+            scene, png, "--at", "6,1,0", "--look", "0,0", "--pick", "640,360",
+        ],
+        Some("no-such-vulkan-device"),
+    );
+    assert!(away["data"]["picks"][0]["id"].is_null(), "{away}");
+    let (output, _) = capture(&[scene, png, "--look-at", "0,0,0"], None);
+    assert_eq!(output.status.code(), Some(2));
 
     let (output, missing) = capture(
         &[scene, png, "--camera", "Nobody"],
@@ -647,6 +694,25 @@ fn capture_renders_a_png_and_maps_pixels_to_scene_ids() {
         capture(&[scene, png.to_str().unwrap(), "--camera", id], None);
     assert!(output.status.success(), "{by_id}");
     assert_eq!(by_id["data"]["camera"]["name"], "Game Camera");
+    // A placed camera renders too, and sees the cube where it aims.
+    let (output, placed) = capture(
+        &[
+            scene,
+            png.to_str().unwrap(),
+            "--size",
+            "320x180",
+            "--at",
+            "6,1,0",
+            "--look-at",
+            "0,0.5,0",
+            "--pick",
+            "160,90",
+        ],
+        None,
+    );
+    assert!(output.status.success(), "{placed}");
+    assert_eq!(placed["data"]["picks"][0]["id"], cube.as_str());
+    assert_ne!(placed["data"]["picks"][0]["color"], picks[1]["color"]);
     let _ = std::fs::remove_dir_all(&parent);
 }
 
