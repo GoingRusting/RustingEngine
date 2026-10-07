@@ -95,6 +95,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/lighting.md"),
     ),
+    (
+        "guide/pitfalls",
+        "guide",
+        include_str!("../docs/pitfalls.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
@@ -1083,5 +1088,22 @@ mod tests {
             }
         }
         assert!(marked >= 2, "only {marked} calls mark a preferred one");
+    }
+
+    #[test]
+    fn pitfall_catalog_names_only_real_codes_and_every_entry_has_a_fix() {
+        let page = super::find("guide/pitfalls").expect("pitfalls");
+        let mut named = 0;
+        for line in page.text.lines().filter(|l| l.starts_with("Code: ")) {
+            let codes = line.split('`').skip(1).step_by(2);
+            for code in codes.filter(|c| !c.contains(' ')) {
+                assert!(crate::diagnostics::lookup(code).is_some(), "{code}");
+                named += 1;
+            }
+        }
+        assert!(named >= 15, "only {named} codes");
+        let entries = page.text.matches("\n**").count();
+        assert_eq!(page.text.matches("\nCode: ").count(), entries);
+        assert_eq!(page.text.matches("\nFix: ").count(), entries);
     }
 }

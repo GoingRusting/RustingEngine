@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting docs show guide/pitfalls`: a catalog of mistakes games have made, each with the diagnostic code that catches it and the fix.
 - `rusting lint` warns `LINT_TEXT_SMALL` for HUD text under 14 px and `LINT_TEXT_OFFSCREEN` for HUD text anchored outside a 1280 x 720 view.
 - `rusting lint` warns `LINT_GOAL_INSIDE` when a pickup, goal or other sensor starts with its centre inside solid geometry, where the player can never reach it.
 - `rusting lint` warns `LINT_CAMERA_INSIDE` for a camera inside a capsule collider too, and no longer for a camera inside any player body.

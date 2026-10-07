@@ -111,6 +111,8 @@ command takes `--json` for output a program can read.
   button by its label. Saves go through `scene.save_data` and
   `scene.load_data`. `rusting docs show guide/menus-and-ui` covers menus,
   pause, quit, saves, rebinding and their tests.
+- `rusting docs show guide/pitfalls` lists mistakes games have made, each
+  with the diagnostic code that catches it and the fix.
 - `rusting docs show api/PlayerController` lists the controller's fields.
   `turn_speed` turns the body's non-camera children (the visible rig)
   toward the walking direction.

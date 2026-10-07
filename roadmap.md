@@ -2998,7 +2998,8 @@ Depends on: Milestones L1 and L2.
     - Verified: `dash_recipe_applies_to_the_player_templates_and_its_scenario_passes` on the first-person, third-person and 2D templates: a player lifted 1 m dashes more than 2.5 m along its forward (+X in 2D) by tick 40, and a second press 20 ticks later inside the cooldown leaves it short of 3.5 m at tick 80. In the 2D template an unlifted dash stops 0.7 m out against the brick row, as walls should stop it.
 - [ ] A template matrix for `rusting new --template`: platformer, top-down action, first-person, third-person, puzzle grid, racing, twin-stick shooter, tower defense, roguelike, card game, rhythm game, and physics sandbox. Each passes its scenarios in CI.
 - [ ] The skill file and project `AGENTS.md` are generated from the schema, the API index, and a pitfall catalog, and checked for staleness in CI.
-- [ ] A pitfall catalog grown from every logged gap in the "Current focus" list, each with its diagnostic code and fix.
+- [x] A pitfall catalog grown from every logged gap in the "Current focus" list, each with its diagnostic code and fix.
+  - Evidence: `docs/pitfalls.md`, served as `rusting docs show guide/pitfalls` and linked from SKILL.md and the project AGENTS.md, has 26 entries from the friction logs and SKILL rules, each with a symptom, `Code:` and `Fix:`. Test `pitfall_catalog_names_only_real_codes_and_every_entry_has_a_fix` checks every named code is in the diagnostics registry (a fake `LINT_ZERO_SCALEX` fails it) and every entry has both lines.
 - [ ] A task cookbook of runnable snippets ("make an enemy follow the player", "add a level select"), each tested.
 
 ### Exit gate

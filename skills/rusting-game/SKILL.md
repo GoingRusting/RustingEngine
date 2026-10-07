@@ -323,6 +323,8 @@ works too.
 - After `restart` or `load_scene`, return from `update`: objects you looked
   up earlier in the frame are gone.
 - Game code adds no dependencies beyond `rusting_engine`.
+- `rusting docs show guide/pitfalls` lists the mistakes games have made,
+  each with the diagnostic code that catches it and the fix.
 
 ## Multiple levels
 
