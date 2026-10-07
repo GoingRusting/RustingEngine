@@ -220,6 +220,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "test my_game my_game/tests/falls.json --json",
     },
     Operation {
+        name: "bisect",
+        usage: "bisect <project-root> <other-root> [--ticks N] [--json]",
+        summary: "Build two copies of a game, such as two git worktrees holding two builds or two revisions of the scenes, run each headless for N ticks, and compare every tick's world-state hash. Fails with DETERMINISM_DIVERGED naming the first tick whose state differs and the first entity that differs there (entities pair by scene ID, so added or removed entities still line up); passes when every tick matches. Hash reports go to build/bisect/ in each root.",
+        gpu: NO_GPU,
+        defaults: &[("--ticks", "600")],
+        example: "bisect my_game ../my_game_main --ticks 300 --json",
+    },
+    Operation {
         name: "fuzz",
         usage: "fuzz [project-root] scenario.json [--seeds N] [--first-seed N] [--action NAME]... [--json]",
         summary: "Run a scenario once per seed with seeded random presses and releases of named actions (each action flips with chance 0.1 per tick), on top of the scenario's own steps and invariants. Stops at the first seed that fails a step or an invariant, or crashes the game, and writes it to build/fuzz/seed-N.json as a ready scenario: the presses as ordinary steps up to the failing tick, so `rusting test` replays the failure. Without --action, presses every action the scene binds; name actions that game code binds with --action. Passes, with `fuzz.tried`, when every seed passes.",

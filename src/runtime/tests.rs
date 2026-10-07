@@ -3217,6 +3217,30 @@ fn compare_runs_reports_the_first_divergent_tick_and_body() {
 }
 
 #[test]
+fn divergent_entities_pair_by_scene_id_across_scene_revisions() {
+    let id = |n: u128| Some(uuid::Uuid::from_u128(n));
+    let entry = |entity, name: &str, scene_id, hash| EntityStateHash {
+        entity,
+        name: Some(name.into()),
+        scene_id,
+        hash,
+    };
+    let old = [entry(1, "Floor", id(1), 10), entry(2, "Crate", id(2), 20)];
+    // The new revision adds a lamp first, shifting every entity.
+    let same = [
+        entry(1, "Lamp", id(3), 30),
+        entry(2, "Floor", id(1), 10),
+        entry(3, "Crate", id(2), 20),
+    ];
+    let found = first_divergent_entity(&old, &same).unwrap();
+    assert_eq!(found.name.as_deref(), Some("Lamp"), "only the new lamp");
+    let moved = [entry(2, "Floor", id(1), 10), entry(3, "Crate", id(2), 21)];
+    let found = first_divergent_entity(&old, &moved).unwrap();
+    assert_eq!(found.name.as_deref(), Some("Crate"));
+    assert!(first_divergent_entity(&old, &old).is_none());
+}
+
+#[test]
 fn replays_reproduce_recorded_hashes_and_find_changed_input() {
     let scene = || {
         let mut app = App::new();

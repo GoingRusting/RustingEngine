@@ -368,27 +368,33 @@ pub fn compare_runs(
     Ok(None)
 }
 
-/// First entity, in entity order, whose hash differs or that only one list
-/// has. Both lists are sorted by entity.
+/// First entity, in the first list's order, whose hash differs or that
+/// only one list has. Entities pair by scene ID when they have one, so two
+/// scene revisions that add or remove entities still line up, and by
+/// entity otherwise.
 #[must_use]
 pub fn first_divergent_entity(
     first: &[EntityStateHash],
     second: &[EntityStateHash],
 ) -> Option<DivergentEntity> {
-    let mut both = BTreeMap::<
-        u64,
-        (Option<&EntityStateHash>, Option<&EntityStateHash>),
-    >::new();
-    for entry in first {
-        both.entry(entry.entity).or_default().0 = Some(entry);
-    }
-    for entry in second {
-        both.entry(entry.entity).or_default().1 = Some(entry);
-    }
-    let (left, right) = both
-        .into_values()
-        .find(|(left, right)| left.map(|l| l.hash) != right.map(|r| r.hash))?;
-    let entry = left.or(right)?;
+    let key = |entry: &EntityStateHash| match entry.scene_id {
+        Some(id) => (Some(id), 0),
+        None => (None, entry.entity),
+    };
+    let seconds: BTreeMap<_, u64> = second
+        .iter()
+        .map(|entry| (key(entry), entry.hash))
+        .collect();
+    let firsts: BTreeMap<_, u64> =
+        first.iter().map(|entry| (key(entry), entry.hash)).collect();
+    let entry = first
+        .iter()
+        .find(|entry| seconds.get(&key(entry)) != Some(&entry.hash))
+        .or_else(|| {
+            second
+                .iter()
+                .find(|entry| !firsts.contains_key(&key(entry)))
+        })?;
     Some(DivergentEntity {
         entity: entry.entity,
         name: entry.name.clone(),

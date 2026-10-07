@@ -2921,50 +2921,7 @@ pub fn check_game_determinism(root: &Path, ticks: u32) -> CliResult {
         );
     }
     let run = |config: &DeterminismConfig, ticks: u32| {
-        let executable = crate::project::built_executable(
-            &project.root,
-            &project.root.join("Cargo.toml"),
-            &project.manifest.binary_name,
-            None,
-            config.release,
-        )
-        .map_err(|error| CliResult::failure("BUILD_FAILED", error, None))?;
-        let report_path = out_dir.join(format!("{}-{ticks}.json", config.name));
-        let _ = std::fs::remove_file(&report_path);
-        let mut game = if config.one_cpu {
-            let mut game = Command::new("taskset");
-            game.args(["--cpu-list", "0"]).arg(&executable);
-            game
-        } else {
-            Command::new(&executable)
-        };
-        game.current_dir(&project.root)
-            .env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
-            .env(crate::project::STATE_HASH_OUT_ENV, &report_path);
-        let output = run_process(&mut game, None).map_err(|error| {
-            CliResult::failure(
-                "GAME_FAILED",
-                format!("could not start {}: {error}", executable.display()),
-                Some(executable.clone()),
-            )
-        })?;
-        std::fs::read_to_string(&report_path)
-            .ok()
-            .and_then(|text| {
-                serde_json::from_str::<crate::runtime::StateHashReport>(&text)
-                    .ok()
-            })
-            .ok_or_else(|| {
-                CliResult::failure(
-                    "GAME_FAILED",
-                    format!(
-                        "{} run wrote no state hashes:\n{}",
-                        config.name,
-                        tail(&output.stderr, 40)
-                    ),
-                    Some(executable),
-                )
-            })
+        headless_state_hashes(&project, config, ticks, &out_dir)
     };
     let mut reports = Vec::new();
     for config in &configs {
@@ -3029,6 +2986,140 @@ pub fn check_game_determinism(root: &Path, ticks: u32) -> CliResult {
         return result;
     }
     CliResult::success(data)
+}
+
+/// Runs a built game headless for `ticks` ticks and reads the state hash
+/// of every tick, plus each entity's hash at the end.
+fn headless_state_hashes(
+    project: &OpenProject,
+    config: &DeterminismConfig,
+    ticks: u32,
+    out_dir: &Path,
+) -> Result<crate::runtime::StateHashReport, CliResult> {
+    let executable = crate::project::built_executable(
+        &project.root,
+        &project.root.join("Cargo.toml"),
+        &project.manifest.binary_name,
+        None,
+        config.release,
+    )
+    .map_err(|error| CliResult::failure("BUILD_FAILED", error, None))?;
+    let report_path = out_dir.join(format!("{}-{ticks}.json", config.name));
+    let _ = std::fs::remove_file(&report_path);
+    let mut game = if config.one_cpu {
+        let mut game = Command::new("taskset");
+        game.args(["--cpu-list", "0"]).arg(&executable);
+        game
+    } else {
+        Command::new(&executable)
+    };
+    game.current_dir(&project.root)
+        .env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
+        .env(crate::project::STATE_HASH_OUT_ENV, &report_path);
+    let output = run_process(&mut game, None).map_err(|error| {
+        CliResult::failure(
+            "GAME_FAILED",
+            format!("could not start {}: {error}", executable.display()),
+            Some(executable.clone()),
+        )
+    })?;
+    std::fs::read_to_string(&report_path)
+        .ok()
+        .and_then(|text| {
+            serde_json::from_str::<crate::runtime::StateHashReport>(&text).ok()
+        })
+        .ok_or_else(|| {
+            CliResult::failure(
+                "GAME_FAILED",
+                format!(
+                    "{} run wrote no state hashes:\n{}",
+                    config.name,
+                    tail(&output.stderr, 40)
+                ),
+                Some(executable),
+            )
+        })
+}
+
+/// Runs two copies of a game (two builds, or two revisions of its scenes,
+/// such as two git worktrees) headless for `ticks` ticks and reports the
+/// first tick whose state hash differs and the first entity that differs
+/// there, matched by scene ID.
+pub fn bisect_game_projects(
+    first: &Path,
+    second: &Path,
+    ticks: u32,
+) -> CliResult {
+    let config = DeterminismConfig {
+        name: "bisect",
+        release: false,
+        one_cpu: false,
+    };
+    let mut projects = Vec::new();
+    for root in [first, second] {
+        let cooked = cook_project(root);
+        if !cooked.ok {
+            return cooked;
+        }
+        let project = match open_project(root) {
+            Ok(project) => project,
+            Err(error) => return project_error(error, root),
+        };
+        if let Err(result) = cargo(&project, "build", false, None) {
+            return result;
+        }
+        let out_dir = project.root.join("build/bisect");
+        if let Err(error) = std::fs::create_dir_all(&out_dir) {
+            return CliResult::failure(
+                "IO_ERROR",
+                error.to_string(),
+                Some(out_dir),
+            );
+        }
+        projects.push((project, out_dir));
+    }
+    let run = |index: usize, ticks: u32| {
+        let (project, out_dir) = &projects[index];
+        headless_state_hashes(project, &config, ticks, out_dir)
+    };
+    let (a, b) = match (run(0, ticks), run(1, ticks)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(result), _) | (_, Err(result)) => return result,
+    };
+    let mut data = json!({
+        "roots": [projects[0].0.root, projects[1].0.root],
+        "ticks": ticks,
+        "final_hashes": [a.ticks.last().map(|t| t.1), b.ticks.last().map(|t| t.1)],
+    });
+    let Some(tick) = crate::runtime::first_divergent_tick(&a.ticks, &b.ticks)
+    else {
+        data["verdict"] = json!(format!("identical on all {ticks} ticks"));
+        return CliResult::success(data);
+    };
+    // Repeat both runs up to the divergent tick for entity hashes there.
+    let tick_count = u32::try_from(tick).unwrap_or(ticks);
+    let entity = match (run(0, tick_count), run(1, tick_count)) {
+        (Ok(a), Ok(b)) => {
+            crate::runtime::first_divergent_entity(&a.entities, &b.entities)
+        }
+        (Err(result), _) | (_, Err(result)) => return result,
+    };
+    data["divergence"] = json!({"tick": tick, "entity": entity});
+    let mut result = CliResult::failure(
+        "DETERMINISM_DIVERGED",
+        format!(
+            "the two runs diverge at tick {tick}{}; compare that tick's \
+             state with `rusting run <root> --ticks {tick}` in each and \
+             `rusting diff` on the two build/final.rscene files",
+            entity
+                .and_then(|entity| entity.name)
+                .map(|name| format!(", first in `{name}`"))
+                .unwrap_or_default()
+        ),
+        None,
+    );
+    result.data = data;
+    result
 }
 
 /// Runs a scenario in a debug and then a release build and compares the

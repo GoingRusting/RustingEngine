@@ -339,6 +339,17 @@ fn execute(args: &[String]) -> CliResult {
                 _ => cli::run_game_project(Path::new(root), options),
             }
         }
+        ["bisect", first, second, flags @ ..] => {
+            let ticks = match flags {
+                [] => 600,
+                ["--ticks", ticks] => match ticks.parse() {
+                    Ok(ticks) => ticks,
+                    Err(_) => return usage("--ticks requires a tick count"),
+                },
+                _ => return usage("bisect flags: --ticks N"),
+            };
+            cli::bisect_game_projects(Path::new(first), Path::new(second), ticks)
+        }
         ["fuzz", root, scenario, flags @ ..] => {
             let (mut first, mut count) = (0_u64, 20_u64);
             let mut actions = Vec::new();

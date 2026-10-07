@@ -473,6 +473,10 @@ so a game that uses actions is testable without a keyboard.
   tick time (mean, p95, max) with draws and triangles when it rendered.
 - `rusting determinism <project>` checks that debug, release, and one-CPU
   builds produce the same simulation, tick by tick.
+- `rusting bisect <project> <other-copy> --ticks N` runs two copies of a
+  game, such as two git worktrees with different code or scenes, and names
+  the first tick and entity whose state differs. Entities pair by scene ID,
+  so a revision that adds or removes entities still lines up.
 
 GPU bodies do not move in `rusting run --ticks`, because no renderer runs
 their compute shaders. A headless run warns when the loaded scene has GPU
