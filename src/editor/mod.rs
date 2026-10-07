@@ -191,6 +191,8 @@ fn reload_external_scene_change(
             );
             if answer.0.is_some() || answer.1 {
                 journal.pending = None;
+                journal.pending_scene = None;
+                journal.pending_fields.clear();
             }
             answer
         });
@@ -199,6 +201,13 @@ fn reload_external_scene_change(
             "Rejected the outside change to {}; Save overwrites it",
             path.display()
         ));
+        return;
+    }
+    let accept_entity = world
+        .get_resource_mut::<agent_panel::AgentJournal>()
+        .and_then(|mut journal| journal.accept_entity.take());
+    if let Some(id) = accept_entity {
+        accept_pending_entity(world, state, history, &path, id);
         return;
     }
     let known = world.resource::<SceneFileRevision>();
@@ -219,21 +228,9 @@ fn reload_external_scene_change(
     let accept = accepted.is_some() && !stale;
     if !accept && (stale || state.scene_dirty || paused) {
         world.resource_mut::<SceneFileRevision>().modified = disk.modified;
-        let diff = scene_document(world, "Editor Scene")
-            .ok()
-            .zip(crate::runtime::read_scene_document(&path).ok())
-            .map(|(ours, theirs)| outside_change(&ours, &theirs))
-            .unwrap_or_default();
-        if let Some(mut journal) =
-            world.get_resource_mut::<agent_panel::AgentJournal>()
-        {
-            journal.pending = Some(agent_panel::JournalEntry {
-                path: path.display().to_string(),
-                summary: diff.summary(),
-                ids: diff.touched(),
-                revision: disk.revision.clone(),
-            });
-        }
+        let theirs = crate::runtime::read_scene_document(&path).ok();
+        let ours = scene_document(world, "Editor Scene").ok();
+        set_pending(world, &path, &disk.revision, ours, theirs);
         state.scene_message = Some(if stale {
             format!(
                 "{} changed again before Accept; review the new pending \
@@ -297,6 +294,135 @@ fn reload_external_scene_change(
             format!("Could not reload outside change: {error}")
         }
     });
+}
+
+/// Records an outside write the editor has not applied as the Agent area's
+/// pending entry, or clears it when the scenes no longer differ.
+fn set_pending(
+    world: &mut World,
+    path: &std::path::Path,
+    revision: &str,
+    ours: Option<SceneDocument>,
+    theirs: Option<SceneDocument>,
+) {
+    let (diff, fields) = match (&ours, &theirs) {
+        (Some(ours), Some(theirs)) => {
+            let diff = outside_change(ours, theirs);
+            let fields = pending_fields(ours, theirs, &diff.touched());
+            (diff, fields)
+        }
+        _ => Default::default(),
+    };
+    let Some(mut journal) =
+        world.get_resource_mut::<agent_panel::AgentJournal>()
+    else {
+        return;
+    };
+    let empty = diff == OutsideChange::default() && theirs.is_some();
+    journal.pending = (!empty).then(|| agent_panel::JournalEntry {
+        path: path.display().to_string(),
+        summary: diff.summary(),
+        ids: diff.touched(),
+        revision: revision.to_owned(),
+    });
+    journal.pending_scene = theirs.filter(|_| !empty);
+    journal.pending_fields = fields;
+}
+
+/// "path: old -> new" for each changed field of these entities.
+fn pending_fields(
+    ours: &SceneDocument,
+    theirs: &SceneDocument,
+    ids: &[uuid::Uuid],
+) -> Vec<(uuid::Uuid, String)> {
+    let value = |document: &SceneDocument, id| {
+        document
+            .entities
+            .iter()
+            .find(|entity| entity.id == id)
+            .map(|entity| serde_json::to_value(entity).unwrap_or_default())
+            .unwrap_or_default()
+    };
+    let show = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => "none".to_owned(),
+        value => value.to_string(),
+    };
+    ids.iter()
+        .flat_map(|&id| {
+            crate::cli::leaf_changes(&value(ours, id), &value(theirs, id))
+                .into_iter()
+                .map(move |change| {
+                    (
+                        id,
+                        format!(
+                            "{}: {} -> {}",
+                            change["path"].as_str().unwrap_or_default(),
+                            show(&change["before"]),
+                            show(&change["after"])
+                        ),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Applies one entity of the pending outside write to the editor scene,
+/// behind an Undo snapshot, and keeps the rest pending.
+fn accept_pending_entity(
+    world: &mut World,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    path: &std::path::Path,
+    id: uuid::Uuid,
+) {
+    let Some(journal) = world.get_resource::<agent_panel::AgentJournal>()
+    else {
+        return;
+    };
+    let (Some(theirs), Some(pending)) =
+        (journal.pending_scene.clone(), journal.pending.clone())
+    else {
+        return;
+    };
+    let Some(entity) = theirs.entities.iter().find(|e| e.id == id).cloned()
+    else {
+        return;
+    };
+    let mut merged = match scene_document(world, "Editor Scene") {
+        Ok(document) => document,
+        Err(error) => {
+            state.scene_message = Some(error.to_string());
+            return;
+        }
+    };
+    let name = entity.name.clone().unwrap_or_else(|| id.to_string());
+    match merged.entities.iter_mut().find(|e| e.id == id) {
+        Some(slot) => *slot = entity,
+        None => merged.entities.push(entity),
+    }
+    if let Err(error) = remember_scene_before_edit(world, history) {
+        state.scene_message = Some(error);
+        return;
+    }
+    let result = view::reload_keeping_selection(world, state, |world| {
+        crate::runtime::load_scene_document(
+            world,
+            &merged,
+            SceneLoadMode::Replace,
+        )
+    });
+    if let Err(error) = result {
+        state.scene_message = Some(error.to_string());
+        return;
+    }
+    history.redo.clear();
+    state.scene_dirty = true;
+    highlight_scene_ids(world, state, &[id]);
+    let ours = scene_document(world, "Editor Scene").ok();
+    set_pending(world, path, &pending.revision, ours, Some(theirs));
+    state.scene_message = Some(format!(
+        "Accepted the outside change to {name}; Undo reverts it"
+    ));
 }
 
 /// Entities an outside write added, removed, or changed, by scene ID.

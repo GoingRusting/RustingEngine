@@ -303,6 +303,10 @@ Items the audit found but left open, with the reason for each.
   Add a conflict dialog that shows the patch diff and offers keep mine,
   take theirs, or a per-field merge. The watch compares the file time
   first; switch to a file watcher if coarse clocks miss changes.
+- Agent panel pending diff: compare the outside write with the last saved
+  or loaded file, not the live editor scene, so the user's own unsaved edits
+  do not show as agent changes; add per-field Accept and a row for removed
+  entities.
 - Agent panel (roadmap Milestone L4): a Blender-style area that lists the
   operation journal of agent edits, shows each pending diff with accept and
   reject, highlights the affected entities in the Hierarchy and Scene View,

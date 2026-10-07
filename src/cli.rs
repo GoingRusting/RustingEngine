@@ -1981,7 +1981,7 @@ fn flatten_leaves(
     }
 }
 
-fn leaf_changes(before: &Value, after: &Value) -> Vec<Value> {
+pub(crate) fn leaf_changes(before: &Value, after: &Value) -> Vec<Value> {
     let (mut a, mut b) = (BTreeMap::new(), BTreeMap::new());
     flatten_leaves(before, String::new(), &mut a);
     flatten_leaves(after, String::new(), &mut b);
