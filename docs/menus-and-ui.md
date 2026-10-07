@@ -62,6 +62,12 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
   `pressed`. A headless run passes every input to both egui and the game.
 - `rusting.hud` entities with `button: true` are egui buttons too, and work
   the same way.
+- egui blends in sRGB space, as its own backends do, but its color
+  constructors premultiply in linear light. `Color32::from_white_alpha(8)`
+  and `from_rgba_unmultiplied(255, 255, 255, 8)` are both grey 50, a clear
+  band over black. For a faint overlay (scanlines, grain) write the
+  premultiplied value yourself: `Color32::from_rgba_premultiplied(8, 8, 8, 8)`
+  adds 8.
 
 ## Settings, saves and key rebinding
 

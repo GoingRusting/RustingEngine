@@ -67,6 +67,7 @@ Engine features for the horror game FOREVER BEAR.
 - `GameScene::set_exposure` and `GameScene::set_mouse_look` set exposure and free or recapture the cursor without `world()`
 - `scene add-model` help and `guide/look-and-feel` say a model's license and author live in the `.rmeta` from `asset import`
 - `GameScene::set_field(name, path, value)` sets any scene field by the scenario `set` JSON pointer, including registered components such as `rusting.fog`
+- `guide/menus-and-ui` explains why `Color32::from_white_alpha(8)` is grey 50 and how to draw a faint overlay
 
 ### Fixed
 

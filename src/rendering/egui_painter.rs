@@ -778,6 +778,40 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn faint_egui_white_is_premultiplied_in_linear_light() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let white = TextureId::Managed(0);
+        let textures = TexturesDelta {
+            set: vec![set(white, None, vec![Color32::WHITE])],
+            free: Vec::new(),
+        };
+        // `guide/menus-and-ui` relies on these: egui's own constructors
+        // premultiply in linear light, so alpha 8 white is grey 50.
+        let red = |color: Color32| {
+            let mut target = Target::new();
+            let all = points([0.0, 0.0], [8.0, 8.0]);
+            target.paint(
+                1.0,
+                &[rect(white, all, Pos2::ZERO, color, all)],
+                &textures,
+            );
+            target.pixel([1, 1])[0]
+        };
+        assert_eq!(Color32::from_white_alpha(8).r(), 50);
+        assert!(red(Color32::from_white_alpha(8)).abs_diff(50) <= 1);
+        assert!(
+            red(Color32::from_rgba_premultiplied(8, 8, 8, 8)).abs_diff(8) <= 1
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn meshes_blend_over_the_target_in_points_and_respect_clip_rects() {
         if vulkano::VulkanLibrary::new().is_err() {
             eprintln!("skipping: no Vulkan driver present");
