@@ -143,6 +143,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Fixed
 - `rusting run --replay` no longer reports a divergence at tick 9 on every windowed recording; the state hash no longer depends on entity ids that only the windowed runtime shifts.
+- Scenario screenshots and goldens now blend the runtime UI in gamma space, as the game window does; before, a translucent egui fill looked about half as dark in screenshots. Goldens with translucent UI may need regenerating.
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
 
 - The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060

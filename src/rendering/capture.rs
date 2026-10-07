@@ -48,6 +48,10 @@ pub struct HeadlessCapture {
     gpu_frames: Vec<f64>,
     #[cfg(feature = "ui")]
     ui: Option<super::egui_painter::EguiPainter>,
+    /// A UNORM view of [`Self::image`]: the UI blends in gamma space, as
+    /// over the window's UNORM swapchain.
+    #[cfg(feature = "ui")]
+    ui_target: Option<Arc<ImageView>>,
 }
 
 impl HeadlessCapture {
@@ -79,6 +83,8 @@ impl HeadlessCapture {
             gpu_frames: Vec::new(),
             #[cfg(feature = "ui")]
             ui: None,
+            #[cfg(feature = "ui")]
+            ui_target: None,
         })
     }
 
@@ -296,13 +302,32 @@ impl HeadlessCapture {
             .resource::<crate::runtime::RuntimeUi>()
             .context()
             .tessellate(output.shapes, output.pixels_per_point);
+        let gamma = vulkano::format::Format::B8G8R8A8_UNORM;
+        let target = match &self.ui_target {
+            Some(view) => view.clone(),
+            None => self
+                .ui_target
+                .insert(
+                    ImageView::new(
+                        self.image.clone(),
+                        vulkano::image::view::ImageViewCreateInfo {
+                            format: gamma,
+                            ..vulkano::image::view::ImageViewCreateInfo::from_image(
+                                &self.image,
+                            )
+                        },
+                    )
+                    .map_err(|error| format!("UI target view: {error}"))?,
+                )
+                .clone(),
+        };
         let painter = match &mut self.ui {
             Some(painter) => painter,
             None => self.ui.insert(
                 super::egui_painter::EguiPainter::new(
                     self.base.queue.clone(),
                     self.allocator.clone(),
-                    OFFSCREEN_COLOR_FORMAT,
+                    gamma,
                 )
                 .map_err(|error| format!("UI painter: {error}"))?,
             ),
@@ -310,7 +335,7 @@ impl HeadlessCapture {
         painter
             .paint(
                 frame,
-                self.target.clone(),
+                target,
                 output.pixels_per_point,
                 &primitives,
                 &output.textures_delta,
@@ -452,6 +477,8 @@ fn color_target(
     let image = Image::new(
         allocator.clone(),
         ImageCreateInfo {
+            // The UI paints through a UNORM view of the same image.
+            flags: vulkano::image::ImageCreateFlags::MUTABLE_FORMAT,
             format: OFFSCREEN_COLOR_FORMAT,
             extent: [extent[0], extent[1], 1],
             usage: ImageUsage::COLOR_ATTACHMENT
@@ -679,5 +706,46 @@ mod tests {
         assert_eq!(names, ["Left", "Right", "Feed"]);
         assert_eq!(metadata["cameras"][2]["screen"], true);
         assert!(metadata["cameras"][2]["draws"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "ui")]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn the_ui_blends_in_gamma_space_as_over_the_window() {
+        use crate::runtime::{RuntimeUi, ScheduleStage};
+        use bevy_ecs::prelude::Res;
+        fn hud(ui: Res<RuntimeUi>) {
+            let painter =
+                ui.context().layer_painter(egui::LayerId::background());
+            let all = egui::Rect::from_min_max(
+                egui::pos2(0.0, 0.0),
+                egui::pos2(8.0, 8.0),
+            );
+            painter.rect_filled(all, 0.0, egui::Color32::from_gray(200));
+            let shade = egui::Color32::from_rgba_premultiplied(0, 0, 0, 128);
+            painter.rect_filled(all, 0.0, shade);
+        }
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        app.add_system(ScheduleStage::Update, hud);
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_max(
+                    egui::pos2(0.0, 0.0),
+                    egui::pos2(8.0, 8.0),
+                )),
+                ..Default::default()
+            });
+        let mut capture = HeadlessCapture::new([8, 8]).unwrap();
+        capture.frame(&mut app, Duration::from_millis(16)).unwrap();
+        // Half black over grey 200 is 100 when blended in gamma space, as
+        // egui backends and the UNORM window do; linear light gives 146.
+        let red = capture.rgba()[(4 * 8 + 4) * 4];
+        assert!(red.abs_diff(100) <= 2, "{red}");
     }
 }

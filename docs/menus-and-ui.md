@@ -70,12 +70,21 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
   the same way. `scene.clicked()` names the HUD buttons clicked since the
   last frame; `rusting recipe apply <root> pause_menu` writes a pause menu
   built from them.
+- egui paints its layers in order: `Order::Background`, `Middle`,
+  `Foreground`, `Tooltip`, `Debug`, all over the game view.
+  `CentralPanel` and `layer_painter(LayerId::background())` share the one
+  background layer, and a `CentralPanel` fills it with the opaque
+  `panel_fill` unless you give it `Frame::NONE` or your own fill. Shapes
+  painted on that layer before such a panel are hidden under it. For a
+  full-screen shade, use a `CentralPanel` with
+  `Frame::default().fill(color)`, or paint on a `Foreground` layer.
 - egui blends in sRGB space, as its own backends do, but its color
   constructors premultiply in linear light. `Color32::from_white_alpha(8)`
   and `from_rgba_unmultiplied(255, 255, 255, 8)` are both grey 50, a clear
   band over black. For a faint overlay (scanlines, grain) write the
   premultiplied value yourself: `Color32::from_rgba_premultiplied(8, 8, 8, 8)`
-  adds 8.
+  adds 8. `from_black_alpha(128)` darkens the view to half its sRGB value,
+  in the window and in scenario screenshots alike.
 
 ## Settings, saves and key rebinding
 
