@@ -1886,7 +1886,9 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     app.add_plugin(crate::runtime::RenderExtractPlugin).unwrap();
     app.add_plugin(EditorPlugin).unwrap();
     let (cube, lamp) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    let shelf = uuid::Uuid::new_v4();
     app.spawn((SceneId(cube), Name("Cube".into()), Transform::default()));
+    app.spawn((SceneId(shelf), Name("Shelf".into()), Transform::default()));
     let world = app.world_mut();
     let mut state = EditorState::default();
     let mut history = EditorHistory::default();
@@ -1898,7 +1900,8 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     world.resource_mut::<agent_panel::AgentJournal>().paused = true;
     let patch = serde_json::from_value(serde_json::json!({"operations": [
         {"op": "set", "id": cube, "path": "/name", "value": "Agent"},
-        {"op": "create", "entity": {"id": lamp, "name": "Lamp"}}]}))
+        {"op": "create", "entity": {"id": lamp, "name": "Lamp"}},
+        {"op": "delete", "id": shelf}]}))
     .unwrap();
     crate::scene_patch::patch_scene_file(&path, &patch, false).unwrap();
     world.resource_mut::<SceneFileRevision>().modified = None;
@@ -1915,8 +1918,9 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     let journal = world.resource::<agent_panel::AgentJournal>();
     assert_eq!(
         journal.pending.as_ref().unwrap().summary,
-        "1 added, 1 changed, 0 removed"
+        "1 added, 1 changed, 1 removed"
     );
+    assert_eq!(journal.pending_removed, vec![(shelf, "Shelf".into())]);
     assert!(journal
         .pending_fields
         .contains(&(cube, "/name: \"Cube\" -> \"Agent\"".into())));
@@ -1930,6 +1934,7 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
         (cube, "Cube".to_owned()),
         (lamp, "Lamp".into()),
         (chair, "Chair".into()),
+        (shelf, "Shelf".into()),
     ];
     expected.sort();
     assert_eq!(names(world), expected);
@@ -1939,7 +1944,18 @@ fn a_pending_outside_write_is_accepted_one_entity_at_a_time() {
     assert!(journal.pending_fields.iter().all(|(id, _)| *id == cube));
     // Undo's snapshot is the scene before that Accept.
     let before = history.undo.back().unwrap().clone();
-    assert_eq!(before.entities.len(), 2);
+    assert_eq!(before.entities.len(), 3);
+
+    // Accepting a removal deletes the entity from the editor scene.
+    world
+        .resource_mut::<agent_panel::AgentJournal>()
+        .accept_entity = Some(shelf);
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(names(world).len(), 3, "the shelf is gone");
+    assert!(world
+        .resource::<agent_panel::AgentJournal>()
+        .pending_removed
+        .is_empty());
 
     // Accepting the last entity clears the pending row.
     world

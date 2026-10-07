@@ -107,6 +107,7 @@ Engine features for the horror game FOREVER BEAR.
 - The editor's Agent area can pause agent edits; an outside scene write that arrives while paused or while the scene has unsaved edits waits as a pending row with Accept (undoable) and Reject. Accept applies only the revision shown; a newer write replaces the pending row.
 - The Agent area's pending row lists each touched entity with its changed fields and its own Accept, which applies that entity alone behind one Undo snapshot.
 - The Agent area's pending diff compares the outside write with the scene file as last loaded or saved, so unsaved editor edits no longer show as agent changes.
+- The Agent area's pending row lists entities an outside write removes, each with an Accept that deletes it and its descendants behind one Undo snapshot.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

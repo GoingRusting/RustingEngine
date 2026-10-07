@@ -201,6 +201,7 @@ fn reload_external_scene_change(
                 journal.pending = None;
                 journal.pending_scene = None;
                 journal.pending_fields.clear();
+                journal.pending_removed.clear();
             }
             answer
         });
@@ -342,6 +343,18 @@ fn set_pending(
         }
         _ => Default::default(),
     };
+    let removed = diff
+        .removed
+        .iter()
+        .map(|&id| {
+            let name = ours
+                .iter()
+                .flat_map(|ours| &ours.entities)
+                .find(|entity| entity.id == id)
+                .and_then(|entity| entity.name.clone());
+            (id, name.unwrap_or_else(|| id.to_string()))
+        })
+        .collect();
     let Some(mut journal) =
         world.get_resource_mut::<agent_panel::AgentJournal>()
     else {
@@ -356,6 +369,7 @@ fn set_pending(
     });
     journal.pending_scene = theirs.filter(|_| !empty);
     journal.pending_fields = fields;
+    journal.pending_removed = removed;
 }
 
 /// "path: old -> new" for each changed field of these entities.
@@ -413,10 +427,12 @@ fn accept_pending_entity(
     else {
         return;
     };
-    let Some(entity) = theirs.entities.iter().find(|e| e.id == id).cloned()
-    else {
+    let entity = theirs.entities.iter().find(|e| e.id == id).cloned();
+    let removed = journal.pending_removed.iter().find(|(r, _)| *r == id);
+    let removed = removed.map(|(_, name)| name.clone());
+    if entity.is_none() && removed.is_none() {
         return;
-    };
+    }
     let mut merged = match scene_document(world, "Editor Scene") {
         Ok(document) => document,
         Err(error) => {
@@ -424,11 +440,28 @@ fn accept_pending_entity(
             return;
         }
     };
-    let name = entity.name.clone().unwrap_or_else(|| id.to_string());
-    match merged.entities.iter_mut().find(|e| e.id == id) {
-        Some(slot) => *slot = entity,
-        None => merged.entities.push(entity),
-    }
+    let name = match entity {
+        Some(entity) => {
+            let name = entity.name.clone().unwrap_or_else(|| id.to_string());
+            match merged.entities.iter_mut().find(|e| e.id == id) {
+                Some(slot) => *slot = entity,
+                None => merged.entities.push(entity),
+            }
+            name
+        }
+        None => {
+            // A removal takes the entity's descendants with it.
+            let mut gone = std::collections::HashSet::from([id]);
+            while let Some(child) = merged.entities.iter().find(|e| {
+                !gone.contains(&e.id)
+                    && e.parent.is_some_and(|p| gone.contains(&p))
+            }) {
+                gone.insert(child.id);
+            }
+            merged.entities.retain(|e| !gone.contains(&e.id));
+            removed.unwrap_or_default()
+        }
+    };
     if let Err(error) = remember_scene_before_edit(world, history) {
         state.scene_message = Some(error);
         return;
@@ -441,6 +474,7 @@ fn accept_pending_entity(
         )
     });
     if let Err(error) = result {
+        history.undo.pop_back();
         state.scene_message = Some(error.to_string());
         return;
     }

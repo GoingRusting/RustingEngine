@@ -57,6 +57,8 @@ pub struct AgentJournal {
     /// new" row per changed field of each touched entity.
     pub(super) pending_scene: Option<crate::runtime::SceneDocument>,
     pub(super) pending_fields: Vec<(uuid::Uuid, String)>,
+    /// Entities the pending write removes, with their names.
+    pub(super) pending_removed: Vec<(uuid::Uuid, String)>,
     /// Set by an entity row's Accept: applies that entity alone.
     pub(super) accept_entity: Option<uuid::Uuid>,
     /// Results file modification time and its rows, reread when it changes.
@@ -164,6 +166,15 @@ pub(super) fn draw_agent_area(
                     format!("  +{more} more fields"),
                 );
             }
+        }
+        for (id, name) in &journal.pending_removed {
+            ui.horizontal(|ui| {
+                if ui.small_button("Accept").clicked() {
+                    journal.accept_entity = Some(*id);
+                }
+                ui.label(name);
+                ui.colored_label(EditorTheme::TEXT_MUTED, "removed");
+            });
         }
     }
     ui.horizontal(|ui| {
