@@ -2704,6 +2704,11 @@ pub fn test_game_folder(
         }
     }
     let data = json!({"root": root, "scenarios": runs});
+    // The editor's Agent panel shows the newest run from this file.
+    let _ = std::fs::write(
+        root.join(crate::project::TEST_RESULTS_FILE),
+        serde_json::to_vec_pretty(&data).unwrap_or_default(),
+    );
     match first_failure {
         None => CliResult::success(data),
         Some(mut result) => {

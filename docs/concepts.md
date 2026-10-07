@@ -467,6 +467,9 @@ so a game that uses actions is testable without a keyboard.
 - `rusting run <project> --ticks N` runs the game headless for N ticks.
 - `rusting test <project> <scenario.json>` presses actions at fixed ticks and
   checks scene values, collision events, and screenshots.
+  `rusting test <project>` runs every scenario in `tests/` and saves the
+  results to `build/test-results.json`, which the editor's Agent area shows
+  in its Results tab.
 - `rusting determinism <project>` checks that debug, release, and one-CPU
   builds produce the same simulation, tick by tick.
 

@@ -1,9 +1,12 @@
-//! Agent area: a journal of scene changes written by tools outside the editor.
+//! Agent area: a journal of scene changes written by tools outside the
+//! editor, and the newest `rusting test` results.
 
 use bevy_ecs::prelude::Resource;
 use egui::Ui;
 
-use super::gui_elements::EditorTheme;
+use std::path::Path;
+
+use super::gui_elements::{kit, EditorTheme};
 
 /// One outside write the editor reloaded.
 #[derive(Clone, Debug)]
@@ -16,10 +19,30 @@ pub(super) struct JournalEntry {
     pub(super) ids: Vec<uuid::Uuid>,
 }
 
-/// Outside writes in the order they arrived, oldest first.
+/// One scenario of the newest `rusting test` run.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ResultRow {
+    pub(super) file: String,
+    pub(super) ok: bool,
+    pub(super) message: String,
+}
+
+/// Which list the Agent area shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum AgentTab {
+    #[default]
+    Journal,
+    Results,
+}
+
+/// Outside writes in the order they arrived, oldest first, and the cached
+/// test results.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct AgentJournal {
     pub(super) entries: Vec<JournalEntry>,
+    pub(super) tab: AgentTab,
+    /// Results file modification time and its rows, reread when it changes.
+    results: Option<(std::time::SystemTime, Vec<ResultRow>)>,
 }
 
 impl AgentJournal {
@@ -34,12 +57,46 @@ impl AgentJournal {
     }
 }
 
-/// Draws the journal, newest first. Returns the IDs of the entry the user
-/// clicked, so the caller can select those entities.
+/// Rows of a `rusting test` results file; `None` when it is missing or
+/// not a results file.
+pub(super) fn read_test_results(path: &Path) -> Option<Vec<ResultRow>> {
+    let data: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let rows = data["scenarios"].as_array()?.iter().map(|run| ResultRow {
+        file: run["file"]
+            .as_str()
+            .map(|file| {
+                Path::new(file).file_name().map_or(file.to_owned(), |name| {
+                    name.to_string_lossy().into_owned()
+                })
+            })
+            .unwrap_or_default(),
+        ok: run["ok"].as_bool().unwrap_or(false),
+        message: run["message"].as_str().unwrap_or_default().to_owned(),
+    });
+    Some(rows.collect())
+}
+
+/// Draws the Journal or Results tab. Returns the IDs of the journal entry
+/// the user clicked, so the caller can select those entities.
 pub(super) fn draw_agent_area(
     ui: &mut Ui,
     journal: &mut AgentJournal,
+    project_root: &str,
 ) -> Option<Vec<uuid::Uuid>> {
+    kit::segmented(
+        ui,
+        "agent_tab",
+        &mut journal.tab,
+        &[
+            (AgentTab::Journal, "Journal"),
+            (AgentTab::Results, "Results"),
+        ],
+    );
+    if journal.tab == AgentTab::Results {
+        draw_results(ui, journal, project_root);
+        return None;
+    }
     let mut clicked = None;
     ui.horizontal(|ui| {
         ui.label(format!("Journal ({})", journal.entries.len()));
@@ -71,4 +128,88 @@ pub(super) fn draw_agent_area(
             }
         });
     clicked
+}
+
+/// The newest `rusting test` run, one row per scenario, failures in the
+/// error color.
+fn draw_results(ui: &mut Ui, journal: &mut AgentJournal, project_root: &str) {
+    let path = Path::new(project_root).join(crate::project::TEST_RESULTS_FILE);
+    let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    if modified != journal.results.as_ref().map(|(time, _)| *time) {
+        journal.results = modified.zip(read_test_results(&path));
+    }
+    let Some((_, rows)) = &journal.results else {
+        ui.colored_label(
+            EditorTheme::TEXT_MUTED,
+            "No test results yet. Run `rusting test` on this project.",
+        );
+        return;
+    };
+    let failed = rows.iter().filter(|row| !row.ok).count();
+    ui.label(format!("{} scenarios, {failed} failed", rows.len()));
+    egui::ScrollArea::vertical()
+        .id_salt("agent_results")
+        .show(ui, |ui| {
+            for row in rows {
+                ui.horizontal(|ui| {
+                    if row.ok {
+                        kit::pill(ui, "pass", EditorTheme::ACCENT);
+                    } else {
+                        kit::pill(ui, "fail", EditorTheme::ERROR);
+                    }
+                    ui.label(&row.file);
+                });
+                if !row.ok {
+                    ui.colored_label(EditorTheme::ERROR, &row.message);
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_results_are_read_from_the_file_rusting_test_writes() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-agent-results-{}", std::process::id()));
+        let path = root.join(crate::project::TEST_RESULTS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert_eq!(read_test_results(&path), None);
+        std::fs::write(
+            &path,
+            serde_json::json!({"root": "/games/demo", "scenarios": [
+                {"file": "/games/demo/tests/jump.json", "ok": true,
+                 "message": "\"jump\" after 60 ticks", "logs": []},
+                {"file": "/games/demo/tests/coin.json", "ok": false,
+                 "message": "tick 30: expected 1, got 0", "logs": []},
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let rows = read_test_results(&path).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].file, "jump.json");
+        assert!(rows[0].ok);
+        assert_eq!(rows[1].file, "coin.json");
+        assert!(!rows[1].ok);
+        assert_eq!(rows[1].message, "tick 30: expected 1, got 0");
+        // The panel draws the rows from the project root.
+        let mut journal = AgentJournal {
+            tab: AgentTab::Results,
+            ..AgentJournal::default()
+        };
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                draw_agent_area(ui, &mut journal, root.to_str().unwrap());
+            });
+        });
+        assert_eq!(
+            journal.results.as_ref().map(|(_, rows)| rows.len()),
+            Some(2)
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
