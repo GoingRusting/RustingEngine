@@ -3886,7 +3886,8 @@ impl ApplicationHandler for ProjectApplication {
 
 /// Opens a window and runs a prepared runtime until the window closes.
 /// With [`crate::project::REPLAY_OUT_ENV`] set, records the session and
-/// writes the replay there on exit.
+/// writes the replay there on exit, or a scenario when the path ends in
+/// `.scenario.json`.
 pub(crate) fn run_windowed(
     title: String,
     mut runtime: App,
@@ -3914,7 +3915,23 @@ pub(crate) fn run_windowed(
     if let (Some(path), Some(replay)) =
         (replay_out, application.runtime.finish_recording())
     {
-        std::fs::write(path, serde_json::to_vec(&replay)?)?;
+        let path = PathBuf::from(path);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        // A `.scenario.json` path asks for a test, not a replay.
+        let bytes = match name.strip_suffix(".scenario.json") {
+            Some(stem) => serde_json::to_vec_pretty(
+                &crate::scenario::scenario_from_replay(
+                    stem,
+                    &replay,
+                    application
+                        .runtime
+                        .world()
+                        .resource::<crate::runtime::ActionMap>(),
+                ),
+            )?,
+            None => serde_json::to_vec(&replay)?,
+        };
+        std::fs::write(path, bytes)?;
     }
     Ok(())
 }

@@ -642,6 +642,50 @@ impl Fuzz {
     }
 }
 
+/// A scenario that presses and releases the named actions a recorded play
+/// session held, on the ticks it held them, so a human can hand a bug over
+/// as a test. A press and release between two frames becomes a `tap`.
+// ponytail: actions only; sticks and the cursor are not converted, add
+// them when a pointer-driven bug needs recording.
+#[must_use]
+pub fn scenario_from_replay(
+    name: &str,
+    replay: &crate::runtime::Replay,
+    map: &ActionMap,
+) -> serde_json::Value {
+    let mut held = std::collections::BTreeSet::new();
+    let mut steps = Vec::new();
+    for frame in &replay.frames {
+        let Some(input) = &frame.input else { continue };
+        let tick = frame.tick.saturating_sub(replay.start_tick);
+        for action in map.actions() {
+            let now = map.held(input, action);
+            let kind = match (held.contains(action), now) {
+                (false, true) => "press",
+                (true, false) => "release",
+                (false, false) if map.just_pressed(input, action) => "tap",
+                _ => continue,
+            };
+            if now {
+                held.insert(action.to_owned());
+            } else {
+                held.remove(action);
+            }
+            steps.push(serde_json::json!({"tick": tick, kind: action}));
+        }
+    }
+    let ticks = replay
+        .frames
+        .last()
+        .map_or(0, |frame| frame.tick.saturating_sub(replay.start_tick));
+    serde_json::json!({
+        "name": name,
+        "seed": replay.seed,
+        "ticks": ticks,
+        "steps": steps,
+    })
+}
+
 /// Limits on [`PerfReport`] values. Draw and triangle limits apply to the
 /// last rendered frame; setting one renders every tick, and without Vulkan
 /// they are ignored.
@@ -3458,6 +3502,55 @@ mod tests {
         let untouched = coverage["sections_untouched"].as_array().unwrap();
         assert!(!untouched.is_empty(), "{coverage}");
         assert!(!untouched.contains(&json!("transform")), "{coverage}");
+    }
+
+    #[test]
+    fn a_recorded_session_becomes_press_release_and_tap_steps() {
+        use crate::runtime::{Replay, ReplayFrame, REPLAY_FORMAT_VERSION};
+        let mut map = ActionMap::default();
+        map.bind("jump", InputBinding::Key(KeyCode::Space));
+        map.bind("left", InputBinding::Key(KeyCode::ArrowLeft));
+        map.bind("left", InputBinding::Key(KeyCode::KeyA));
+        let mut input = RuntimeInput::default();
+        let mut frames = Vec::new();
+        let mut frame = |tick, input: Option<&RuntimeInput>| {
+            frames.push(ReplayFrame {
+                tick,
+                delta_nanos: 16_000_000,
+                input: input.cloned(),
+            });
+        };
+        frame(10, Some(&input));
+        input.record_key(KeyCode::ArrowLeft, true);
+        frame(12, Some(&input));
+        input.clear_frame_edges();
+        input.record_key(KeyCode::KeyA, true);
+        frame(13, Some(&input));
+        input.clear_frame_edges();
+        input.record_key(KeyCode::ArrowLeft, false);
+        input.record_key(KeyCode::KeyA, false);
+        input.record_key(KeyCode::Space, true);
+        input.record_key(KeyCode::Space, false);
+        frame(15, Some(&input));
+        frame(16, None);
+        frame(20, None);
+        let replay = Replay {
+            format_version: REPLAY_FORMAT_VERSION,
+            seed: 7,
+            start_tick: 10,
+            frames,
+            hashes: Vec::new(),
+        };
+        let scenario = scenario_from_replay("bug", &replay, &map);
+        assert_eq!(
+            scenario,
+            serde_json::json!({"name": "bug", "seed": 7, "ticks": 10,
+                "steps": [{"tick": 2, "press": "left"},
+                          {"tick": 5, "tap": "jump"},
+                          {"tick": 5, "release": "left"}]})
+        );
+        let parsed: Scenario = serde_json::from_value(scenario).unwrap();
+        assert_eq!(parsed.steps.len(), 3);
     }
 
     #[test]
