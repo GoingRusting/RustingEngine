@@ -149,7 +149,8 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
--- The lighting and look-and-feel guides state the light budget per quality level (64 High, 32 Balanced, 16 Eco) and which level `Auto` picks.
+-- A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.
+- The lighting and look-and-feel guides state the light budget per quality level (64 High, 32 Balanced, 16 Eco) and which level `Auto` picks.
 - `rusting preset apply` puts ambient, sky, tone mapping, grading and background on a new `Environment` entity instead of the sun, and `--only environment` applies them without touching the sun.
  A scenario keeps its whole audio mix only when it has `audio_out` or `audio_reference`, so a long soak no longer grows by 384 KB per second of game time (FOREVER BEAR F47).
 - An exported game whose cooked scene was made by a different engine build loads its source scene from `scenes/` with a warning, as a dev project does; with no source, the error names the cooked file and says to recook it with a CLI built from the game's engine (FOREVER BEAR F45).

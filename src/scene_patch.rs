@@ -1008,10 +1008,16 @@ fn locate_invalid(entity: &Value) -> Option<PatchError> {
         }
         break;
     }
+    let mut message = format!("{path}: {error}");
+    if message.contains("expected path string") {
+        message.push_str(
+            "; write a plain path string relative to the scene file, such as \"../assets/textures/crate.png\"",
+        );
+    }
     Some(PatchError::InvalidObject {
         id: entity_id(entity).unwrap_or_default(),
         name: entity["name"].as_str().map(str::to_owned),
-        message: format!("{path}: {error}"),
+        message,
     })
 }
 
@@ -1363,6 +1369,22 @@ mod tests {
             true,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn an_asset_object_in_an_inline_texture_slot_names_the_plain_form() {
+        let error = patch_scene_file(
+            &scene_file("texture-slot"),
+            &patch(json!({"operations": [
+                {"op": "create", "entity": {"name": "Plate",
+                    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+                        "material": {"Inline": {"base_color_texture": {"$asset": "a.png"}}}}}}
+            ]})),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("a plain path string"), "{error}");
     }
 
     #[test]

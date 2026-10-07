@@ -1386,6 +1386,7 @@ pub fn catalog() -> Value {
         },
         "resources_note": "Resources are runtime state that game code sets (for example `scene.set_render_scale`). A scene file cannot set them: scene settings are `render` and `simulation` (set_scene `/render/...`).",
         "resources": reflected_types(types.resources()),
+        "asset_types_note": "The fields of asset types as a registered component holds them through an asset handle. A texture slot there is {\"$asset\": path}; a material written inline in a scene's mesh_renderer takes a plain path string instead (scene.entity_sections).",
         "asset_types": reflected_types(types.assets()),
         "physics_sync_readback_bytes": PhysicsSyncMode::STATE_READBACK_BYTES,
         "scene_patch": {
