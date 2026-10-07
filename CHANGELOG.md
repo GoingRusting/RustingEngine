@@ -79,6 +79,7 @@ Engine features for the horror game FOREVER BEAR.
 - New docs pages `api/GpuBodySettings`, `api/GpuConditionShader` and `api/MaterialAsset`, and a note on friction and jamming in dense GPU piles.
 - Scenario checks read one entity instead of capturing the whole scene each tick, which speeds up long runs of big scenes. `perf.wall_ms_mean` gives the whole run per tick.
 - `rusting_game!(update, components: [Night => "game.night"])` registers a game's own scene components, and the prelude re-exports `Component`, `Serialize` and `Deserialize`, so game state can leave counters without adding crates.
+- `spot_light` gains `shadows` (default false): a shadowed spot light stops at walls, so a flashlight no longer lights the far side of a door. One light per frame casts shadows, and a shadowed directional light wins.
 
 ### Fixed
 

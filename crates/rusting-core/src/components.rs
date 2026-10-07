@@ -181,6 +181,10 @@ pub struct SpotLight {
     pub inner_angle: f32,
     /// Outer cone angle in radians where illumination reaches zero.
     pub outer_angle: f32,
+    /// Casts shadows through one shadow map. A frame has one shadowed
+    /// light: a directional light with shadows wins over spot lights.
+    #[serde(default)]
+    pub shadows: bool,
 }
 
 impl Default for SpotLight {
@@ -191,6 +195,7 @@ impl Default for SpotLight {
             range: 10.0,
             inner_angle: 20.0_f32.to_radians(),
             outer_angle: 35.0_f32.to_radians(),
+            shadows: false,
         }
     }
 }

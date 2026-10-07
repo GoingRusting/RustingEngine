@@ -405,6 +405,7 @@ pub(super) fn draw_inspector_area(
                     );
                     light.outer_angle =
                         light.outer_angle.max(light.inner_angle);
+                    widgets::checkbox(ui, "Cast Shadows", &mut light.shadows);
                 });
             }
             if let Some(classes) = edited_classes {

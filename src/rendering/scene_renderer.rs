@@ -1093,8 +1093,9 @@ struct PreparedLights {
     ambient: [f32; 4],
     ground_ambient: [f32; 4],
     /// Upload index and direction of the one directional light that casts
-    /// shadows: the first uploaded one with `shadows` enabled.
-    shadow: Option<(u32, [f32; 3])>,
+    /// shadows: the first uploaded one with `shadows` enabled, directional
+    /// lights before spot lights.
+    shadow: Option<(u32, ShadowView)>,
 }
 
 /// Resources reused when one swapchain image comes around again.
@@ -2492,8 +2493,21 @@ impl SceneRenderer {
                 shadow_size,
             )?;
         }
-        let light_view_projection = lights.shadow.map(|(_, direction)| {
-            shadow_view_projection(eye, forward, direction, shadow_distance)
+        let light_view_projection = lights.shadow.map(|(_, view)| match view {
+            ShadowView::Directional(direction) => {
+                shadow_view_projection(eye, forward, direction, shadow_distance)
+            }
+            ShadowView::Spot {
+                position,
+                direction,
+                outer_angle,
+                range,
+            } => spot_shadow_view_projection(
+                position,
+                direction,
+                outer_angle,
+                range,
+            ),
         });
         // Refracting materials and screen-space reflections sample a copy
         // of the opaque scene, so the scene pass splits before blended
@@ -4564,7 +4578,10 @@ impl SceneRenderer {
             }
             let direction = light_direction(extracted.transform.matrix);
             if shadow.is_none() && extracted.light.shadows {
-                shadow = Some((uploads.len() as u32, direction));
+                shadow = Some((
+                    uploads.len() as u32,
+                    ShadowView::Directional(direction),
+                ));
             }
             uploads.push(LightUpload {
                 position_kind: [0.0, 0.0, 0.0, 0.0],
@@ -4612,6 +4629,17 @@ impl SceneRenderer {
             }
             let position = light_position(extracted.transform.matrix);
             let direction = light_direction(extracted.transform.matrix);
+            if shadow.is_none() && extracted.light.shadows {
+                shadow = Some((
+                    uploads.len() as u32,
+                    ShadowView::Spot {
+                        position,
+                        direction,
+                        outer_angle: extracted.light.outer_angle,
+                        range: extracted.light.range.max(0.01),
+                    },
+                ));
+            }
             uploads.push(LightUpload {
                 position_kind: [position[0], position[1], position[2], 2.0],
                 direction_range: [
@@ -7817,6 +7845,42 @@ fn shadow_view_projection(
     vulkan_clip_correction() * projection * view
 }
 
+/// What the one shadow map looks along.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ShadowView {
+    /// Orthographic, along this world direction, around the camera.
+    Directional([f32; 3]),
+    /// Perspective, from the spot light over its cone.
+    Spot {
+        position: [f32; 3],
+        direction: [f32; 3],
+        outer_angle: f32,
+        range: f32,
+    },
+}
+
+/// Perspective light matrix covering a spot light's cone out to its range.
+fn spot_shadow_view_projection(
+    position: [f32; 3],
+    direction: [f32; 3],
+    outer_angle: f32,
+    range: f32,
+) -> Matrix4<f32> {
+    let eye = Point3::from(position);
+    let direction = Vector3::from(direction);
+    let up = if direction.y.abs() > 0.99 {
+        Vector3::z()
+    } else {
+        Vector3::y()
+    };
+    let view = Matrix4::look_at_rh(&eye, &(eye + direction), &up);
+    // A little wider than the cone so the edge PCF taps stay on the map.
+    let fov = (2.0 * outer_angle + 0.1).clamp(0.1, 3.0);
+    let near = (range * 0.002).max(0.02);
+    let projection = Perspective3::new(1.0, fov, near, range).to_homogeneous();
+    vulkan_clip_correction() * projection * view
+}
+
 fn light_position(matrix: [[f32; 4]; 4]) -> [f32; 3] {
     let matrix = matrix_from_array(matrix);
     [matrix[(0, 3)], matrix[(1, 3)], matrix[(2, 3)]]
@@ -8451,9 +8515,15 @@ float shadow_factor(vec3 surface_normal) {
     // Normal offset: sample from two shadow texels off the surface. The PCF
     // taps reach one texel sideways, where a sloped surface's own depth is
     // nearer the light; without the offset it shadows itself in stripes.
-    // Row 0 of the orthographic light matrix scales world units to clip x.
+    // Row 0 of the light matrix scales world units to clip x; dividing by
+    // w (1 for the orthographic sun, the distance for a spot light) gives
+    // the texel size at this surface.
     mat4 light = shadow.light_view_projection;
-    float texel_world = 2.0 * texel.x
+    vec4 surface_clip = light * vec4(v_world_position, 1.0);
+    if (surface_clip.w <= 0.0) {
+        return 1.0;
+    }
+    float texel_world = 2.0 * texel.x * surface_clip.w
         / length(vec3(light[0][0], light[1][0], light[2][0]));
     vec3 position = v_world_position + surface_normal * 2.0 * texel_world;
     vec4 clip = light * vec4(position, 1.0);
@@ -10491,6 +10561,83 @@ mod tests {
                 lit.len()
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn spot_light_shadow_stops_at_a_wall_only_when_enabled() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Floor slab at z = 0; a spot light at z = 6 shines down -Z on it
+        // through a wall slab at z = 3 that covers the view center.
+        let mut scene = SlabScene::new(&[
+            (0.0, MaterialAsset::default()),
+            (1.0, MaterialAsset::default()),
+        ]);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        // The wall sits off to the side of the camera's view but in the
+        // light's cone: the light is at x = 4 and leans to the center.
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(2.0, 0.0, 3.0))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    1.0, 1.0, 0.1,
+                )))
+            .into();
+        let position = Vector3::new(4.0, 0.0, 6.0);
+        let direction = (-position).normalize();
+        scene.render_world.spot_lights.push(
+            crate::runtime::ExtractedSpotLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2001).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: (Matrix4::new_translation(&position)
+                        * nalgebra::Rotation3::rotation_between(
+                            &-Vector3::z(),
+                            &direction,
+                        )
+                        .unwrap()
+                        .to_homogeneous())
+                    .into(),
+                },
+                light: crate::runtime::SpotLight {
+                    color: [1.0; 3],
+                    intensity: 40_000.0,
+                    range: 20.0,
+                    inner_angle: 0.4,
+                    outer_angle: 0.6,
+                    shadows: true,
+                },
+            },
+        );
+        let frame = |scene: &mut SlabScene| {
+            scene.render_world.renderables_revision += 1;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.center_pixel()[2]
+        };
+        let shadowed = frame(&mut scene);
+        scene.render_world.spot_lights[0].light.shadows = false;
+        let lit = frame(&mut scene);
+        assert!(lit > 150, "spot light without shadows lights it, got {lit}");
+        assert!(
+            shadowed < 30,
+            "the wall shadows the floor behind it, got {shadowed}"
+        );
     }
 
     #[test]

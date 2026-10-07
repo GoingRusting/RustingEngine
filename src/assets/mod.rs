@@ -1881,6 +1881,7 @@ impl AssetServer {
                                 range,
                                 inner_angle: inner_cone_angle,
                                 outer_angle: outer_cone_angle,
+                                shadows: false,
                             }),
                         }
                     }),
@@ -3534,6 +3535,7 @@ mod tests {
                 range: 7.0,
                 inner_angle: 0.2,
                 outer_angle: 0.6,
+                shadows: false,
             }))
         );
 

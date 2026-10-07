@@ -614,8 +614,8 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "spot_light",
-        summary: "Cone of light along the object's forward direction. Casts no shadows.",
-        gpu: "as point_light",
+        summary: "Cone of light along the object's forward direction. `shadows` gives it a shadow map (a flashlight stops at walls); one light per frame casts shadows, and a shadowed directional light wins.",
+        gpu: "as point_light; one shadow pass when shadows is true",
         example: || json!({"color": [1.0, 1.0, 1.0], "intensity": 1200.0, "range": 12.0, "inner_angle": 0.3, "outer_angle": 0.5}),
         fields: &[
             field("/color", RGB, "0..1", ""),
@@ -623,6 +623,7 @@ const ENTITY_SECTIONS: &[Section] = &[
             field("/range", METRES, "> 0", "light reaches zero here"),
             field("/inner_angle", RADIANS, "0..outer_angle", "fully lit cone"),
             field("/outer_angle", RADIANS, "inner_angle..1.57", "light reaches zero here"),
+            field("/shadows", "", "", "default false"),
         ],
     },
 ];
