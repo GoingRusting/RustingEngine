@@ -461,11 +461,15 @@ pub struct AnimationPlayer {
 /// order, then by animated entity, then by time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnimationEvent {
+    /// Fixed tick the marker was passed on.
     pub tick: u64,
+    /// The animated entity.
     pub entity: Entity,
     /// Name of the animated object, empty without one.
     pub object: String,
+    /// Name of the clip that holds the marker.
     pub clip: String,
+    /// The marker's name, as written in the clip.
     pub name: String,
 }
 

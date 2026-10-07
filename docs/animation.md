@@ -393,8 +393,10 @@ for event in scene.animation_events() {
 
 Commands apply on the next fixed tick. `animation_events()` returns the
 markers passed since the last frame, ordered by tick, then by object, then
-by time. Each event carries the object's name, the clip and the marker
-name.
+by time. Each `AnimationEvent` has these fields: `tick` (the fixed tick the
+marker was passed on), `entity`, `object` (the object's name), `clip` and
+`name` (the marker's name). `rusting docs show api/AnimationEvent` prints
+them.
 
 ## Rules
 

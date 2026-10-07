@@ -303,6 +303,10 @@ pub fn items() -> Vec<DocItem> {
         "Animation",
         include_str!("runtime/animation.rs"),
     ));
+    items.push(struct_item(
+        "AnimationEvent",
+        include_str!("runtime/animation.rs"),
+    ));
     items.push(struct_item("Skin", include_str!("runtime/skinning.rs")));
     items.push(struct_item("Morph", include_str!("runtime/skinning.rs")));
     items.push(struct_item("Ik", include_str!("runtime/ik.rs")));
@@ -644,6 +648,16 @@ mod tests {
             player.text
         );
         assert!(!player.text.contains("`: \n"), "{}", player.text);
+        let event = super::find("api/AnimationEvent").expect("animation event");
+        for field in [
+            "tick: u64",
+            "entity: Entity",
+            "object: String",
+            "clip",
+            "name",
+        ] {
+            assert!(event.text.contains(field), "{}", event.text);
+        }
     }
 
     use super::*;
