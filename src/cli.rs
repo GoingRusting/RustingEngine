@@ -1142,6 +1142,41 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             (!collider.sensor).then_some((entity, collider.shape, inverse))
         })
         .collect();
+    // The renderer uploads visible directional, then point, then spot
+    // lights, each in spawn order, and drops the rest past the budget.
+    let shown = |entity: &SceneEntity| {
+        let mut next = Some(entity);
+        for _ in 0..64 {
+            let Some(current) = next else { break };
+            if current.visible == Some(false) {
+                return false;
+            }
+            next = current.parent.and_then(|id| by_id.get(&id).copied());
+        }
+        true
+    };
+    let quality = document.render.quality;
+    let budget = crate::rendering::scene_renderer::light_budget(quality);
+    let has = |entity: &SceneEntity, key| match key {
+        "directional_light" => entity.directional_light.is_some(),
+        "point_light" => entity.point_light.is_some(),
+        _ => entity.spot_light.is_some(),
+    };
+    let over_budget: Vec<_> =
+        ["directional_light", "point_light", "spot_light"]
+            .into_iter()
+            .flat_map(|key| {
+                document
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, entity)| {
+                        has(entity, key) && shown(entity)
+                    })
+                    .map(move |(index, _)| (index, key))
+            })
+            .skip(budget)
+            .collect();
     let mut cameras_inside = Vec::new();
     for (index, entity) in document.entities.iter().enumerate() {
         if entity.camera.is_none() {
@@ -1179,6 +1214,16 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
                 format!(
                     "is a camera that starts inside the collider of `{}`, so the first frame shows its inside",
                     solid.as_deref().unwrap_or("unnamed entity")
+                ),
+            );
+        }
+        for (_, key) in over_budget.iter().filter(|(at, _)| *at == index) {
+            warn(
+                "LINT_LIGHT_BUDGET",
+                index,
+                &format!("/{key}"),
+                format!(
+                    "has a {key} past the {budget}-light budget of quality {quality:?}, so the renderer drops it"
                 ),
             );
         }
@@ -4200,6 +4245,34 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             ],
             "Kid (0.9 m), Torch (switched on in code), Clear Cam and Eye Cam pass"
         );
+    }
+
+    #[test]
+    fn lint_names_visible_lights_past_the_quality_budget() {
+        let id = |n: u8| format!("00000000-0000-0000-0000-0000000000{n:02}");
+        let point =
+            json!({"color": [1.0, 1.0, 1.0], "intensity": 5.0, "range": 8.0});
+        // Spot first in the file, but the renderer takes point lights first.
+        let mut entities = vec![
+            json!({"id": id(90), "name": "Spot", "spot_light": {"color": [1.0, 1.0, 1.0],
+                "intensity": 5.0, "range": 8.0, "inner_angle": 0.3, "outer_angle": 0.5}}),
+            json!({"id": id(91), "name": "Hidden", "visible": false, "point_light": point}),
+            json!({"id": id(92), "name": "Off Set", "visible": false}),
+            json!({"id": id(93), "parent": id(92), "name": "Set Lamp", "point_light": point}),
+        ];
+        for n in 0..16 {
+            entities.push(json!({"id": id(n), "name": format!("Lamp {n}"), "point_light": point}));
+        }
+        let scene = json!({"format_version": 7, "name": "Lights", "entities": entities,
+            "render": {"quality": "Eco", "culling": "Auto"}});
+        let document =
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap();
+        let found: Vec<_> = lint_scene(&document)
+            .into_iter()
+            .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
+            .collect();
+        assert_eq!(found, [("LINT_LIGHT_BUDGET", "Spot".to_owned())]);
     }
 
     #[test]

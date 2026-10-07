@@ -241,6 +241,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_LIGHT_BUDGET",
+        "More lights are visible than the quality profile uploads (Eco 16, Balanced 32, High and Auto 64). The renderer takes visible directional, then point, then spot lights in scene order and drops the rest without lighting anything.",
+        "Hide lights that are not needed yet with `visible: false` (hidden lights are not uploaded), remove lights, or raise `render.quality`.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_LIGHT_OFF",
         "A light can never light anything: negative intensity, a zero range, or a black color. Intensity 0 is allowed, for lights game code switches on.",
         "Raise the intensity (illuminance for a directional light) and range, or remove the light.",
