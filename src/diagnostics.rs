@@ -349,6 +349,18 @@ pub const CODES: &[CodeInfo] = &[
         "rusting doctor",
     ),
     code(
+        "RECIPE_NEEDS_PLAYER",
+        "The recipe places its objects from the object named `Player`, and the main scene has none.",
+        "Name the player object `Player`, or start from a player template.",
+        "rusting scene query scenes/main.rscene --name Player --json",
+    ),
+    code(
+        "RECIPE_UNKNOWN",
+        "No gameplay recipe has the given name.",
+        "List the recipes and use one of their names.",
+        "rusting recipe list",
+    ),
+    code(
         "RETARGET_FAILED",
         "`scene retarget` could not find an object or clip, or the clip is a blend space.",
         "Check both object names and the clip name; retarget the point clips of a blend space one by one.",

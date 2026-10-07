@@ -1,3 +1,7 @@
+// Recipe sources name the crate as a game does; this lets the engine's
+// tests compile them unchanged.
+extern crate self as rusting_engine;
+
 pub mod annotate;
 pub mod art_direction;
 pub mod asset_import;
@@ -19,6 +23,7 @@ pub mod input;
 pub mod project;
 #[cfg(feature = "window")]
 pub mod project_runner;
+pub mod recipes;
 pub mod reflect;
 pub mod rendering;
 pub mod runtime;

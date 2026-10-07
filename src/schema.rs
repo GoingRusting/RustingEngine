@@ -60,6 +60,7 @@ pub const READ_ONLY: &[&str] = &[
     "diff",
     "preset list",
     "effect list",
+    "recipe list",
     "docs",
     "explain",
     "schema",
@@ -78,6 +79,7 @@ pub const WRITES_PROJECT: &[&str] = &[
     "add system",
     "preset apply",
     "effect apply",
+    "recipe apply",
     "cook",
 ];
 
@@ -387,6 +389,22 @@ pub const OPERATIONS: &[Operation] = &[
         gpu: NO_GPU,
         defaults: &[("--at", "0, the preset's height, 0"), ("--name", "the effect's name in title case, made unique"), ("--dry-run", "false")],
         example: "effect apply my_game/scenes/main.rscene fire --at 2,0,-3 --json",
+    },
+    Operation {
+        name: "recipe list",
+        usage: "recipe list [--limit N] [--fields a,b] [--summary] [--json]",
+        summary: "List the gameplay recipes (checkpoints) with a summary and the call `update` makes.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "recipe list --json",
+    },
+    Operation {
+        name: "recipe apply",
+        usage: "recipe apply <project-root> <recipe> [--dry-run] [--json]",
+        summary: "Write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch (placed from the object named `Player`), and a passing scenario as `tests/<recipe>.json`. Never overwrites a file. `src/main.rs` is left alone: `next` names the `mod` line and the call to add to `update`.",
+        gpu: NO_GPU,
+        defaults: &[("--dry-run", "false")],
+        example: "recipe apply my_game checkpoints --json",
     },
     Operation {
         name: "docs",

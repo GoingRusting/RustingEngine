@@ -1876,6 +1876,103 @@ pub fn apply_effect(
     apply_scene_patch(path, &patch, None, dry_run)
 }
 
+pub fn list_recipes() -> CliResult {
+    let recipes: Vec<_> = crate::recipes::RECIPES
+        .iter()
+        .map(|recipe| {
+            json!({"name": recipe.name, "summary": recipe.summary, "call": recipe.call})
+        })
+        .collect();
+    CliResult::success(json!({ "recipes": recipes }))
+}
+
+/// `rusting recipe apply`: writes `src/<name>.rs` and
+/// `tests/<name>.json` and adds the recipe's objects to the main scene as
+/// one patch. Never overwrites a file; `src/main.rs` is left for the caller
+/// to wire.
+pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
+    let Some(recipe) = crate::recipes::recipe(name) else {
+        let names: Vec<_> =
+            crate::recipes::RECIPES.iter().map(|r| r.name).collect();
+        return CliResult::failure(
+            "RECIPE_UNKNOWN",
+            format!("no recipe `{name}`; choose one of {}", names.join(", ")),
+            None,
+        );
+    };
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let source = project.root.join("src").join(format!("{name}.rs"));
+    let scenario = project.root.join("tests").join(format!("{name}.json"));
+    for path in [&source, &scenario] {
+        if path.exists() {
+            return CliResult::failure(
+                "PROJECT_EXISTS",
+                format!("{} already exists; the recipe is applied or the name is taken", path.display()),
+                Some(path.clone()),
+            );
+        }
+    }
+    let bytes = match std::fs::read(&project.scene_path) {
+        Ok(bytes) => bytes,
+        Err(error) => return scene_error(error.into(), &project.scene_path),
+    };
+    let document = match read_scene(&project.scene_path) {
+        Ok(document) => document,
+        Err(result) => return result,
+    };
+    let Some(player) = document
+        .entities
+        .iter()
+        .find(|entity| entity.name.as_deref() == Some("Player"))
+    else {
+        return CliResult::failure(
+            "RECIPE_NEEDS_PLAYER",
+            "the main scene has no object named `Player`",
+            Some(project.scene_path),
+        );
+    };
+    let at = player.transform.map_or([0.0; 3], |t| t.position);
+    let (entities, test) = (recipe.build)(at);
+    let patch = crate::scene_patch::ScenePatch {
+        expected_revision: Some(crate::runtime::scene_revision(&bytes)),
+        operations: entities
+            .into_iter()
+            .map(|entity| crate::scene_patch::PatchOperation::Create { entity })
+            .collect(),
+    };
+    let mut result =
+        apply_scene_patch(&project.scene_path, &patch, None, dry_run);
+    if !result.ok {
+        return result;
+    }
+    if !dry_run {
+        let written = std::fs::write(&source, recipe.source).and_then(|()| {
+            std::fs::create_dir_all(project.root.join("tests"))?;
+            std::fs::write(
+                &scenario,
+                serde_json::to_string_pretty(&test).unwrap(),
+            )
+        });
+        if let Err(error) = written {
+            return CliResult::failure(
+                "IO_ERROR",
+                error.to_string(),
+                Some(source),
+            );
+        }
+    }
+    result.data["source"] = json!(source);
+    result.data["scenario"] = json!(scenario);
+    result.data["next"] = json!(format!(
+        "Add `mod {name};` to src/main.rs, call `{}` from `update`, then run `rusting test`.",
+        recipe.call
+    ));
+    result
+}
+
 fn tool_available(tool: &str) -> bool {
     Command::new(tool).arg("--version").output().is_ok()
 }

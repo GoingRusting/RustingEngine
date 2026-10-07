@@ -32,6 +32,7 @@ fn help_for(command: &[String]) -> String {
         "add" => "add scenario",
         "preset" => "preset apply",
         "effect" => "effect apply",
+        "recipe" => "recipe apply",
         topic => topic,
     };
     match OPERATIONS.iter().find(|operation| operation.name == topic) {
@@ -412,6 +413,12 @@ fn execute(args: &[String]) -> CliResult {
             }
         }
         ["effect", "list"] => cli::list_effects(),
+        ["recipe", "list"] => cli::list_recipes(),
+        ["recipe", "apply", root, name, flags @ ..] => match flags {
+            [] => cli::apply_recipe(Path::new(root), name, false),
+            ["--dry-run"] => cli::apply_recipe(Path::new(root), name, true),
+            _ => usage("`recipe apply` takes only --dry-run"),
+        },
         ["effect", "apply", scene, name, flags @ ..] => {
             let (mut on, mut object, mut at, mut dry_run) = (None, None, None, false);
             let mut flags = flags.iter();
