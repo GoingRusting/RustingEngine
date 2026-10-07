@@ -4387,6 +4387,12 @@ fn simulate_timed<P: Plugin>(
     let start = Instant::now();
     for _ in 0..ticks {
         runtime.update(delta)?;
+        // As the windowed loop does, so a press game code injects is
+        // "just pressed" for one update only.
+        runtime
+            .world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
         announce_first_frame();
         if runtime.exit_requested() {
             break;
@@ -4963,6 +4969,44 @@ mod tests {
             world: runtime.world_mut(),
         };
         assert!(scene.object("Ball").position()[1] < 5.0);
+    }
+
+    #[test]
+    fn headless_simulation_clears_a_press_game_code_injects_after_one_update() {
+        use crate::runtime::KeyCode;
+        static PRESSED: AtomicBool = AtomicBool::new(false);
+        static PRESSES: AtomicU32 = AtomicU32::new(0);
+        // Like a playtest bot: press R once and keep it held.
+        fn press_once(scene: &mut GameScene<'_>, _: &FrameTime) {
+            let mut input = scene.world.resource_mut::<RuntimeInput>();
+            if !PRESSED.swap(true, Ordering::Relaxed) {
+                input.record_key(KeyCode::KeyR, true);
+            }
+            if input.key_just_pressed(KeyCode::KeyR) {
+                PRESSES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-headless-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("main.rscene");
+        let cooked = directory.join("main.rscene.bin");
+        let mut editor = App::new();
+        editor.add_plugin(AssetPlugin).unwrap();
+        crate::runtime::save_scene(editor.world_mut(), &source, "main")
+            .unwrap();
+        crate::runtime::cook_scene(&source, &cooked).unwrap();
+        simulate_project_headless(
+            &cooked,
+            SimpleGamePlugin {
+                update: press_once,
+                tick: None,
+                components: None,
+            },
+            10,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(PRESSES.load(Ordering::Relaxed), 1);
     }
 
     #[derive(
