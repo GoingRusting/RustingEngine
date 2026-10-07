@@ -824,6 +824,16 @@ pub struct PixelExpectation {
     /// Highest standard deviation of the region's brightness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stddev_max: Option<f64>,
+    /// An earlier capture (relative to the scenario file) to compare the
+    /// same region with, by `difference_min` and `difference_max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub differs_from: Option<PathBuf>,
+    /// Lowest largest-channel mean difference (0..255) from `differs_from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difference_min: Option<f64>,
+    /// Highest largest-channel mean difference (0..255) from `differs_from`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difference_max: Option<f64>,
 }
 
 fn whole_frame() -> [f32; 4] {
@@ -1092,13 +1102,23 @@ impl Scenario {
                     )
                 }
                 StepAction::ExpectPixels(expect)
+                    if expect.differs_from.is_some()
+                        != (expect.difference_min.is_some()
+                            || expect.difference_max.is_some()) =>
+                {
+                    return fail(
+                        "expect_pixels differs_from goes with difference_min or difference_max",
+                    )
+                }
+                StepAction::ExpectPixels(expect)
                     if expect.mean_min.is_none()
                         && expect.mean_max.is_none()
                         && expect.stddev_min.is_none()
-                        && expect.stddev_max.is_none() =>
+                        && expect.stddev_max.is_none()
+                        && expect.differs_from.is_none() =>
                 {
                     return fail(
-                        "expect_pixels needs mean_min, mean_max, stddev_min or stddev_max",
+                        "expect_pixels needs mean_min, mean_max, stddev_min, stddev_max or differs_from",
                     )
                 }
                 StepAction::ExpectEvents(expect)
@@ -1389,11 +1409,27 @@ fn region_stats(pixels: &[u8], width: u32, rect: [u32; 4]) -> ([f64; 3], f64) {
     (sums.map(|sum| sum / count), variance.sqrt())
 }
 
+/// The largest of the R, G and B mean differences of two frames in `rect`.
+fn region_difference(a: &[u8], b: &[u8], width: u32, rect: [u32; 4]) -> f64 {
+    let mut sums = [0.0_f64; 3];
+    for y in rect[1]..rect[3] {
+        for x in rect[0]..rect[2] {
+            let at = ((y * width + x) * 4) as usize;
+            for c in 0..3 {
+                sums[c] += f64::from(a[at + c].abs_diff(b[at + c]));
+            }
+        }
+    }
+    let count = f64::from((rect[2] - rect[0]) * (rect[3] - rect[1])).max(1.0);
+    sums.iter().map(|sum| sum / count).fold(0.0, f64::max)
+}
+
 fn check_pixels(
     world: &mut World,
     expect: &PixelExpectation,
     pixels: &[u8],
     extent: [u32; 2],
+    base: &Path,
 ) -> Check {
     // The region is a fraction of the camera's viewport, or of the frame.
     let mut frame = [0.0, 0.0, 1.0, 1.0];
@@ -1427,7 +1463,31 @@ fn check_pixels(
         ));
     }
     let (mean, stddev) = region_stats(pixels, extent[0], rect);
-    let actual = json!({"rect": rect, "mean": mean, "stddev": stddev});
+    let mut actual = json!({"rect": rect, "mean": mean, "stddev": stddev});
+    if let Some(earlier) = &expect.differs_from {
+        let path = base.join(earlier);
+        let image = image::open(&path)
+            .map_err(|error| {
+                (
+                    format!("cannot read {}: {error}", path.display()),
+                    Value::Null,
+                )
+            })?
+            .into_rgba8();
+        if image.dimensions() != (extent[0], extent[1]) {
+            return Err((
+                format!(
+                    "{} is {:?}, the capture is {extent:?}",
+                    path.display(),
+                    image.dimensions()
+                ),
+                Value::Null,
+            ));
+        }
+        actual["difference"] =
+            json!(region_difference(pixels, image.as_raw(), extent[0], rect));
+    }
+    let difference = actual["difference"].as_f64().unwrap_or(0.0);
     let fail = |wanted: String| {
         Err((
             format!("pixels are {actual}, expected {wanted}"),
@@ -1449,6 +1509,12 @@ fn check_pixels(
     }
     if expect.stddev_max.is_some_and(|max| stddev > max) {
         return fail(format!("stddev_max {:?}", expect.stddev_max));
+    }
+    if expect.difference_min.is_some_and(|min| difference < min) {
+        return fail(format!("difference_min {:?}", expect.difference_min));
+    }
+    if expect.difference_max.is_some_and(|max| difference > max) {
+        return fail(format!("difference_max {:?}", expect.difference_max));
     }
     Ok(format!("pixels are {actual} as expected"))
 }
@@ -1848,6 +1914,7 @@ pub fn run_scenario(
                         expect,
                         &capture.rgba(),
                         scenario.capture_size,
+                        base,
                     ),
                     Some(Err(error)) => Err((
                         format!("expect_pixels needs a renderer: {error}"),
@@ -3469,6 +3536,10 @@ mod tests {
                 {"tick": 1, "capture": {"path": "main.png", "golden": "main.golden.png"}},
                 {"tick": 1, "capture": {"path": "away.png", "camera": "Away",
                     "golden": "away.golden.png"}},
+                {"tick": 1, "expect_pixels": {"differs_from": "main.png",
+                    "difference_max": 1.0}},
+                {"tick": 1, "expect_pixels": {"differs_from": "away.png",
+                    "difference_min": 1.0}},
             ]),
         );
         run.capture_size = [64, 48];
@@ -3493,6 +3564,31 @@ mod tests {
             "{failure:?}"
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn differs_from_needs_a_difference_limit() {
+        let steps = |expect: Value| {
+            json!({"name": "t", "seed": 1, "ticks": 2,
+                "steps": [{"tick": 1, "expect_pixels": expect}]})
+        };
+        for (expect, ok) in [
+            (json!({"differs_from": "a.png"}), false),
+            (json!({"difference_min": 2.0}), false),
+            (
+                json!({"differs_from": "a.png", "difference_min": 2.0}),
+                true,
+            ),
+        ] {
+            let parsed = serde_json::from_value::<Scenario>(steps(expect))
+                .map_err(|error| error.to_string())
+                .and_then(|run| run.validate().map_err(|e| e.to_string()));
+            assert_eq!(parsed.is_ok(), ok, "{parsed:?}");
+        }
+        let a = [10, 0, 0, 255, 0, 0, 0, 255];
+        let b = [0, 0, 0, 255, 0, 0, 30, 255];
+        assert_eq!(region_difference(&a, &b, 2, [0, 0, 2, 1]), 15.0);
+        assert_eq!(region_difference(&a, &b, 2, [0, 0, 1, 1]), 10.0);
     }
 
     #[test]
