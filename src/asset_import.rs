@@ -559,7 +559,8 @@ fn copy_in_or_preview(
     )
 }
 
-/// Imports `source` into `<project>/assets/<folder>/`. Fails without
+/// Imports `source` into `<project>/assets/<folder>/`; a `folder` that
+/// starts with `assets/` means the same folder. Fails without
 /// writing when the file does not load or the destination exists. A
 /// non-empty `provenance.original` replaces the recorded source path.
 /// `dry_run` runs every check and returns the report without writing.
@@ -577,6 +578,7 @@ pub fn import_asset(
             message: "the folder must be relative to `assets`".into(),
         });
     }
+    let folder = folder.strip_prefix("assets").unwrap_or(folder);
     let name = source
         .file_name()
         .ok_or_else(|| AssetImportError::SourceMissing(source.to_owned()))?;
@@ -1267,6 +1269,17 @@ mod tests {
         .unwrap();
         assert!(!imported.dry_run);
         assert_eq!(imported.channels, Some(1), "mono");
+        // A folder written from the project root lands in the same place.
+        let rooted = import_asset(
+            &root,
+            &source,
+            Path::new("assets/music"),
+            &none,
+            &settings,
+            false,
+        )
+        .unwrap();
+        assert_eq!(rooted.path, "assets/music/hit.wav");
         std::fs::write(&source, wav(8000, 8000)).unwrap();
         let replace = reimport_asset(
             &root,

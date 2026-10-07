@@ -278,7 +278,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "asset import",
         usage: "asset import <project-root> <source-file> [--to FOLDER] [--author A] [--license L] [--url U] [--generator G] [--notes N] [--max-size PIXELS] [--dry-run] [--json]",
-        summary: "Copy a png, jpeg, bmp, tga, gltf, glb, wav or ogg file (and a glTF's external buffers and images) into assets/FOLDER after loading it as the runtime would, and write <file>.rmeta with a new stable ID, settings, dependencies, content hash, and source/license provenance. Scenes reference it by the returned `reference` path (relative to the scene); sound clips (`rusting.sound_cue.clip`, `play_sound`) are relative to assets/ instead, e.g. `sounds/hit.wav`. Warns when no license is given. --dry-run runs every check on a staged copy and writes nothing (`dry_run: true` in the report).",
+        summary: "Copy a png, jpeg, bmp, tga, gltf, glb, wav or ogg file (and a glTF's external buffers and images) into assets/FOLDER (`sounds` and `assets/sounds` both mean assets/sounds) after loading it as the runtime would, and write <file>.rmeta with a new stable ID, settings, dependencies, content hash, and source/license provenance. Scenes reference it by the returned `reference` path (relative to the scene); sound clips (`rusting.sound_cue.clip`, `play_sound`) are relative to assets/ instead, e.g. `sounds/hit.wav`. Warns when no license is given. --dry-run runs every check on a staged copy and writes nothing (`dry_run: true` in the report).",
         gpu: NO_GPU,
         defaults: &[("--to", "assets/ itself"), ("--max-size", "none (images keep their size)")],
         example: "asset import my_game art/crate.png --to props --license CC0-1.0 --json",
