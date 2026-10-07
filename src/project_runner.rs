@@ -2453,6 +2453,34 @@ impl GameScene<'_> {
             .get::<crate::runtime::GpuStateMirror>(entity)
             .copied()
     }
+
+    /// Counts the GPU bodies in object class `class` whose mirrored
+    /// position lies inside the box from `min` to `max` (world meters,
+    /// edges included). It reads each body's latest
+    /// [`crate::runtime::GpuStateMirror`], so call
+    /// `request_gpu_class_snapshot(scene.world(), class)` first and count
+    /// a few frames later; bodies with no mirror yet are not counted.
+    #[must_use]
+    pub fn count_gpu_bodies_in_box(
+        &mut self,
+        class: &str,
+        min: [f32; 3],
+        max: [f32; 3],
+    ) -> usize {
+        self.world
+            .query::<(
+                &crate::runtime::ObjectClasses,
+                &crate::runtime::GpuStateMirror,
+            )>()
+            .iter(self.world)
+            .filter(|(classes, mirror)| {
+                let at = mirror.transform.position;
+                classes.contains(class)
+                    && (0..3)
+                        .all(|axis| (min[axis]..=max[axis]).contains(&at[axis]))
+            })
+            .count()
+    }
 }
 
 /// Mutable high-level access to one scene object's transform.
@@ -4534,6 +4562,39 @@ mod tests {
             world: runtime.world_mut(),
         };
         assert!(scene.try_object("Ball").is_some());
+    }
+
+    #[test]
+    fn gpu_bodies_are_counted_inside_a_box_from_their_mirrors() {
+        use crate::runtime::{GpuStateMirror, ObjectClasses};
+        let mut world = World::new();
+        let mirror = |x: f32| GpuStateMirror {
+            tick: 3,
+            transform: Transform {
+                position: [x, 0.5, 0.0],
+                ..Transform::default()
+            },
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            custom_values: None,
+        };
+        for x in [0.0, 1.0, 2.5] {
+            world.spawn((ObjectClasses::new(["ball"]), mirror(x)));
+        }
+        // Inside, but another class, or no snapshot yet.
+        world.spawn((ObjectClasses::new(["crate"]), mirror(0.0)));
+        world.spawn(ObjectClasses::new(["ball"]));
+        let mut scene = GameScene { world: &mut world };
+        let count = |scene: &mut GameScene<'_>, class| {
+            scene.count_gpu_bodies_in_box(
+                class,
+                [-1.0, 0.0, -1.0],
+                [1.0, 1.0, 1.0],
+            )
+        };
+        assert_eq!(count(&mut scene, "ball"), 2);
+        assert_eq!(count(&mut scene, "crate"), 1);
+        assert_eq!(count(&mut scene, "enemy"), 0);
     }
 
     #[test]

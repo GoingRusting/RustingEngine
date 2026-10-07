@@ -123,6 +123,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting.camera_shake` and `scene.add_trauma(name, amount)` shake a camera's drawn view by trauma squared, fading by `decay` per second without moving its `Transform`.
 - `rusting.squash` and `scene.squash(name, amount)` squash or stretch an object on a damped spring that keeps its volume and returns to the rest scale.
 - `rusting lint` warns `LINT_LIGHT_BUDGET` for each visible light past the scene quality's light budget (Eco 16, Balanced 32, High and Auto 64), which the renderer drops.
+- `GameScene::count_gpu_bodies_in_box(class, min, max)` counts the GPU bodies of an object class inside a box, from their latest `request_gpu_class_snapshot` mirrors.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
