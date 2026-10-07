@@ -592,6 +592,11 @@ pub struct Scenario {
     /// the report lists them as `fuzz_steps`. `rusting fuzz` sets it.
     #[serde(default)]
     pub fuzz: Option<Fuzz>,
+    /// Walks the `PlayerController` toward each goal with the `player.*`
+    /// actions, jumping when stuck, and fails naming the goals it could not
+    /// reach. The report lists them as `explore`.
+    #[serde(default)]
+    pub explore: Option<Explore>,
 }
 
 /// A scenario's random input, see [`Scenario::fuzz`].
@@ -639,6 +644,208 @@ impl Fuzz {
             }
         }
         steps
+    }
+}
+
+/// A scenario's explorer bot, see [`Scenario::explore`].
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Explore {
+    /// Entity names or IDs to reach, in order. Empty means every sensor
+    /// collider, nearest first.
+    #[serde(default)]
+    pub goals: Vec<String>,
+    /// Ticks to spend on one goal before calling it unreachable.
+    #[serde(default = "default_goal_ticks")]
+    pub ticks_per_goal: u32,
+}
+
+fn default_goal_ticks() -> u32 {
+    600
+}
+
+/// Horizontal metres from a goal that count as reaching it.
+const EXPLORE_REACH: f32 = 0.75;
+/// Ticks without getting 5 cm closer to the goal that count as stuck.
+const EXPLORE_STUCK_TICKS: u32 = 30;
+
+/// Live state of [`Explore`] during a run.
+struct Explorer {
+    settings: Explore,
+    /// Goals not yet tried; the first is the current one.
+    pending: Vec<(Entity, String)>,
+    /// Set when the goal order was not given and the nearest goal must be
+    /// picked again.
+    resort: bool,
+    started: u32,
+    /// The closest distance to the current goal so far, and its tick.
+    best: (f32, u32),
+    held: Vec<&'static str>,
+    goals: Vec<Value>,
+    stuck: Vec<Value>,
+}
+
+fn position(world: &World, entity: Entity) -> Option<[f32; 3]> {
+    let column = world.get::<GlobalTransform>(entity)?.matrix[3];
+    Some([column[0], column[1], column[2]])
+}
+
+impl Explorer {
+    fn new(world: &mut World, settings: &Explore) -> Result<Self, String> {
+        let mut pending = Vec::new();
+        for goal in &settings.goals {
+            let entity = find_entity(world, goal, |_, _| true)
+                .ok_or_else(|| format!("explore: no entity `{goal}`"))?;
+            pending.push((entity, goal.clone()));
+        }
+        let resort = pending.is_empty();
+        if resort {
+            let mut query = world.query::<(
+                Entity,
+                &crate::runtime::Collider,
+                Option<&Name>,
+                Option<&SceneId>,
+            )>();
+            let mut sensors: Vec<_> = query
+                .iter(world)
+                .filter(|(_, collider, ..)| collider.sensor)
+                .map(|(entity, _, name, id)| {
+                    let label = name.map_or_else(
+                        || {
+                            id.map_or(format!("{entity}"), |id| {
+                                id.0.to_string()
+                            })
+                        },
+                        |name| name.0.clone(),
+                    );
+                    (id.map(|id| id.0), entity, label)
+                })
+                .collect();
+            sensors.sort();
+            pending = sensors
+                .into_iter()
+                .map(|(_, e, label)| (e, label))
+                .collect();
+        }
+        Ok(Self {
+            settings: settings.clone(),
+            pending,
+            resort,
+            started: 0,
+            best: (f32::MAX, 0),
+            held: Vec::new(),
+            goals: Vec::new(),
+            stuck: Vec::new(),
+        })
+    }
+
+    /// Presses the actions that walk toward the current goal, before the
+    /// tick's update.
+    fn steer(&mut self, world: &mut World, tick: u32) -> Result<(), String> {
+        use crate::runtime::{
+            PLAYER_BACK, PLAYER_FORWARD, PLAYER_JUMP, PLAYER_LEFT, PLAYER_RIGHT,
+        };
+        let mut query =
+            world.query::<(Entity, &crate::runtime::PlayerController)>();
+        let Some((player, controller)) = query.iter(world).next() else {
+            return Err(
+                "explore needs an entity with a PlayerController".into()
+            );
+        };
+        let yaw = controller.yaw;
+        let Some(at) = position(world, player) else {
+            return Ok(());
+        };
+        let mut wanted = Vec::new();
+        loop {
+            if self.resort {
+                self.resort = false;
+                // A stable sort keeps scene-ID order between equal distances.
+                self.pending.sort_by(|a, b| {
+                    let distance = |entity| {
+                        position(world, entity).map_or(f32::MAX, |p| {
+                            (p[0] - at[0]).hypot(p[2] - at[2])
+                        })
+                    };
+                    distance(a.0).total_cmp(&distance(b.0))
+                });
+            }
+            let Some(&(goal, ref name)) = self.pending.first() else {
+                break;
+            };
+            let target = position(world, goal);
+            let reached = target.is_none_or(|target| {
+                (target[0] - at[0]).hypot(target[2] - at[2]) < EXPLORE_REACH
+            });
+            let timed_out = tick - self.started > self.settings.ticks_per_goal;
+            if !reached && !timed_out {
+                let target = target.unwrap_or(at);
+                let (dx, dz) = (target[0] - at[0], target[2] - at[2]);
+                let (sin, cos) = crate::runtime::sim_math::sin_cos(yaw);
+                // Forward is -Z turned by yaw; right is +X turned by yaw.
+                let forward = -sin * dx - cos * dz;
+                let right = cos * dx - sin * dz;
+                let dead = 0.2;
+                for (amount, positive, negative) in [
+                    (forward, PLAYER_FORWARD, PLAYER_BACK),
+                    (right, PLAYER_RIGHT, PLAYER_LEFT),
+                ] {
+                    if amount > dead {
+                        wanted.push(positive);
+                    } else if amount < -dead {
+                        wanted.push(negative);
+                    }
+                }
+                let distance = dx.hypot(dz);
+                if distance < self.best.0 - 0.05 {
+                    self.best = (distance, tick);
+                } else if tick - self.best.1 >= EXPLORE_STUCK_TICKS {
+                    self.stuck.push(serde_json::json!({
+                        "tick": tick, "goal": name, "position": at,
+                    }));
+                    self.best.1 = tick;
+                    wanted.push(PLAYER_JUMP);
+                }
+                break;
+            }
+            self.goals.push(serde_json::json!({
+                "name": name,
+                "reached": reached.then_some(tick),
+            }));
+            self.pending.remove(0);
+            self.started = tick;
+            self.best = (f32::MAX, tick);
+            self.resort |= self.settings.goals.is_empty();
+        }
+        for action in self.held.clone() {
+            if !wanted.contains(&action) {
+                press(world, action, false, None)?;
+            }
+        }
+        for &action in &wanted {
+            if !self.held.contains(&action) {
+                press(world, action, true, None)?;
+            }
+        }
+        self.held = wanted;
+        Ok(())
+    }
+
+    /// Goals left when the run ends count as unreachable.
+    fn finish(mut self) -> (Value, Vec<String>) {
+        let mut missed: Vec<String> = Vec::new();
+        for (_, name) in self.pending.drain(..) {
+            self.goals
+                .push(serde_json::json!({"name": name, "reached": null}));
+        }
+        for goal in &self.goals {
+            if goal["reached"].is_null() {
+                missed.push(goal["name"].as_str().unwrap_or_default().into());
+            }
+        }
+        (
+            serde_json::json!({"goals": self.goals, "stuck": self.stuck}),
+            missed,
+        )
     }
 }
 
@@ -1310,6 +1517,11 @@ pub struct ScenarioReport {
     /// counts as unchanged.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub coverage: Value,
+    /// With [`Scenario::explore`]: `goals` (each `name` and the `reached`
+    /// tick or null) and `stuck` (tick, goal and position where the player
+    /// stopped moving and jumped).
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub explore: Value,
 }
 
 /// Most trace entries one report keeps.
@@ -1665,6 +1877,7 @@ pub fn run_scenario(
         state_hashes: Vec::new(),
         fuzz_steps: Vec::new(),
         coverage: Value::Null,
+        explore: Value::Null,
     };
     if let Err(message) = scenario.validate() {
         report.first_failure = Some(StepResult {
@@ -1693,6 +1906,22 @@ pub fn run_scenario(
     }
     let scenario = &scenario;
     app.world_mut().insert_resource(RandomSeed(scenario.seed));
+    let mut explorer = match &scenario.explore {
+        Some(explore) => match Explorer::new(app.world_mut(), explore) {
+            Ok(explorer) => Some(explorer),
+            Err(message) => {
+                report.first_failure = Some(StepResult {
+                    tick: 0,
+                    step: 0,
+                    ok: false,
+                    message,
+                    actual: Value::Null,
+                });
+                return report;
+            }
+        },
+        None => None,
+    };
     // A headless view is the capture size from tick 0, for layout, the UI
     // pass and pointer steps alike.
     app.world_mut()
@@ -1852,6 +2081,18 @@ pub fn run_scenario(
             }
         }
 
+        if let Some(explorer) = &mut explorer {
+            if let Err(message) = explorer.steer(app.world_mut(), tick) {
+                report.steps.push(StepResult {
+                    tick,
+                    step: 0,
+                    ok: false,
+                    message,
+                    actual: Value::Null,
+                });
+                break 'ticks;
+            }
+        }
         let delta = tick_delta(app, tick);
         let started = std::time::Instant::now();
         let render = scenario.gpu
@@ -2234,6 +2475,26 @@ pub fn run_scenario(
         crate::runtime::scene_document_lenient(app.world_mut(), ""),
     ) {
         report.coverage = coverage(start, &end, &report.trace);
+    }
+    if let Some(explorer) = explorer {
+        let (explored, missed) = explorer.finish();
+        if !missed.is_empty() {
+            report.steps.push(StepResult {
+                tick: report.ticks_run as u32,
+                step: 0,
+                ok: false,
+                message: format!(
+                    "explore: could not reach {}",
+                    missed
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                actual: explored.clone(),
+            });
+        }
+        report.explore = explored;
     }
     if let Some(budgets) = &scenario.budgets {
         for message in over_budget(budgets, &report.perf) {
@@ -3502,6 +3763,100 @@ mod tests {
         let untouched = coverage["sections_untouched"].as_array().unwrap();
         assert!(!untouched.is_empty(), "{coverage}");
         assert!(!untouched.contains(&json!("transform")), "{coverage}");
+    }
+
+    #[test]
+    fn explorer_walks_to_reachable_goals_and_reports_caged_ones() {
+        use crate::runtime::{
+            Collider, PlayerController, RigidBody, RigidBodyKind,
+            DEFAULT_PLAYER_SHAPE,
+        };
+        let mut app = App::new();
+        let mut body = |name: &str, at: [f32; 3], half: [f32; 3], sensor| {
+            let kind = if name == "Player" {
+                RigidBodyKind::Kinematic
+            } else {
+                RigidBodyKind::Fixed
+            };
+            let shape = if name == "Player" {
+                DEFAULT_PLAYER_SHAPE
+            } else {
+                ColliderShape::Box { half_extents: half }
+            };
+            app.world_mut()
+                .spawn((
+                    SceneId(Uuid::new_v4()),
+                    Name(name.into()),
+                    Transform::new(at),
+                    PhysicsBody::default(),
+                    RigidBody {
+                        kind,
+                        ..RigidBody::default()
+                    },
+                    Collider {
+                        shape,
+                        sensor,
+                        ..Collider::default()
+                    },
+                ))
+                .id()
+        };
+        body("Ground", [0.0, -0.5, 0.0], [20.0, 0.5, 20.0], false);
+        body("Coin", [3.0, 0.5, -4.0], [0.3; 3], true);
+        body("Flag", [-2.0, 0.5, 3.0], [0.3; 3], true);
+        // Four walls 2 m high around the cage goal.
+        body("Caged", [-8.0, 0.5, -8.0], [0.3; 3], true);
+        for (x, z, half) in [
+            (-8.0, -9.5, [2.0, 1.0, 0.2]),
+            (-8.0, -6.5, [2.0, 1.0, 0.2]),
+            (-9.5, -8.0, [0.2, 1.0, 2.0]),
+            (-6.5, -8.0, [0.2, 1.0, 2.0]),
+        ] {
+            body("Wall", [x, 1.0, z], half, false);
+        }
+        let player = body("Player", [0.0, 1.0, 0.0], [0.0; 3], false);
+        app.world_mut().entity_mut(player).insert(PlayerController {
+            yaw: 0.7,
+            ..PlayerController::default()
+        });
+        let mut scenario = scenario(1500, json!([]));
+        scenario.explore = Some(Explore {
+            goals: Vec::new(),
+            ticks_per_goal: 400,
+        });
+        let report = run_scenario(&mut app, &scenario, Path::new("."));
+        let goals = &report.explore["goals"];
+        let reached = |name: &str| {
+            goals
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|goal| goal["name"] == name)
+                .map(|goal| goal["reached"].clone())
+                .unwrap()
+        };
+        assert!(reached("Coin").is_u64(), "{}", report.explore);
+        assert!(reached("Flag").is_u64(), "{}", report.explore);
+        assert!(reached("Caged").is_null(), "{}", report.explore);
+        // The nearer flag (3.6 m) goes before the coin (5 m).
+        assert_eq!(goals[0]["name"], "Flag", "{}", report.explore);
+        assert!(
+            !report.explore["stuck"].as_array().unwrap().is_empty(),
+            "{}",
+            report.explore
+        );
+        let failure = report.first_failure.unwrap();
+        assert_eq!(failure.message, "explore: could not reach `Caged`");
+        // A named goal list is walked in its order.
+        scenario.explore = Some(Explore {
+            goals: vec!["Nowhere".into()],
+            ticks_per_goal: 10,
+        });
+        let report = run_scenario(&mut App::new(), &scenario, Path::new("."));
+        assert_eq!(
+            report.first_failure.unwrap().message,
+            "explore: no entity `Nowhere`"
+        );
     }
 
     #[test]
@@ -4838,6 +5193,7 @@ mod tests {
             state_hashes: Vec::new(),
             fuzz_steps: Vec::new(),
             coverage: Value::Null,
+            explore: Value::Null,
         };
         for tick in 0..3000_u64 {
             let mut hashes =
