@@ -2931,15 +2931,37 @@ fn load_project_runtime<P: Plugin>(
     runtime.add_plugin(HybridPhysicsPlugin)?;
     runtime.add_plugin(RenderExtractPlugin)?;
     runtime.add_plugin(plugin)?;
-    load_scene(runtime.world_mut(), scene_path, SceneLoadMode::Replace)?;
-    let start = scene_document(runtime.world_mut(), "start")?;
-    runtime.insert_resource(StartingScene(start));
     let folder = scene_path
         .ancestors()
         .skip(1)
         .find(|folder| folder.join("project.json").is_file())
         .or_else(|| scene_path.parent())
         .unwrap_or(Path::new("."));
+    match load_scene(runtime.world_mut(), scene_path, SceneLoadMode::Replace) {
+        // A `rusting` CLI built from another engine version cooks a layout
+        // this game cannot read. In a dev project the source scene is right
+        // there, so load it instead of failing every run.
+        Err(crate::runtime::SceneIoError::Compiled(error)) => {
+            let Some(source) = project_source_scene(folder, scene_path) else {
+                return Err(
+                    crate::runtime::SceneIoError::Compiled(error).into()
+                );
+            };
+            eprintln!(
+                "warning: {} was cooked by a different engine build than this \
+                 game ({error}); loading {} instead. Reinstall the `rusting` \
+                 CLI from the engine the game builds against.",
+                scene_path.display(),
+                source.display()
+            );
+            load_scene(runtime.world_mut(), &source, SceneLoadMode::Replace)?;
+        }
+        result => {
+            result?;
+        }
+    }
+    let start = scene_document(runtime.world_mut(), "start")?;
+    runtime.insert_resource(StartingScene(start));
     if let Some(warning) = stale_cooked_scene_warning(folder, scene_path) {
         eprintln!("{warning}");
     }
@@ -2973,6 +2995,23 @@ fn stale_cooked_scene_warning(
     folder: &Path,
     scene_path: &Path,
 ) -> Option<String> {
+    let source = project_source_scene(folder, scene_path)?;
+    let modified =
+        |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    (modified(&source)? > modified(scene_path)?).then(|| {
+        format!(
+            "warning: {} is older than {}, so the game runs the scene as it \
+             was at the last cook. Run `rusting cook .` first (`rusting run` \
+             and `rusting test` cook for you).",
+            scene_path.display(),
+            source.display()
+        )
+    })
+}
+
+/// The source of `scene_path` when it is the cooked main scene of a project
+/// that is still being developed (it has a `Cargo.toml`).
+fn project_source_scene(folder: &Path, scene_path: &Path) -> Option<PathBuf> {
     // An exported game has no Cargo.toml, and copying sets its file times.
     if !folder.join("Cargo.toml").is_file() {
         return None;
@@ -2982,21 +3021,9 @@ fn stale_cooked_scene_warning(
     )
     .ok()?;
     let cooked = folder.join(&manifest.cooked_scene).canonicalize().ok()?;
-    if cooked != scene_path.canonicalize().ok()? {
-        return None;
-    }
     let source = folder.join(&manifest.main_scene);
-    let modified =
-        |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
-    (modified(&source)? > modified(&cooked)?).then(|| {
-        format!(
-            "warning: {} is older than {}, so the game runs the scene as it \
-             was at the last cook. Run `rusting cook .` first (`rusting run` \
-             and `rusting test` cook for you).",
-            manifest.cooked_scene.display(),
-            manifest.main_scene.display()
-        )
-    })
+    (cooked == scene_path.canonicalize().ok()? && source.is_file())
+        .then_some(source)
 }
 
 /// Textures drawn by [`GameScene::set_text`], by text and style.
@@ -4323,6 +4350,45 @@ mod tests {
         age(&cooked, 3_000);
         assert_eq!(stale_cooked_scene_warning(&folder, &cooked), None);
         let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_cooked_scene_from_another_engine_build_falls_back_to_the_source() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-mismatch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(folder.join("build")).unwrap();
+        std::fs::write(
+            folder.join("project.json"),
+            r#"{"name": "g", "main_scene": "scenes/main.rscene", "cooked_scene": "build/main.rscene.bin"}"#,
+        )
+        .unwrap();
+        let mut editor = App::new();
+        editor.add_plugin(AssetPlugin).unwrap();
+        editor.spawn((Name("Ball".into()), Transform::new([0.0, 5.0, 0.0])));
+        crate::runtime::save_scene(
+            editor.world_mut(),
+            folder.join("scenes/main.rscene"),
+            "main",
+        )
+        .unwrap();
+        // A layout this engine cannot decode, as an older CLI would cook.
+        let cooked = folder.join("build/main.rscene.bin");
+        std::fs::write(&cooked, b"RSCENE01\x09\0\0\0\x10\x10\x10").unwrap();
+        fn idle(_: &mut GameScene<'_>, _: &FrameTime) {}
+        let plugin = || SimpleGamePlugin {
+            update: idle,
+            tick: None,
+            components: None,
+        };
+        // An exported game has no source to fall back to.
+        assert!(load_project_runtime(&cooked, plugin()).is_err());
+        std::fs::write(folder.join("Cargo.toml"), "").unwrap();
+        let mut runtime = load_project_runtime(&cooked, plugin()).unwrap();
+        let _ = std::fs::remove_dir_all(&folder);
+        let mut scene = GameScene {
+            world: runtime.world_mut(),
+        };
+        assert!(scene.try_object("Ball").is_some());
     }
 
     #[test]

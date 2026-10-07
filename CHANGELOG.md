@@ -81,6 +81,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting_game!(update, components: [Night => "game.night"])` registers a game's own scene components, and the prelude re-exports `Component`, `Serialize` and `Deserialize`, so game state can leave counters without adding crates.
 - `spot_light` gains `shadows` (default false): a shadowed spot light stops at walls, so a flashlight no longer lights the far side of a door. One light per frame casts shadows, and a shadowed directional light wins.
 - New `rusting.post_volume` component: fog and color grading on its object apply only inside its box, blending over `blend` metres, so a foggy hall and a warm office can share a scene.
+- A game whose cooked scene was made by a `rusting` CLI from another engine build now warns and loads the source scene instead of failing with a bincode decode error (dev projects only).
 
 ### Fixed
 
