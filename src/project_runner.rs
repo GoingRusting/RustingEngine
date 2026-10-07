@@ -1461,17 +1461,17 @@ impl GameScene<'_> {
                 .get::<crate::runtime::RagdollPart>(entity)
                 .map_or(entity, |part| part.bone)
         };
+        // No lookups per collider unless classes are skipped.
         let keep = |entity| {
+            if skip_classes.is_empty() {
+                return true;
+            }
             let entity = owner(entity);
-            skip_classes.is_empty()
-                || self
-                    .world
-                    .get::<crate::runtime::ObjectClasses>(entity)
-                    .is_none_or(|classes| {
-                        !skip_classes
-                            .iter()
-                            .any(|class| classes.contains(class))
-                    })
+            self.world
+                .get::<crate::runtime::ObjectClasses>(entity)
+                .is_none_or(|classes| {
+                    !skip_classes.iter().any(|class| classes.contains(class))
+                })
         };
         let hit = self
             .world

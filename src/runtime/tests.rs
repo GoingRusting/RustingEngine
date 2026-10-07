@@ -5093,3 +5093,40 @@ fn player_controller_crouches_under_a_table_and_stands_only_with_room() {
     let eye = app.world().get::<Transform>(camera).unwrap().position[1];
     assert!((eye - 0.7).abs() < 1e-4, "{eye}");
 }
+
+/// Cost of `GameScene::raycast` per ray, the way a game ray-traces a small
+/// camera feed (split-signal F23). Prints the cost; the bound only catches a
+/// gross regression.
+#[test]
+#[ignore = "timing: run on a quiet machine with --release -- --ignored --nocapture"]
+fn raycast_cost_per_ray() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    // A room of 200 static boxes, like a level's walls and props.
+    for index in 0..200 {
+        let (x, z) = ((index % 20) as f32 - 9.5, (index / 20) as f32 - 4.5);
+        cpu_body(world, [x, 0.5, z], UNIT_BOX, RigidBodyKind::Fixed);
+    }
+    run_fixed_steps(&mut app, 1);
+    let scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    // One 80x45 feed: 3,600 rays fanned down over the room.
+    let rays = 3_600;
+    let start = std::time::Instant::now();
+    let mut hits = 0;
+    for ray in 0..rays {
+        let (u, v) = ((ray % 80) as f32 / 80.0, (ray / 80) as f32 / 45.0);
+        let direction = [u - 0.5, -0.4 - v * 0.5, -1.0];
+        hits += usize::from(
+            scene.raycast([0.0, 4.0, 8.0], direction, 50.0).is_some(),
+        );
+    }
+    let per_ray = start.elapsed().as_secs_f64() * 1e6 / f64::from(rays);
+    println!(
+        "raycast: {per_ray:.2} us per ray over 201 colliders, {hits} hits"
+    );
+    assert!(hits > rays as usize / 2);
+    assert!(per_ray < 200.0, "{per_ray:.2} us per ray");
+}

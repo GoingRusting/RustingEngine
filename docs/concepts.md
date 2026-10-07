@@ -382,6 +382,12 @@ With thousands of bodies, a few per-body costs decide the frame rate:
   for 40,000 bodies. Call it on checkpoint ticks (every 30 ticks, or where
   a scenario checks it), not in every `update`.
 - The GPU contact grid: keep cells under 8 bodies, as above.
+- `scene.raycast` tests every CPU collider, so its cost grows with the
+  collider count: about 2 microseconds per ray against 200 colliders in a
+  release build (Ryzen 5 7600X), so a 3,600-ray camera feed costs about
+  7.5 ms. Cast fewer rays (a smaller feed, or every other tick), or use a
+  `rusting.camera_screen` instead. `cargo test --release --lib
+  raycast_cost_per_ray -- --ignored --nocapture` in the engine measures it.
 - Compare runs with `rusting test --json`: `perf.tick_ms_p95` is the CPU
   side and `perf.render.gpu_ms_p95` the GPU side.
 
