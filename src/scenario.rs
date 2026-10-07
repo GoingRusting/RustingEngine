@@ -3783,9 +3783,17 @@ mod tests {
             // Outranks every echo, so it replaces one.
             let mascot = Sound {
                 priority: 255,
-                ..echo
+                ..echo.clone()
             };
             scene.play_sound_with("tone.wav", mascot);
+            // Priority compares within a bus only: a full chorus does not
+            // stop a priority 0 sound on another bus.
+            let whisper = Sound {
+                bus: "voice".into(),
+                priority: 0,
+                ..echo
+            };
+            scene.play_sound_with("tone.wav", whisper);
         });
         let report = run_scenario(
             &mut app,
@@ -3801,7 +3809,9 @@ mod tests {
                     {"tick": 2, "expect": {"entity": "audio:",
                         "path": "/dropped", "equals": 969}},
                     {"tick": 2, "expect": {"entity": "audio:",
-                        "path": "/requested", "equals": 1001}},
+                        "path": "/buses/voice/voices", "equals": 1}},
+                    {"tick": 2, "expect": {"entity": "audio:",
+                        "path": "/requested", "equals": 1002}},
                 ]),
             ),
             &directory,

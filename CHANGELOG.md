@@ -54,6 +54,7 @@ Engine features for the horror game FOREVER BEAR.
 - A scenario check on a counter nobody created yet reads it as 0, as game code does, instead of failing with "no entity"
 - A CLI usage error names the flag the command does not take and prints that command's usage
 - `rusting test --keep-going` runs every step after a failed check, and the failure message lists every failed step
+- The audio guide says which sound loses when a bus is full: priority within that bus only, then the quietest after distance and occlusion, ties replacing the oldest
 
 ### Fixed
 

@@ -134,6 +134,17 @@ quietest, counting distance and occlusion. When the new sound ranks lowest
 itself, it is dropped. Give the mascot `priority: 255` and the shelf
 chorus a lower one, and a thousand bears cannot drown it out.
 
+When the bus is full:
+
+- Priority compares only within one bus. A full `chorus` bus never stops
+  a sound on `voice`, whatever their priorities.
+- "Quietest" is the volume after distance falloff and occlusion, so with
+  equal priority the farthest sound goes first.
+- A new sound must rank strictly higher to replace one. On a full tie the
+  playing sound stays and the new one is dropped (counted in `dropped`).
+- Among playing sounds that tie for lowest, the oldest is replaced
+  (counted in `stolen`).
+
 `/buses/<bus>` reports `voices`, `limit`, `dropped` and `stolen`;
 `/dropped` is the total of dropped and stolen sounds on every bus.
 

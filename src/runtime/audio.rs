@@ -136,8 +136,10 @@ pub struct Sound {
     /// the listener and the sound. Needs `position` or `follow`.
     pub occlude: bool,
     /// When a bus is at its voice limit, a new sound replaces the playing
-    /// one with the lowest priority, then the quietest. A new sound that
-    /// ranks lowest is dropped. 128 by default.
+    /// one with the lowest priority, then the quietest (after distance and
+    /// occlusion); on a tie the oldest goes. A new sound that does not rank
+    /// strictly higher is dropped. Compared within one bus only. 128 by
+    /// default.
     pub priority: u8,
     /// Subtitle lines shown while the sound plays, timed in seconds of the
     /// clip (they follow `rate`, pauses and seeks).
