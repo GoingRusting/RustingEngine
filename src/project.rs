@@ -423,17 +423,21 @@ pub enum ProjectTemplate {
     ThirdPerson3d,
     /// A pile of dynamic boxes and balls that fall onto a floor and settle.
     PhysicsSandbox,
+    /// The 3D template without its cube: only a camera, so game
+    /// code can spawn any name.
+    Empty,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
         Self::PhysicsSandbox,
         Self::Platformer2d,
         Self::Starter,
+        Self::Empty,
     ];
 
     /// The name `rusting new --template` takes.
@@ -446,6 +450,7 @@ impl ProjectTemplate {
             Self::FirstPerson3d => "first-person",
             Self::ThirdPerson3d => "third-person",
             Self::PhysicsSandbox => "sandbox",
+            Self::Empty => "empty",
         }
     }
 
@@ -459,6 +464,7 @@ impl ProjectTemplate {
             Self::FirstPerson3d => "3D first person",
             Self::ThirdPerson3d => "3D third person",
             Self::PhysicsSandbox => "Physics sandbox",
+            Self::Empty => "Empty (camera only)",
         }
     }
 
@@ -688,6 +694,13 @@ fn write_project_template(
         root.join("scenes/main.rscene"),
         serde_json::to_vec_pretty(&match template {
             ProjectTemplate::Basic3d => default_scene(name),
+            ProjectTemplate::Empty => {
+                let mut scene = default_scene(name);
+                scene
+                    .entities
+                    .retain(|entity| entity.name.as_deref() != Some("Cube"));
+                scene
+            }
             ProjectTemplate::Platformer2d => platformer_scene(name),
             ProjectTemplate::Starter => starter_scene(name),
             ProjectTemplate::FirstPerson3d
@@ -1786,6 +1799,24 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
             }
         };
         (app, tick, parent)
+    }
+
+    #[test]
+    fn the_empty_template_has_no_named_objects_to_clash_with() {
+        let (mut app, _, parent) = load_template(ProjectTemplate::Empty);
+        let world = app.world_mut();
+        let names: Vec<String> = world
+            .query::<&rusting_core::components::Name>()
+            .iter(world)
+            .map(|name| name.0.clone())
+            .collect();
+        assert!(!names.iter().any(|name| name == "Cube"), "{names:?}");
+        let cameras = world
+            .query_filtered::<(), bevy_ecs::query::With<crate::runtime::Camera>>()
+            .iter(world)
+            .count();
+        assert_eq!(cameras, 1);
+        let _ = std::fs::remove_dir_all(parent);
     }
 
     #[test]
