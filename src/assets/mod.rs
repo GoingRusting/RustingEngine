@@ -2628,26 +2628,26 @@ fn pyramid_mesh() -> MeshAsset {
 /// Turns a profile of `(radius, y)` points with `(radial, y)` normals
 /// around the Y axis. Consecutive points form a band; repeat a point with a
 /// new normal for a hard edge. Bands wrap U once around the axis with V
-/// down the profile; flat caps (radial normal 0) map the texture as a disc,
+/// from 0 at the top to 1 at the bottom, by height, as on the sphere; flat caps (radial normal 0) map the texture as a disc,
 /// upright when seen from outside with -Z at the top.
 fn lathe_mesh(profile: &[([f32; 2], [f32; 2])], segments: u32) -> MeshAsset {
     let mut vertices = Vec::new();
+    let (bottom, top) = profile
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(low, high), ([_, y], _)| {
+            (low.min(*y), high.max(*y))
+        });
     for step in 0..=segments {
         let angle = std::f32::consts::TAU * step as f32 / segments as f32;
         let (sin, cos) = angle.sin_cos();
-        for (index, ([radius, y], [radial, normal_y])) in
-            profile.iter().copied().enumerate()
-        {
+        for ([radius, y], [radial, normal_y]) in profile.iter().copied() {
             vertices.push(MeshVertex {
                 position: [radius * cos, y, radius * sin],
                 normal: normalize3([radial * cos, normal_y, radial * sin]),
                 uv: if radial == 0.0 {
                     [0.5 + radius * cos * normal_y, 0.5 + radius * sin]
                 } else {
-                    [
-                        step as f32 / segments as f32,
-                        index as f32 / (profile.len() - 1) as f32,
-                    ]
+                    [step as f32 / segments as f32, (top - y) / (top - bottom)]
                 },
                 tangent: [1.0, 0.0, 0.0, 1.0],
             });

@@ -837,6 +837,23 @@ mod tests {
                 assert!((v.uv[1] - w).abs() < 1e-5, "{shape:?} {v:?}");
             }
         }
+        // Sides show the whole texture by height, its top row at the top
+        // as on the sphere (lantern-keeper F30).
+        for (shape, half) in [
+            (PrimitiveShape::Cylinder, 0.5),
+            (PrimitiveShape::Cone, 0.5),
+            (PrimitiveShape::Capsule, 1.0),
+        ] {
+            let mesh = procedural_primitive_mesh(shape);
+            for v in mesh
+                .vertices
+                .iter()
+                .filter(|v| v.normal[0] != 0.0 || v.normal[2] != 0.0)
+            {
+                let expected = (half - v.position[1]) / (2.0 * half);
+                assert!((v.uv[1] - expected).abs() < 1e-4, "{shape:?} {v:?}");
+            }
+        }
         let plane = procedural_primitive_mesh(PrimitiveShape::Plane);
         let uvs: Vec<_> = plane.vertices.iter().map(|v| v.uv).collect();
         assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);

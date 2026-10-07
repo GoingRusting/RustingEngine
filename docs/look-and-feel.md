@@ -165,7 +165,9 @@ around X or Z.
 
 Texture mapping (UVs): `Cube`, `RoundedCube` and `Plane` show the whole
 texture on each face. `Sphere`, `Capsule`, and the sides of `Cylinder` and
-`Cone` wrap it once around the Y axis, bottom to top. The flat caps of
+`Cone` wrap it once around the Y axis and show its full height, the top
+row of the image at the top of the shape, so horizontal bands in the image
+become rings. The flat caps of
 `Cylinder` and `Cone` show it as a disc, upright when seen from outside with
 -Z at the top, so a thin cylinder turned to face the camera is a round
 door, coin or clock face.

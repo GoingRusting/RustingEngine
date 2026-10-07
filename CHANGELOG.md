@@ -95,6 +95,7 @@ Engine features for the horror game FOREVER BEAR.
 - `scene.raycast` is about 20% faster without skip classes, and the concepts guide gives the cost per ray.
 - `rusting asset reimport` accepts a path relative to `assets/`, as `asset import --to` names it.
 - With `keep_going`, a failed scenario's game error says how many more checks failed, and docs/concepts.md documents `RUSTING_KEEP_GOING`.
+- The sides of `Cylinder`, `Cone` and `Capsule` show a texture's full height with its top row at the top, as `Sphere` does. A cylinder side showed only the middle fifth of the image before; a textured capsule was upside down and now appears flipped compared with earlier builds.
 
 ### Fixed
 
