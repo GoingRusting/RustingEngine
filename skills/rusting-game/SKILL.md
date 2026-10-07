@@ -305,9 +305,12 @@ works too.
   with velocities, sleep and solver state; the clock carries on, so time
   loop logic by ticks since the round began.
 - Use CPU bodies (`"simulation": "Cpu"`) for anything gameplay reads or
-  must repeat. GPU bodies reach game code a few frames late, cannot be
-  reset or moved from code after setup, and are not covered by
-  `restart` determinism; use them for large decorative piles. Their
+  must repeat. GPU bodies reach game code a few frames late and are not
+  covered by `restart` determinism; use them for large decorative piles.
+  `restart` puts every GPU body back at its scene-file pose. Move or push
+  one from code with `scene.gpu_command("Ball#7",
+  GpuBodyCommand::Teleport(Transform::new([0.0, 5.0, 0.0])))` (also
+  `SetVelocity`, `Impulse`, `Force`). Their
   `Transform` keeps the spawn pose: read the GPU pose with
   `gpu_state(name)` (set `GpuBodySettings { sync:
   PhysicsSyncMode::SelectedState, .. }`), and in scenarios under

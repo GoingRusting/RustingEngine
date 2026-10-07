@@ -68,7 +68,7 @@ pub mod prelude {
     };
     pub use crate::rendering::scene_renderer::RenderCapacityDiagnostics;
     pub use crate::runtime::{
-        BeatClock, BusEffect, Caption, FrameTime, GpuCondition,
+        BeatClock, BusEffect, Caption, FrameTime, GpuBodyCommand, GpuCondition,
         GpuConditionShader, GpuConditionShaders, GpuEventMode, GpuEventPayload,
         GpuFieldCondition, GpuPhysicsEvent, GpuPhysicsEventsLost,
         GpuPhysicsRule, GpuPhysicsWatch, GpuStateField, HudAnchor, HudElement,

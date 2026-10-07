@@ -174,6 +174,13 @@ pub(crate) fn restart_scene(world: &mut World) -> bool {
         return false;
     }
     forget_old_scene(world);
+    // Every GPU body starts again from the scene file, with rule edge and
+    // cooldown state cleared, instead of whatever survived the reload.
+    if let Some(mut commands) =
+        world.get_resource_mut::<crate::runtime::GpuPhysicsCommands>()
+    {
+        commands.reset_to_authored = true;
+    }
     true
 }
 
@@ -2481,6 +2488,36 @@ impl GameScene<'_> {
             })
             .count()
     }
+
+    /// Sends a command to the GPU body named `name`: move it, set its
+    /// velocity, push it, or ask for its state. It applies before the next
+    /// GPU tick. Returns `false` when no such body has a GPU physics id
+    /// yet (the engine assigns ids after the frame a body spawns).
+    ///
+    /// ```ignore
+    /// scene.gpu_command("Ball#7", GpuBodyCommand::Teleport(Transform::new([0.0, 5.0, 0.0])));
+    /// scene.gpu_command("Ball#7", GpuBodyCommand::SetVelocity { linear: [0.0; 3], angular: [0.0; 3] });
+    /// ```
+    pub fn gpu_command(
+        &mut self,
+        name: &str,
+        command: crate::runtime::GpuBodyCommand,
+    ) -> bool {
+        let id = find_named_entity(self.world, name).and_then(|entity| {
+            self.world
+                .get_resource::<crate::runtime::PhysicsIdRegistry>()?
+                .id_for(entity)
+        });
+        let Some(id) = id else {
+            return false;
+        };
+        self.world
+            .get_resource_or_insert_with(
+                crate::runtime::GpuPhysicsCommands::default,
+            )
+            .push(id, command);
+        true
+    }
 }
 
 /// Mutable high-level access to one scene object's transform.
@@ -4650,6 +4687,30 @@ mod tests {
     }
 
     #[test]
+    fn gpu_commands_reach_the_named_body_once_it_has_an_id() {
+        use crate::runtime::{
+            GpuBodyCommand, GpuPhysicsCommands, PhysicsIdRegistry,
+        };
+        let mut world = World::new();
+        let ball = world.spawn(Name("Ball".into())).id();
+        world.spawn(Name("Fresh".into()));
+        let mut registry = PhysicsIdRegistry::default();
+        registry.assign(world.spawn_empty().id());
+        let id = registry.assign(ball);
+        world.insert_resource(registry);
+        let mut scene = GameScene { world: &mut world };
+        let teleport =
+            GpuBodyCommand::Teleport(Transform::new([0.0, 5.0, 0.0]));
+        assert!(scene.gpu_command("Ball", teleport));
+        assert!(!scene.gpu_command("Fresh", teleport), "no id yet");
+        assert!(!scene.gpu_command("Missing", teleport));
+        assert_eq!(
+            world.resource::<GpuPhysicsCommands>().commands,
+            [(id, teleport)]
+        );
+    }
+
+    #[test]
     fn a_tick_function_sees_a_press_from_a_frame_without_a_tick() {
         use crate::runtime::{InputBinding, KeyCode};
         use std::time::Duration;
@@ -5093,6 +5154,12 @@ mod tests {
         assert_eq!(count_named(world, "Gate"), 1);
         assert_eq!(count_named(world, "Coin"), 0);
         assert_eq!(count_named(world, "score"), 0, "set_counter counters go");
+        assert!(
+            world
+                .resource::<crate::runtime::RenderWorld>()
+                .gpu_physics_reset,
+            "GPU bodies restart from the scene file"
+        );
         game.update(frame).unwrap();
         let world = game.world_mut();
         assert_eq!(count_named(world, "Coin"), 1, "setup ran again");
