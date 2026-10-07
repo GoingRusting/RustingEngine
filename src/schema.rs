@@ -205,7 +205,7 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "run",
-        usage: "run [project-root] [--release] [--ticks N | --bench FRAMES] [--timeout SECONDS] [--record FILE | --replay FILE] [--json]",
+        usage: "run [project-root] [--release] [--ticks N | --bench FRAMES] [--timeout SECONDS] [--record FILE | --replay FILE] [--stderr] [--json]",
         summary: "Cook, build, and run the game from the project folder. --ticks N runs N fixed ticks without a window, saves the end state to build/final.rscene for `scene query`, and exits. --timeout stops a game still running; reaching it is not a failure. --record FILE saves the windowed session's input, frame times and per-tick state hashes to FILE when the window closes; --replay FILE plays such a file back without a window and fails at the first tick whose state differs, so a recorded run is a regression test. --bench FRAMES opens the window, skips 60 warm-up frames, measures FRAMES frames, closes, and reports their mean, p50, p95, p99 and max in timings.bench.",
         gpu: "required for a window; none with --ticks",
         defaults: &[("--release", "off (debug build)"), ("--ticks", "off (opens a window)"), ("--bench", "off"), ("--timeout", "none"), ("project-root", "the current folder")],
@@ -213,8 +213,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "test",
-        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--update-golden] [--keep-going] [--json]",
-        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. --update-golden rewrites capture `golden` images instead of comparing them. --keep-going runs every step after a failed check and lists every failure, like `\"keep_going\": true` in the scenario. The scenario format is under `scenario` in `rusting schema`.",
+        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--update-golden] [--keep-going] [--stderr] [--json]",
+        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. --update-golden rewrites capture `golden` images instead of comparing them. --keep-going runs every step after a failed check and lists every failure, like `\"keep_going\": true` in the scenario. --stderr prints the game's stderr (`eprintln!`) as it runs instead of only in the result's `game.stderr` at the end. The scenario format is under `scenario` in `rusting schema`.",
         gpu: "optional: only capture, expect_pixels and render-budget runs render; captures are skipped without Vulkan; one frame readback per capture or pixel check",
         defaults: &[("--release", "off (debug build)"), ("--timeout", "none"), ("project-root", "the current folder"), ("scenario", "every file in tests/")],
         example: "test my_game my_game/tests/falls.json --json",

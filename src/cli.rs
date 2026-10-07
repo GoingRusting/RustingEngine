@@ -1648,7 +1648,17 @@ fn run_process(
     command: &mut Command,
     timeout: Option<Duration>,
 ) -> std::io::Result<ProcessRun> {
-    use std::io::Read;
+    run_process_echoing(command, timeout, false)
+}
+
+/// [`run_process`], also copying the child's stderr line by line to this
+/// process's stderr while it runs when `echo` is set.
+fn run_process_echoing(
+    command: &mut Command,
+    timeout: Option<Duration>,
+    echo: bool,
+) -> std::io::Result<ProcessRun> {
+    use std::io::{BufRead, Read};
 
     let start = Instant::now();
     let mut child = command
@@ -1668,7 +1678,21 @@ fn run_process(
         })
     };
     let stdout = read(child.stdout.take().map(|pipe| Box::new(pipe) as _));
-    let stderr = read(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = match (echo, child.stderr.take()) {
+        (true, Some(pipe)) => std::thread::spawn(move || {
+            let mut text = String::new();
+            let mut pipe = std::io::BufReader::new(pipe);
+            let mut line = Vec::new();
+            while pipe.read_until(b'\n', &mut line).unwrap_or(0) > 0 {
+                let chunk = String::from_utf8_lossy(&line);
+                eprint!("{chunk}");
+                text.push_str(&chunk);
+                line.clear();
+            }
+            text
+        }),
+        (_, pipe) => read(pipe.map(|pipe| Box::new(pipe) as _)),
+    };
     let mut timed_out = false;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -2336,6 +2360,9 @@ pub struct RunOptions {
     pub keep_going: bool,
     /// Measure this many windowed frames, report their times, and close.
     pub bench: Option<u32>,
+    /// Copy the game's stderr to this process's stderr as it arrives
+    /// (`--stderr`), as well as keeping it for the result.
+    pub echo_stderr: bool,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -2497,7 +2524,8 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
         timeout = Some(limit + Duration::from_secs(10));
     }
     let launched_after = start.elapsed();
-    let run = match run_process(&mut game, timeout) {
+    let run = match run_process_echoing(&mut game, timeout, options.echo_stderr)
+    {
         Ok(run) => run,
         Err(error) => {
             return CliResult::failure(
@@ -3345,6 +3373,17 @@ mod shape_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn echoed_stderr_is_still_kept_whole() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'one\\ntwo' >&2; echo out"]);
+        let run = run_process_echoing(&mut command, None, true).unwrap();
+        assert_eq!(run.stderr, "one\ntwo");
+        assert_eq!(run.stdout, "out\n");
+        assert!(run.success);
+    }
 
     #[test]
     #[cfg(feature = "gltf")]

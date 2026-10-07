@@ -48,7 +48,8 @@ command takes `--json` for output a program can read.
 7. `rusting run` opens the game window. `--ticks N` runs it headless and
    saves the end state to `build/final.rscene`; inspect it with
    `rusting scene query build/final.rscene --json`. Game output (`eprintln!`)
-   is in the `--json` result under `game.stderr`.
+   is in the `--json` result under `game.stderr`; `--stderr` on `run` or
+   `test` also prints it while the game runs.
 8. Every error has a code such as `SCENE_CONFLICT`.
    `rusting explain SCENE_CONFLICT` prints what it means, how to fix it and
    an example; `rusting explain` lists every code. A `--json` diagnostic

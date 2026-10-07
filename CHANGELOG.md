@@ -71,6 +71,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting capture --at X,Y,Z` with `--look-at X,Y,Z` or `--look YAW,PITCH` shoots from any point without a camera in the scene.
 - A scenario with captures, and `rusting capture --tick N`, render only the few ticks before each image instead of the whole run, so long runs with a late capture are no longer slow throughout. Scenes with GPU bodies still render every tick.
 - `rusting docs show api/WaypointGraph` documents the waypoint graph's fields and methods.
+- `--stderr` on `rusting run` and `rusting test` streams game output while the game runs.
 
 ### Fixed
 
