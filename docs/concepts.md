@@ -389,7 +389,11 @@ With thousands of bodies, a few per-body costs decide the frame rate:
   `rusting.camera_screen` instead. `cargo test --release --lib
   raycast_cost_per_ray -- --ignored --nocapture` in the engine measures it.
 - Compare runs with `rusting test --json`: `perf.tick_ms_p95` is the CPU
-  side and `perf.render.gpu_ms_p95` the GPU side.
+  side and `perf.render.gpu_ms_p95` the GPU side. `perf.render.cameras`
+  splits the GPU time, draws and triangles per camera and camera screen.
+  `perf.render` is filled when the scenario renders: a `max_draws` or
+  `max_triangles` budget, `"gpu": true`, or a capture or `expect_pixels`
+  step. Without one it is null.
 
 A `rusting.joint` component joins a CPU body to another CPU body, its
 `target`, or to the world when `target` is null. `anchor` and `frame` place

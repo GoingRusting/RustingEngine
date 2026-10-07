@@ -805,6 +805,17 @@ mod tests {
     }
 
     #[test]
+    fn when_perf_render_is_filled_is_documented() {
+        let (found, _) = search("perf.render cameras null budget", 50);
+        assert!(found.iter().any(|item| item["id"] == "manual/concepts"));
+        let schema = crate::schema::catalog().to_string();
+        assert!(
+            schema.contains("no capture step needed"),
+            "split-signal F12"
+        );
+    }
+
+    #[test]
     fn keep_going_and_its_variable_are_documented() {
         let (found, _) = search("RUSTING_KEEP_GOING", 50);
         assert!(found.iter().any(|item| item["id"] == "manual/concepts"));
