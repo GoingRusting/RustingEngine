@@ -1153,7 +1153,12 @@ impl GameScene<'_> {
     ) -> Option<T> {
         let found = self.find_counter(name, read);
         if found.is_none() {
-            warn_missing_counter(name);
+            warn_missing_counter(name, || {
+                let mut counters =
+                    self.world.try_query::<&crate::runtime::Counter>()?;
+                let names = counters.iter(self.world).map(|c| c.name.as_str());
+                Some(nearest_hint(names, name))
+            });
         }
         found
     }
@@ -2526,14 +2531,17 @@ impl GameObject<'_> {
 static MISSING_COUNTERS: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-fn warn_missing_counter(name: &str) {
+/// `hint` runs only for the first warning of a name, so a counter read
+/// every tick does not search the names every tick.
+fn warn_missing_counter(name: &str, hint: impl FnOnce() -> Option<String>) {
     let mut missing = MISSING_COUNTERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if missing.insert(name.to_owned()) {
+        let hint = hint().unwrap_or_default();
         eprintln!(
-            "warning: game code read counter `{name}`, which does not exist; \
-             it reads as 0. Add a `rusting.counter` named `{name}` to the \
+            "warning: game code read counter `{name}`, which does not \
+             exist{hint}; it reads as 0. Add a `rusting.counter` named `{name}` to the \
              scene, create it with `set_counter` or `add_to_counter`, or \
              read it with `counter_or` to give a default without this \
              warning."
@@ -2635,18 +2643,27 @@ fn ensure_scene_name_index(world: &mut World) {
 /// or an empty string when none is close.
 fn nearest_names_hint(world: &mut World, name: &str) -> String {
     let mut names = world.query::<&Name>();
+    nearest_hint(names.iter(world).map(|other| other.0.as_str()), name)
+}
+
+/// `; did you mean ...?` with the up to three `names` within a
+/// case-insensitive edit distance of half `name`'s length (at least two).
+fn nearest_hint<'a>(
+    names: impl Iterator<Item = &'a str>,
+    name: &str,
+) -> String {
     let limit = (name.chars().count() / 2).max(2);
     let mut close: Vec<(usize, &str)> = names
-        .iter(world)
         .filter_map(|other| {
             let distance = crate::scene_patch::edit_distance(
                 &name.to_lowercase(),
-                &other.0.to_lowercase(),
+                &other.to_lowercase(),
             );
-            (distance <= limit).then_some((distance, other.0.as_str()))
+            (distance <= limit).then_some((distance, other))
         })
         .collect();
     close.sort_unstable();
+    close.dedup();
     close.truncate(3);
     if close.is_empty() {
         return String::new();
@@ -5358,6 +5375,10 @@ mod tests {
             .lock()
             .unwrap()
             .contains("unset_queue_slot"));
+        // A misspelt read names the close counters once.
+        let names = ["money", "night", "coins"].into_iter();
+        assert_eq!(nearest_hint(names, "mony"), "; did you mean `money`?");
+        assert_eq!(nearest_hint(["money"].into_iter(), "screen"), "");
     }
 
     #[test]
