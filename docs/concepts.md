@@ -12,7 +12,8 @@ same files, so you can switch between them at any time.
 ## Scenes
 
 A scene (`scenes/main.rscene`) is JSON: a list of entities, each with a
-persistent ID (a UUID), a name, an optional parent, and components. Built-in
+persistent ID (a UUID), a name, an optional parent, and components. A
+child's transform is relative to its parent, scale included. Built-in
 components have their own fields (`transform`, `mesh_renderer`, `camera`,
 `rigid_body`, `collider`, lights, ...). Everything else, built-in gameplay
 components such as `rusting.pickup` and your own, lives under `components`

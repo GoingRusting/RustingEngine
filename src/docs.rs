@@ -805,6 +805,38 @@ mod tests {
     }
 
     #[test]
+    fn primitive_uvs_and_child_scale_are_explained() {
+        for (query, page) in [
+            ("cylinder cap texture disc", "guide/look-and-feel"),
+            ("child transform relative parent scale", "manual/concepts"),
+        ] {
+            let (found, _) = search(query, 50);
+            assert!(found.iter().any(|item| item["id"] == page), "{query}");
+        }
+        // Caps map as a disc: the UV is the cap position shifted by 0.5,
+        // with the bottom mirrored so it reads upright from below.
+        use crate::assets::{procedural_primitive_mesh, PrimitiveShape};
+        for shape in [PrimitiveShape::Cylinder, PrimitiveShape::Cone] {
+            let mesh = procedural_primitive_mesh(shape);
+            let caps: Vec<_> = mesh
+                .vertices
+                .iter()
+                .filter(|v| v.normal[0] == 0.0 && v.normal[2] == 0.0)
+                .collect();
+            assert!(!caps.is_empty(), "{shape:?}");
+            for v in caps {
+                let u = 0.5 + v.position[0] * v.normal[1];
+                let w = 0.5 + v.position[2];
+                assert!((v.uv[0] - u).abs() < 1e-5, "{shape:?} {v:?}");
+                assert!((v.uv[1] - w).abs() < 1e-5, "{shape:?} {v:?}");
+            }
+        }
+        let plane = procedural_primitive_mesh(PrimitiveShape::Plane);
+        let uvs: Vec<_> = plane.vertices.iter().map(|v| v.uv).collect();
+        assert_eq!(uvs, [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+    }
+
+    #[test]
     fn many_body_costs_are_explained() {
         for query in ["subdivisions triangles", "state_hash checkpoint"] {
             let (found, _) = search(query, 50);

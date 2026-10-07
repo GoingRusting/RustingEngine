@@ -2369,10 +2369,7 @@ pub fn procedural_primitive_mesh(shape: PrimitiveShape) -> MeshAsset {
             [0.5, -0.5, 0.0],
             [0.0, 0.5, 0.0],
         ]]),
-        PrimitiveShape::Plane => mesh_from_triangles(&[
-            [[-0.5, 0.0, -0.5], [-0.5, 0.0, 0.5], [0.5, 0.0, 0.5]],
-            [[-0.5, 0.0, -0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5]],
-        ]),
+        PrimitiveShape::Plane => plane_mesh(),
         PrimitiveShape::Tetrahedron => polyhedron_mesh(
             &[
                 [0.5, 0.5, 0.5],
@@ -2630,7 +2627,9 @@ fn pyramid_mesh() -> MeshAsset {
 
 /// Turns a profile of `(radius, y)` points with `(radial, y)` normals
 /// around the Y axis. Consecutive points form a band; repeat a point with a
-/// new normal for a hard edge.
+/// new normal for a hard edge. Bands wrap U once around the axis with V
+/// down the profile; flat caps (radial normal 0) map the texture as a disc,
+/// upright when seen from outside with -Z at the top.
 fn lathe_mesh(profile: &[([f32; 2], [f32; 2])], segments: u32) -> MeshAsset {
     let mut vertices = Vec::new();
     for step in 0..=segments {
@@ -2642,10 +2641,14 @@ fn lathe_mesh(profile: &[([f32; 2], [f32; 2])], segments: u32) -> MeshAsset {
             vertices.push(MeshVertex {
                 position: [radius * cos, y, radius * sin],
                 normal: normalize3([radial * cos, normal_y, radial * sin]),
-                uv: [
-                    step as f32 / segments as f32,
-                    index as f32 / (profile.len() - 1) as f32,
-                ],
+                uv: if radial == 0.0 {
+                    [0.5 + radius * cos * normal_y, 0.5 + radius * sin]
+                } else {
+                    [
+                        step as f32 / segments as f32,
+                        index as f32 / (profile.len() - 1) as f32,
+                    ]
+                },
                 tangent: [1.0, 0.0, 0.0, 1.0],
             });
         }
@@ -2844,6 +2847,28 @@ fn normalize3(value: [f32; 3]) -> [f32; 3] {
 }
 
 /// UV (0, 0) is the image's top-left pixel, as in glTF.
+/// Flat in XZ facing +Y; the whole texture, -Z at the top.
+fn plane_mesh() -> MeshAsset {
+    let corners = [
+        ([-0.5, 0.0, -0.5], [0.0, 0.0]),
+        ([-0.5, 0.0, 0.5], [0.0, 1.0]),
+        ([0.5, 0.0, 0.5], [1.0, 1.0]),
+        ([0.5, 0.0, -0.5], [1.0, 0.0]),
+    ];
+    MeshAsset {
+        vertices: corners
+            .into_iter()
+            .map(|(position, uv)| MeshVertex {
+                position,
+                normal: [0.0, 1.0, 0.0],
+                uv,
+                tangent: [1.0, 0.0, 0.0, 1.0],
+            })
+            .collect(),
+        indices: vec![0, 1, 2, 0, 2, 3],
+    }
+}
+
 fn quad_mesh() -> MeshAsset {
     let corners = [
         ([-0.5, -0.5, 0.0], [0.0, 1.0]),

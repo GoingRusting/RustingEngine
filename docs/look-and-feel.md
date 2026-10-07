@@ -163,6 +163,19 @@ So a scale of `[0.1, 2.0, 0.1]` on a `Cylinder` is a pole 2 m tall and
 10 cm thick. To lay a cylinder on its side (a roller), rotate it by 1.5708
 around X or Z.
 
+Texture mapping (UVs): `Cube`, `RoundedCube` and `Plane` show the whole
+texture on each face. `Sphere`, `Capsule`, and the sides of `Cylinder` and
+`Cone` wrap it once around the Y axis, bottom to top. The flat caps of
+`Cylinder` and `Cone` show it as a disc, upright when seen from outside with
+-Z at the top, so a thin cylinder turned to face the camera is a round
+door, coin or clock face.
+
+A child's transform is relative to its parent, scale included. Under a
+parent scaled `[0.6, 1.8, 0.6]`, a child sphere at scale 1 is stretched
+three times taller than wide; divide the child's scale by the parent's,
+or keep the parent at scale 1 and scale only the mesh children, as `Hero`
+does below.
+
 - `RoundedCube` is a unit box with edges rounded by 0.1. Edges catch the
   light, so crates, furniture and buttons stop looking like placeholders.
   Large scales stretch the rounding; for a wall, keep a plain `Cube`.
