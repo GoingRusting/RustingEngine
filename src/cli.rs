@@ -1904,9 +1904,11 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
         Ok(project) => project,
         Err(error) => return project_error(error, root),
     };
-    let source = project.root.join("src").join(format!("{name}.rs"));
+    let source = recipe
+        .source
+        .map(|_| project.root.join("src").join(format!("{name}.rs")));
     let scenario = project.root.join("tests").join(format!("{name}.json"));
-    for path in [&source, &scenario] {
+    for path in source.iter().chain([&scenario]) {
         if path.exists() {
             return CliResult::failure(
                 "PROJECT_EXISTS",
@@ -1934,13 +1936,21 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
             Some(project.scene_path),
         );
     };
-    let at = player.transform.map_or([0.0; 3], |t| t.position);
-    let (entities, test) = (recipe.build)(at);
+    let (operations, test) = match (recipe.build)(player) {
+        Ok(built) => built,
+        Err(message) => {
+            return CliResult::failure(
+                "RECIPE_NEEDS_CONTROLLER",
+                message,
+                Some(project.scene_path),
+            )
+        }
+    };
     let patch = crate::scene_patch::ScenePatch {
         expected_revision: Some(crate::runtime::scene_revision(&bytes)),
-        operations: entities
+        operations: operations
             .into_iter()
-            .map(|entity| crate::scene_patch::PatchOperation::Create { entity })
+            .map(|operation| serde_json::from_value(operation).unwrap())
             .collect(),
     };
     let mut result =
@@ -1949,27 +1959,33 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
         return result;
     }
     if !dry_run {
-        let written = std::fs::write(&source, recipe.source).and_then(|()| {
-            std::fs::create_dir_all(project.root.join("tests"))?;
-            std::fs::write(
-                &scenario,
-                serde_json::to_string_pretty(&test).unwrap(),
-            )
-        });
+        let written = source
+            .iter()
+            .zip(recipe.source)
+            .try_for_each(|(path, text)| std::fs::write(path, text))
+            .and_then(|()| {
+                std::fs::create_dir_all(project.root.join("tests"))?;
+                std::fs::write(
+                    &scenario,
+                    serde_json::to_string_pretty(&test).unwrap(),
+                )
+            });
         if let Err(error) = written {
             return CliResult::failure(
                 "IO_ERROR",
                 error.to_string(),
-                Some(source),
+                Some(scenario),
             );
         }
     }
     result.data["source"] = json!(source);
     result.data["scenario"] = json!(scenario);
-    result.data["next"] = json!(format!(
-        "Add `mod {name};` to src/main.rs, call `{}` from `update` (`scene` and `time` are its arguments; drop the `_` from `_time`), then run `rusting test`.",
-        recipe.call
-    ));
+    result.data["next"] = json!(match recipe.call {
+        Some(call) => format!(
+            "Add `mod {name};` to src/main.rs, call `{call}` from `update` (`scene` and `time` are its arguments; drop the `_` from `_time`), then run `rusting test`."
+        ),
+        None => "Nothing to wire in code; run `rusting test`.".to_owned(),
+    });
     result
 }
 

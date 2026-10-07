@@ -349,6 +349,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting doctor",
     ),
     code(
+        "RECIPE_NEEDS_CONTROLLER",
+        "The recipe changes the player's controller, and `Player` has no `rusting.player_controller` or `rusting.platformer_controller` it can use.",
+        "Give `Player` one of those controllers with a jump speed and gravity above 0, or start from a player template.",
+        "rusting scene query scenes/main.rscene --name Player --json",
+    ),
+    code(
         "RECIPE_NEEDS_PLAYER",
         "The recipe places its objects from the object named `Player`, and the main scene has none.",
         "Name the player object `Player`, or start from a player template.",

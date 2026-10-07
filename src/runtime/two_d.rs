@@ -410,6 +410,11 @@ pub struct PlatformerController {
     pub gravity: f32,
     /// Collision layers the body stops against.
     pub collision_mask: u32,
+    /// Extra jumps allowed in the air before landing: 1 is a double jump.
+    pub air_jumps: u32,
+    /// Air jumps taken since the body last stood on ground.
+    #[serde(skip)]
+    pub air_jumps_used: u32,
     #[serde(skip)]
     pub vertical_speed: f32,
     #[serde(skip)]
@@ -437,6 +442,8 @@ impl Default for PlatformerController {
             jump_speed: 8.0,
             gravity: 20.0,
             collision_mask: u32::MAX,
+            air_jumps: 0,
+            air_jumps_used: 0,
             vertical_speed: 0.0,
             grounded: false,
             jump_buffer: 0.0,
@@ -494,6 +501,12 @@ pub(super) fn platformer_move(
             player.jump_buffer = 0.0;
             // No second jump from the same grace window.
             player.air_time = f32::INFINITY;
+        } else if player.jump_buffer > 0.0
+            && player.air_jumps_used < player.air_jumps
+        {
+            player.air_jumps_used += 1;
+            player.vertical_speed = player.jump_speed;
+            player.jump_buffer = 0.0;
         }
         player.jump_buffer = (player.jump_buffer - dt).max(0.0);
         player.vertical_speed -= player.gravity * dt;
@@ -519,6 +532,7 @@ pub(super) fn platformer_move(
         if moved.grounded && player.vertical_speed < 0.0 {
             player.vertical_speed = 0.0;
             player.air_time = 0.0;
+            player.air_jumps_used = 0;
         } else {
             player.air_time += dt;
         }

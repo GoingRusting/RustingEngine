@@ -77,6 +77,8 @@ pub struct PlayerController {
     pub sprint_multiplier: f32,
     /// Upward speed in metres per second when a jump starts.
     pub jump_speed: f32,
+    /// Extra jumps allowed in the air before landing: 1 is a double jump.
+    pub air_jumps: u32,
     /// Downward acceleration in metres per second squared.
     pub gravity: f32,
     /// Radians of turn per pixel of mouse motion.
@@ -146,9 +148,12 @@ pub struct PlayerController {
     /// Whether the body stood on ground after the last fixed step.
     #[serde(skip)]
     pub grounded: bool,
-    /// Set when jump is pressed; the next grounded fixed step consumes it.
+    /// Set when jump is pressed; the next fixed step consumes it.
     #[serde(skip)]
     pub jump_requested: bool,
+    /// Air jumps taken since the body last stood on ground.
+    #[serde(skip)]
+    pub air_jumps_used: u32,
     /// The floor body under the controller after the last step and where
     /// it was, so a moving platform carries the controller.
     #[serde(skip)]
@@ -169,6 +174,7 @@ impl Default for PlayerController {
             walk_speed: 4.0,
             sprint_multiplier: 1.8,
             jump_speed: 5.0,
+            air_jumps: 0,
             gravity: 9.81,
             look_sensitivity: 0.002,
             mouse_look: true,
@@ -192,6 +198,7 @@ impl Default for PlayerController {
             vertical_speed: 0.0,
             grounded: false,
             jump_requested: false,
+            air_jumps_used: 0,
             floor: None,
             wall: None,
             velocity: [0.0; 3],
@@ -506,8 +513,13 @@ pub(super) fn player_move(
         if length > 0.0 {
             motion = motion.map(|value| value / length * speed * dt);
         }
-        if player.grounded && player.jump_requested && !player.crouched {
-            player.vertical_speed = player.jump_speed;
+        if player.jump_requested && !player.crouched {
+            if player.grounded {
+                player.vertical_speed = player.jump_speed;
+            } else if player.air_jumps_used < player.air_jumps {
+                player.air_jumps_used += 1;
+                player.vertical_speed = player.jump_speed;
+            }
         }
         player.jump_requested = false;
         player.vertical_speed -= player.gravity * dt;
@@ -540,6 +552,9 @@ pub(super) fn player_move(
             push(&mut pushed, wall, normal, motion, dt);
         }
         player.grounded = moved.grounded;
+        if moved.grounded {
+            player.air_jumps_used = 0;
+        }
         if (moved.grounded && player.vertical_speed < 0.0)
             || (moved.ceiling && player.vertical_speed > 0.0)
         {

@@ -393,7 +393,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "recipe list",
         usage: "recipe list [--limit N] [--fields a,b] [--summary] [--json]",
-        summary: "List the gameplay recipes (checkpoints, health) with a summary and the call `update` makes.",
+        summary: "List the gameplay recipes (checkpoints, health, double_jump, inventory, day_timer, pause_menu, wave_spawner, turret) with a summary and the call `update` makes.",
         gpu: NO_GPU,
         defaults: &[],
         example: "recipe list --json",
@@ -401,7 +401,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "recipe apply",
         usage: "recipe apply <project-root> <recipe> [--dry-run] [--json]",
-        summary: "Write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch (placed from the object named `Player`), and a passing scenario as `tests/<recipe>.json`. Never overwrites a file. `src/main.rs` is left alone: `next` names the `mod` line and the call to add to `update`.",
+        summary: "Write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch (placed from the object named `Player`), and a passing scenario as `tests/<recipe>.json`. Never overwrites a file. `src/main.rs` is left alone: `next` names the `mod` line and the call to add to `update`. A recipe that is only a scene change (`double_jump`) writes no source.",
         gpu: NO_GPU,
         defaults: &[("--dry-run", "false")],
         example: "recipe apply my_game checkpoints --json",
@@ -764,9 +764,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction. pitch_limits and yaw_limits ([low, high] radians; yaw_limits null turns freely) bound the view, for a seated or turret camera. crouch_height above 0 lets player.crouch (C, left Ctrl, pad East) shrink the body to that height from the top, at crouch_multiplier speed; it stands again only where there is room.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction. pitch_limits and yaw_limits ([low, high] radians; yaw_limits null turns freely) bound the view, for a seated or turret camera. crouch_height above 0 lets player.crouch (C, left Ctrl, pad East) shrink the body to that height from the top, at crouch_multiplier speed; it stands again only where there is room. air_jumps allows that many extra jumps before landing (1 is a double jump).",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "pitch_limits": [-1.55, 1.55], "yaw_limits": null, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0, "crouch_height": 1.0, "crouch_multiplier": 0.5}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "pitch_limits": [-1.55, 1.55], "yaw_limits": null, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0, "crouch_height": 1.0, "crouch_multiplier": 0.5, "air_jumps": 0}),
     },
     ComponentSection {
         key: "rusting.tween",
@@ -890,9 +890,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.platformer_controller",
-        summary: "Side-view run and jump in the XY plane. Reads player.left, player.right and player.jump; parent an orthographic camera to follow.",
+        summary: "Side-view run and jump in the XY plane. Reads player.left, player.right and player.jump; parent an orthographic camera to follow. air_jumps allows that many extra jumps before landing (1 is a double jump).",
         gpu: NO_GPU,
-        example: || json!({"run_speed": 6.0, "jump_speed": 9.0, "gravity": 25.0, "collision_mask": 1}),
+        example: || json!({"run_speed": 6.0, "jump_speed": 9.0, "gravity": 25.0, "collision_mask": 1, "air_jumps": 1}),
     },
     ComponentSection {
         key: "rusting.scene_instance",

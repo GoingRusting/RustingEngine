@@ -132,7 +132,9 @@ Engine features for the horror game FOREVER BEAR.
 - `scene.hit_stop(seconds)` freezes a windowed game for up to a second of real time on a heavy hit; fixed ticks then carry on unchanged, so simulation results and headless runs are not affected.
 - Clip paths `sfx:<preset> [seed]` (for example `sfx:coin 7` in `play_sound` or `rusting.sound_cue`) play a built-in synthesized sound with no file, and validation no longer reports them as missing assets.
 - `rusting lint` reports `LINT_COLLIDER_MISMATCH` when a solid collider is more than twice or less than half the size of its entity's built-in mesh on any axis.
-- `rusting recipe list` and `rusting recipe apply <root> <recipe>` write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch, and a passing scenario as `tests/<recipe>.json`. The recipes are `checkpoints` and `health` (hazards cost a point, a short safe window follows, 0 restarts the round).
+- `rusting recipe list` and `rusting recipe apply <root> <recipe>` write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch, and a passing scenario as `tests/<recipe>.json`. The recipes are `checkpoints`, `health` (hazards cost a point, a short safe window follows, 0 restarts the round), `double_jump` and `inventory` (items in class `item` count into `inventory_<kind>` counters; a key opens an object in class `locked`), `day_timer` (a `day` counter that goes up every 30 seconds, with a HUD clock), `pause_menu` (Escape pauses and shows Resume and Quit HUD buttons), `wave_spawner` (each wave copies a hidden enemy template, more each time, once the last wave is gone) and `turret` (shoots the nearest visible enemy in range on a cooldown).
+- `GameScene::clicked()` names the HUD buttons clicked since the last frame, so game code reads them without the event queue.
+- `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

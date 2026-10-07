@@ -90,6 +90,7 @@ crate::reflect! {
         walk_speed: f32 { unit: "m/s", min: 0.0 },
         sprint_multiplier: f32 { unit: "factor", min: 1.0 },
         jump_speed: f32 { unit: "m/s", min: 0.0 },
+        air_jumps: u32 { doc: "extra jumps in the air before landing; 1 is a double jump" },
         gravity: f32 { unit: "m/s²", min: 0.0 },
         look_sensitivity: f32 { unit: "rad/pixel", min: 0.0 },
         mouse_look: bool {
@@ -142,6 +143,7 @@ crate::reflect! {
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_requested: bool,
+        #[skip] air_jumps_used: u32,
         #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
         #[skip] wall: Option<bevy_ecs::entity::Entity>,
         #[skip] velocity: [f32; 3],
@@ -938,6 +940,8 @@ crate::reflect! {
         collision_mask: u32 {
             unit: "bitmask", doc: "layers the body stops against",
         },
+        air_jumps: u32 { doc: "extra jumps in the air before landing; 1 is a double jump" },
+        #[skip] air_jumps_used: u32,
         #[skip] vertical_speed: f32,
         #[skip] grounded: bool,
         #[skip] jump_buffer: f32,

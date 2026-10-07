@@ -126,7 +126,9 @@ Prefer these components over game code when they fit:
   `mouse_look: false` stops a left click from capturing the mouse (for a
   second player or a UI). The controller owns the transform of its direct
   camera children; `camera_offset` moves the camera in the body's frame
-  (`[0.6, 0, 0]` over the right shoulder).
+  (`[0.6, 0, 0]` over the right shoulder). `air_jumps` (default 0) on it
+  and on `rusting.platformer_controller` allows that many extra jumps in
+  the air; 1 is a double jump.
   `rusting docs show api/PlayerController` lists every field.
 - Split screen: give two active cameras a `viewport` (`[x, y, width,
   height]` fractions); `scene.set_camera(name, active, viewport)` changes
@@ -284,7 +286,7 @@ works too.
 | look | `set_hud(name, \|hud\| ..)` (text, color, size of a `rusting.hud`, shown the same tick), `set_visible`, `color`, `set_color`, `set_emissive` (per object), `set_light(name, color, intensity, range)` (point or spot light; `None` keeps a value) |
 | animation | `play_animation(name, clip)`, `crossfade(name, clip, secs)`, `stop_animation`, `is_playing(name, clip)`, `set_animation_speed`, `set_animation_parameter(name, param, value)` (state machine input), `animation_events()` (clip markers), `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `is_limp(name)`; see `guide/animation` |
 | rounds, levels | `restart`, `once(key, setup)`, `load_scene("scenes/level_2.rscene")`, `initial(name)` (starting transform, color, body kind), `snapshot()` / `restore(&snapshot)`, `state_hash(class)` |
-| menus, saves | `ui()` (egui), `set_paused`, `paused`, `quit`, `save_data(key, text)`, `load_data`, `delete_data`, `counters()`, `keys_pressed()`, `rebind(action, &[key])`, `cursor()`, `viewport_size()`; see `guide/menus-and-ui` |
+| menus, saves | `ui()` (egui), `set_paused`, `paused`, `quit`, `save_data(key, text)`, `load_data`, `delete_data`, `counters()`, `keys_pressed()`, `clicked()` (HUD buttons), `rebind(action, &[key])`, `cursor()`, `viewport_size()`; see `guide/menus-and-ui` |
 | video settings | `set_render_scale(0.25..=2.0)`, `render_scale`, `set_pixelated(true)` (nearest upscale for a chunky low scale), `set_vsync`, `set_max_fps(Option<u32>)`, `set_fullscreen`, `fullscreen`, `set_window_size([w, h])` |
 | other | `tile`, `set_tile`, `trigger`, `in_class`, `name_of(entity)`, `has_class(entity, class)`, `binding(action)` (keys of a scene `rusting.input_action`), `random(stream)`, `ui()` (egui), `world()` (raw ECS) |
 
@@ -345,7 +347,7 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
 `rusting add scenario <name>` writes one that fails until you fill in a real check;
 `rusting add system <name>` also appends a documented stub function to
 `src/main.rs` (call it from `update`).
-`rusting recipe apply <root> checkpoints` (or `health`) writes a tested mechanic: its source
+`rusting recipe apply <root> checkpoints` (or `health`, `double_jump`, `inventory`, `day_timer`, `pause_menu`, `wave_spawner`, `turret`) writes a tested mechanic: its source
 as `src/checkpoints.rs`, its objects into the main scene and a passing scenario;
 add the `mod` line and call it reports to `src/main.rs` (`rusting recipe list`).
 

@@ -67,7 +67,9 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 - In a window, egui keeps the clicks and keys it uses, so they do not reach
   `pressed`. A headless run passes every input to both egui and the game.
 - `rusting.hud` entities with `button: true` are egui buttons too, and work
-  the same way.
+  the same way. `scene.clicked()` names the HUD buttons clicked since the
+  last frame; `rusting recipe apply <root> pause_menu` writes a pause menu
+  built from them.
 - egui blends in sRGB space, as its own backends do, but its color
   constructors premultiply in linear light. `Color32::from_white_alpha(8)`
   and `from_rgba_unmultiplied(255, 255, 255, 8)` are both grey 50, a clear

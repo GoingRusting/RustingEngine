@@ -1292,6 +1292,23 @@ impl GameScene<'_> {
             .held(self.world.resource::<RuntimeInput>(), action)
     }
 
+    /// Names of the HUD buttons (`rusting.hud` with `button` true) clicked
+    /// since the last frame. A click shows here on the frame after it.
+    #[must_use]
+    pub fn clicked(&self) -> Vec<String> {
+        let Some(pressed) = self
+            .world
+            .get_resource::<EventQueue<crate::runtime::HudButtonPressed>>()
+        else {
+            return Vec::new();
+        };
+        pressed
+            .iter()
+            .filter_map(|click| self.world.get::<Name>(click.entity))
+            .map(|name| name.0.clone())
+            .collect()
+    }
+
     /// Cursor position in pixels from the top-left corner of the view, or
     /// `None` before the cursor first enters it.
     #[must_use]
@@ -4592,6 +4609,19 @@ mod tests {
         request_project_window(&mut world, &folder);
         assert_eq!(world.resource::<WindowRequest>().size, Some([1920, 1080]));
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn clicked_names_the_hud_buttons_pressed_last_frame() {
+        let mut world = World::new();
+        assert!(GameScene { world: &mut world }.clicked().is_empty());
+        let button = world.spawn(Name("Resume".into())).id();
+        let mut queue =
+            EventQueue::<crate::runtime::HudButtonPressed>::default();
+        queue.send(crate::runtime::HudButtonPressed { entity: button });
+        queue.begin_frame();
+        world.insert_resource(queue);
+        assert_eq!(GameScene { world: &mut world }.clicked(), ["Resume"]);
     }
 
     #[test]

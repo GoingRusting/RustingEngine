@@ -2738,6 +2738,85 @@ fn platformer_runs_jumps_and_lands_on_tiles() {
 }
 
 #[test]
+fn air_jumps_allow_that_many_jumps_before_landing() {
+    let mut app = App::new();
+    cpu_ground(app.world_mut());
+    let world = app.world_mut();
+    let runner = world
+        .spawn((
+            Transform::new([-3.0, 1.0, 0.0]),
+            PlatformerController {
+                air_jumps: 1,
+                ..PlatformerController::default()
+            },
+        ))
+        .id();
+    let walker = world
+        .spawn((
+            Transform::new([3.0, 1.0, 0.0]),
+            PlayerController {
+                air_jumps: 1,
+                ..PlayerController::default()
+            },
+        ))
+        .id();
+    // (vertical speed, air jumps used, grounded) of both bodies.
+    let state = |app: &App| {
+        let runner = app.world().get::<PlatformerController>(runner).unwrap();
+        let walker = app.world().get::<PlayerController>(walker).unwrap();
+        [
+            (
+                runner.vertical_speed,
+                runner.air_jumps_used,
+                runner.grounded,
+            ),
+            (
+                walker.vertical_speed,
+                walker.air_jumps_used,
+                walker.grounded,
+            ),
+        ]
+    };
+    let press = |app: &mut App| {
+        let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+        input.record_key(KeyCode::Space, false);
+        input.clear_frame_edges();
+        input.record_key(KeyCode::Space, true);
+        run_fixed_steps(app, 1);
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
+        // The press is read after this frame's fixed step; the next one
+        // jumps.
+        run_fixed_steps(app, 1);
+    };
+    run_fixed_steps(&mut app, 90);
+    assert!(state(&app).iter().all(|body| body.2), "{:?}", state(&app));
+
+    // Ground jump, then fall for a while.
+    press(&mut app);
+    run_fixed_steps(&mut app, 40);
+    for (speed, used, grounded) in state(&app) {
+        assert!(speed < 0.0 && !grounded && used == 0, "{:?}", state(&app));
+    }
+    // The air jump rises again and counts as used.
+    press(&mut app);
+    for (speed, used, _) in state(&app) {
+        assert!(speed > 0.0 && used == 1, "{:?}", state(&app));
+    }
+    run_fixed_steps(&mut app, 40);
+    // No air jumps left: a third press keeps falling.
+    press(&mut app);
+    for (speed, used, _) in state(&app) {
+        assert!(speed < 0.0 && used == 1, "{:?}", state(&app));
+    }
+    run_fixed_steps(&mut app, 120);
+    for (_, used, grounded) in state(&app) {
+        assert!(grounded && used == 0, "{:?}", state(&app));
+    }
+}
+
+#[test]
 fn controllers_ride_moving_platforms_and_stop_at_ceilings() {
     let mut app = App::new();
     let world = app.world_mut();
