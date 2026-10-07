@@ -93,6 +93,7 @@ Engine features for the horror game FOREVER BEAR.
 - Cylinder and cone caps show a texture as a disc, a Plane shows the whole texture, and the mesh kit docs say how each primitive maps textures and that children inherit their parent's scale.
 - Invalid-object patch errors name the operation at fault, and a short color says it needs 3 or 4 numbers.
 - `scene.raycast` is about 20% faster without skip classes, and the concepts guide gives the cost per ray.
+- `rusting asset reimport` accepts a path relative to `assets/`, as `asset import --to` names it.
 
 ### Fixed
 

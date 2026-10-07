@@ -614,7 +614,8 @@ pub fn import_asset(
     Ok(report)
 }
 
-/// Replaces an imported asset, found by ID or project-relative path, and
+/// Replaces an imported asset, found by ID or by its path relative to the
+/// project or to `assets/`, and
 /// keeps its ID. The new content comes from `from`, else from the recorded
 /// original when it still exists, else the asset is revalidated in place.
 /// Provenance fields and settings that are given replace the recorded ones.
@@ -849,11 +850,15 @@ fn find_asset(
     asset: &str,
 ) -> Result<(PathBuf, AssetMeta), AssetImportError> {
     let id = Uuid::parse_str(asset).ok();
-    let by_path = project_root.join(asset);
+    // `textures/x.png` works as `import --to textures` names it.
+    let by_path = [
+        project_root.join(asset),
+        project_root.join("assets").join(asset),
+    ];
     metas(project_root)
         .into_iter()
         .filter_map(|(path, meta)| Some((path, meta.ok()?)))
-        .find(|(path, meta)| Some(meta.id) == id || *path == by_path)
+        .find(|(path, meta)| Some(meta.id) == id || by_path.contains(path))
         .ok_or_else(|| AssetImportError::NotFound(asset.to_owned()))
 }
 
@@ -1093,6 +1098,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(imported.path, "assets/ui/incoming.png");
+        // Found by the path `--to` took, relative to assets/, as well.
+        for name in ["assets/ui/incoming.png", "ui/incoming.png"] {
+            let found = find_asset(&root, name).unwrap();
+            assert_eq!(found.1.id, imported.id, "{name}");
+        }
         assert_eq!(imported.reference, "../assets/ui/incoming.png");
         assert_eq!(imported.size, [16, 8], "longest edge scaled to max_size");
         assert_eq!(imported.source.author.as_deref(), Some("Ada"));
