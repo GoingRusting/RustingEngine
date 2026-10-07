@@ -805,6 +805,12 @@ mod tests {
     }
 
     #[test]
+    fn entity_order_effect_on_physics_is_documented() {
+        let (found, _) = search("unrelated scene edit toppled", 50);
+        assert!(found.iter().any(|item| item["id"] == "manual/determinism"));
+    }
+
+    #[test]
     fn when_perf_render_is_filled_is_documented() {
         let (found, _) = search("perf.render cameras null budget", 50);
         assert!(found.iter().any(|item| item["id"] == "manual/concepts"));

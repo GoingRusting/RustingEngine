@@ -98,6 +98,7 @@ Engine features for the horror game FOREVER BEAR.
 - The sides of `Cylinder`, `Cone` and `Capsule` show a texture's full height with its top row at the top, as `Sphere` does. A cylinder side showed only the middle fifth of the image before; a textured capsule was upside down and now appears flipped compared with earlier builds.
 - A scenario `click` with `index` counts copies of a text drawn within 4 px of each other, such as a drop shadow, as one place.
 - The `budgets` schema text no longer says draw and triangle limits need a capture step; it and docs/concepts.md say when `perf.render` is filled.
+- docs/determinism.md explains that an unrelated scene edit can move a chaotic physics result, because bodies solve in `Entity` order.
 
 ### Fixed
 

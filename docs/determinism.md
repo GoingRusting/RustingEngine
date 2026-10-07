@@ -324,6 +324,13 @@ The engine meets `Local` today and does not meet `CrossPlatform` yet:
   body order whatever sweep axis it picks, and solves contacts in that
   order. `PhysicsWorld::gpu_colliders` keeps that order; GPU bodies upload
   sorted by `PhysicsId` slot.
+- Because bodies are solved in `Entity` order, adding, removing or
+  reordering entities in the scene, even ones without bodies, can change
+  which body a contact resolves first. The same scene still replays
+  exactly, but a chaotic result such as where a toppled stack of barrels
+  ends up can move after an unrelated scene edit. Scenario checks on such
+  results should test something robust (distance travelled, fell over,
+  left an area) rather than a final position to a few centimetres.
 - GPU contacts: the grid pass fills hash cells and the fallback list with
   atomics, so which body lands where changes between runs. That never
   changes the result. A body that is not oversized reaches no further than
