@@ -1,0 +1,124 @@
+{
+  "name": "solve: the walls stop the player, and pushing both boxes onto the goals solves the level",
+  "ticks": 60,
+  "steps": [
+    {
+      "tick": 5,
+      "tap": "up"
+    },
+    {
+      "tick": 8,
+      "tap": "up"
+    },
+    {
+      "tick": 10,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": -2.0
+      }
+    },
+    {
+      "tick": 11,
+      "tap": "down"
+    },
+    {
+      "tick": 12,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": -1.0
+      }
+    },
+    {
+      "tick": 14,
+      "tap": "left"
+    },
+    {
+      "tick": 17,
+      "tap": "down"
+    },
+    {
+      "tick": 20,
+      "tap": "down"
+    },
+    {
+      "tick": 23,
+      "tap": "right"
+    },
+    {
+      "tick": 26,
+      "tap": "right"
+    },
+    {
+      "tick": 29,
+      "tap": "right"
+    },
+    {
+      "tick": 32,
+      "tap": "left"
+    },
+    {
+      "tick": 35,
+      "tap": "up"
+    },
+    {
+      "tick": 38,
+      "tap": "up"
+    },
+    {
+      "tick": 41,
+      "tap": "up"
+    },
+    {
+      "tick": 44,
+      "tap": "right"
+    },
+    {
+      "tick": 47,
+      "tap": "down"
+    },
+    {
+      "tick": 50,
+      "tap": "down"
+    },
+    {
+      "tick": 30,
+      "expect": {
+        "counter": "boxes",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 30,
+      "expect": {
+        "entity": "Box 2",
+        "path": "/transform/position/0",
+        "equals": 1.0
+      }
+    },
+    {
+      "tick": 55,
+      "expect": {
+        "counter": "boxes",
+        "equals": 2
+      }
+    },
+    {
+      "tick": 55,
+      "expect": {
+        "entity": "Box 1",
+        "path": "/transform/position/2",
+        "equals": 1.0
+      }
+    },
+    {
+      "tick": 55,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": 0.0
+      }
+    }
+  ]
+}
