@@ -50,6 +50,7 @@ Engine features for the horror game FOREVER BEAR.
 - `project.json` takes `"window": [width, height]`, the window size a game asks for when it runs from the project folder
 - `perf.render.cameras` in a test report also lists each camera screen drawn that frame, with its GPU time, draws and triangles
 - `rusting run --bench FRAMES` measures that many windowed frames after a 60-frame warm-up, closes the game, and reports mean, p50, p95, p99 and max frame time
+- `set_color` and `set_emissive` no longer scan every material or keep one material per eased value; easing 900 objects a tick drops from about 0.5 ms to 0.35 µs a call
 
 ### Fixed
 

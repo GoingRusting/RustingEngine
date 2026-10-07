@@ -1790,6 +1790,10 @@ impl GameScene<'_> {
 
     /// Changes the named object's emitted light (RGB, linear; above 1
     /// glows with bloom). Other objects that shared its material keep theirs.
+    ///
+    /// Cheap enough to ease hundreds of objects every tick: objects given
+    /// the same color share one material, and materials no object shows any
+    /// more are removed.
     pub fn set_emissive(&mut self, name: &str, emissive: [f32; 3]) {
         self.edit_material(name, |material| material.emissive = emissive);
     }
@@ -1882,24 +1886,36 @@ impl GameScene<'_> {
         else {
             return;
         };
-        let Some(mut assets) = self.world.get_resource_mut::<AssetServer>()
-        else {
+        let Some(assets) = self.world.get_resource::<AssetServer>() else {
             return;
         };
         let Some(mut material) = assets.materials.get(handle).cloned() else {
             return;
         };
         edit(&mut material);
-        // ponytail: linear scan of every material; index them by value if
-        // a game recolors thousands of objects per frame.
-        let shared = assets.materials.iter().find_map(|(handle, existing)| {
-            (*existing == material).then_some(handle)
+        let key = material_key(&material);
+        let mut edited = std::mem::take(
+            &mut *self.world.get_resource_or_init::<EditedMaterials>(),
+        );
+        let bucket = edited.by_key.entry(key).or_default();
+        let mut assets = self.world.resource_mut::<AssetServer>();
+        let shared = bucket
+            .iter()
+            .copied()
+            .find(|handle| assets.materials.get(*handle) == Some(&material));
+        let handle = shared.unwrap_or_else(|| {
+            let handle = assets.materials.insert(material);
+            bucket.push(handle);
+            edited.count += 1;
+            handle
         });
-        let handle =
-            shared.unwrap_or_else(|| assets.materials.insert(material));
         if let Some(mut renderer) = self.world.get_mut::<MeshRenderer>(entity) {
             renderer.material = handle;
         }
+        if edited.count >= edited.sweep_at.max(EditedMaterials::FIRST_SWEEP) {
+            edited.sweep(self.world);
+        }
+        self.world.insert_resource(edited);
     }
 
     /// The character in the named `rusting.tile_map` cell under world
@@ -2411,6 +2427,57 @@ struct SceneNameIndex {
     initialized: bool,
 }
 
+/// Materials made by [`GameScene::set_color`] and its siblings, by value, so
+/// equal edits share one asset without searching every material. Easing a
+/// color makes a new material each tick; [`Self::sweep`] removes the ones
+/// no object shows any more.
+#[derive(Resource, Clone, Default)]
+struct EditedMaterials {
+    by_key:
+        HashMap<u64, Vec<crate::assets::Handle<crate::assets::MaterialAsset>>>,
+    /// Materials in `by_key`.
+    count: usize,
+    /// Sweep when `count` reaches this.
+    sweep_at: usize,
+}
+
+impl EditedMaterials {
+    const FIRST_SWEEP: usize = 1024;
+
+    /// Removes edited materials that no mesh renderer uses. Runs when the
+    /// count doubles, so it costs O(1) per edit on average.
+    fn sweep(&mut self, world: &mut World) {
+        let used: HashSet<_> = world
+            .query::<&MeshRenderer>()
+            .iter(world)
+            .map(|renderer| renderer.material)
+            .collect();
+        let mut assets = world.resource_mut::<AssetServer>();
+        for bucket in self.by_key.values_mut() {
+            bucket.retain(|handle| {
+                used.contains(handle)
+                    || assets.materials.remove(*handle).is_err()
+            });
+        }
+        self.by_key.retain(|_, bucket| !bucket.is_empty());
+        self.count = self.by_key.values().map(Vec::len).sum();
+        self.sweep_at = (self.count * 2).max(Self::FIRST_SWEEP);
+    }
+}
+
+/// A hash of the material fields edits change, for [`EditedMaterials`].
+fn material_key(material: &crate::assets::MaterialAsset) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    material.name.hash(&mut hasher);
+    for value in material.base_color.iter().chain(&material.emissive) {
+        value.to_bits().hash(&mut hasher);
+    }
+    material.base_color_texture.hash(&mut hasher);
+    material.emissive_texture.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Builds the fast name index once after a scene is loaded.
 fn ensure_scene_name_index(world: &mut World) {
     if world
@@ -2630,6 +2697,7 @@ impl Plugin for SimpleGamePlugin {
         app.register_snapshot_component::<GameUpdateFunction>()
             .register_snapshot_component::<GameOnceState>()
             .register_snapshot_component::<SceneNameIndex>()
+            .ignore_in_snapshots::<EditedMaterials>()
             .register_snapshot_component::<SphereMeshCache>();
         Ok(())
     }
@@ -4775,6 +4843,49 @@ mod tests {
         };
         assert_eq!(material(&mut scene, "A"), material(&mut scene, "B"));
         assert_eq!(count(scene.world), before + 2);
+    }
+
+    #[test]
+    fn easing_many_colors_keeps_the_material_count_bounded() {
+        let mut app = crate::App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        let world = app.world_mut();
+        let (mesh, material) = {
+            let assets = world.resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        for index in 0..4000 {
+            world.spawn((
+                Name(format!("Bear {index}")),
+                Transform::default(),
+                MeshRenderer {
+                    mesh,
+                    material,
+                    cast_shadows: true,
+                    receive_shadows: true,
+                },
+            ));
+        }
+        let mut scene = GameScene { world };
+        let names: Vec<String> =
+            (0..900).map(|index| format!("Bear {index}")).collect();
+        let start = Instant::now();
+        for tick in 0..20 {
+            for (index, name) in names.iter().enumerate() {
+                let glow = (tick * 900 + index) as f32 * 1e-4;
+                scene.set_emissive(name, [glow, 0.0, 0.0]);
+            }
+        }
+        let per_call = start.elapsed() / (20 * 900);
+        eprintln!("set_emissive: {per_call:?} per call");
+        // 18,000 distinct colors, of which only the last 900 are on screen.
+        let materials = scene.world.resource::<AssetServer>().materials.len();
+        assert!(materials < 4000, "{materials} materials kept");
+        let entity = find_named_entity(scene.world, "Bear 899").unwrap();
+        let handle = scene.world.get::<MeshRenderer>(entity).unwrap().material;
+        let assets = scene.world.resource::<AssetServer>();
+        let glow = (19.0 * 900.0 + 899.0) * 1e-4;
+        assert_eq!(assets.materials.get(handle).unwrap().emissive[0], glow);
     }
 
     #[test]
