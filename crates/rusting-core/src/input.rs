@@ -319,6 +319,26 @@ impl RuntimeInput {
     /// Clears this frame's edge sets. Runtime integrations call this once per
     /// rendered frame after gameplay systems have read them, so the next frame
     /// starts empty.
+    /// Adds the edge sets, press times and mouse motion of `earlier`, an
+    /// earlier frame, to this one, so presses from frames that ran no fixed
+    /// tick reach the next tick.
+    pub fn merge_frame_edges(&mut self, earlier: &Self) {
+        self.keys_just_pressed.extend(&earlier.keys_just_pressed);
+        self.keys_just_released.extend(&earlier.keys_just_released);
+        self.mouse_just_pressed.extend(&earlier.mouse_just_pressed);
+        self.mouse_just_released
+            .extend(&earlier.mouse_just_released);
+        self.pad_just_pressed.extend(&earlier.pad_just_pressed);
+        self.pad_just_released.extend(&earlier.pad_just_released);
+        let later = std::mem::replace(
+            &mut self.press_ticks,
+            earlier.press_ticks.clone(),
+        );
+        self.press_ticks.extend(later);
+        self.mouse_motion[0] += earlier.mouse_motion[0];
+        self.mouse_motion[1] += earlier.mouse_motion[1];
+    }
+
     pub fn clear_frame_edges(&mut self) {
         self.keys_just_pressed.clear();
         self.keys_just_released.clear();

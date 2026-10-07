@@ -1166,7 +1166,9 @@ impl GameScene<'_> {
             .unwrap_or_default()
     }
 
-    /// True on the frame `action` was pressed. Actions come from
+    /// True on the frame `action` was pressed; inside a tick function (see
+    /// [`run_game_with_tick`]), true on the first tick after the press, even
+    /// when frames without a tick came between. Actions come from
     /// `rusting.input_action` components, the built-in `player.*` actions,
     /// or [`crate::runtime::ActionMap`] bindings made in code.
     #[must_use]
@@ -2683,17 +2685,39 @@ pub type GameUpdate = for<'world> fn(&mut GameScene<'world>, &FrameTime);
 #[derive(Resource, Clone, Copy)]
 struct GameUpdateFunction(GameUpdate);
 
+/// Tick function stored inside the ECS world.
+#[derive(Resource, Clone, Copy)]
+struct GameTickFunction(GameUpdate);
+
+/// Input edges from frames that ran no fixed tick, held for the next tick
+/// so [`GameScene::pressed`] inside a tick function misses no press.
+#[derive(Resource, Clone, Default)]
+struct TickInput {
+    pending: RuntimeInput,
+    /// A tick already ran this frame and took the pending edges.
+    ticked: bool,
+}
+
 /// Installs the easy game update function into the normal ECS schedule.
 #[derive(Clone, Copy)]
 struct SimpleGamePlugin {
     /// User function called once per rendered frame.
     update: GameUpdate,
+    /// User function called once per fixed tick, before the frame's update.
+    tick: Option<GameUpdate>,
 }
 
 impl Plugin for SimpleGamePlugin {
     fn build(&self, app: &mut App) -> Result<(), AppError> {
         app.insert_resource(GameUpdateFunction(self.update));
         app.add_system(ScheduleStage::Update, run_simple_game_update);
+        if let Some(tick) = self.tick {
+            app.insert_resource(GameTickFunction(tick));
+            app.insert_resource(TickInput::default());
+            app.add_system(ScheduleStage::FixedUpdate, run_simple_game_tick);
+            app.register_snapshot_component::<GameTickFunction>()
+                .register_snapshot_component::<TickInput>();
+        }
         app.register_snapshot_component::<GameUpdateFunction>()
             .register_snapshot_component::<GameOnceState>()
             .register_snapshot_component::<SceneNameIndex>()
@@ -2708,6 +2732,38 @@ fn run_simple_game_update(world: &mut World) {
     let time = *world.resource::<FrameTime>();
     let update = world.resource::<GameUpdateFunction>().0;
     update(&mut GameScene { world }, &time);
+    let input = world.resource::<RuntimeInput>().clone();
+    if let Some(mut state) = world.get_resource_mut::<TickInput>() {
+        if !state.ticked {
+            state.pending.merge_frame_edges(&input);
+        }
+        state.ticked = false;
+    }
+}
+
+/// Runs the game's tick function with this tick's input: the first tick of
+/// a frame sees every press since the last tick, later ticks of the same
+/// frame see none.
+fn run_simple_game_tick(world: &mut World) {
+    let time = *world.resource::<FrameTime>();
+    let tick = world.resource::<GameTickFunction>().0;
+    let mut input = world.resource::<RuntimeInput>().clone();
+    let mut state = world.resource_mut::<TickInput>();
+    if state.ticked {
+        input.clear_frame_edges();
+    } else {
+        input.merge_frame_edges(&std::mem::take(&mut state.pending));
+        state.ticked = true;
+    }
+    let mut frame =
+        std::mem::replace(&mut *world.resource_mut::<RuntimeInput>(), input);
+    tick(&mut GameScene { world }, &time);
+    // ponytail: only cursor capture carries back from the tick's input copy;
+    // carry more fields if tick code starts changing input state.
+    frame.set_cursor_captured(
+        world.resource::<RuntimeInput>().cursor_captured(),
+    );
+    *world.resource_mut::<RuntimeInput>() = frame;
 }
 
 /// What a code reload carries from the old game process to the new one.
@@ -3949,7 +4005,31 @@ pub fn run_game(
     run_project(
         "RustingEngine Game",
         scene_path,
-        SimpleGamePlugin { update },
+        SimpleGamePlugin { update, tick: None },
+    )
+}
+
+/// Runs a cooked scene with a per-frame update and a per-fixed-tick
+/// function. Put game state that must step once per tick in `tick`, and
+/// drawing (HUD, egui) in `update`.
+///
+/// # Arguments
+/// * `scene_path` - Path to cooked `.rscene.bin` data.
+/// * `update` - Function called once per rendered frame, after its ticks.
+/// * `tick` - Function called once per fixed tick. [`GameScene::pressed`]
+///   there is true for a press made since the previous tick.
+pub fn run_game_with_tick(
+    scene_path: impl Into<PathBuf>,
+    update: GameUpdate,
+    tick: GameUpdate,
+) -> GameResult {
+    run_project(
+        "RustingEngine Game",
+        scene_path,
+        SimpleGamePlugin {
+            update,
+            tick: Some(tick),
+        },
     )
 }
 
@@ -3981,6 +4061,18 @@ pub fn resolve_game_scene_path(
 macro_rules! rusting_game {
     ($update:path) => {
         $crate::rusting_game!("build/main.rscene.bin", $update);
+    };
+    ($update:path, tick: $tick:path) => {
+        $crate::rusting_game!("build/main.rscene.bin", $update, tick: $tick);
+    };
+    ($scene:literal, $update:path, tick: $tick:path) => {
+        fn main() -> $crate::project_runner::GameResult {
+            let scene = $crate::project_runner::resolve_game_scene_path(
+                $scene,
+                env!("CARGO_MANIFEST_DIR"),
+            );
+            $crate::project_runner::run_game_with_tick(scene, $update, $tick)
+        }
     };
     ($scene:literal, $update:path) => {
         fn main() -> $crate::project_runner::GameResult {
@@ -4064,6 +4156,54 @@ mod tests {
     }
 
     #[test]
+    fn a_tick_function_sees_a_press_from_a_frame_without_a_tick() {
+        use crate::runtime::{InputBinding, KeyCode};
+        use std::time::Duration;
+        static TICKS: AtomicU32 = AtomicU32::new(0);
+        static PRESSES: AtomicU32 = AtomicU32::new(0);
+        fn idle(_: &mut GameScene<'_>, _: &FrameTime) {}
+        fn tick(scene: &mut GameScene<'_>, _: &FrameTime) {
+            TICKS.fetch_add(1, Ordering::Relaxed);
+            if scene.pressed("fire") {
+                PRESSES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let mut app = App::new();
+        app.add_plugin(SimpleGamePlugin {
+            update: idle,
+            tick: Some(tick),
+        })
+        .unwrap();
+        app.world_mut()
+            .resource_mut::<crate::runtime::ActionMap>()
+            .bind("fire", InputBinding::Key(KeyCode::KeyF));
+        let step = app
+            .world()
+            .resource::<crate::runtime::TimeControl>()
+            .fixed_delta;
+        let frame = |app: &mut App, delta: Duration, press: bool| {
+            let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+            input.record_key(KeyCode::KeyF, press);
+            app.update_exact(delta).unwrap();
+            app.world_mut()
+                .resource_mut::<RuntimeInput>()
+                .clear_frame_edges();
+        };
+        // A fast frame with the press runs no tick; the next frame runs
+        // three. Only the first of the three sees the press.
+        frame(&mut app, step / 4, true);
+        assert_eq!(TICKS.load(Ordering::Relaxed), 0);
+        frame(&mut app, step * 3, false);
+        assert_eq!(TICKS.load(Ordering::Relaxed), 3);
+        assert_eq!(PRESSES.load(Ordering::Relaxed), 1);
+        // A press on a frame that ticks counts once too.
+        frame(&mut app, step, true);
+        frame(&mut app, step, false);
+        assert_eq!(TICKS.load(Ordering::Relaxed), 5);
+        assert_eq!(PRESSES.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn headless_simulation_runs_exact_ticks_from_a_cooked_scene() {
         let directory = std::env::temp_dir()
             .join(format!("rusting-headless-{}", uuid::Uuid::new_v4()));
@@ -4084,7 +4224,10 @@ mod tests {
         fn idle(_: &mut GameScene<'_>, _: &FrameTime) {}
         let (mut runtime, report) = simulate_project_headless(
             &cooked,
-            SimpleGamePlugin { update: idle },
+            SimpleGamePlugin {
+                update: idle,
+                tick: None,
+            },
             30,
         )
         .unwrap();
@@ -4160,6 +4303,7 @@ mod tests {
             })?;
             app.add_plugin(SimpleGamePlugin {
                 update: self.update,
+                tick: None,
             })?;
             app.add_system(ScheduleStage::Startup, |world: &mut World| {
                 world.spawn((

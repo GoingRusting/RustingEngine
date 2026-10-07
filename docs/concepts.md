@@ -66,6 +66,12 @@ A game's `main.rs` picks one of two entry points:
   `GameScene`. Find objects by name, move and rotate them, spawn cubes and
   spheres, turn on GPU physics for a class, and read GPU events. Good for
   small games and procedural setup. See [Tutorial 1](tutorials/01-hello-cube.md).
+- **`rusting_game!(update, tick: tick)`**: the same, plus `tick` called
+  once per fixed tick before the frame's `update`. Step game state (timers,
+  AI, rules) in `tick` and draw the HUD in `update`. Inside `tick`,
+  `scene.pressed(action)` is true on the first tick after the press, even
+  at 144 Hz when most frames run no tick; later ticks of the same frame see
+  no press.
 - **A `Plugin` passed to `run_project`**: normal ECS systems (the engine uses
   `bevy_ecs`) with queries, resources, input actions, and your own
   components saved in scenes. See [Tutorial 3](tutorials/03-gameplay-plugin.md).
@@ -306,6 +312,12 @@ Systems run in stages: `Startup`, `FixedUpdate` (once per tick), `Update`
 that must replay identically runs in `FixedUpdate` and reads
 `FrameTime::fixed_delta`. Visual effects and per-frame input handling run in
 `Update` and read `FrameTime::delta`.
+
+`scene.pressed` in a plain `update` is true for one frame. A frame can
+run no tick or several, so game code that steps state per tick inside
+`update` misses presses on fast displays; use the `tick:` function of
+`rusting_game!` instead. Scenarios run one tick per frame and do not show
+the problem.
 
 `FrameTime` also holds `elapsed` game time, `fixed_tick` (ticks completed),
 and `frame`. `TimeControl` pauses, steps, and scales time.

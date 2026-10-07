@@ -56,6 +56,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting test --keep-going` runs every step after a failed check, and the failure message lists every failed step
 - The audio guide says which sound loses when a bus is full: priority within that bus only, then the quietest after distance and occlusion, ties replacing the oldest
 - `rusting test` reports `perf.render.gpu_ms_p50`, `gpu_ms_p95`, `gpu_ms_max` and `gpu_frames` over every offscreen frame, for GPU timing without a window
+- `rusting_game!(update, tick: tick)` adds a function called once per fixed tick; `scene.pressed` inside it sees presses made on frames that ran no tick (`run_game_with_tick` for custom scene paths)
 
 ### Fixed
 
