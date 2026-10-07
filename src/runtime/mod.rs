@@ -427,6 +427,12 @@ impl App {
         Ok(self)
     }
 
+    /// Runs `system` at the start of every frame, before the fixed steps.
+    pub fn add_frame_start(&mut self, system: fn(&mut World)) -> &mut Self {
+        self.event_maintenance.push(system);
+        self
+    }
+
     pub fn add_event<T: Send + Sync + 'static>(&mut self) -> &mut Self {
         if !self.world.contains_resource::<EventQueue<T>>() {
             self.world.insert_resource(EventQueue::<T>::default());

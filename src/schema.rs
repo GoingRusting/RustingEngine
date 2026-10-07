@@ -763,6 +763,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"trauma": 0.0, "decay": 1.5, "max_offset": [0.3, 0.3, 0.0], "max_roll": 0.05, "frequency": 12.0}),
     },
     ComponentSection {
+        key: "rusting.spawn_grid",
+        summary: "Bulk spawn. When the game starts or a scene loads, the object is copied with its children onto a grid of count cells (X, Y, Z, original included) spacing meters apart along positive local axes; copies are named \"<name>#<n>\" from 1. A 40 by 25 by 40 grid makes a 40,000-ball pit from one authored ball. Runs in a running game only, not in the editor, and the component is removed once used.",
+        gpu: NO_GPU,
+        example: || json!({"count": [10, 1, 10], "spacing": [0.5, 0.5, 0.5]}),
+    },
+    ComponentSection {
         key: "rusting.squash",
         summary: "Squash and stretch spring. Game code calls squash(name, amount) on a landing or hit (positive flattens, negative stretches, -0.8 to 0.8); the object's Transform scale wobbles back to rest keeping its volume. Colliders scale too, so put it on a visible child, not the physics body.",
         gpu: NO_GPU,

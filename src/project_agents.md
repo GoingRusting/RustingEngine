@@ -83,8 +83,10 @@ command takes `--json` for output a program can read.
   `rusting.sound_cue`, `rusting.burst_emitter`, `rusting.player_controller`,
   `rusting.joint`, `rusting.camera_shake` (shake a camera with
   `scene.add_trauma("Camera", 0.5)`), `rusting.squash` (wobble a visible
-  child with `scene.squash("Body", 0.4)`). Components with `requires` wait for
-  that counter to reach its target.
+  child with `scene.squash("Body", 0.4)`), `rusting.spawn_grid` (copy an
+  object onto a grid at game start, for example `{"count":[10,1,10],
+  "spacing":[0.5,0.5,0.5]}`; copies are named `Ball#1`, `Ball#2`, ...).
+  Components with `requires` wait for that counter to reach its target.
 - Quads are one-sided: a sprite turned more than 90 degrees about Y
   disappears. Animate 2D sprites with a `Scale` tween instead.
 - Player and platformer controllers ride moving platforms (kinematic bodies

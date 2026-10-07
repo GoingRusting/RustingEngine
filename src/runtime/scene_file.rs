@@ -1088,6 +1088,8 @@ pub const AUTO_SIMULATION_COMPONENT: &str = "rusting.auto_simulation";
 pub const PLAYER_CONTROLLER_COMPONENT: &str = "rusting.player_controller";
 /// Registry name of the built-in transform tween.
 pub const TWEEN_COMPONENT: &str = "rusting.tween";
+/// Registry name of the built-in bulk spawn grid.
+pub const SPAWN_GRID_COMPONENT: &str = "rusting.spawn_grid";
 /// Registry name of the built-in squash and stretch spring.
 pub const SQUASH_COMPONENT: &str = "rusting.squash";
 /// Registry name of the built-in camera trauma shake.
@@ -1184,6 +1186,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Squash>(SQUASH_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::SpawnGrid>(SPAWN_GRID_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::BurstEmitter>(BURST_EMITTER_COMPONENT)

@@ -16,8 +16,8 @@ use crate::runtime::{
     PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
     PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
     RenderSettings, SceneBackground, SceneInstance, ShadowQuality, SkyLight,
-    SoundCue, Squash, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
-    TweenProperty, TweenRepeat, WaterBody,
+    SoundCue, SpawnGrid, Squash, TileKind, TileMap, ToneMapper, ToneMapping,
+    Tween, TweenProperty, TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -273,6 +273,13 @@ crate::reflect! {
         max_offset: [f32; 3] { unit: "m", doc: "along the camera's right, up and back axes" },
         max_roll: f32 { unit: "rad", min: 0.0 },
         frequency: f32 { unit: "Hz", min: 0.0 },
+    }
+}
+
+crate::reflect! {
+    struct SpawnGrid {
+        count: [u32; 3] { unit: "cells", doc: "along X, Y and Z, original included" },
+        spacing: [f32; 3] { unit: "m" },
     }
 }
 

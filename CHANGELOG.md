@@ -125,6 +125,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting lint` warns `LINT_LIGHT_BUDGET` for each visible light past the scene quality's light budget (Eco 16, Balanced 32, High and Auto 64), which the renderer drops.
 - `GameScene::count_gpu_bodies_in_box(class, min, max)` counts the GPU bodies of an object class inside a box, from their latest `request_gpu_class_snapshot` mirrors.
 - `rusting asset generate <root> sfx "coin 7"` synthesizes a seeded sfxr-style sound (jump, coin, hit, explosion, laser, powerup or blip) and imports it as a CC0 WAV, with no hook to set up.
+- `rusting.spawn_grid` copies an object and its children onto a grid when the game starts, so a scene can hold hundreds of balls without game code.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

@@ -279,6 +279,31 @@ impl CameraShake {
     }
 }
 
+/// Bulk spawn: a scene object with this component is copied, children and
+/// all, onto a grid of `count` cells `spacing` apart when the game starts
+/// (or a scene loads), so a ball pit or a crowd needs one authored object
+/// instead of thousands. The original fills cell 0, 0, 0; copies go along
+/// positive local X, Y and Z and are named `"<name>#<n>"` from 1. Copies
+/// are made in a running game only, never in the editor, and the component
+/// is removed once used, so a saved state does not copy again.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpawnGrid {
+    /// Cells along X, Y and Z, original included.
+    pub count: [u32; 3],
+    /// Distance between cells along X, Y and Z, in meters.
+    pub spacing: [f32; 3],
+}
+
+impl Default for SpawnGrid {
+    fn default() -> Self {
+        Self {
+            count: [1; 3],
+            spacing: [1.0; 3],
+        }
+    }
+}
+
 /// Squash and stretch: game code calls `scene.squash(name, amount)` on a
 /// landing or hit, and a damped spring wobbles the object's `Transform`
 /// scale back to rest, keeping its volume. Positive amounts flatten it,

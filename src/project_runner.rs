@@ -2961,6 +2961,7 @@ impl Plugin for SimpleGamePlugin {
                 message: error.to_string(),
             })?;
         }
+        app.add_frame_start(expand_spawn_grids);
         app.insert_resource(GameUpdateFunction(self.update));
         app.add_system(ScheduleStage::Update, run_simple_game_update);
         if let Some(tick) = self.tick {
@@ -2976,6 +2977,57 @@ impl Plugin for SimpleGamePlugin {
             .ignore_in_snapshots::<EditedMaterials>()
             .register_snapshot_component::<SphereMeshCache>();
         Ok(())
+    }
+}
+
+/// Copies each `rusting.spawn_grid` object onto its grid, in spawn order,
+/// and removes the component so it copies once.
+fn expand_spawn_grids(world: &mut World) {
+    use crate::runtime::SpawnGrid;
+    let mut grids: Vec<_> = world
+        .query::<(Entity, &SpawnGrid)>()
+        .iter(world)
+        .map(|(entity, grid)| (entity, *grid))
+        .collect();
+    if grids.is_empty() {
+        return;
+    }
+    grids.sort_by_key(|(entity, _)| entity.index());
+    for (template, grid) in grids {
+        world.entity_mut(template).remove::<SpawnGrid>();
+        let name = world.get::<Name>(template).map(|name| name.0.clone());
+        let origin = world
+            .get::<Transform>(template)
+            .map_or([0.0; 3], |transform| transform.position);
+        let parent = world.get::<crate::runtime::Parent>(template).map(|p| p.0);
+        let [nx, ny, nz] = grid.count;
+        let mut index = 0;
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    if [x, y, z] == [0; 3] {
+                        continue;
+                    }
+                    index += 1;
+                    let copy_name =
+                        name.as_ref().map(|name| format!("{name}#{index}"));
+                    let copy = copy_tree(world, template, copy_name.as_deref());
+                    if let Some(mut transform) =
+                        world.get_mut::<Transform>(copy)
+                    {
+                        for (axis, cell) in [x, y, z].into_iter().enumerate() {
+                            transform.position[axis] =
+                                origin[axis] + cell as f32 * grid.spacing[axis];
+                        }
+                    }
+                    if let Some(parent) = parent {
+                        let _ = rusting_core::hierarchy::set_parent(
+                            world, copy, parent,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5915,6 +5967,42 @@ mod tests {
             world: app.world_mut(),
         };
         scene.spawn_copy("Ember", "Copy", [0.0; 3]);
+    }
+
+    #[test]
+    fn spawn_grids_copy_the_tree_onto_cells_once() {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let pit = world.spawn((Name("Pit".into()), Transform::default())).id();
+        let ball = world
+            .spawn((
+                crate::runtime::SceneId::new(),
+                Name("Ball".into()),
+                Transform::new([1.0, 2.0, 0.0]),
+                crate::runtime::SpawnGrid {
+                    count: [3, 2, 1],
+                    spacing: [0.5, 1.0, 9.0],
+                },
+            ))
+            .id();
+        let shine = world
+            .spawn((Name("Shine".into()), Transform::default()))
+            .id();
+        rusting_core::hierarchy::set_parent(world, shine, ball).unwrap();
+        rusting_core::hierarchy::set_parent(world, ball, pit).unwrap();
+        expand_spawn_grids(world);
+        expand_spawn_grids(world);
+        let mut scene = GameScene { world };
+        assert_eq!(scene.object("Ball").position(), [1.0, 2.0, 0.0]);
+        assert_eq!(scene.object("Ball#2").position(), [2.0, 2.0, 0.0]);
+        assert_eq!(scene.object("Ball#5").position(), [2.0, 3.0, 0.0]);
+        assert!(scene.try_object("Ball#6").is_none(), "copied once");
+        assert!(scene.try_object("Ball#5/Shine").is_some());
+        let copy = scene.object("Ball#3").entity();
+        let world = app.world();
+        assert_eq!(world.get::<crate::runtime::Parent>(copy).unwrap().0, pit);
+        assert!(world.get::<crate::runtime::SpawnGrid>(copy).is_none());
+        assert!(world.get::<crate::runtime::SpawnGrid>(ball).is_none());
     }
 
     #[test]
