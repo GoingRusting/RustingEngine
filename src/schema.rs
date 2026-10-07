@@ -271,7 +271,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "inspect",
         usage: "inspect [project-root] --tick N [--entity NAME]... [--limit N] [--fields a,b] [--summary] [--json]",
-        summary: "Cook and build the game, run it without a window to tick N, and report the scene form of each named entity after that tick's update: transform, components and counters. With no `--entity`, reports every named entity of the main scene. Entities that do not exist at that tick are null.",
+        summary: "Cook and build the game, run it without a window to tick N, and report the scene form of each named entity after that tick's update: transform, components and counters. With no `--entity`, reports every named entity of the main scene. Entities that do not exist at that tick are null. A player or platformer controller also gets `feel`: top and sprint speed, time to top speed, stopping distance, air control, jump apex height and time, air time and jump distance in metres and seconds, the genre ranges they are compared with, and `notes` for numbers outside them.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder"), ("--entity", "every named entity")],
         example: "inspect my_game --tick 120 --entity Player --json",

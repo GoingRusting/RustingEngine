@@ -2369,9 +2369,93 @@ pub fn inspect_tick(root: &Path, tick: u32, entities: &[String]) -> CliResult {
             .zip(&names)
             .map(|(step, name)| (name.clone(), step["actual"].clone()))
             .collect();
+        let mut state = state;
+        for entity in state.values_mut() {
+            if let Some(feel) = controller_feel(&entity["components"]) {
+                entity["feel"] = feel;
+            }
+        }
         result.data = json!({"tick": tick, "entities": state});
     }
     result
+}
+
+/// Jump and run numbers in physical units for a player or platformer
+/// controller in an entity's `components`, with `notes` naming any number
+/// outside its genre range. Both controllers set their speed directly, so
+/// top speed takes one fixed step, stopping is instant and air control is
+/// full.
+fn controller_feel(components: &Value) -> Option<Value> {
+    use crate::runtime::{
+        PlatformerController, PlayerController,
+        PLATFORMER_CONTROLLER_COMPONENT, PLAYER_CONTROLLER_COMPONENT,
+    };
+    // ponytail: rough ranges read off common games, not measured
+    // studies; (top speed m/s, jump apex m, air time s).
+    let (genre, speed, jump, gravity, sprint, ranges) = if let Some(value) =
+        components.get(PLAYER_CONTROLLER_COMPONENT)
+    {
+        let c: PlayerController = serde_json::from_value(value.clone()).ok()?;
+        let ranges = [[3.0, 8.0], [0.4, 1.6], [0.4, 1.2]];
+        let sprint = c.walk_speed * c.sprint_multiplier;
+        (
+            "first or third person",
+            c.walk_speed,
+            c.jump_speed,
+            c.gravity,
+            Some(sprint),
+            ranges,
+        )
+    } else {
+        let value = components.get(PLATFORMER_CONTROLLER_COMPONENT)?;
+        let c: PlatformerController =
+            serde_json::from_value(value.clone()).ok()?;
+        let ranges = [[4.0, 12.0], [1.0, 5.0], [0.5, 1.2]];
+        (
+            "2D platformer",
+            c.run_speed,
+            c.jump_speed,
+            c.gravity,
+            None,
+            ranges,
+        )
+    };
+    let apex_s = if gravity > 0.0 {
+        jump / gravity
+    } else {
+        f32::INFINITY
+    };
+    let apex_m = jump * apex_s / 2.0;
+    let air_s = 2.0 * apex_s;
+    let mut notes = Vec::new();
+    for ((label, value), [low, high]) in [
+        ("top speed (m/s)", speed),
+        ("jump apex (m)", apex_m),
+        ("air time (s)", air_s),
+    ]
+    .into_iter()
+    .zip(ranges)
+    {
+        if !(low..=high).contains(&value) {
+            notes.push(format!(
+                "{label} {value:.2} is outside the {genre} range {low} to {high}"
+            ));
+        }
+    }
+    Some(json!({
+        "genre": genre,
+        "top_speed_m_s": speed,
+        "sprint_speed_m_s": sprint,
+        "time_to_top_speed_s": crate::runtime::FrameTime::default().fixed_delta.as_secs_f32(),
+        "stopping_distance_m": 0.0,
+        "air_control": 1.0,
+        "jump_apex_m": apex_m,
+        "jump_apex_s": apex_s,
+        "air_time_s": air_s,
+        "jump_distance_m": speed * air_s,
+        "ranges": {"top_speed_m_s": ranges[0], "jump_apex_m": ranges[1], "air_time_s": ranges[2]},
+        "notes": notes,
+    }))
 }
 
 /// Validates the project and compiles it with the debug build that `run`
@@ -4038,6 +4122,24 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         assert_eq!(hints[0].line, Some(12));
         assert_eq!(hints[0].file.as_deref(), Some(Path::new("/p/src/main.rs")));
         assert!(hints[1].message.contains("rusting docs search"));
+    }
+
+    #[test]
+    fn controller_feel_reports_jump_and_speed_in_physical_units() {
+        // Default player: 5 m/s jump under 9.81 m/s2 peaks at 1.27 m.
+        let feel =
+            controller_feel(&json!({"rusting.player_controller": {}})).unwrap();
+        assert!((feel["jump_apex_m"].as_f64().unwrap() - 1.274).abs() < 0.01);
+        assert!((feel["air_time_s"].as_f64().unwrap() - 1.019).abs() < 0.01);
+        assert_eq!(feel["notes"], json!([]), "{feel}");
+        // A moon jump and a crawl fall outside the platformer ranges.
+        let feel = controller_feel(&json!({"rusting.platformer_controller":
+            {"run_speed": 2.0, "jump_speed": 20.0, "gravity": 10.0}}))
+        .unwrap();
+        assert_eq!(feel["jump_apex_m"], json!(20.0));
+        assert_eq!(feel["jump_distance_m"], json!(8.0));
+        assert_eq!(feel["notes"].as_array().unwrap().len(), 3, "{feel}");
+        assert!(controller_feel(&json!({})).is_none());
     }
 
     #[test]
