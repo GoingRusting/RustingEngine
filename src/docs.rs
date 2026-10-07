@@ -762,6 +762,17 @@ mod tests {
     }
 
     #[test]
+    fn level_of_detail_is_found_by_its_usual_names() {
+        for query in ["lod", "level of detail", "rlod"] {
+            let (found, _) = search(query, 50);
+            assert!(
+                found.iter().any(|item| item["id"] == "guide/look-and-feel"),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
     fn budget_cuts_at_a_line_and_the_brief_fits_it() {
         let (cut, truncated) = within_budget("aaaa\nbbbb\ncccc\n", 3);
         assert!(truncated);

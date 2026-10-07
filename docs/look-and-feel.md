@@ -238,6 +238,32 @@ with `cargo run --release --example render_bench -- balanced --no-bodies
 per-instance custom value yet; give a copy that must look different its own
 material.
 
+### Level of detail (LOD)
+
+A crowd seen from far away does not need its full mesh. Put a `.rlod` file
+beside the `.rmesh` the objects use, with the same name (`bear.mesh-0-0.rlod`
+next to `bear.mesh-0-0.rmesh`), and every object drawing that mesh picks one
+level per frame. Mesh paths are relative to the `.rlod` file:
+
+```json
+{"metric": "Distance", "levels": [
+  {"mesh": "bear.mesh-0-0.rmesh", "until": 8},
+  {"mesh": "bear_low.mesh-0-0.rmesh", "until": 30},
+  {"mesh": "bear_far.mesh-0-0.rmesh"}
+]}
+```
+
+With `"metric": "Distance"` a level draws while the camera is closer than
+its `until`, in metres. The default metric, `"ScreenSize"`, uses the
+fraction of the view height the object covers instead, so a level draws while
+it covers at least `until` (0.5 is half the screen); it keeps the same look
+when the field of view changes. A level without `until` draws at any range;
+give the last level an `until` to stop drawing the object past it. Make the
+coarser meshes with `rusting scene add-model` from a lower-poly glTF, or with
+your own generator. The scene does not change: the group loads with the mesh,
+and an exported game carries it in `assets/`. Edit the `.rlod` and reload the
+scene to retune it.
+
 To measure your own game in its real window, run it with `RUSTING_PERF=1`
 (for example `RUSTING_PERF=1 rusting run --release`). Once a second it
 prints a `[rusting] perf` line with the frame rate, the p50, p95, p99 and

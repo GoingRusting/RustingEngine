@@ -463,6 +463,9 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
   Close other GPU programs first: a second game instance halves the numbers.
 - Objects with the same mesh and textures share one draw whatever their
   colors, so give many props one texture set instead of many textured ones.
+- Level of detail: a `.rlod` file beside a `.rmesh` (same name) lists
+  coarser meshes and the distance or screen size where each takes over;
+  every object drawing that mesh uses it (`guide/look-and-feel`).
 - Materials rougher than 0.5 skip screen-space reflections. If no surface
   needs a mirror-like look, call `scene.set_reflections(false)` at startup:
   it removes the scene copy, mip chain and depth pyramid passes.
