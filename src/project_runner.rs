@@ -4972,6 +4972,36 @@ mod tests {
     }
 
     #[test]
+    fn an_export_layout_finds_its_assets_next_to_project_json() {
+        // What `rusting export` writes: no Cargo.toml, the cooked scene
+        // under `build/`, `project.json` and `assets/` at the top.
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-export-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("main.rscene");
+        let cooked = directory.join("build/main.rscene.bin");
+        std::fs::create_dir_all(directory.join("build")).unwrap();
+        std::fs::write(directory.join("project.json"), "{}").unwrap();
+        let mut editor = App::new();
+        editor.add_plugin(AssetPlugin).unwrap();
+        crate::runtime::save_scene(editor.world_mut(), &source, "main")
+            .unwrap();
+        crate::runtime::cook_scene(&source, &cooked).unwrap();
+        fn idle(_: &mut GameScene<'_>, _: &FrameTime) {}
+        let (runtime, _) = simulate_project_headless(
+            &cooked,
+            SimpleGamePlugin {
+                update: idle,
+                tick: None,
+                components: None,
+            },
+            1,
+        )
+        .unwrap();
+        assert_eq!(runtime.world().resource::<ProjectFolder>().0, directory);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
     fn headless_simulation_clears_a_press_game_code_injects_after_one_update() {
         use crate::runtime::KeyCode;
         static PRESSED: AtomicBool = AtomicBool::new(false);

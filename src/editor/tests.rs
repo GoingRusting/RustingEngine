@@ -685,6 +685,7 @@ fn export_package_contains_executable_scene_assets_and_readme() {
     std::fs::write(project.join("assets/texture.png"), "texture").unwrap();
     std::fs::create_dir_all(project.join("scenes")).unwrap();
     std::fs::write(project.join("scenes/level_two.rscene"), "scene").unwrap();
+    std::fs::write(project.join("project.json"), "{}").unwrap();
 
     let exported = package_game_files(
         &project,
@@ -707,6 +708,8 @@ fn export_package_contains_executable_scene_assets_and_readme() {
     assert!(exported.join("assets/texture.png").is_file());
     assert!(exported.join("scenes/level_two.rscene").is_file());
     assert!(exported.join("README.txt").is_file());
+    // The runtime finds `assets/` from the folder holding `project.json`.
+    assert!(exported.join("project.json").is_file());
 
     // A Windows export from any system gets an .exe in its own folder.
     let windows = package_game_files(

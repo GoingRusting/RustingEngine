@@ -1683,6 +1683,13 @@ pub fn package_game_files(
         }
         std::fs::copy(&cooked_source, cooked_destination)
             .map_err(|error| error.to_string())?;
+        // The game finds its asset root and window size through the
+        // manifest; without it, `assets/` is looked up next to the scene.
+        let manifest = project_root.join("project.json");
+        if manifest.is_file() {
+            std::fs::copy(manifest, temporary.join("project.json"))
+                .map_err(|error| error.to_string())?;
+        }
         let assets = project_root.join("assets");
         if assets.is_dir() {
             copy_directory(&assets, &temporary.join("assets"))?;
