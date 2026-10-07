@@ -117,6 +117,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenarios take an `explore` section: an explorer bot walks the `PlayerController` to each goal (every sensor by default), jumps when stuck, and fails naming the goals it could not reach; the report lists them as `explore`.
 - `rusting lint [project]` checks the main scene for a player body outside 0.5 to 3 m tall, zero scale axes, and lights that can never light anything, as `LINT_*` warnings.
 - `rusting lint` warns with `LINT_CAMERA_INSIDE` when a camera starts inside a solid box or sphere collider.
+- Spawning an object under a taken name still panics, but the message now says names are unique and points at the usual cause: the scene file or its template already has an object of that name (playplace friction 3).
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

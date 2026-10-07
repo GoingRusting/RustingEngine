@@ -618,7 +618,8 @@ impl GameScene<'_> {
             .clone()
     }
 
-    /// Creates one visible built-in cube with a unique object name.
+    /// Creates one visible built-in cube with a unique object name. Panics
+    /// when a live object, including one from the scene file, has the name.
     pub fn spawn_cube(
         &mut self,
         name: impl Into<String>,
@@ -781,7 +782,8 @@ impl GameScene<'_> {
             .size = Some(size.map(|side| side.max(1)));
     }
 
-    /// Creates one visible procedural sphere with a unique object name.
+    /// Creates one visible procedural sphere with a unique object name. Panics
+    /// when a live object, including one from the scene file, has the name.
     pub fn spawn_sphere(
         &mut self,
         name: impl Into<String>,
@@ -858,7 +860,7 @@ impl GameScene<'_> {
         // The index keeps names of despawned or renamed objects, so only a
         // live entity that still carries the name blocks the spawn.
         if find_named_entity(self.world, &name).is_some() {
-            panic!("scene object `{name}` already exists");
+            name_taken(&name);
         }
         let order = crate::runtime::next_spawn_order(self.world);
         let entity = self
@@ -2702,6 +2704,16 @@ fn nearest_hint<'a>(
 }
 
 /// Finds a named ECS object and saves the result for later calls.
+/// Panics for a spawn whose name is taken, with the usual cause: the scene
+/// file (or a template it came from) already has an object of that name.
+fn name_taken(name: &str) -> ! {
+    panic!(
+        "scene object `{name}` already exists; object names are unique. If the \
+         scene file declares it (templates ship names such as `Box 1` and \
+         `Ball 1`), delete it there or spawn under another name"
+    );
+}
+
 fn find_named_entity(world: &mut World, name: &str) -> Option<Entity> {
     ensure_scene_name_index(world);
     let indexed = world
@@ -2792,7 +2804,7 @@ fn forget_old_scene(world: &mut World) {
 fn copy_tree(world: &mut World, entity: Entity, name: Option<&str>) -> Entity {
     if let Some(name) = name {
         if find_named_entity(world, name).is_some() {
-            panic!("scene object `{name}` already exists");
+            name_taken(name);
         }
     }
     let copy =
@@ -5796,7 +5808,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "`Copy/Glow` already exists")]
+    #[should_panic(
+        expected = "`Copy/Glow` already exists; object names are unique. If the scene file declares it"
+    )]
     fn spawn_copy_refuses_a_child_name_that_is_taken() {
         let mut app = App::new();
         let world = app.world_mut();
