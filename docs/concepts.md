@@ -455,6 +455,11 @@ A scenario fails when no tick finishes for 60 seconds, for example after a
 deadlock in game code. The failure names the last tick that finished. Set
 `RUSTING_TEST_STALL_SECS` to change the limit, or to `0` to turn it off.
 
+A scenario stops at its first failed check. To list every failed check,
+including several at the same tick, set `"keep_going": true` in the
+scenario, pass `--keep-going` to `rusting test`, or set the environment
+variable `RUSTING_KEEP_GOING=1`.
+
 ## Determinism
 
 `determinism` in `project.json` is `Off`, `Local` (reproduces on one

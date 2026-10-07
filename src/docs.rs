@@ -805,6 +805,12 @@ mod tests {
     }
 
     #[test]
+    fn keep_going_and_its_variable_are_documented() {
+        let (found, _) = search("RUSTING_KEEP_GOING", 50);
+        assert!(found.iter().any(|item| item["id"] == "manual/concepts"));
+    }
+
+    #[test]
     fn primitive_uvs_and_child_scale_are_explained() {
         for (query, page) in [
             ("cylinder cap texture disc", "guide/look-and-feel"),

@@ -4078,11 +4078,20 @@ pub fn run_project_scenario<P: Plugin>(
     }
     match report.first_failure {
         None => Ok(()),
-        Some(failure) => Err(format!(
-            "scenario `{}` failed at tick {} step {}: {}",
-            report.name, failure.tick, failure.step, failure.message
-        )
-        .into()),
+        Some(failure) => {
+            let more =
+                report.steps.iter().filter(|step| !step.ok).count().max(1) - 1;
+            let more = if more > 0 {
+                format!(" ({more} more failed checks in the report)")
+            } else {
+                String::new()
+            };
+            Err(format!(
+                "scenario `{}` failed at tick {} step {}: {}{more}",
+                report.name, failure.tick, failure.step, failure.message
+            )
+            .into())
+        }
     }
 }
 

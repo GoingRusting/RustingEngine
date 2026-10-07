@@ -94,6 +94,7 @@ Engine features for the horror game FOREVER BEAR.
 - Invalid-object patch errors name the operation at fault, and a short color says it needs 3 or 4 numbers.
 - `scene.raycast` is about 20% faster without skip classes, and the concepts guide gives the cost per ray.
 - `rusting asset reimport` accepts a path relative to `assets/`, as `asset import --to` names it.
+- With `keep_going`, a failed scenario's game error says how many more checks failed, and docs/concepts.md documents `RUSTING_KEEP_GOING`.
 
 ### Fixed
 
