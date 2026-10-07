@@ -236,7 +236,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     code(
         "LINT_CAMERA_INSIDE",
-        "A camera starts inside another entity's box or sphere collider, so the first frame shows the inside of that geometry.",
+        "A camera starts inside another entity's box, sphere or capsule collider (player bodies aside), so the first frame shows the inside of that geometry.",
         "Move the camera or its parent out of the collider, or make the collider a sensor if it is not solid.",
         "rusting lint --json",
     ),
@@ -244,6 +244,12 @@ pub const CODES: &[CodeInfo] = &[
         "LINT_COLLIDER_MISMATCH",
         "A solid collider is more than twice as big or less than half as big as its entity's built-in mesh on some axis, so the object is hit where it is not drawn, or not hit where it is.",
         "Size the collider to the mesh (a 1 m cube has half extents 0.5), or make it a sensor if it is a trigger zone.",
+        "rusting lint --json",
+    ),
+    code(
+        "LINT_GOAL_INSIDE",
+        "A sensor collider (a pickup, goal or trigger) has its centre inside another entity's solid box, sphere or capsule collider, so a player walking up to it is stopped before it is reached.",
+        "Move the sensor out of the solid, or make that collider a sensor too if it is not meant to block.",
         "rusting lint --json",
     ),
     code(

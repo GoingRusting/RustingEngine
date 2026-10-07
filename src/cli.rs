@@ -1226,9 +1226,12 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             })
             .skip(budget)
             .collect();
-    let mut cameras_inside = Vec::new();
+    // Cameras and sensors (pickups, goals, triggers) whose centre starts
+    // inside a solid, with that solid's name.
+    let mut inside_solid = Vec::new();
     for (index, entity) in document.entities.iter().enumerate() {
-        if entity.camera.is_none() {
+        let sensor = entity.collider.as_ref().is_some_and(|c| c.sensor);
+        if entity.camera.is_none() && !sensor {
             continue;
         }
         let at = world_matrix(entity).column(3).xyz().push(1.0);
@@ -1255,24 +1258,35 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
                 _ => false,
             };
             if inside {
-                cameras_inside.push((index, solid.name.clone()));
+                inside_solid.push((index, solid.name.clone()));
                 break;
             }
         }
     }
     for (index, entity) in document.entities.iter().enumerate() {
         if let Some((_, solid)) =
-            cameras_inside.iter().find(|(camera, _)| *camera == index)
+            inside_solid.iter().find(|(inside, _)| *inside == index)
         {
-            warn(
-                "LINT_CAMERA_INSIDE",
-                index,
-                "/transform/position",
-                format!(
-                    "is a camera that starts inside the collider of `{}`, so the first frame shows its inside",
-                    solid.as_deref().unwrap_or("unnamed entity")
-                ),
-            );
+            let solid = solid.as_deref().unwrap_or("unnamed entity");
+            if entity.camera.is_some() {
+                warn(
+                    "LINT_CAMERA_INSIDE",
+                    index,
+                    "/transform/position",
+                    format!(
+                        "is a camera that starts inside the collider of `{solid}`, so the first frame shows its inside"
+                    ),
+                );
+            } else {
+                warn(
+                    "LINT_GOAL_INSIDE",
+                    index,
+                    "/transform/position",
+                    format!(
+                        "is a sensor whose centre is inside the solid collider of `{solid}`, so a player is stopped before reaching it"
+                    ),
+                );
+            }
         }
         for (_, key) in over_budget.iter().filter(|(at, _)| *at == index) {
             warn(
@@ -4432,6 +4446,11 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             {"id": id(17), "name": "Side Cam", "camera": cam, "transform": at([50.6, 0.0, 0.0])},
             // Inside the 0.9 m `Kid` player but not its child: exempt too.
             {"id": id(18), "name": "Loose Eye Cam", "camera": cam, "transform": at([0.0, 0.3, 0.0])},
+            // A coin buried in the pillar warns; one beside it does not.
+            {"id": id(19), "name": "Buried Coin", "transform": at([50.0, -0.5, 0.0]),
+             "collider": body(json!({"Sphere": {"radius": 0.3}}), true)},
+            {"id": id(20), "name": "Free Coin", "transform": at([51.5, 0.0, 0.0]),
+             "collider": body(json!({"Sphere": {"radius": 0.3}}), true)},
         ]});
         let mut scene = scene;
         scene["entities"][2]["collider"] = json!({"shape": {"Box":
@@ -4454,6 +4473,7 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_CAMERA_INSIDE", "Stuck Cam".to_owned()),
                 ("LINT_COLLIDER_MISMATCH", "Crate".to_owned()),
                 ("LINT_CAMERA_INSIDE", "Pillar Cam".to_owned()),
+                ("LINT_GOAL_INSIDE", "Buried Coin".to_owned()),
             ],
             "Kid (0.9 m), Torch (switched on in code), Clear Cam, Eye Cam, Ball and Zone pass"
         );
