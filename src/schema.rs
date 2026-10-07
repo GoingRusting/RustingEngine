@@ -220,6 +220,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "test my_game my_game/tests/falls.json --json",
     },
     Operation {
+        name: "fuzz",
+        usage: "fuzz [project-root] scenario.json [--seeds N] [--first-seed N] [--action NAME]... [--json]",
+        summary: "Run a scenario once per seed with seeded random presses and releases of named actions (each action flips with chance 0.1 per tick), on top of the scenario's own steps and invariants. Stops at the first seed that fails a step or an invariant, or crashes the game, and writes it to build/fuzz/seed-N.json as a ready scenario: the presses as ordinary steps up to the failing tick, so `rusting test` replays the failure. Without --action, presses every action the scene binds; name actions that game code binds with --action. Passes, with `fuzz.tried`, when every seed passes.",
+        gpu: "as for test",
+        defaults: &[("--seeds", "20"), ("--first-seed", "0"), ("--action", "every action the scene binds"), ("project-root", "the current folder")],
+        example: "fuzz my_game tests/invariants.json --seeds 50 --json",
+    },
+    Operation {
         name: "debug",
         usage: "debug [project-root]",
         summary: "Cook and build the game, then run it without a window as a debug session: the game's standard input and output carry one JSON request and one JSON reply per line. The game is paused between commands. Commands: `{\"cmd\": \"step\", \"ticks\": N}` (the only way time passes), `get` (`entity`, `path`), `set` (`entity`, `path`, `value`), `press` / `release` (`action`), `capture` (`path`, optional `size` [w, h]; needs Vulkan), `tick`, `quit`. A reply is `{\"id\", \"ok\", \"tick\", \"result\" or \"error\"}`. Build failures go to standard error as the usual result envelope.",
@@ -1165,6 +1173,10 @@ pub fn json_schemas() -> Value {
                     "path": {"type": "string"}, "tolerance": {"type": "number"}},
                     "required": ["path"]},
                 "files": {"type": "object", "additionalProperties": {"type": "string"}},
+                "fuzz": {"type": "object", "properties": {
+                    "seed": {"type": "integer", "minimum": 0},
+                    "actions": {"type": "array", "items": {"type": "string"}},
+                    "rate": {"type": "number", "minimum": 0, "maximum": 1}}},
                 "gpu": {"type": "boolean"},
                 "invariants": {"type": "array", "items": {
                     "type": "object",
@@ -1358,6 +1370,7 @@ pub fn catalog() -> Value {
                 "set": "{\"tick\": 0, \"set\": {\"entity\": \"Player\", \"path\": \"/transform/position\", \"value\": [0.0, 1.0, -12.0]}}: writes before the tick runs; path under /transform, /visible, /rigid_body, /collider, /physics_body, /collision_layers, /point_light, /spot_light, /directional_light (the entity must already have it) or /components/<name>, for example /components/rusting.counter/value or /collider/friction. To turn a player's view before a click (clicks aim along the view centre), set /components/rusting.player_controller/yaw and /pitch in radians; the controller applies them, within its limits, that tick",
             },
             "gpu": "{\"gpu\": true}: top-level; opens the headless Vulkan device so GPU bodies simulate and GPU events arrive in `rusting test`. A scenario with a `capture` step does this too, but without either the GPU bodies stay where they spawned and GPU rules never fire. Fails with `gpu: no Vulkan device` when none opens; software Vulkan (lavapipe) works but is slow",
+            "fuzz": "{\"fuzz\": {\"seed\": 3, \"actions\": [\"jump\"], \"rate\": 0.1}}: top-level; before each tick from 1, each action (empty: every action the scene binds) flips between pressed and released with chance `rate`, seeded by `seed`; the report lists the presses as `fuzz_steps`. `rusting fuzz` sets it per seed",
             "invariants": "{\"invariants\": [{\"entity\": \"Player\", \"path\": \"/transform/position\", \"finite\": true}, {\"entity\": \"Player\", \"path\": \"/transform/position/1\", \"greater_than\": -5.0}]}: top-level; same fields as `expect` plus `finite` (no NaN or infinite number). Checked after every tick; the first tick one fails is reported as `invariant N:`. A missing entity or path passes unless `exists` is set",
             "budgets": "{\"budgets\": {\"p95_tick_ms\": 8.0, \"max_draws\": 200}}: top-level; each limit exceeded fails the run with a `budget:` step. Timing is wall-clock and machine-dependent: set headroom and read `perf.environment` (engine version, OS, arch, debug or release, device) in `rusting test --json`. Draw and triangle limits draw every tick through headless Vulkan, no capture step needed, and fill `perf.render` (draws, triangles, gpu_ms, and `cameras` with each camera's gpu_ms, draws and triangles). `perf.render` is null only in a scenario with no render budget, no `\"gpu\": true` and no capture or expect_pixels step",
             "tick_length_seconds": 1.0 / 60.0,

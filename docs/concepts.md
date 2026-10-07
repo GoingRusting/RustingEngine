@@ -500,6 +500,17 @@ run passes when the scenario fails or the game crashes, and fails with
 `SCENARIO_TOO_WEAK` when the scenario still passes. A `--without` run does
 not update `build/test-results.json`.
 
+To find input that breaks a game, give a scenario `invariants` and fuzz it:
+`rusting fuzz <project> tests/invariants.json --seeds 50`. Each seed runs the
+scenario with seeded random presses and releases of the scene's actions (or
+the `--action` names; name actions that game code binds this way), each
+flipping with chance 0.1 per tick. The first seed that fails a step or an
+invariant, or crashes the game, is written to `build/fuzz/seed-N.json` with
+the presses as ordinary steps up to the failing tick, so `rusting test`
+replays it and the file can become a regression test. A scenario can also
+carry the random input itself as `"fuzz": {"seed": 3, "actions": [], "rate":
+0.1}`; its report then lists the presses as `fuzz_steps`.
+
 ## Determinism
 
 `determinism` in `project.json` is `Off`, `Local` (reproduces on one

@@ -110,6 +110,7 @@ Engine features for the horror game FOREVER BEAR.
 - The Agent area's pending row lists entities an outside write removes, each with an Accept that deletes it and its descendants behind one Undo snapshot.
 - `rusting test <project>` saves each scenario's tick time, draws and triangles in `build/test-results.json`, and the Agent area's Results tab shows them.
 - `rusting test --without COMPONENT` runs a scenario with that component left out of every scene and passes only when the scenario then fails, or fails with `SCENARIO_TOO_WEAK`.
+- `rusting fuzz <project> <scenario>` runs a scenario over many seeds with random action presses and writes the first failing seed to `build/fuzz/seed-N.json` as a ready scenario; scenarios accept a `fuzz` section and reports list `fuzz_steps`.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

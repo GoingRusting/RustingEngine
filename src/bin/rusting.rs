@@ -102,6 +102,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["project", "inspect"], 0),
         (&["asset", "list"], 0),
         (&["test"], 1),
+        (&["fuzz"], 1),
         (&["add", "scenario"], 1),
         (&["add", "system"], 1),
     ];
@@ -337,6 +338,34 @@ fn execute(args: &[String]) -> CliResult {
                 }
                 _ => cli::run_game_project(Path::new(root), options),
             }
+        }
+        ["fuzz", root, scenario, flags @ ..] => {
+            let (mut first, mut count) = (0_u64, 20_u64);
+            let mut actions = Vec::new();
+            let mut flags = flags.iter();
+            while let Some(flag) = flags.next() {
+                let value = flags.next();
+                let number = value.and_then(|v| v.parse().ok());
+                match (*flag, value, number) {
+                    ("--seeds", _, Some(n)) => count = n,
+                    ("--first-seed", _, Some(n)) => first = n,
+                    ("--action", Some(name), _) => actions.push(name.to_string()),
+                    _ => {
+                        return usage(
+                            "fuzz flags: --seeds N, --first-seed N, --action NAME",
+                        )
+                    }
+                }
+            }
+            let in_root = Path::new(root).join(scenario);
+            let scenario =
+                if in_root.exists() { in_root } else { scenario.into() };
+            cli::fuzz_game_project(
+                Path::new(root),
+                &scenario,
+                first..first + count,
+                &actions,
+            )
         }
         ["export", root, parent] => {
             cli::export_game_project(Path::new(root), Path::new(parent), None)

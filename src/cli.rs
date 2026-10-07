@@ -2449,6 +2449,106 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
     }
 }
 
+/// Runs `scenario` once per seed with seeded random presses of its named
+/// actions (the scenario's `fuzz` section) and stops at the first seed that
+/// fails a step or an invariant, or crashes the game. That run is written as
+/// a ready scenario file, `build/fuzz/seed-N.json`, with the presses as
+/// ordinary steps up to the failing tick.
+pub fn fuzz_game_project(
+    root: &Path,
+    scenario: &Path,
+    seeds: std::ops::Range<u64>,
+    actions: &[String],
+) -> CliResult {
+    let base: serde_json::Value = match std::fs::read(scenario)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+        }) {
+        Ok(base) => base,
+        Err(error) => {
+            return CliResult::failure(
+                "FILE_NOT_FOUND",
+                format!("cannot read scenario {}: {error}", scenario.display()),
+                Some(scenario.to_path_buf()),
+            )
+        }
+    };
+    let folder = root.join("build/fuzz");
+    let _ = std::fs::create_dir_all(&folder);
+    let run_file = folder.join("run.json");
+    let mut tried = 0;
+    for seed in seeds {
+        let mut run = base.clone();
+        run["fuzz"] = json!({"seed": seed, "actions": actions});
+        if let Err(error) = std::fs::write(&run_file, run.to_string()) {
+            return CliResult::failure(
+                "IO_ERROR",
+                error.to_string(),
+                Some(run_file),
+            );
+        }
+        let mut result = run_game_project(
+            root,
+            RunOptions {
+                scenario: Some(run_file.clone()),
+                ..RunOptions::default()
+            },
+        );
+        tried += 1;
+        let failed = result.diagnostics.first().is_some_and(|diagnostic| {
+            matches!(diagnostic.code, "SCENARIO_FAILED" | "GAME_FAILED")
+        });
+        if result.ok || !failed {
+            if result.ok {
+                continue;
+            }
+            return result;
+        }
+        // The presses become plain steps; a crash without a report keeps
+        // the `fuzz` section, which replays the same presses.
+        let report = &result.data["scenario"];
+        if let (Some(tick), Some(steps)) = (
+            report["first_failure"]["tick"].as_u64(),
+            report["fuzz_steps"].as_array(),
+        ) {
+            let mut steps: Vec<_> = steps
+                .iter()
+                .filter(|step| step["tick"].as_u64() <= Some(tick))
+                .cloned()
+                .collect();
+            if let Some(own) = base["steps"].as_array() {
+                steps.extend(own.iter().cloned());
+            }
+            steps.sort_by_key(|step| step["tick"].as_u64());
+            run.as_object_mut().map(|run| run.remove("fuzz"));
+            run["steps"] = json!(steps);
+            run["ticks"] = json!(tick);
+        }
+        let found = folder.join(format!("seed-{seed}.json"));
+        let text = serde_json::to_string_pretty(&run).unwrap_or_default();
+        if let Err(error) = std::fs::write(&found, text + "\n") {
+            return CliResult::failure(
+                "IO_ERROR",
+                error.to_string(),
+                Some(found),
+            );
+        }
+        let diagnostic = &mut result.diagnostics[0];
+        diagnostic.message = format!(
+            "seed {seed} fails; replay it with `rusting test {} {}`:\n{}",
+            root.display(),
+            found.display(),
+            diagnostic.message
+        );
+        diagnostic.file = Some(found.clone());
+        result.data["fuzz"] =
+            json!({"seed": seed, "tried": tried, "scenario": found});
+        return result;
+    }
+    CliResult::success(json!({"fuzz": {"tried": tried, "failed": null}}))
+}
+
 fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
     let start = Instant::now();
     let headless =

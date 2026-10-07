@@ -378,6 +378,14 @@ impl ActionMap {
             .push(binding);
         self
     }
+    /// Every action with a binding, in name order.
+    #[must_use]
+    pub fn actions(&self) -> Vec<&str> {
+        let mut names: Vec<&str> =
+            self.bindings.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
     /// Removes one binding of `action`; other bindings stay.
     pub fn unbind(&mut self, action: &str, binding: InputBinding) {
         if let Some(list) = self.bindings.get_mut(action) {

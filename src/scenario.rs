@@ -586,6 +586,60 @@ pub struct Scenario {
     /// scenario file.
     #[serde(default)]
     pub files: BTreeMap<String, PathBuf>,
+    /// Presses random actions: before each tick, each action flips between
+    /// pressed and released with chance `rate`. The presses come from a
+    /// stream seeded by `fuzz.seed`, so one seed always plays the same, and
+    /// the report lists them as `fuzz_steps`. `rusting fuzz` sets it.
+    #[serde(default)]
+    pub fuzz: Option<Fuzz>,
+}
+
+/// A scenario's random input, see [`Scenario::fuzz`].
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Fuzz {
+    #[serde(default)]
+    pub seed: u64,
+    /// Actions to press; empty means every action the scene binds. Name
+    /// actions that game code binds in `update` here, since they are not
+    /// bound before the first tick.
+    #[serde(default)]
+    pub actions: Vec<String>,
+    #[serde(default = "default_fuzz_rate")]
+    pub rate: f32,
+}
+
+fn default_fuzz_rate() -> f32 {
+    0.1
+}
+
+impl Fuzz {
+    /// The press and release steps of ticks 1 through `ticks`.
+    pub fn steps(&self, actions: &[String], ticks: u32) -> Vec<ScenarioStep> {
+        let stream = RandomSeed(self.seed);
+        let mut held = vec![false; actions.len()];
+        let mut steps = Vec::new();
+        for tick in 1..=ticks {
+            for (index, action) in actions.iter().enumerate() {
+                if stream.unit(u64::from(tick), index as u64) >= self.rate {
+                    continue;
+                }
+                held[index] = !held[index];
+                let action = action.clone();
+                steps.push(ScenarioStep {
+                    tick,
+                    until: None,
+                    within: None,
+                    at: None,
+                    action: if held[index] {
+                        StepAction::Press(action)
+                    } else {
+                        StepAction::Release(action)
+                    },
+                });
+            }
+        }
+        steps
+    }
 }
 
 /// Limits on [`PerfReport`] values. Draw and triangle limits apply to the
@@ -1200,6 +1254,9 @@ pub struct ScenarioReport {
     /// `(tick, hash)` of the CPU-visible world state after each tick.
     #[serde(default)]
     pub state_hashes: Vec<(u64, u64)>,
+    /// The steps a `fuzz` scenario pressed, in the scenario step form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fuzz_steps: Vec<Value>,
 }
 
 /// Most trace entries one report keeps.
@@ -1553,6 +1610,7 @@ pub fn run_scenario(
         perf: PerfReport::default(),
         gpu_state_hashes: Vec::new(),
         state_hashes: Vec::new(),
+        fuzz_steps: Vec::new(),
     };
     if let Err(message) = scenario.validate() {
         report.first_failure = Some(StepResult {
@@ -1564,7 +1622,22 @@ pub fn run_scenario(
         });
         return report;
     }
-    let scenario = &scenario.with_counters_resolved();
+    let mut scenario = scenario.with_counters_resolved();
+    if let Some(fuzz) = &scenario.fuzz {
+        let mut actions = fuzz.actions.clone();
+        if actions.is_empty() {
+            crate::runtime::bind_input_actions(app.world_mut());
+            let map = app.world().resource::<ActionMap>();
+            actions = map.actions().into_iter().map(str::to_owned).collect();
+        }
+        let steps = fuzz.steps(&actions, scenario.ticks);
+        report.fuzz_steps = steps
+            .iter()
+            .map(|step| serde_json::to_value(step).unwrap_or_default())
+            .collect();
+        scenario.steps.extend(steps);
+    }
+    let scenario = &scenario;
     app.world_mut().insert_resource(RandomSeed(scenario.seed));
     // A headless view is the capture size from tick 0, for layout, the UI
     // pass and pointer steps alike.
@@ -3248,6 +3321,45 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_presses_seeded_actions_and_its_steps_replay_the_failure() {
+        // The ground rises while `jump` is held, breaking the invariant.
+        let mut fuzzed = scenario(120, json!([]));
+        fuzzed.invariants = serde_json::from_value(json!([
+            {"entity": "Ground", "path": "/transform/position/1", "less_than": 0.5},
+        ]))
+        .unwrap();
+        fuzzed.fuzz = Some(Fuzz {
+            seed: 3,
+            ..serde_json::from_value(json!({})).unwrap()
+        });
+        let report = run(&fuzzed);
+        let failure = report.first_failure.clone().unwrap();
+        assert!(failure.message.starts_with("invariant 0"), "{failure:?}");
+        let first = &report.fuzz_steps[0];
+        assert_eq!(first["press"], "jump", "{first}");
+        assert_eq!(failure.tick, first["tick"].as_u64().unwrap() as u32);
+        assert_eq!(run(&fuzzed).fuzz_steps, report.fuzz_steps, "same seed");
+
+        // The reported steps alone replay the same failure.
+        let mut replay = fuzzed.clone();
+        replay.fuzz = None;
+        replay.steps =
+            serde_json::from_value(json!(report.fuzz_steps)).unwrap();
+        assert_eq!(run(&replay).first_failure.unwrap().tick, failure.tick);
+
+        let other = Fuzz {
+            seed: 4,
+            ..fuzzed.fuzz.clone().unwrap()
+        };
+        let jump = ["jump".to_owned()];
+        assert_ne!(
+            serde_json::to_string(&other.steps(&jump, 120)).unwrap(),
+            serde_json::to_string(&fuzzed.fuzz.unwrap().steps(&jump, 120))
+                .unwrap()
+        );
+    }
+
+    #[test]
     #[cfg_attr(
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
@@ -4491,6 +4603,7 @@ mod tests {
             perf: PerfReport::default(),
             gpu_state_hashes: Vec::new(),
             state_hashes: Vec::new(),
+            fuzz_steps: Vec::new(),
         };
         for tick in 0..3000_u64 {
             let mut hashes =

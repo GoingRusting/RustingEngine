@@ -4198,6 +4198,7 @@ fn start_stall_watchdog(
             steps: vec![failure],
             captures: Vec::new(),
             trace: Vec::new(),
+            fuzz_steps: Vec::new(),
             perf: Default::default(),
             gpu_state_hashes: Vec::new(),
             state_hashes: Vec::new(),
