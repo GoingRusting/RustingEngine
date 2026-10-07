@@ -1681,8 +1681,8 @@ impl GameScene<'_> {
     /// Use it to spawn enemies or projectiles from an object authored in the
     /// scene: keep that template hidden and out of the way, then show each
     /// copy with [`Self::set_visible`]. A copied child is named
-    /// `"<name>/<child name>"`, so names stay unique. Returns `None` when
-    /// `template` does not exist.
+    /// `"<name>/<child name>"`, so names stay unique. Returns `None` and
+    /// warns once, with the nearest names, when `template` does not exist.
     ///
     /// # Panics
     ///
@@ -1695,7 +1695,7 @@ impl GameScene<'_> {
         position: [f32; 3],
     ) -> Option<Entity> {
         let name = name.into();
-        let template = find_named_entity(self.world, template)?;
+        let template = find_or_warn(self.world, template)?;
         let copy = copy_tree(self.world, template, Some(&name));
         if let Some(mut transform) = self.world.get_mut::<Transform>(copy) {
             transform.position = position;
@@ -1901,7 +1901,7 @@ impl GameScene<'_> {
         name: &str,
         material: crate::assets::Handle<crate::assets::MaterialAsset>,
     ) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut renderer) = self.world.get_mut::<MeshRenderer>(entity) {
@@ -1972,7 +1972,7 @@ impl GameScene<'_> {
         name: &str,
         edit: impl FnOnce(&mut crate::assets::MaterialAsset),
     ) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         let Some(handle) = self
@@ -2064,7 +2064,7 @@ impl GameScene<'_> {
     /// `rusting.burst_emitter` and restarts its `rusting.particle_emitter`,
     /// the way a pickup does when collected.
     pub fn trigger(&mut self, name: &str) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut cue) =
@@ -2088,7 +2088,7 @@ impl GameScene<'_> {
         name: &str,
         command: crate::runtime::ParticleCommand,
     ) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut emitter) = self
@@ -2121,7 +2121,7 @@ impl GameScene<'_> {
 
     /// Sets how fast the named object's animation plays; 1 is real time.
     pub fn set_animation_speed(&mut self, name: &str, speed: f32) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut animation) =
@@ -2134,7 +2134,7 @@ impl GameScene<'_> {
     /// Makes the named character's `rusting.ragdoll` go limp (`true`) or
     /// get back up (`false`) next fixed step.
     pub fn set_ragdoll(&mut self, name: &str, limp: bool) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut ragdoll) =
@@ -2148,7 +2148,7 @@ impl GameScene<'_> {
     /// makes it an active ragdoll; 0 lets it go limp and then return to
     /// plain animation.
     pub fn set_ragdoll_muscle(&mut self, name: &str, hz: f32) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut ragdoll) =
@@ -2191,7 +2191,7 @@ impl GameScene<'_> {
         parameter: &str,
         value: f32,
     ) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut animation) =
@@ -2206,7 +2206,7 @@ impl GameScene<'_> {
         name: &str,
         command: crate::runtime::AnimationCommand,
     ) {
-        let Some(entity) = find_named_entity(self.world, name) else {
+        let Some(entity) = find_or_warn(self.world, name) else {
             return;
         };
         if let Some(mut animation) =
@@ -2547,6 +2547,32 @@ fn warn_missing_counter(name: &str, hint: impl FnOnce() -> Option<String>) {
              warning."
         );
     }
+}
+
+/// Object names that game code passed to a setter but that did not exist,
+/// so each is warned about once.
+static MISSING_OBJECTS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// [`find_named_entity`] for setters that return nothing, such as
+/// `set_color` and `trigger`: a missing name warns once with the nearest
+/// object names instead of doing nothing silently.
+fn find_or_warn(world: &mut World, name: &str) -> Option<Entity> {
+    let found = find_named_entity(world, name);
+    if found.is_none() {
+        let mut missing = MISSING_OBJECTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if missing.insert(name.to_owned()) {
+            let hint = nearest_names_hint(world, name);
+            eprintln!(
+                "warning: game code named object `{name}`, which does not \
+                 exist{hint}; the call did nothing. Use `try_object` to \
+                 check first."
+            );
+        }
+    }
+    found
 }
 
 /// Connects object names to ECS IDs after the first lookup.
@@ -5379,6 +5405,28 @@ mod tests {
         let names = ["money", "night", "coins"].into_iter();
         assert_eq!(nearest_hint(names, "mony"), "; did you mean `money`?");
         assert_eq!(nearest_hint(["money"].into_iter(), "screen"), "");
+    }
+
+    #[test]
+    fn a_setter_given_a_missing_name_warns_once() {
+        let mut world = World::new();
+        world.spawn((Name("Lamp".into()), Transform::new([0.0; 3])));
+        let mut scene = GameScene { world: &mut world };
+        scene.set_color("Lamp", [1.0; 4]);
+        scene.set_color("Lmap_typo", [1.0; 4]);
+        scene.trigger("Lmap_typo");
+        assert!(scene
+            .spawn_copy("Lamp_template", "Copy", [0.0; 3])
+            .is_none());
+        let missing = MISSING_OBJECTS.lock().unwrap();
+        assert!(missing.contains("Lmap_typo"));
+        assert!(missing.contains("Lamp_template"));
+        assert!(!missing.contains("Lamp"));
+        drop(missing);
+        assert_eq!(
+            nearest_names_hint(&mut world, "Lmap"),
+            "; did you mean `Lamp`?"
+        );
     }
 
     #[test]
