@@ -4805,6 +4805,33 @@ fn phase(app: &App, hero: Entity) -> RagdollPhase {
 }
 
 #[test]
+fn ray_hits_on_ragdoll_bodies_carry_the_bone_name_and_classes() {
+    let (mut app, hero, hips, _) = ragdoll_scene(20.0);
+    app.world_mut().entity_mut(hips).insert(ObjectClasses {
+        names: vec!["animatronic".into()],
+    });
+    app.world_mut().entity_mut(hero).insert(ObjectClasses {
+        names: vec!["hero".into()],
+    });
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Active);
+    // The physics world picks the new bodies up on the next tick.
+    run_fixed_steps(&mut app, 1);
+    let part = app.world().get::<RagdollState>(hero).unwrap().parts[0];
+    let centre = app.world().get::<Transform>(part).unwrap().position;
+    let from = [centre[0], centre[1], centre[2] + 3.0];
+    let scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    let down = [0.0, 0.0, -1.0];
+    let hit = scene.raycast_skipping(from, down, 10.0, &["hero"]).unwrap();
+    assert_eq!(hit.name, "Hips");
+    let skipped =
+        scene.raycast_skipping(from, down, 10.0, &["hero", "animatronic"]);
+    assert_ne!(skipped.map(|hit| hit.name), Some("Hips".to_owned()));
+}
+
+#[test]
 fn ragdolls_go_limp_on_a_hit_fall_and_blend_back_deterministically() {
     let (mut app, hero, hips, _) = ragdoll_scene(0.0);
     let mut steps = 0;

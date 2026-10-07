@@ -434,6 +434,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::IkPose>();
     types.register::<super::Ragdoll>();
     types.register::<super::RagdollState>();
+    types.register::<super::RagdollPart>();
     types.register::<super::SkinnedMesh>();
     types.register::<super::AnimationPlayer>();
     types.register::<Camera>();

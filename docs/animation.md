@@ -354,6 +354,9 @@ the animated hips, so the character stands and walks with its clips.
   sags a little under gravity; stiffer muscles sag less.
 - `set_ragdoll_muscle(name, 0.0)` lets it go limp and then return to plain
   animation; `set_ragdoll_muscle(name, 10.0)` makes it active again.
+- Rays hit the bodies. A hit reports the bone's name, and
+  `raycast_skipping` skips the bodies by the bone's classes: give every
+  bone the character's class and its own sight rays pass through its limbs.
 
 The character's own collider stays off while it is active; the bodies
 collide instead.

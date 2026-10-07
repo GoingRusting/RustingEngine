@@ -113,6 +113,13 @@ pub enum RagdollPhase {
 
 type Pose = (Vector3<f32>, UnitQuaternion<f32>);
 
+/// Marks a ragdoll body with the bone it moves. Ray hits on the body
+/// report the bone's name and classes.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RagdollPart {
+    pub bone: Entity,
+}
+
 /// A ragdoll's runtime state. Not saved.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct RagdollState {
@@ -329,6 +336,7 @@ fn spawn_parts(
                     ..Collider::default()
                 },
                 PhysicsBody::default(),
+                RagdollPart { bone: bones[i] },
                 RigidBody {
                     kind: RigidBodyKind::Dynamic,
                     mass: bone.mass,

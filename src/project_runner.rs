@@ -1390,7 +1390,9 @@ impl GameScene<'_> {
     /// world `point`, the surface `normal` and the `distance` from `origin`.
     /// Only colliders with a `physics_body` count (`Static` for one that
     /// never moves); `rusting check` warns with `SCENE_COLLIDER_WITHOUT_BODY`
-    /// about a collider without one.
+    /// about a collider without one. A hit on a ragdoll body reports its
+    /// bone's name, and [`Self::raycast_skipping`] skips it by the bone's
+    /// classes, so a character can skip its own limbs.
     #[must_use]
     pub fn raycast(
         &self,
@@ -1411,7 +1413,14 @@ impl GameScene<'_> {
         max_distance: f32,
         skip_classes: &[&str],
     ) -> Option<RayHit> {
+        // A ragdoll body stands for its bone.
+        let owner = |entity| {
+            self.world
+                .get::<crate::runtime::RagdollPart>(entity)
+                .map_or(entity, |part| part.bone)
+        };
         let keep = |entity| {
+            let entity = owner(entity);
             skip_classes.is_empty()
                 || self
                     .world
@@ -1429,7 +1438,7 @@ impl GameScene<'_> {
         Some(RayHit {
             name: self
                 .world
-                .get::<Name>(hit.entity)
+                .get::<Name>(owner(hit.entity))
                 .map(|name| name.0.clone())
                 .unwrap_or_default(),
             point: hit.point,
