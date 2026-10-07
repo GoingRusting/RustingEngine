@@ -102,6 +102,7 @@ Engine features for the horror game FOREVER BEAR.
 - `GameScene::counter_or(name, default)` reads a counter that may not exist yet without the missing-counter warning.
 - The missing-counter warning lists close counter names ("did you mean `money`?") when the name looks like a typo.
 - `set_color`, `trigger`, `spawn_copy` and the other name-taking setters that return nothing warn once, with the nearest object names, when the name does not exist.
+- docs/concepts.md "Build times" states the 3 s edit-to-diagnostic budget and shows how to share one `CARGO_TARGET_DIR` across games so the engine builds once.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

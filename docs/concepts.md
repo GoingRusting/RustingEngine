@@ -166,6 +166,29 @@ fn open_door(tree: SceneTree, mut doors: Query<&mut Transform>) {
 | `name(entity)` | The object's name. |
 | `in_class(class)`, `is_in_class(entity, class)` | Class members from `ClassIndex`. |
 
+## Build times
+
+`rusting check`, `run`, `test` and `export` build game code with Cargo.
+The budget is 3 seconds from saving a game file to its diagnostic once
+the engine is built. Measured on forever-bear (3,700 lines of game code,
+Ryzen 5 7600X, 2026-10-07): a type error is reported in 0.9 s and the
+fixed build is green in 2.1 s.
+
+The first build of a project compiles the engine and takes about 2
+minutes, and every project keeps its own multi-gigabyte `target/`. To
+build the engine once for all your games, point them at one shared
+target directory:
+
+```sh
+export CARGO_TARGET_DIR=~/.cache/rusting-target
+```
+
+With it, a second project's first `rusting check` took 3.1 s instead of
+122 s. Games that pick different engine features (for example
+`default-features = false`) still compile their own copy of the engine
+once. Each game needs its own package name, or their binaries overwrite
+each other. `rusting export` finds the binary in the shared directory.
+
 ## Data assets
 
 A data asset is a file of typed values that several objects share, like a

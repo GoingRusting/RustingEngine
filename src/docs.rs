@@ -834,6 +834,12 @@ mod tests {
     }
 
     #[test]
+    fn build_time_budget_and_shared_target_are_documented() {
+        let (found, _) = search("CARGO_TARGET_DIR shared build", 50);
+        assert!(found.iter().any(|item| item["id"] == "manual/concepts"));
+    }
+
+    #[test]
     fn primitive_uvs_and_child_scale_are_explained() {
         for (query, page) in [
             ("cylinder cap texture disc", "guide/look-and-feel"),
