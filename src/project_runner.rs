@@ -454,13 +454,27 @@ impl GameScene<'_> {
 
     /// Puts every scene object back as the game started: objects spawned
     /// since are removed, and moved, hidden or despawned ones return with
-    /// their starting components. [`Self::once`] blocks run again. Time,
-    /// input and resources carry on, and so do playing sounds: restart
+    /// their starting components. [`Self::once`] blocks run again.
+    /// Counters saved in the scene go back to their starting values;
+    /// counters made by [`Self::set_counter`] are gone until code sets them
+    /// again. Time (`fixed_tick` keeps counting), input and resources carry
+    /// on, and so do playing sounds: restart
     /// stops none, so a loop started in a `once` block would play twice.
     /// Call [`Self::stop_all_sounds`] (or stop the loop by its ID) before
     /// restarting. Returns false when the game was not
     /// started from a scene file, or when that file no longer loads (the
     /// error is logged and the scene stays as it was).
+    ///
+    /// To carry a value across, such as the night to play, save it first
+    /// and read it back in setup:
+    ///
+    /// ```ignore
+    /// scene.save_data("session.json", &night.to_string()).ok();
+    /// scene.restart();
+    /// // in a `once` block:
+    /// let night = scene.load_data("session.json").and_then(|t| t.parse().ok()).unwrap_or(1);
+    /// scene.set_counter("night", night);
+    /// ```
     pub fn restart(&mut self) -> bool {
         restart_scene(self.world)
     }
@@ -1335,7 +1349,10 @@ impl GameScene<'_> {
     /// Stops fixed ticks while `paused`: physics, tweens, player
     /// controllers, emitters and `rusting.counter` changes from pickups.
     /// This update function still runs every frame, so a pause menu draws
-    /// and reads input. Scenario tick numbers count frames and keep going.
+    /// and reads input. `FrameTime::fixed_tick` and `elapsed` stop too, so
+    /// tick-indexed randomness and timers resume where they were;
+    /// `FrameTime::frame` keeps counting. Scenario tick numbers count frames
+    /// and keep going.
     pub fn set_paused(&mut self, paused: bool) {
         self.world
             .resource_mut::<crate::runtime::TimeControl>()
@@ -4201,6 +4218,17 @@ mod tests {
         frame(&mut app, step, false);
         assert_eq!(TICKS.load(Ordering::Relaxed), 5);
         assert_eq!(PRESSES.load(Ordering::Relaxed), 2);
+        // Pause stops `fixed_tick` and tick functions; `frame` counts on.
+        GameScene {
+            world: app.world_mut(),
+        }
+        .set_paused(true);
+        let before = *app.world().resource::<FrameTime>();
+        frame(&mut app, step * 2, false);
+        let after = *app.world().resource::<FrameTime>();
+        assert_eq!(after.fixed_tick, before.fixed_tick);
+        assert_eq!(after.frame, before.frame + 1);
+        assert_eq!(TICKS.load(Ordering::Relaxed), 5);
     }
 
     #[test]
@@ -4488,6 +4516,9 @@ mod tests {
         // Setup spawns a coin; the ball moves right each frame, the gate is
         // removed, and the third frame restarts.
         fn code(scene: &mut GameScene<'_>, _: &FrameTime) {
+            if scene.object("Ball").position()[0] == 1.0 {
+                scene.set_counter("score", 5);
+            }
             scene.once("setup", |scene| {
                 scene.spawn_cube(
                     "Coin",
@@ -4519,6 +4550,7 @@ mod tests {
         assert_eq!(world.get::<Transform>(ball).unwrap().position, [0.0; 3]);
         assert_eq!(count_named(world, "Gate"), 1);
         assert_eq!(count_named(world, "Coin"), 0);
+        assert_eq!(count_named(world, "score"), 0, "set_counter counters go");
         game.update(frame).unwrap();
         let world = game.world_mut();
         assert_eq!(count_named(world, "Coin"), 1, "setup ran again");
