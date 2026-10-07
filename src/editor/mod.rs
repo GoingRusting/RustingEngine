@@ -157,8 +157,10 @@ impl SceneFileRevision {
 
 /// Reloads the open scene when another tool changed its file. A clean scene
 /// reloads behind an Undo snapshot, so Undo reverts the outside change. A
-/// scene with unsaved edits keeps them and reports the conflict; the next
-/// Save then refuses once before it overwrites.
+/// scene with unsaved edits, or any scene while agent edits are paused,
+/// keeps its state and shows the write as pending in the Agent area: Accept
+/// reloads it behind an Undo snapshot, Reject drops it, and the next Save
+/// refuses once before it overwrites.
 fn reload_external_scene_change(
     world: &mut World,
     state: &mut EditorState,
@@ -170,10 +172,35 @@ fn reload_external_scene_change(
     let Some(path) = known.path.clone() else {
         return;
     };
+    if state.mode != EditorMode::Edit {
+        return;
+    }
     let modified = std::fs::metadata(&path)
         .and_then(|metadata| metadata.modified())
         .ok();
-    if modified == known.modified || state.mode != EditorMode::Edit {
+    let (accept, reject, paused) = world
+        .get_resource_mut::<agent_panel::AgentJournal>()
+        .map_or((false, false, false), |mut journal| {
+            let pending = journal.pending.is_some();
+            let answer = (
+                std::mem::take(&mut journal.accept_requested) && pending,
+                std::mem::take(&mut journal.reject_requested) && pending,
+                journal.paused,
+            );
+            if answer.0 || answer.1 {
+                journal.pending = None;
+            }
+            answer
+        });
+    if reject {
+        state.scene_message = Some(format!(
+            "Rejected the outside change to {}; Save overwrites it",
+            path.display()
+        ));
+        return;
+    }
+    let known = world.resource::<SceneFileRevision>();
+    if !accept && modified == known.modified {
         return;
     }
     let known = known.revision.clone();
@@ -184,13 +211,36 @@ fn reload_external_scene_change(
         world.resource_mut::<SceneFileRevision>().modified = disk.modified;
         return;
     }
-    if state.scene_dirty {
+    if !accept && (state.scene_dirty || paused) {
         world.resource_mut::<SceneFileRevision>().modified = disk.modified;
-        state.scene_message = Some(format!(
-            "{} changed on disk while this scene has unsaved edits; Load \
-             takes the outside change, Save overwrites it",
-            path.display()
-        ));
+        let diff = scene_document(world, "Editor Scene")
+            .ok()
+            .zip(crate::runtime::read_scene_document(&path).ok())
+            .map(|(ours, theirs)| outside_change(&ours, &theirs))
+            .unwrap_or_default();
+        if let Some(mut journal) =
+            world.get_resource_mut::<agent_panel::AgentJournal>()
+        {
+            journal.pending = Some(agent_panel::JournalEntry {
+                path: path.display().to_string(),
+                summary: diff.summary(),
+                ids: diff.touched(),
+            });
+        }
+        state.scene_message = Some(if paused && !state.scene_dirty {
+            format!(
+                "{} changed on disk while agent edits are paused; Accept \
+                 or Reject it in the Agent area",
+                path.display()
+            )
+        } else {
+            format!(
+                "{} changed on disk while this scene has unsaved edits; \
+                 Accept in the Agent area or Load takes the outside change, \
+                 Save overwrites it",
+                path.display()
+            )
+        });
         return;
     }
     if let Err(error) = remember_scene_before_edit(world, history) {

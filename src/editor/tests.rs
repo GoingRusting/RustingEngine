@@ -1824,6 +1824,44 @@ fn outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits() {
     assert!(!std::fs::read_to_string(&path)
         .unwrap()
         .contains("Agent Again"));
+
+    // Paused agent edits: a clean scene queues the write as pending.
+    state.scene_dirty = false;
+    world.resource_mut::<agent_panel::AgentJournal>().paused = true;
+    rename(world, "Paused");
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Cube", "a paused write does not reload");
+    let pending = world
+        .resource::<agent_panel::AgentJournal>()
+        .pending
+        .clone()
+        .expect("the write is pending");
+    assert_eq!(pending.summary, "0 added, 1 changed, 0 removed");
+    assert_eq!(pending.ids, vec![id]);
+    // Reject keeps the scene and the file.
+    world
+        .resource_mut::<agent_panel::AgentJournal>()
+        .reject_requested = true;
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Cube");
+    assert!(world
+        .resource::<agent_panel::AgentJournal>()
+        .pending
+        .is_none());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Paused"));
+    // Accept applies a later pending write behind one Undo snapshot.
+    rename(world, "Accepted");
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Cube");
+    world
+        .resource_mut::<agent_panel::AgentJournal>()
+        .accept_requested = true;
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Accepted");
+    let before = history.undo.back().unwrap().clone();
+    crate::runtime::load_scene_document(world, &before, SceneLoadMode::Replace)
+        .unwrap();
+    assert_eq!(name(world), "Cube", "Undo reverts the accepted write");
     std::fs::remove_dir_all(folder).unwrap();
 }
 

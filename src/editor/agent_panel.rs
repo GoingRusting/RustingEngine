@@ -41,6 +41,15 @@ pub(super) enum AgentTab {
 pub struct AgentJournal {
     pub(super) entries: Vec<JournalEntry>,
     pub(super) tab: AgentTab,
+    /// An outside write the editor has not applied, because the scene had
+    /// unsaved edits or agent edits are paused.
+    pub(super) pending: Option<JournalEntry>,
+    /// Queue outside writes as pending instead of reloading them.
+    pub(super) paused: bool,
+    /// Set by the Accept and Reject buttons; the scene watcher applies them
+    /// on its next poll, behind one Undo snapshot.
+    pub(super) accept_requested: bool,
+    pub(super) reject_requested: bool,
     /// Results file modification time and its rows, reread when it changes.
     results: Option<(std::time::SystemTime, Vec<ResultRow>)>,
 }
@@ -98,6 +107,28 @@ pub(super) fn draw_agent_area(
         return None;
     }
     let mut clicked = None;
+    ui.horizontal(|ui| {
+        kit::toggle(ui, &mut journal.paused);
+        ui.label("Pause agent edits");
+    });
+    if let Some(pending) = &journal.pending {
+        ui.colored_label(
+            EditorTheme::WARNING,
+            format!("Pending: {} ({})", pending.path, pending.summary),
+        );
+        let ids = pending.ids.clone();
+        ui.horizontal(|ui| {
+            if ui.button("Accept").clicked() {
+                journal.accept_requested = true;
+            }
+            if ui.button("Reject").clicked() {
+                journal.reject_requested = true;
+            }
+            if ui.button("Select").clicked() {
+                clicked = Some(ids);
+            }
+        });
+    }
     ui.horizontal(|ui| {
         ui.label(format!("Journal ({})", journal.entries.len()));
         if ui.button("Clear").clicked() {
