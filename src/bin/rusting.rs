@@ -298,6 +298,7 @@ fn execute(args: &[String]) -> CliResult {
                 match *flag {
                     "--release" => options.release = true,
                     "--update-golden" => options.update_golden = true,
+                    "--keep-going" => options.keep_going = true,
                     "--ticks" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
                         _ => return usage("--ticks requires a tick count"),
@@ -1310,6 +1311,14 @@ mod tests {
         );
         let result = execute(&["nonsense".into()]);
         assert!(result.diagnostics[0].message.starts_with("invalid command"));
+        // Accepted: the run fails later, on the missing project.
+        let result = execute(&[
+            "test".into(),
+            "/no/such/project".into(),
+            "a.json".into(),
+            "--keep-going".into(),
+        ]);
+        assert_ne!(result.diagnostics[0].code, "CLI_USAGE");
     }
 
     #[test]

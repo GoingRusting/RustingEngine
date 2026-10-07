@@ -2514,10 +2514,26 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
             let Some(failure) = &report.first_failure else {
                 break 'result CliResult::success(data);
             };
-            let mut message = format!(
-                "tick {} step {}: {}",
-                failure.tick, failure.step, failure.message
-            );
+            // With `keep_going`, every failed step, not just the first.
+            let message = report
+                .steps
+                .iter()
+                .filter(|step| !step.ok)
+                .map(|step| {
+                    format!(
+                        "tick {} step {}: {}",
+                        step.tick, step.step, step.message
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut message = if message.is_empty() {
+                format!(
+                    "tick {} step {}: {}",
+                    failure.tick, failure.step, failure.message
+                )
+            } else {
+                message.join("\n")
+            };
             if !run.stderr.trim().is_empty() {
                 message += &format!(
                     "\ngame stderr (last 20 lines):\n{}",

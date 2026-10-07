@@ -213,8 +213,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "test",
-        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--update-golden] [--json]",
-        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. --update-golden rewrites capture `golden` images instead of comparing them. The scenario format is under `scenario` in `rusting schema`.",
+        usage: "test [project-root] [scenario.json | folder] [--release] [--timeout SECONDS] [--update-golden] [--keep-going] [--json]",
+        summary: "Cook and build the game, then run a scenario file in it without a window: named actions at fixed ticks, checks on reflected scene state and events, and optional captures. Given a folder, runs every .json in it in name order and lists each result under `scenarios`; with neither argument, runs tests/. Fails with SCENARIO_FAILED and the first failing tick and step. --update-golden rewrites capture `golden` images instead of comparing them. --keep-going runs every step after a failed check and lists every failure, like `\"keep_going\": true` in the scenario. The scenario format is under `scenario` in `rusting schema`.",
         gpu: "optional: only capture, expect_pixels and render-budget runs render; captures are skipped without Vulkan; one frame readback per capture or pixel check",
         defaults: &[("--release", "off (debug build)"), ("--timeout", "none"), ("project-root", "the current folder"), ("scenario", "every file in tests/")],
         example: "test my_game my_game/tests/falls.json --json",

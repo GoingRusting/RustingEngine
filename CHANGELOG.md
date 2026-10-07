@@ -53,6 +53,7 @@ Engine features for the horror game FOREVER BEAR.
 - `set_color` and `set_emissive` no longer scan every material or keep one material per eased value; easing 900 objects a tick drops from about 0.5 ms to 0.35 µs a call
 - A scenario check on a counter nobody created yet reads it as 0, as game code does, instead of failing with "no entity"
 - A CLI usage error names the flag the command does not take and prints that command's usage
+- `rusting test --keep-going` runs every step after a failed check, and the failure message lists every failed step
 
 ### Fixed
 
