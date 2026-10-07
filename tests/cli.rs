@@ -985,7 +985,7 @@ fn art_presets_list_and_apply_as_scene_patches() {
         run(&["preset", "apply", scene, "golden_hour", "--dry-run"]);
     assert!(output.status.success(), "{dry}");
     assert_eq!(dry["data"]["patch"]["written"], false);
-    assert_eq!(dry["data"]["patch"]["created"].as_array().unwrap().len(), 1);
+    assert_eq!(dry["data"]["patch"]["created"].as_array().unwrap().len(), 2);
     let (output, applied) = run(&["preset", "apply", scene, "golden_hour"]);
     assert!(output.status.success(), "{applied}");
     let (_, found) = run(&["scene", "query", scene, "--name", "Sun"]);

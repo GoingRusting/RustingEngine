@@ -179,9 +179,11 @@ pub const PRESETS: &[ArtPreset] = &[
     },
 ];
 
-/// What `preset apply --only` can limit a preset to: sun, ambient, sky,
-/// tone mapping and background; perspective field of view; HUD text.
-pub const PRESET_SCOPES: [&str; 3] = ["lighting", "camera", "text"];
+/// What `preset apply --only` can limit a preset to: sun plus environment;
+/// ambient, sky, tone mapping, grading and background without the sun;
+/// perspective field of view; HUD text.
+pub const PRESET_SCOPES: [&str; 4] =
+    ["lighting", "environment", "camera", "text"];
 
 #[must_use]
 pub fn preset(name: &str) -> Option<&'static ArtPreset> {
@@ -190,8 +192,8 @@ pub fn preset(name: &str) -> Option<&'static ArtPreset> {
 
 /// The patch that applies `preset` to `document`. The sun goes on the first
 /// entity with a directional light; ambient, sky, tone mapping and
-/// background go on the first entity with any of them, else on the sun.
-/// Missing entities are created as `Sun` and `Environment`. `only` limits
+/// background go on the first entity with any of them. Missing entities
+/// are created as `Sun` and `Environment`. `only` limits
 /// the patch to some of [`PRESET_SCOPES`]; empty means every scope.
 #[must_use]
 pub fn preset_patch(
@@ -201,7 +203,8 @@ pub fn preset_patch(
 ) -> ScenePatch {
     let wants = |scope: &str| only.is_empty() || only.contains(&scope);
     let mut operations = Vec::new();
-    if !wants("lighting") {
+    let wants_sun = wants("lighting");
+    if !wants_sun && !wants("environment") {
         preset_camera_and_text(document, preset, &wants, &mut operations);
         return ScenePatch {
             expected_revision: None,
@@ -234,19 +237,29 @@ pub fn preset_patch(
         "illuminance": preset.sun_illuminance,
         "shadows": preset.sun_shadows,
     });
-    let sun = sun.unwrap_or_else(|| {
+    let mut create = |name: &str, extra: Value| {
         let id = Uuid::new_v4();
-        operations.push(PatchOperation::Create {
-            entity: json!({
-                "id": id,
-                "name": unused_name(document, "Sun"),
-                "transform": {"position": [0.0, 10.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
-                "directional_light": light,
-                "components": {},
-            }),
+        let mut entity = json!({
+            "id": id,
+            "name": unused_name(document, name),
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "components": {},
         });
+        if let (Some(entity), Value::Object(extra)) =
+            (entity.as_object_mut(), extra)
+        {
+            entity.extend(extra);
+        }
+        operations.push(PatchOperation::Create { entity });
         id
+    };
+    let sun = wants_sun.then(|| {
+        sun.unwrap_or_else(|| {
+            create("Sun", json!({"directional_light": light.clone()}))
+        })
     });
+    let environment =
+        environment.unwrap_or_else(|| create("Environment", json!({})));
     let mut set = |id: Uuid, path: &str, value: Value| {
         operations.push(PatchOperation::Set {
             id: id.into(),
@@ -255,9 +268,10 @@ pub fn preset_patch(
             expected: None,
         });
     };
-    set(sun, "/directional_light", light);
-    set(sun, "/transform/rotation", json!(preset.sun_rotation));
-    let environment = environment.unwrap_or(sun);
+    if let Some(sun) = sun {
+        set(sun, "/directional_light", light);
+        set(sun, "/transform/rotation", json!(preset.sun_rotation));
+    }
     let component = |key: &str| format!("/components/{key}");
     set(
         environment,
@@ -399,6 +413,18 @@ mod tests {
             crate::scene_patch::PatchOperation::Set { path, .. }
                 if path.contains(HUD_ELEMENT_COMPONENT)
         )));
+        let environment_only = preset_patch(&before, night, &["environment"]);
+        assert!(environment_only.operations.iter().all(|operation| {
+            match operation {
+                crate::scene_patch::PatchOperation::Set { path, .. } => {
+                    path.starts_with("/components/")
+                }
+                crate::scene_patch::PatchOperation::Create { entity } => {
+                    entity["directional_light"].is_null()
+                }
+                _ => false,
+            }
+        }));
         let dry =
             patch_scene_file(&scene, &preset_patch(&before, night, &[]), true)
                 .unwrap();
@@ -408,8 +434,8 @@ mod tests {
         let after = read_scene_document(&scene).unwrap();
         assert_eq!(
             after.entities.len(),
-            before.entities.len() + 1,
-            "one Sun added"
+            before.entities.len() + 2,
+            "a Sun and an Environment added"
         );
         let sun = after
             .entities
@@ -417,6 +443,10 @@ mod tests {
             .find(|entity| entity.directional_light.is_some())
             .unwrap();
         assert_eq!(sun.name.as_deref(), Some("Sun"));
+        assert!(
+            !sun.components.contains_key(AMBIENT_LIGHT_COMPONENT),
+            "the environment is its own entity, not the sun"
+        );
         let hud: crate::runtime::HudElement = serde_json::from_str(
             after
                 .entities

@@ -368,8 +368,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "preset apply",
-        usage: "preset apply <scene-path> <preset> [--only lighting,camera,text] [--dry-run] [--json]",
-        summary: "Apply an art-direction preset as one scene patch: sun, ambient and sky light, tone mapping, background color (scope `lighting`), perspective camera field of view (`camera`), and HUD text size and color (`text`). `--only` limits it to the named scopes; the result lists every changed field in `patch.changes`, so `--dry-run` previews them. Creates a Sun entity when the scene has no directional light. The values stay ordinary, editable scene data; reapplying edits the same entities.",
+        usage: "preset apply <scene-path> <preset> [--only lighting,environment,camera,text] [--dry-run] [--json]",
+        summary: "Apply an art-direction preset as one scene patch: sun, ambient and sky light, tone mapping, background color (scope `lighting`; `environment` is the same without the sun), perspective camera field of view (`camera`), and HUD text size and color (`text`). `--only` limits it to the named scopes; the result lists every changed field in `patch.changes`, so `--dry-run` previews them. Creates a Sun entity when the scene has no directional light and an Environment entity for ambient, sky, tone mapping, grading and background when no entity has them. The values stay ordinary, editable scene data; reapplying edits the same entities.",
         gpu: NO_GPU,
         defaults: &[("--dry-run", "false"), ("--only", "every scope")],
         example: "preset apply my_game/scenes/main.rscene night --only lighting --dry-run --json",
