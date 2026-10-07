@@ -62,6 +62,7 @@ Engine features for the horror game FOREVER BEAR.
 - An active ragdoll holds each unkeyed bone field (position, rotation, scale) to its starting pose, so a clip that keys only the hips' position no longer leaves them turned
 - `GameScene::reset_ragdoll(name)` drops a ragdoll's bodies and restores its animated pose, for a teleport without trailing limbs; blending back from limp also restores unkeyed bone fields one by one
 - `rusting docs show api/AnimationEvent` lists the event's fields; `guide/animation` names them too
+- `guide/look-and-feel` no longer claims skinned models import as a still pose
 
 ### Fixed
 

@@ -291,9 +291,9 @@ Steps:
    the scene (check the scale) and may face +Z instead of -Z (turn the
    parent by π).
 
-Limits: skinned meshes and glTF animations import as a still pose. Child
-object names come from the glTF file, so look them up under the parent
-you named rather than by their name alone.
+Skinned meshes keep their skin and their clips play; see `guide/animation`,
+"Skinned meshes". Child object names come from the glTF file, so look them
+up under the parent you named rather than by their name alone.
 
 A shared Rusting model library on a CDN is planned so agents can fetch a
 small set of house models by name. It does not exist yet; use the sources
