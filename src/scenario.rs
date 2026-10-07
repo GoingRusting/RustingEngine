@@ -2255,7 +2255,16 @@ pub(crate) fn reflected(
             "captions": queue.captions(),
         }));
     }
-    let entity = find_entity(world, wanted, |_, _| true)
+    let found = find_entity(world, wanted, |_, _| true);
+    if let (None, Some(counter)) = (found, wanted.strip_prefix(COUNTER_PREFIX))
+    {
+        // Game code reads a counter nobody created yet as 0; so do checks.
+        return Ok(serde_json::json!({
+            "missing": true,
+            "components": {"rusting.counter": {"name": counter, "value": 0}},
+        }));
+    }
+    let entity = found
         .ok_or_else(|| format!("no entity has the ID or name `{wanted}`"))?;
     let id = world
         .get::<SceneId>(entity)
@@ -3393,6 +3402,14 @@ mod tests {
         assert_eq!(log.actual, json!(5));
         let last = report.first_failure.expect("not_equals 5 fails");
         assert!(last.message.contains("expected not 5"), "{}", last.message);
+
+        // A counter nobody created yet reads as 0, as in game code.
+        let unborn = super::tests::scenario(
+            1,
+            json!([{"tick": 1, "expect": {"counter": "plays", "equals": 0}}]),
+        );
+        let report = run_scenario(&mut game(), &unborn, Path::new("."));
+        assert!(report.passed, "{report:#?}");
 
         let both = scenario_from(json!({"tick": 1, "expect": {
             "counter": "score", "entity": "Cube", "equals": 1}}));
