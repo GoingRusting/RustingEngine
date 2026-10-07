@@ -241,6 +241,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_COLLIDER_MISMATCH",
+        "A solid collider is more than twice as big or less than half as big as its entity's built-in mesh on some axis, so the object is hit where it is not drawn, or not hit where it is.",
+        "Size the collider to the mesh (a 1 m cube has half extents 0.5), or make it a sensor if it is a trigger zone.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_LIGHT_BUDGET",
         "More lights are visible than the quality profile uploads (Eco 16, Balanced 32, High and Auto 64). The renderer takes visible directional, then point, then spot lights in scene order and drops the rest without lighting anything.",
         "Hide lights that are not needed yet with `visible: false` (hidden lights are not uploaded), remove lights, or raise `render.quality`.",

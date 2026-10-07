@@ -1071,6 +1071,44 @@ pub fn lint_project(root: &Path) -> CliResult {
     }
 }
 
+/// Local half sizes of a solid collider and its entity's built-in mesh when
+/// any axis differs by more than a factor of 2. Sensors are meant to be
+/// bigger or smaller than what is drawn, and a player's capsule has nothing
+/// to do with its mesh, so both are skipped.
+fn collider_mismatch(entity: &SceneEntity) -> Option<([f32; 3], [f32; 3])> {
+    use crate::assets::PrimitiveShape as P;
+    use crate::runtime::{
+        ColliderShape, SceneMesh, PLAYER_CONTROLLER_COMPONENT,
+    };
+    let collider = entity.collider.as_ref().filter(|c| !c.sensor)?;
+    if entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT) {
+        return None;
+    }
+    let mesh = match entity.mesh_renderer.as_ref()?.mesh {
+        SceneMesh::BuiltinCube
+        | SceneMesh::BuiltinSphere
+        | SceneMesh::BuiltinPrimitive(
+            P::Cube | P::RoundedCube | P::Sphere | P::Cylinder,
+        ) => [0.5; 3],
+        SceneMesh::BuiltinPrimitive(P::Capsule) => [0.5, 1.0, 0.5],
+        _ => return None,
+    };
+    let body = match collider.shape {
+        ColliderShape::Box { half_extents } => half_extents,
+        ColliderShape::Sphere { radius } => [radius; 3],
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } => [radius, half_height + radius, radius],
+        _ => return None,
+    };
+    let off = mesh
+        .iter()
+        .zip(body)
+        .any(|(mesh, body)| !(0.5..=2.0).contains(&(body / mesh)));
+    off.then_some((mesh, body))
+}
+
 /// The `LINT_*` warnings of one scene document.
 fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
     use crate::runtime::{
@@ -1239,6 +1277,16 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
                     format!("has scale {:?}, so it vanishes", transform.scale),
                 );
             }
+        }
+        if let Some((mesh, body)) = collider_mismatch(entity) {
+            warn(
+                "LINT_COLLIDER_MISMATCH",
+                index,
+                "/collider/shape",
+                format!(
+                    "has a collider of half size {body:?} on a mesh of half size {mesh:?}, so it is hit where it is not drawn or not hit where it is"
+                ),
+            );
         }
         if entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT) {
             let shape = entity
@@ -4197,6 +4245,15 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "near": 0.1, "far": 100.0}}, "active": true, "priority": 0});
         let scale = |s: [f32; 3]| json!({"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": s});
         let player = json!({"rusting.player_controller": "{}"});
+        let at = |p: [f32; 3]| json!({"position": p, "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]});
+        let mesh = |shape: &str| {
+            json!({"mesh": {"BuiltinPrimitive": shape},
+            "material": "BuiltinError", "cast_shadows": true, "receive_shadows": true})
+        };
+        let body = |shape: Value, sensor: bool| {
+            json!({"shape": shape,
+            "friction": 0.5, "restitution": 0.0, "sensor": sensor})
+        };
         let scene = json!({"format_version": 7, "name": "Lint", "entities": [
             {"id": id(1), "name": "Giant", "transform": scale([1.0, 20.0, 1.0]),
              "components": player},
@@ -4225,6 +4282,14 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             // Inside its own player's collider: exempt.
             {"id": id(11), "parent": id(3), "name": "Eye Cam", "camera": cam,
              "transform": scale([1.0, 1.0, 1.0])},
+                    // A 1 m cube with a 3 m wide box collider; a ball that matches;
+            // an oversized trigger zone, which is fine.
+            {"id": id(12), "name": "Crate", "transform": at([-20.0, 0.0, 0.0]), "mesh_renderer": mesh("Cube"),
+             "collider": body(json!({"Box": {"half_extents": [1.5, 0.5, 0.5]}}), false)},
+            {"id": id(13), "name": "Ball", "transform": at([-30.0, 0.0, 0.0]), "mesh_renderer": mesh("Sphere"),
+             "collider": body(json!({"Sphere": {"radius": 0.45}}), false)},
+            {"id": id(14), "name": "Zone", "transform": at([-40.0, 0.0, 0.0]), "mesh_renderer": mesh("Cube"),
+             "collider": body(json!({"Box": {"half_extents": [5.0, 5.0, 5.0]}}), true)},
         ]});
         let mut scene = scene;
         scene["entities"][2]["collider"] = json!({"shape": {"Box":
@@ -4245,8 +4310,9 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_LIGHT_OFF", "Lamp".to_owned()),
                 ("LINT_LIGHT_OFF", "Sun".to_owned()),
                 ("LINT_CAMERA_INSIDE", "Stuck Cam".to_owned()),
+                ("LINT_COLLIDER_MISMATCH", "Crate".to_owned()),
             ],
-            "Kid (0.9 m), Torch (switched on in code), Clear Cam and Eye Cam pass"
+            "Kid (0.9 m), Torch (switched on in code), Clear Cam, Eye Cam, Ball and Zone pass"
         );
     }
 

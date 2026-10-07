@@ -2905,7 +2905,16 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
     and a light under a hidden parent do not count). Run over every
     RustingGames project and sample, it flags only forever-bear, whose four
     `Day Light` spot lights are past its Balanced budget.
-  - [ ] Collider and mesh mismatch, and pickups or goals with no reachable path (the explorer bot can supply this). Capsule, cylinder and mesh colliders for the camera check.
+  - [x] Collider and mesh mismatch: `LINT_COLLIDER_MISMATCH` warns when a
+    solid box, sphere or capsule collider is more than twice or less than
+    half the size of its entity's built-in cube, rounded cube, sphere,
+    cylinder or capsule mesh on any axis. Sensors and player controllers are
+    exempt; imported meshes are skipped (no bounds in the scene file).
+    Verified by `lint_flags_giant_players_zero_scales_and_dead_lights` (a
+    1 m cube with a 3 m wide box warns; a ball with a 0.45 radius and an
+    oversized sensor zone pass). Every sample and RustingGames project
+    lints with no new warnings.
+  - [ ] Pickups or goals with no reachable path (the explorer bot can supply this). Capsule, cylinder and mesh colliders for the camera check.
   - [ ] HUD text contrast and off-screen text (needs a rendered frame), events with no audio or visual feedback, and games with no win or lose state.
 - [x] Controller feel metrics in physical units (jump apex height and time, time to top speed, stopping distance, air control), reported by `rusting inspect` and compared with documented genre ranges. Done 2026-10-07: `rusting inspect --tick N` adds `feel` to each entity with a player or platformer controller, with genre ranges (first or third person: 3 to 8 m/s, 0.4 to 1.6 m apex, 0.4 to 1.2 s air time; 2D platformer: 4 to 12 m/s, 1 to 5 m, 0.5 to 1.2 s) and `notes` for numbers outside them. Both controllers set their speed directly, so time to top speed is one fixed step, stopping distance 0 and air control full. Evidence: unit test `controller_feel_reports_jump_and_speed_in_physical_units` (default player 1.27 m apex and 1.02 s air time with no notes; a 20 m moon jump at 2 m/s gets three notes), and a real `rusting inspect` of a copy of `hammer_run` reported 1.27 m apex, 4.08 m jump distance and 7.2 m/s sprint for its player.
 - [x] More data-driven juice: screen shake, hit-stop, squash and stretch, camera trauma, flashes, and particle and sound presets, each a registered component with schema entries.
