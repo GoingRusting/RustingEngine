@@ -366,6 +366,24 @@ let overflow = scene
     .map_or(0, |counts| counts.physics_grid_overflow);
 ```
 
+### Many bodies: what costs time
+
+With thousands of bodies, a few per-body costs decide the frame rate:
+
+- Triangles. A `SphereSpawn` sphere has `4 * subdivisions * subdivisions`
+  triangles: 36 at 3, 144 at 6, 1,024 at the default 16. Forty thousand
+  balls at 6 are 5.8 million triangles a frame; at 3 they are 1.4 million
+  and look the same when small or pixelated. `perf.render.triangles` in
+  `rusting test --json` adds up every pass that draws a mesh, so it can be
+  a multiple of the mesh count. For models, use level of detail
+  (`rusting docs show guide/look-and-feel`).
+- `scene.state_hash(class)` reads every object in the class: about 5 ms
+  for 40,000 bodies. Call it on checkpoint ticks (every 30 ticks, or where
+  a scenario checks it), not in every `update`.
+- The GPU contact grid: keep cells under 8 bodies, as above.
+- Compare runs with `rusting test --json`: `perf.tick_ms_p95` is the CPU
+  side and `perf.render.gpu_ms_p95` the GPU side.
+
 A `rusting.joint` component joins a CPU body to another CPU body, its
 `target`, or to the world when `target` is null. `anchor` and `frame` place
 the joint on this body; `target_anchor` and `target_frame` place it on the

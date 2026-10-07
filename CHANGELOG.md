@@ -86,6 +86,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scenarios and `rusting capture` with GPU bodies no longer draw a frame every tick: ticks without an image step only advance GPU physics, with the same state hashes, so long GPU runs finish sooner.
 - The lighting guide explains light brightness units, the art presets' values and which way directional and spot lights point.
 - GPU contact-grid overflow counts appear in `rusting test --json` perf and in the `RenderCapacityDiagnostics` resource during a game run; the concepts manual explains why crowded cells slow every GPU body.
+- The concepts manual has a "Many bodies" section: triangles per sphere `subdivisions` value, the cost of `state_hash` and where to read CPU and GPU time.
 
 ### Fixed
 

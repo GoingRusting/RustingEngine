@@ -105,7 +105,8 @@ pub struct SphereSpawn {
 }
 
 impl SphereSpawn {
-    /// Creates a sphere template with moderate mesh quality.
+    /// Creates a sphere template with moderate mesh quality: 16
+    /// subdivisions, 1,024 triangles per sphere.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -115,6 +116,8 @@ impl SphereSpawn {
     }
 
     /// Changes the sphere mesh quality. Meshes are cached by this value.
+    /// A sphere has `4 * value * value` triangles (3: 36, 6: 144, 16:
+    /// 1,024); for thousands of small spheres 3 to 6 is plenty.
     #[must_use]
     pub fn subdivisions(mut self, value: u32) -> Self {
         self.subdivisions = value.clamp(2, 128);
@@ -1721,6 +1724,10 @@ impl GameScene<'_> {
     /// it leaves out the clock and everything else, so two rounds that
     /// leave the class in the same state hash the same at any tick. Equal
     /// floats bit for bit give equal hashes; any drift changes it.
+    ///
+    /// It reads every object in the class, so its cost grows with the
+    /// class: milliseconds for tens of thousands of bodies. Call it on
+    /// checkpoint ticks, not every frame.
     #[must_use]
     pub fn state_hash(&mut self, class: &str) -> u64 {
         let mut hasher = crate::runtime::StateHasher::default();

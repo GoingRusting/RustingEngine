@@ -784,6 +784,22 @@ mod tests {
     }
 
     #[test]
+    fn many_body_costs_are_explained() {
+        for query in ["subdivisions triangles", "state_hash checkpoint"] {
+            let (found, _) = search(query, 50);
+            assert!(
+                found.iter().any(|item| item["id"] == "manual/concepts"),
+                "{query}"
+            );
+        }
+        // The documented count matches the mesh.
+        for n in [3, 6, 16] {
+            let mesh = crate::assets::procedural_sphere_mesh(n);
+            assert_eq!(mesh.indices.len() as u32 / 3, 4 * n * n);
+        }
+    }
+
+    #[test]
     fn contact_grid_overflow_is_explained() {
         let (found, _) = search("contact grid overflow", 50);
         assert!(
