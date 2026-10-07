@@ -694,6 +694,42 @@ impl GameScene<'_> {
         self.world.resource_mut::<RenderSettings>().pixelated = pixelated;
     }
 
+    /// Sets the exposure of the scene's `rusting.tone_mapping`, adding a
+    /// linear one when the scene has none. 1 is neutral; above 1 brightens
+    /// a dark camera feed. Negative or non-finite values are ignored.
+    pub fn set_exposure(&mut self, exposure: f32) {
+        if !(exposure.is_finite() && exposure >= 0.0) {
+            return;
+        }
+        let mut query = self.world.query::<&mut crate::runtime::ToneMapping>();
+        if let Some(mut tone) = query.iter_mut(self.world).next() {
+            tone.exposure = exposure;
+        } else {
+            self.world.spawn(crate::runtime::ToneMapping {
+                exposure,
+                ..crate::runtime::ToneMapping::default()
+            });
+        }
+    }
+
+    /// Turns the mouse look of player `name` on or off. Off frees a
+    /// captured cursor so menus and in-world screens can be clicked; on
+    /// captures it again at the next left click. False without such a
+    /// player.
+    pub fn set_mouse_look(&mut self, name: &str, enabled: bool) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let Some(mut player) = self
+            .world
+            .get_mut::<crate::runtime::PlayerController>(entity)
+        else {
+            return false;
+        };
+        player.mouse_look = enabled;
+        true
+    }
+
     /// The scale from [`Self::set_render_scale`].
     #[must_use]
     pub fn render_scale(&self) -> f32 {
@@ -4677,6 +4713,30 @@ mod tests {
         assert_eq!(world.resource::<WindowRequest>().size, Some([1280, 1]));
         GameScene { world: &mut world }.set_max_fps(None);
         assert!(!world.resource::<RenderSettings>().limit_fps);
+        let mut scene = GameScene { world: &mut world };
+        scene.set_exposure(2.5);
+        scene.set_exposure(-1.0);
+        let mut tones = world.query::<&crate::runtime::ToneMapping>();
+        let tone: Vec<_> = tones.iter(&world).collect();
+        assert_eq!(tone.len(), 1);
+        assert_eq!(tone[0].exposure, 2.5);
+        GameScene { world: &mut world }.set_exposure(0.5);
+        assert_eq!(tones.iter(&world).next().unwrap().exposure, 0.5);
+        let guard = world
+            .spawn((
+                Name("Guard".into()),
+                crate::runtime::PlayerController::default(),
+            ))
+            .id();
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.set_mouse_look("Guard", false));
+        assert!(!scene.set_mouse_look("Nobody", false));
+        assert!(
+            !world
+                .get::<crate::runtime::PlayerController>(guard)
+                .unwrap()
+                .mouse_look
+        );
     }
 
     #[test]

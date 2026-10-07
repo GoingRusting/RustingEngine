@@ -64,6 +64,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting docs show api/AnimationEvent` lists the event's fields; `guide/animation` names them too
 - `guide/look-and-feel` no longer claims skinned models import as a still pose
 - `scene add-model` suffixes repeated or taken node names (`slice 2`) instead of failing, and a taken root name says to pass `--name`
+- `GameScene::set_exposure` and `GameScene::set_mouse_look` set exposure and free or recapture the cursor without `world()`
 
 ### Fixed
 

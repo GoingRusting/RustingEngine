@@ -103,7 +103,10 @@ is not useful while looking. To click things while looking, use
 `scene.aim(distance)`, the ray through the centre of the view, on a left
 click, and draw a crosshair or aim dot at the centre of the screen.
 `pointer_ray()` is for views where the cursor stays free: set
-`mouse_look: false` for those.
+`mouse_look: false` for those. From game code,
+`scene.set_mouse_look("Player", false)` frees the cursor for a menu or an
+in-world screen, and `true` hands the view back; the next left click
+captures the cursor again.
 
 A scenario turns the view with `set` on the controller's `yaw` and `pitch`,
 then clicks what the centre now faces:
