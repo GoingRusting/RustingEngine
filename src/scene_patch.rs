@@ -577,6 +577,19 @@ fn fill_defaults(
             {
                 rgb.push(1.0.into());
             }
+            Some(Value::Array(short))
+                if key.ends_with("color")
+                    && short.len() != 4
+                    && default
+                        .as_array()
+                        .is_some_and(|rgba| rgba.len() == 4) =>
+            {
+                return Err(format!(
+                    "/{path}/{key}: a color needs 3 numbers (RGB, alpha 1) \
+                     or 4 (RGBA), got {}",
+                    short.len()
+                ));
+            }
             Some(value) => {
                 fill_defaults(
                     value,
@@ -733,6 +746,30 @@ pub fn apply_patch(
     document: &SceneDocument,
     patch: &ScenePatch,
 ) -> Result<(SceneDocument, PatchOutcome), PatchError> {
+    // An invalid object names the last operation that changed it.
+    let mut touched = BTreeMap::new();
+    apply_tracked(document, patch, &mut touched).map_err(|error| match error {
+        PatchError::InvalidObject { id, name, message } => {
+            PatchError::InvalidObject {
+                message: match touched.get(&id) {
+                    Some(operation) => {
+                        format!("operation {operation}: {message}")
+                    }
+                    None => message,
+                },
+                id,
+                name,
+            }
+        }
+        error => error,
+    })
+}
+
+fn apply_tracked(
+    document: &SceneDocument,
+    patch: &ScenePatch,
+    touched: &mut BTreeMap<Uuid, usize>,
+) -> Result<(SceneDocument, PatchOutcome), PatchError> {
     let before: Vec<Value> =
         document.entities.iter().map(entity_form).collect();
     let mut entities = before.clone();
@@ -773,7 +810,17 @@ pub fn apply_patch(
             )?;
             continue;
         }
+        // ponytail: copies the entity list per operation; track ids in
+        // apply_operation if large patches get slow.
+        let previous = entities.clone();
         apply_operation(&mut entities, index, operation)?;
+        for entity in &entities {
+            if !previous.contains(entity) {
+                if let Some(id) = entity_id(entity) {
+                    touched.insert(id, index);
+                }
+            }
+        }
     }
     let (defaults, component_defaults) = crate::schema::defaults();
     // Entities the patch did not touch are not this patch's to reject.
@@ -783,13 +830,25 @@ pub fn apply_patch(
         if untouched.contains(&entity.to_string()) {
             continue;
         }
+        let invalid = |entity: &Value| {
+            let (id, name) = (entity_id(entity), entity["name"].as_str());
+            let name = name.map(str::to_owned);
+            move |message| match id {
+                Some(id) => PatchError::InvalidObject {
+                    id,
+                    name: name.clone(),
+                    message,
+                },
+                None => PatchError::Invalid(message),
+            }
+        };
+        let invalid = invalid(entity);
         let Value::Object(sections) = entity else {
             continue;
         };
         for (key, section) in sections.iter_mut() {
             if let Some(default) = defaults.get(key) {
-                fill_defaults(section, default, key, true)
-                    .map_err(PatchError::Invalid)?;
+                fill_defaults(section, default, key, true).map_err(&invalid)?;
             }
         }
         if let Some(Value::Object(components)) = sections.get_mut("components")
@@ -797,7 +856,7 @@ pub fn apply_patch(
             for (key, component) in components {
                 if let Some(default) = component_defaults.get(key) {
                     fill_defaults(component, default, key, false)
-                        .map_err(PatchError::Invalid)?;
+                        .map_err(&invalid)?;
                 }
             }
         }
@@ -1257,6 +1316,7 @@ mod tests {
         let error = patch_scene_file(
             &path,
             &patch(json!({"operations": [
+                {"op": "create", "entity": {"name": "Wall"}},
                 {"op": "create", "entity": {"name": "Floor",
                     "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
                         "material": {"Inline": {"base_color": [1, 0]}}}}}
@@ -1266,7 +1326,24 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("(`Floor`): /mesh_renderer/material/Inline/base_color: invalid length 2"),
+            error.contains("(`Floor`): operation 1: /mesh_renderer/material/Inline/base_color: a color needs 3 numbers (RGB, alpha 1) or 4 (RGBA), got 2"),
+            "{error}"
+        );
+        // A serde error names the operation too.
+        let error = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "create", "entity": {"name": "Post",
+                    "transform": {"position": [1, 2]}}}
+            ]})),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(
+                "(`Post`): operation 0: /transform/position: invalid length 2"
+            ),
             "{error}"
         );
         // RGB is fine: alpha defaults to 1.

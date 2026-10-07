@@ -91,6 +91,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting docs show api/BusEffect` lists the bus effects and their fields, and `api/GameScene::press_tick` names the scenario `at` field.
 - `expect_pixels` takes `differs_from` with `difference_min` or `difference_max` to compare a region with an earlier capture.
 - Cylinder and cone caps show a texture as a disc, a Plane shows the whole texture, and the mesh kit docs say how each primitive maps textures and that children inherit their parent's scale.
+- Invalid-object patch errors name the operation at fault, and a short color says it needs 3 or 4 numbers.
 
 ### Fixed
 
