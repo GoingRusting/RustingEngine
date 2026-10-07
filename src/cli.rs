@@ -1110,9 +1110,16 @@ fn collider_mismatch(entity: &SceneEntity) -> Option<([f32; 3], [f32; 3])> {
 }
 
 /// The `LINT_*` warnings of one scene document.
+/// HUD text smaller than this, in logical pixels, warns `LINT_TEXT_SMALL`.
+const MIN_HUD_FONT_SIZE: f32 = 14.0;
+/// The smallest view, in logical pixels, that HUD text must fit.
+const LINT_VIEW: [f32; 2] = [1280.0, 720.0];
+
 fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
     use crate::runtime::{
-        ColliderShape, DEFAULT_PLAYER_SHAPE, PLAYER_CONTROLLER_COMPONENT,
+        ColliderShape, HudAnchor, HudElement, DEFAULT_PLAYER_SHAPE,
+        HUD_ELEMENT_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
+        PLAYER_CONTROLLER_COMPONENT,
     };
     let by_id: std::collections::HashMap<_, _> =
         document.entities.iter().map(|e| (e.id, e)).collect();
@@ -1183,7 +1190,7 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             !entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT)
                 && !entity
                     .components
-                    .contains_key("rusting.platformer_controller")
+                    .contains_key(PLATFORMER_CONTROLLER_COMPONENT)
         })
         .filter_map(|entity| {
             let collider = entity.collider.as_ref()?;
@@ -1305,6 +1312,50 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
                     index,
                     "/transform/scale",
                     format!("has scale {:?}, so it vanishes", transform.scale),
+                );
+            }
+        }
+        let hud = entity
+            .components
+            .get(HUD_ELEMENT_COMPONENT)
+            .and_then(|text| serde_json::from_str::<HudElement>(text).ok());
+        if let Some(hud) = hud {
+            if hud.font_size < MIN_HUD_FONT_SIZE {
+                warn(
+                    "LINT_TEXT_SMALL",
+                    index,
+                    &format!("/components/{HUD_ELEMENT_COMPONENT}"),
+                    format!(
+                        "has HUD text at font_size {}, below the {MIN_HUD_FONT_SIZE} px that stays readable",
+                        hud.font_size
+                    ),
+                );
+            }
+            // Where the text's anchored corner lands in the smallest
+            // supported view; a camera's viewport is left out.
+            let [w, h] = LINT_VIEW;
+            let (x, y, inward) = match hud.anchor {
+                HudAnchor::TopLeft => (0.0, 0.0, [1.0, 1.0]),
+                HudAnchor::Top => (w / 2.0, 0.0, [1.0, 1.0]),
+                HudAnchor::TopRight => (w, 0.0, [-1.0, 1.0]),
+                HudAnchor::Center => (w / 2.0, h / 2.0, [1.0, 1.0]),
+                HudAnchor::BottomLeft => (0.0, h, [1.0, -1.0]),
+                HudAnchor::Bottom => (w / 2.0, h, [1.0, -1.0]),
+                HudAnchor::BottomRight => (w, h, [-1.0, -1.0]),
+            };
+            let at =
+                [x + hud.offset[0] * inward[0], y + hud.offset[1] * inward[1]];
+            let outside =
+                !(0.0..=w).contains(&at[0]) || !(0.0..=h).contains(&at[1]);
+            if hud.camera.is_none() && outside {
+                warn(
+                    "LINT_TEXT_OFFSCREEN",
+                    index,
+                    &format!("/components/{HUD_ELEMENT_COMPONENT}/offset"),
+                    format!(
+                        "has HUD text anchored {:?} with offset {:?}, which places it at {at:?}, outside a {w} x {h} view",
+                        hud.anchor, hud.offset
+                    ),
                 );
             }
         }
@@ -4451,6 +4502,17 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              "collider": body(json!({"Sphere": {"radius": 0.3}}), true)},
             {"id": id(20), "name": "Free Coin", "transform": at([51.5, 0.0, 0.0]),
              "collider": body(json!({"Sphere": {"radius": 0.3}}), true)},
+            // HUD text: 10 px is too small; 1400 px right of the top-left
+            // corner is off a 1280 px view; 40 px up from the bottom is fine,
+            // and so is any offset inside a camera's own viewport.
+            {"id": id(21), "name": "Tiny Text", "components": {"rusting.hud":
+             json!({"text": "hp", "font_size": 10.0}).to_string()}},
+            {"id": id(22), "name": "Lost Text", "components": {"rusting.hud":
+             json!({"text": "score", "offset": [1400.0, 16.0]}).to_string()}},
+            {"id": id(23), "name": "Footer", "components": {"rusting.hud":
+             json!({"text": "ok", "anchor": "Bottom", "offset": [0.0, 40.0]}).to_string()}},
+            {"id": id(24), "name": "Cam Text", "components": {"rusting.hud":
+             json!({"text": "cam", "offset": [1400.0, 16.0], "camera": "Clear Cam"}).to_string()}},
         ]});
         let mut scene = scene;
         scene["entities"][2]["collider"] = json!({"shape": {"Box":
@@ -4474,6 +4536,8 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_COLLIDER_MISMATCH", "Crate".to_owned()),
                 ("LINT_CAMERA_INSIDE", "Pillar Cam".to_owned()),
                 ("LINT_GOAL_INSIDE", "Buried Coin".to_owned()),
+                ("LINT_TEXT_SMALL", "Tiny Text".to_owned()),
+                ("LINT_TEXT_OFFSCREEN", "Lost Text".to_owned()),
             ],
             "Kid (0.9 m), Torch (switched on in code), Clear Cam, Eye Cam, Ball and Zone pass"
         );

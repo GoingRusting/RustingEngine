@@ -271,6 +271,18 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_TEXT_OFFSCREEN",
+        "HUD text's anchored corner lands outside a 1280 x 720 view: its offset points away from the screen or is bigger than the screen, so the text is not seen.",
+        "Offsets point from the anchor toward the screen centre; use a positive offset smaller than the view, or pick the anchor nearest where the text belongs.",
+        "rusting lint --json",
+    ),
+    code(
+        "LINT_TEXT_SMALL",
+        "HUD text has a font_size below 14 logical pixels, which is hard to read, more so on a TV or a high-DPI laptop.",
+        "Raise font_size to 18 or more for body text (the default) and 14 at the least.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_ZERO_SCALE",
         "An entity has a zero scale on some axis, so its mesh and collider vanish.",
         "Set every scale axis above zero; hide the entity with `visible: false` instead.",
