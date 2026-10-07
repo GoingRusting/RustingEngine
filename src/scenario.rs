@@ -153,11 +153,11 @@ fn collect_hashes(world: &World, report: &mut ScenarioReport) {
 }
 
 /// Plays this tick's sound requests into the offline mix and renders one
-/// fixed step of audio, appended to `samples`.
+/// fixed step of audio, appended to `samples` when given.
 fn mix_tick(
     app: &mut App,
     mixer: &mut crate::audio_output::OfflineMixer,
-    samples: &mut Vec<f32>,
+    samples: Option<&mut Vec<f32>>,
 ) {
     let world = app.world_mut();
     let commands = world
@@ -210,7 +210,9 @@ fn mix_tick(
         buses: mixer.buses(),
     };
     world.insert_resource(mix);
-    samples.extend_from_slice(&block);
+    if let Some(samples) = samples {
+        samples.extend_from_slice(&block);
+    }
 }
 
 /// Path of a counter's value in its entity's scene form.
@@ -1980,6 +1982,10 @@ pub fn run_scenario(
         })
         .collect();
     let mut mixer = crate::audio_output::OfflineMixer::offline();
+    // The whole mix is kept only for the steps that read it; a long soak
+    // would otherwise grow by 384 KB per second of game time.
+    let keep_mix =
+        scenario.audio_out.is_some() || scenario.audio_reference.is_some();
     let mut mixed = Vec::new();
     if let (true, Some(Err(error))) = (scenario.gpu, capture.as_ref()) {
         report.steps.push(StepResult {
@@ -2134,7 +2140,7 @@ pub fn run_scenario(
         // `audio:` sees them.
         crate::runtime::route_sound_events(app.world_mut());
         if let Some(mixer) = &mut mixer {
-            mix_tick(app, mixer, &mut mixed);
+            mix_tick(app, mixer, keep_mix.then_some(&mut mixed));
         }
         collect_hashes(app.world(), &mut report);
         if let Err(error) = updated {

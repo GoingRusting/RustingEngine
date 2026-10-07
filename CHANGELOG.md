@@ -148,6 +148,7 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
+- A scenario keeps its whole audio mix only when it has `audio_out` or `audio_reference`, so a long soak no longer grows by 384 KB per second of game time (FOREVER BEAR F47).
 - An exported game whose cooked scene was made by a different engine build loads its source scene from `scenes/` with a warning, as a dev project does; with no source, the error names the cooked file and says to recook it with a CLI built from the game's engine (FOREVER BEAR F45).
 - `rusting export` copies `project.json` into the export, so the game finds `assets/` (and its window size) from its own folder instead of looking next to `build/` (FOREVER BEAR F44).
 - A headless `rusting run --ticks` clears the input edges after each update, as the windowed loop does, so a key game code presses is "just pressed" for one update, not every update after (FOREVER BEAR F43).
