@@ -531,7 +531,46 @@ fn execute(args: &[String]) -> CliResult {
             }
             cli::capture_scene(Path::new(scene), &options)
         }
-        _ => usage("invalid command or arguments; run `rusting --help`"),
+        _ => usage(bad_arguments(&positional)),
+    }
+}
+
+/// Names a flag the command's usage does not list, and shows that usage.
+fn bad_arguments(args: &[&str]) -> String {
+    let words = args.iter().take_while(|arg| !arg.starts_with('-'));
+    let operation = OPERATIONS
+        .iter()
+        .filter(|operation| {
+            let name: Vec<_> = operation.name.split(' ').collect();
+            words.clone().take(name.len()).eq(name.iter())
+        })
+        .max_by_key(|operation| operation.name.len());
+    let Some(operation) = operation else {
+        return "invalid command or arguments; run `rusting --help`".into();
+    };
+    let listed = |flag: &str| {
+        operation
+            .usage
+            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+            .any(|word| word == flag)
+    };
+    match args
+        .iter()
+        .find(|arg| arg.starts_with("--") && !listed(arg))
+    {
+        Some(&"--release") if operation.name == "determinism" => {
+            "unknown flag `--release` for `determinism`: it always builds \
+             and compares debug and release"
+                .into()
+        }
+        Some(flag) => format!(
+            "unknown flag `{flag}` for `{}`; usage: rusting {}",
+            operation.name, operation.usage
+        ),
+        None => format!(
+            "invalid arguments for `{}`; usage: rusting {}",
+            operation.name, operation.usage
+        ),
     }
 }
 
@@ -1248,6 +1287,30 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bad_flag_is_named_with_the_command_usage() {
+        let result = execute(&["determinism".into(), "--release".into()]);
+        assert_eq!(result.exit_code(), 2);
+        let message = &result.diagnostics[0].message;
+        assert!(message.contains("always builds and compares"), "{message}");
+        let result = execute(&["check".into(), "--fast".into()]);
+        let message = &result.diagnostics[0].message;
+        assert!(
+            message.starts_with(
+                "unknown flag `--fast` for `check`; usage: rusting check ["
+            ),
+            "{message}"
+        );
+        let result = execute(&["determinism".into(), "--ticks".into()]);
+        let message = &result.diagnostics[0].message;
+        assert!(
+            message.starts_with("invalid arguments for `determinism`"),
+            "{message}"
+        );
+        let result = execute(&["nonsense".into()]);
+        assert!(result.diagnostics[0].message.starts_with("invalid command"));
+    }
 
     #[test]
     fn mcp_lists_tools_and_calls_them_like_the_cli() {
