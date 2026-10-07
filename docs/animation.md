@@ -357,6 +357,10 @@ only the hips' position still keeps them upright.
   sags a little under gravity; stiffer muscles sag less.
 - `set_ragdoll_muscle(name, 0.0)` lets it go limp and then return to plain
   animation; `set_ragdoll_muscle(name, 10.0)` makes it active again.
+- `set_position` moves the character at once, but the bodies spring after
+  it at the muscle's rate. For a teleport, call
+  `scene.reset_ragdoll(name)` right after: the bodies respawn at rest on
+  the bones next tick. On a limp character it stands it up at once.
 - Rays hit the bodies. A hit reports the bone's name, and
   `raycast_skipping` skips the bodies by the bone's classes: give every
   bone the character's class and its own sight rays pass through its limbs.

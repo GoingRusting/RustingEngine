@@ -4805,6 +4805,30 @@ fn phase(app: &App, hero: Entity) -> RagdollPhase {
 }
 
 #[test]
+fn reset_ragdoll_teleports_an_active_ragdoll_with_its_bodies() {
+    let (mut app, hero, _, _) = ragdoll_scene(20.0);
+    run_fixed_steps(&mut app, 2);
+    let old = app.world().get::<RagdollState>(hero).unwrap().parts[0];
+    let was = app.world().get::<Transform>(old).unwrap().position;
+    app.world_mut().get_mut::<Transform>(hero).unwrap().position[0] += 5.0;
+    let mut scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    assert!(scene.reset_ragdoll("Hero"));
+    assert!(!scene.reset_ragdoll("Nobody"));
+    assert!(app.world().get_entity(old).is_err(), "old bodies are gone");
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Active);
+    let part = app.world().get::<RagdollState>(hero).unwrap().parts[0];
+    let at = app.world().get::<Transform>(part).unwrap().position;
+    assert!((at[0] - was[0] - 5.0).abs() < 0.05, "hips body at {at:?}");
+    let speed = nalgebra::Vector3::from(
+        app.world().get::<RigidBody>(part).unwrap().linear_velocity,
+    );
+    assert!(speed.norm() < 1.0, "respawned moving at {speed}");
+}
+
+#[test]
 fn an_active_ragdoll_returns_an_unkeyed_rotation_to_its_pose() {
     let (mut app, hero, hips, _) = ragdoll_scene(20.0);
     run_fixed_steps(&mut app, 1);

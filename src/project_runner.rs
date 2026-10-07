@@ -2090,6 +2090,18 @@ impl GameScene<'_> {
         }
     }
 
+    /// Drops the named character's ragdoll bodies and puts its bones back on
+    /// their animated pose. An active ragdoll (`muscle` above 0) respawns
+    /// its bodies on the next tick, at rest on the bones. Call it right
+    /// after `set_position` to teleport a ragdoll without its limbs
+    /// trailing behind; a limp character stands up at once. False when the
+    /// object has no ragdoll.
+    pub fn reset_ragdoll(&mut self, name: &str) -> bool {
+        find_named_entity(self.world, name).is_some_and(|entity| {
+            crate::runtime::reset_ragdoll(self.world, entity)
+        })
+    }
+
     /// Whether the named character is limp (not animated or blending back).
     #[must_use]
     pub fn is_limp(&mut self, name: &str) -> bool {

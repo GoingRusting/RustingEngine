@@ -404,15 +404,7 @@ fn drive(
             continue;
         };
         if let Some(mut transform) = world.get_mut::<Transform>(bone) {
-            if transform.position == written.position {
-                transform.position = before.position;
-            }
-            if transform.rotation == written.rotation {
-                transform.rotation = before.rotation;
-            }
-            if transform.scale == written.scale {
-                transform.scale = before.scale;
-            }
+            *transform = unkeyed(*transform, written, before);
         }
     }
     let targets: Vec<Option<Pose>> =
@@ -548,6 +540,65 @@ fn move_under_hips(
 }
 
 /// Removes the bodies and starts blending back.
+/// `now` with each field that still holds what this module `written` taken
+/// from `before`; fields a clip keyed this tick keep the clip's value.
+fn unkeyed(
+    now: Transform,
+    written: &Transform,
+    before: &Transform,
+) -> Transform {
+    let pick = |now: [f32; 3], written: [f32; 3], before: [f32; 3]| {
+        if now == written {
+            before
+        } else {
+            now
+        }
+    };
+    Transform {
+        position: pick(now.position, written.position, before.position),
+        rotation: pick(now.rotation, written.rotation, before.rotation),
+        scale: pick(now.scale, written.scale, before.scale),
+    }
+}
+
+/// Drops the named character's ragdoll bodies and puts its bones back on
+/// their animated pose, as if it had never gone physical. An active
+/// ragdoll respawns its bodies on the next tick, at rest where the bones
+/// are now: call it after moving the character for a clean teleport.
+/// False when `root` has no ragdoll.
+pub(crate) fn reset_ragdoll(world: &mut World, root: Entity) -> bool {
+    let Some(ragdoll) = world.get::<Ragdoll>(root).cloned() else {
+        return false;
+    };
+    let Some(state) = world
+        .get_mut::<RagdollState>(root)
+        .map(|mut state| std::mem::take(&mut *state))
+    else {
+        return true;
+    };
+    for (i, bone) in ragdoll.bones.iter().enumerate() {
+        let (Some(entity), Some(written), Some(before)) = (
+            find_target(world, root, &bone.path),
+            state.written.get(i),
+            state.before.get(i),
+        ) else {
+            continue;
+        };
+        if let Some(mut transform) = world.get_mut::<Transform>(entity) {
+            *transform = unkeyed(*transform, written, before);
+        }
+    }
+    for part in state.parts {
+        if part != Entity::PLACEHOLDER && world.get_entity(part).is_ok() {
+            world.despawn(part);
+        }
+    }
+    if let Some(collider) = state.collider {
+        world.entity_mut(root).insert(collider);
+    }
+    true
+}
+
 fn recover(
     world: &mut World,
     root: Entity,
@@ -592,11 +643,7 @@ fn blend(
         let Some(mut transform) = world.get_mut::<Transform>(bone) else {
             continue;
         };
-        let target = if *transform == *written {
-            *before
-        } else {
-            *transform
-        };
+        let target = unkeyed(*transform, written, before);
         let (a, b) = (quaternion(from.rotation), quaternion(target.rotation));
         let b = if a.coords.dot(&b.coords) < 0.0 {
             UnitQuaternion::new_unchecked(-b.into_inner())
