@@ -49,6 +49,8 @@ pub struct GpuBodySettings {
     /// Mass, velocity, and gravity values copied into GPU body state.
     pub rigid_body: crate::runtime::RigidBody,
     /// Collision shape and surface values used by collision solvers.
+    /// `friction` decides whether a dense pile flows: about 0.05 for
+    /// plastic balls; 0.3 can jam a packed tube.
     pub collider: crate::runtime::Collider,
     /// Collision groups used when collision solvers are connected.
     pub collision_layers: crate::runtime::CollisionLayers,

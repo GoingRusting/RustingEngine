@@ -76,6 +76,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting.player_controller` gains `crouch_height` and `crouch_multiplier`, and a `player.crouch` action bound to C, left Ctrl and pad East. Crouching is off by default (`crouch_height` 0). `PLAYER_ACTIONS` now has seven entries.
 - Scenario `audio:` checks read a clip that never played as 0 plays at `/clips/<clip>`.
 - `asset import --to assets/sounds` now means `assets/sounds` instead of `assets/assets/sounds`.
+- New docs pages `api/GpuBodySettings`, `api/GpuConditionShader` and `api/MaterialAsset`, and a note on friction and jamming in dense GPU piles.
 
 ### Fixed
 

@@ -1140,16 +1140,25 @@ pub enum AlphaMode {
     Blend,
 }
 
+/// Surface settings for `GameScene::create_material`. Build it with
+/// `..MaterialAsset::default()` (white, roughness 0.5, opaque PBR) and
+/// set only the fields you need. Colors are linear RGB(A), 0 to 1.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialAsset {
     /// Editor name, such as "glass"; empty when unnamed. Two materials
     /// that differ only by name stay separate assets.
     pub name: String,
+    /// `Pbr` (default) or `Unlit`, which ignores lights.
     pub model: MaterialModel,
+    /// `Opaque` (default), `Mask { cutoff }` or `Blend` for see-through.
     pub alpha_mode: AlphaMode,
+    /// Surface color and alpha.
     pub base_color: [f32; 4],
+    /// Light the surface gives off on its own; above 1 blooms.
     pub emissive: [f32; 3],
+    /// 0 is plastic or wood, 1 is bare metal.
     pub metallic: f32,
+    /// 0 is a mirror, 1 is fully matte.
     pub roughness: f32,
     /// Share of light that passes through instead of being diffused, 0 to 1.
     /// Above 0 the material draws after opaque objects and shows them

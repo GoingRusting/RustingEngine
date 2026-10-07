@@ -299,6 +299,15 @@ pub fn items() -> Vec<DocItem> {
         include_str!("runtime/hybrid_physics.rs"),
     ));
     items.push(struct_item("RayHit", include_str!("project_runner.rs")));
+    items.push(struct_item(
+        "GpuBodySettings",
+        include_str!("project_runner.rs"),
+    ));
+    items.push(struct_item(
+        "GpuConditionShader",
+        include_str!("runtime/hybrid_physics.rs"),
+    ));
+    items.push(struct_item("MaterialAsset", include_str!("assets/mod.rs")));
     items.push(struct_item("Sound", include_str!("runtime/audio.rs")));
     items.push(struct_item(
         "ParticleEmitter",
@@ -655,6 +664,14 @@ mod tests {
         let graph = super::find("api/WaypointGraph").expect("waypoints");
         for wanted in ["nodes", "nearest", "disconnect", "path", "length"] {
             assert!(graph.text.contains(wanted), "{wanted}: {}", graph.text);
+        }
+        for (page, field) in [
+            ("api/GpuBodySettings", "- `collision_layers:"),
+            ("api/GpuConditionShader", "- `params: Vec<[f32; 4]>`: Values"),
+            ("api/MaterialAsset", "- `roughness: f32`: 0 is a mirror"),
+        ] {
+            let item = super::find(page).expect(page);
+            assert!(item.text.contains(field), "{page}: {}", item.text);
         }
         let player = super::find("api/PlayerController").expect("player");
         assert!(

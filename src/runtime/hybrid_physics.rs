@@ -873,8 +873,11 @@ pub const GPU_PHYSICS_ABI_VERSION: u32 = 1;
 /// See `rusting docs show guide/gpu-condition-shaders` for the whole ABI.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuConditionShader {
+    /// Event names the shader emits, by index.
     pub events: Vec<String>,
+    /// GLSL body of the condition function.
     pub glsl: String,
+    /// Values the shader reads as `condition_params.values[i]`.
     pub params: Vec<[f32; 4]>,
     /// Most events one body emits per tick from this shader; 0 counts as 1.
     pub events_per_body: u32,

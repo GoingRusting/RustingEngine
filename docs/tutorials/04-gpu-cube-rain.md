@@ -86,6 +86,17 @@ chooses how:
 | `collider` | `Collider::default()` | shape, friction, restitution |
 | `collision_layers` | all | which groups collide |
 
+`rusting docs show api/GpuBodySettings` lists the same fields.
+
+**Dense piles.** The GPU solver has no damping setting; `collider.friction`
+is what decides how a packed pile moves. In a ball pit of 40,000 spheres
+pushed through a 1.4 m tube, friction 0.3 jammed the tube (0 balls through
+in 60 s) and 0.05 moved 38,948 balls in the same time. Start near 0.05
+for plastic balls or grain that should flow. A dense pile also has a sharp
+jamming threshold for the force that drives it: below some push it stops
+completely rather than flowing slower, so pace a flow by how many bodies
+move, not by a weaker push.
+
 You can set the same thing in a scene: set an object's
 `physics_body.simulation` to `Gpu`. See [Core concepts](../concepts.md#physics-cpu-and-gpu).
 
