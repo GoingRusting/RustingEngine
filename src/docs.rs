@@ -667,7 +667,10 @@ mod tests {
         }
         for (page, field) in [
             ("api/GpuBodySettings", "- `collision_layers:"),
-            ("api/GpuConditionShader", "- `params: Vec<[f32; 4]>`: Values"),
+            (
+                "api/GpuConditionShader",
+                "- `params: Vec<[f32; 4]>`: Values",
+            ),
             ("api/MaterialAsset", "- `roughness: f32`: 0 is a mirror"),
         ] {
             let item = super::find(page).expect(page);
