@@ -1174,9 +1174,17 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
         }
         false
     };
+    // Player bodies are left out: an eye camera sits inside one, parented
+    // or not, and the body is not drawn from there.
     let solids: Vec<_> = document
         .entities
         .iter()
+        .filter(|entity| {
+            !entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT)
+                && !entity
+                    .components
+                    .contains_key("rusting.platformer_controller")
+        })
         .filter_map(|entity| {
             let collider = entity.collider.as_ref()?;
             let inverse = world_matrix(entity).try_inverse()?;
@@ -1229,13 +1237,21 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
                 continue;
             }
             let local = (inverse * at).xyz();
-            // ponytail: boxes and spheres only; capsules and meshes are
-            // skipped until a camera is caught inside one.
+            // ponytail: mesh colliders are skipped; the scene file has no
+            // mesh bounds.
             let inside = match shape {
                 ColliderShape::Box { half_extents } => {
                     (0..3).all(|axis| local[axis].abs() < half_extents[axis])
                 }
                 ColliderShape::Sphere { radius } => local.norm() < *radius,
+                ColliderShape::Capsule {
+                    half_height,
+                    radius,
+                } => {
+                    let core = local[1].clamp(-half_height, *half_height);
+                    (local - nalgebra::Vector3::new(0.0, core, 0.0)).norm()
+                        < *radius
+                }
                 _ => false,
             };
             if inside {
@@ -4408,6 +4424,14 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              "collider": body(json!({"Sphere": {"radius": 0.45}}), false)},
             {"id": id(14), "name": "Zone", "transform": at([-40.0, 0.0, 0.0]), "mesh_renderer": mesh("Cube"),
              "collider": body(json!({"Box": {"half_extents": [5.0, 5.0, 5.0]}}), true)},
+            // A 3 m capsule: a camera in its top cap is inside, one just
+            // past its side is not.
+            {"id": id(15), "name": "Pillar", "transform": at([50.0, 0.0, 0.0]),
+             "collider": body(json!({"Capsule": {"half_height": 1.0, "radius": 0.5}}), false)},
+            {"id": id(16), "name": "Pillar Cam", "camera": cam, "transform": at([50.0, 1.3, 0.0])},
+            {"id": id(17), "name": "Side Cam", "camera": cam, "transform": at([50.6, 0.0, 0.0])},
+            // Inside the 0.9 m `Kid` player but not its child: exempt too.
+            {"id": id(18), "name": "Loose Eye Cam", "camera": cam, "transform": at([0.0, 0.3, 0.0])},
         ]});
         let mut scene = scene;
         scene["entities"][2]["collider"] = json!({"shape": {"Box":
@@ -4429,6 +4453,7 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_LIGHT_OFF", "Sun".to_owned()),
                 ("LINT_CAMERA_INSIDE", "Stuck Cam".to_owned()),
                 ("LINT_COLLIDER_MISMATCH", "Crate".to_owned()),
+                ("LINT_CAMERA_INSIDE", "Pillar Cam".to_owned()),
             ],
             "Kid (0.9 m), Torch (switched on in code), Clear Cam, Eye Cam, Ball and Zone pass"
         );
