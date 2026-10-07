@@ -713,6 +713,11 @@ fn capture_renders_a_png_and_maps_pixels_to_scene_ids() {
     assert!(output.status.success(), "{placed}");
     assert_eq!(placed["data"]["picks"][0]["id"], cube.as_str());
     assert_ne!(placed["data"]["picks"][0]["color"], picks[1]["color"]);
+    // A late tick renders only the last few ticks, not the whole run.
+    let (output, late) =
+        capture(&[scene, png.to_str().unwrap(), "--tick", "300"], None);
+    assert!(output.status.success(), "{late}");
+    assert_eq!(late["data"]["render"]["gpu_frames"], 5, "{late}");
     let _ = std::fs::remove_dir_all(&parent);
 }
 

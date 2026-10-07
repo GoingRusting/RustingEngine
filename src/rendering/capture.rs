@@ -146,6 +146,26 @@ impl HeadlessCapture {
         Ok(self.read(&image))
     }
 
+    /// Updates `app` by `delta` without rendering, for ticks no image step
+    /// looks at. GPU physics does not advance on such a tick.
+    pub fn update(
+        &mut self,
+        app: &mut App,
+        delta: Duration,
+    ) -> Result<(), String> {
+        // The UI pass and pointer picking read the view size; a headless
+        // view is the capture.
+        let mut input = app
+            .world_mut()
+            .resource_mut::<crate::runtime::RuntimeInput>();
+        if input.viewport_size().contains(&0.0) {
+            input.record_viewport_size(self.extent.map(|side| side as f32));
+        }
+        app.update(delta)
+            .map(drop)
+            .map_err(|error| format!("update: {error}"))
+    }
+
     /// Delivers completed GPU physics readback, updates `app` by `delta`,
     /// and renders the frame, waiting for it to finish.
     pub fn frame(
@@ -170,14 +190,7 @@ impl HeadlessCapture {
             apply_gpu_state_samples(world, &states);
         }
         record_gpu_state_hashes(world, &hashes);
-        // The UI pass and pointer picking read the view size; a headless
-        // view is the capture.
-        let mut input = world.resource_mut::<crate::runtime::RuntimeInput>();
-        if input.viewport_size().contains(&0.0) {
-            input.record_viewport_size(self.extent.map(|side| side as f32));
-        }
-        app.update(delta)
-            .map_err(|error| format!("update: {error}"))?;
+        self.update(app, delta)?;
         let world = app.world();
         let render_world = world.resource::<RenderWorld>();
         let split = !render_world.views.is_empty();

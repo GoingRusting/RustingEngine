@@ -3120,8 +3120,9 @@ pub struct CaptureOptions {
 }
 
 /// Loads a scene, simulates `tick` fixed ticks, and renders one camera
-/// offscreen to a PNG. Every tick is rendered, so GPU physics advances as in
-/// the game; game code from the project is not run. Picks and camera data
+/// offscreen to a PNG. Only the last few ticks are rendered, unless the
+/// scene has GPU bodies: those advance only while frames render, so then
+/// every tick is, as in the game. Game code from the project is not run. Picks and camera data
 /// come from the CPU, so they are reported, with a `VULKAN_UNAVAILABLE`
 /// error, even when no Vulkan device exists.
 pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
@@ -3238,8 +3239,12 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
     };
     for tick in 0..=options.tick {
         let delta = crate::scenario::tick_delta(&app, tick);
+        let render = tick + crate::scenario::RENDER_WARMUP_TICKS
+            >= options.tick
+            || crate::scenario::has_gpu_bodies(app.world_mut());
         let stepped = match capture.as_mut() {
-            Some(capture) => capture.frame(&mut app, delta),
+            Some(capture) if render => capture.frame(&mut app, delta),
+            Some(capture) => capture.update(&mut app, delta),
             None => app
                 .update(delta)
                 .map(drop)

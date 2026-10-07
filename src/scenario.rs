@@ -613,7 +613,8 @@ pub struct PerfReport {
     pub tick_ms_max: f64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
     /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
-    /// `gpu_ms_max` over all `gpu_frames` frames drawn (one per tick, plus the first); and
+    /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with GPU physics or a
+    /// render budget, else the few ticks before each image step); and
     /// `cameras`:
     /// `[{name, gpu_ms, draws, triangles}]`, one per viewport camera, then
     /// one per camera screen drawn that frame (with `"screen": true`). Null
@@ -1448,6 +1449,20 @@ fn check_pixels(
 
 /// Runs `scenario` on a loaded game. Relative capture paths resolve against
 /// `base`, normally the scenario file's folder.
+/// Ticks rendered before each capture or pixel check of a scenario. One
+/// fills occlusion culling's history; the rest let a camera screen with a
+/// small `update_every` draw its feed.
+pub(crate) const RENDER_WARMUP_TICKS: u32 = 4;
+
+/// GPU bodies advance only while frames render, so a run with any renders
+/// every tick, as the game does.
+pub(crate) fn has_gpu_bodies(world: &mut World) -> bool {
+    world
+        .query::<&crate::runtime::PhysicsBody>()
+        .iter(world)
+        .any(|body| body.simulation == crate::runtime::SimulationClass::Gpu)
+}
+
 pub fn run_scenario(
     app: &mut App,
     scenario: &Scenario,
@@ -1506,6 +1521,23 @@ pub fn run_scenario(
         });
     let mut capture =
         wants_capture.then(|| HeadlessCapture::new(scenario.capture_size));
+    // Ticks that must render: the image steps and a few ticks before each,
+    // for occlusion history and camera screens. A run with GPU physics or
+    // render budgets renders every tick instead (see `render_tick`).
+    let image_ticks: Vec<(u32, u32)> = scenario
+        .steps
+        .iter()
+        .filter(|step| {
+            matches!(
+                step.action,
+                StepAction::Capture(_) | StepAction::ExpectPixels(_)
+            )
+        })
+        .map(|step| {
+            let last = step.until.or(step.within).unwrap_or(step.tick);
+            (step.tick.saturating_sub(RENDER_WARMUP_TICKS), last)
+        })
+        .collect();
     let mut mixer = crate::audio_output::OfflineMixer::offline();
     let mut mixed = Vec::new();
     if let (true, Some(Err(error))) = (scenario.gpu, capture.as_ref()) {
@@ -1619,8 +1651,15 @@ pub fn run_scenario(
 
         let delta = tick_delta(app, tick);
         let started = std::time::Instant::now();
+        let render = scenario.gpu
+            || render_budget
+            || image_ticks
+                .iter()
+                .any(|(first, last)| (*first..=*last).contains(&tick))
+            || has_gpu_bodies(app.world_mut());
         let updated = match capture.as_mut() {
-            Some(Ok(capture)) => capture.frame(app, delta),
+            Some(Ok(capture)) if render => capture.frame(app, delta),
+            Some(Ok(capture)) => capture.update(app, delta),
             _ => app
                 .update(delta)
                 .map(drop)
@@ -3221,6 +3260,28 @@ mod tests {
             .unwrap()
             .message
             .starts_with("budget: max_draws"));
+        // A capture renders only the ticks just before it, so a long run
+        // with one late capture is not rendered throughout.
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-late-capture-{}", std::process::id()));
+        let mut late = scenario.clone();
+        late.budgets = None;
+        late.ticks = 40;
+        late.steps = serde_json::from_value(
+            json!([{"tick": 40, "capture": "late.png"}]),
+        )
+        .unwrap();
+        late.capture_size = [160, 90];
+        let report = run_scenario(&mut app, &late, &folder);
+        assert!(report.passed, "{:?}", report.first_failure);
+        assert_eq!(
+            report.perf.render["gpu_frames"],
+            RENDER_WARMUP_TICKS + 1,
+            "{}",
+            report.perf.render
+        );
+        assert!(folder.join("late.png").exists());
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
