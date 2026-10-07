@@ -2921,7 +2921,7 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
     shared handles.
   - [ ] Particle and sound presets as registered components.
 - [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
-- [ ] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency.
+- [x] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency. `rusting asset generate <root> sfx "coin 7"` synthesizes one of seven presets (jump, coin, hit, explosion, laser, powerup, blip) with a seeded splitmix64 and imports the WAV as CC0 with its preset and seed in the `.rmeta` notes; a project hook named `sfx` still wins. Verified by `presets_are_seeded_short_and_quiet_enough` (each preset repeats for one seed, changes for another, lasts 0.05 to 1 s, peaks at 0.4 and fades to silence) and `the_builtin_sfx_generator_imports_a_seeded_cc0_wav` (same bytes on a second import, bad presets and seeds fail with `GENERATOR_FAILED`). Run on a sample copy, `coin 7` imported a 207 ms 48 kHz stereo WAV.
 - [ ] Accessibility checks from `missingFeatures.md` P2: contrast, text size, focus order, colour-only status, and missing captions, with locations and captures.
 
 ### Exit gate

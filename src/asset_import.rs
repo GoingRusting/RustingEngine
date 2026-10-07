@@ -720,6 +720,9 @@ pub fn generate_asset(
     target: GenerateTarget<'_>,
     dry_run: bool,
 ) -> Result<ImportReport, AssetImportError> {
+    if hook == "sfx" && !hooks.contains_key(hook) {
+        return generate_sfx(project_root, prompt, target, dry_run);
+    }
     let config = hooks
         .get(hook)
         .ok_or_else(|| AssetImportError::GeneratorUnknown(hook.to_owned()))?;
@@ -791,6 +794,65 @@ pub fn generate_asset(
             &provenance,
             (config.settings != ImportSettings::default())
                 .then_some(&config.settings),
+            dry_run,
+        ),
+    }
+}
+
+/// The built-in `sfx` generator: `prompt` is a preset and an optional seed
+/// (`coin` or `coin 7`), synthesized by [`crate::sfx::synth`] into a WAV.
+fn generate_sfx(
+    project_root: &Path,
+    prompt: &str,
+    target: GenerateTarget<'_>,
+    dry_run: bool,
+) -> Result<ImportReport, AssetImportError> {
+    let failed = |message: String| AssetImportError::GeneratorFailed {
+        hook: "sfx".to_owned(),
+        message,
+    };
+    let mut words = prompt.split_whitespace();
+    let preset = words.next().unwrap_or_default();
+    let seed = match words.next().map(str::parse::<u64>) {
+        None => 1,
+        Some(Ok(seed)) => seed,
+        Some(Err(_)) => {
+            return Err(failed(format!(
+                "the seed in `{prompt}` must be a whole number"
+            )))
+        }
+    };
+    let samples = crate::sfx::synth(preset, seed).ok_or_else(|| {
+        failed(format!(
+            "unknown preset `{preset}`; use one of {}",
+            crate::sfx::PRESETS.join(", ")
+        ))
+    })?;
+    let output_dir = Staging::new("generated")?;
+    let file = output_dir.0.join(format!("{preset}_{seed}.wav"));
+    crate::audio_output::write_wav(&file, &samples).map_err(io(&file))?;
+    let provenance = AssetProvenance {
+        original: "generator:sfx".to_owned(),
+        license: Some("CC0-1.0".to_owned()),
+        generator: Some("rusting sfx".to_owned()),
+        notes: Some(format!("preset {preset}, seed {seed}")),
+        ..AssetProvenance::default()
+    };
+    match target {
+        GenerateTarget::Import { folder } => import_asset(
+            project_root,
+            &file,
+            folder,
+            &provenance,
+            &ImportSettings::default(),
+            dry_run,
+        ),
+        GenerateTarget::Replace { asset } => reimport_asset(
+            project_root,
+            asset,
+            Some(&file),
+            &provenance,
+            None,
             dry_run,
         ),
     }
@@ -1419,6 +1481,35 @@ mod tests {
                 "GENERATOR_UNKNOWN"
             ]
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_builtin_sfx_generator_imports_a_seeded_cc0_wav() {
+        let root = project();
+        let hooks = BTreeMap::new();
+        let folder = Path::new("sounds");
+        let generate = |prompt| {
+            generate_asset(
+                &root,
+                &hooks,
+                "sfx",
+                prompt,
+                GenerateTarget::Import { folder },
+                false,
+            )
+        };
+        let made = generate("coin 7").unwrap();
+        assert_eq!(made.path, "assets/sounds/coin_7.wav");
+        assert_eq!(made.source.license.as_deref(), Some("CC0-1.0"));
+        assert_eq!(made.source.notes.as_deref(), Some("preset coin, seed 7"));
+        let first = std::fs::read(root.join(&made.path)).unwrap();
+        std::fs::remove_dir_all(root.join("assets/sounds")).unwrap();
+        generate("coin 7").unwrap();
+        assert_eq!(std::fs::read(root.join(&made.path)).unwrap(), first);
+        for bad in ["moo", "coin seven"] {
+            assert_eq!(generate(bad).unwrap_err().code(), "GENERATOR_FAILED");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

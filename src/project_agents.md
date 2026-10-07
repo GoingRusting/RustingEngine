@@ -179,7 +179,8 @@ compare rounds (`state_hash`), reads
 and writes `rusting.tile_map` cells under a world position (`tile`,
 `set_tile`), plays sounds (`play_sound`, `play_sound_looped`,
 `stop_sound`, `set_master_volume`; clips are WAV, Ogg, MP3 or FLAC paths under
-`assets/`), fires sound cues and burst emitters (`trigger`), spawns shapes
+`assets/`; `rusting asset generate . sfx "coin 7" --to sounds` makes a
+placeholder sound from a preset and seed), fires sound cues and burst emitters (`trigger`), spawns shapes
 (`spawn_cube`, `spawn_sphere`), copies a hidden template object with its
 children (`spawn_copy`; a copied child is named `"<copy>/<child>"`), lists the
 objects in a class (`in_class`), runs setup once per round (`once`; `restart`

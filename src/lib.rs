@@ -25,6 +25,7 @@ pub mod runtime;
 pub mod scenario;
 pub mod scene_patch;
 pub mod schema;
+pub mod sfx;
 pub mod steam;
 #[cfg(test)]
 pub mod tests;
