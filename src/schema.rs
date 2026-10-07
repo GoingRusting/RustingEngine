@@ -129,7 +129,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
-        summary: "Inspect a migrated scene: entities, cameras, classes, assets, and reference warnings.",
+        summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",
         gpu: NO_GPU,
         defaults: &[],
         example: "scene inspect my_game/scenes/main.rscene --json",
@@ -137,7 +137,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "scene map",
         usage: "scene map <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
-        summary: "Draw every tile map as rows of characters with a legend. Entities that sit over a map's cells appear as letters, with their name, ID, column and row. A text view of a 2D layout for a model without vision.",
+        summary: "Draw every tile map as rows of characters with a legend. Entities that sit over a map's cells appear as letters, with their name, ID, column and row. A text view of a 2D layout for a model without vision. A scene without a tile map gives an empty `maps` list; list its entities with `scene inspect`.",
         gpu: NO_GPU,
         defaults: &[],
         example: "scene map my_game/scenes/main.rscene --json",

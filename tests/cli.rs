@@ -54,6 +54,22 @@ fn repository_project_inspects_validates_and_cooks() {
         run(&["scene", "inspect", &format!("{root}/scenes/main.rscene")]);
     assert!(output.status.success(), "{scene}");
     assert!(scene["data"]["entity_count"].as_u64().unwrap() > 0);
+    assert_eq!(
+        scene["data"]["entities"].as_array().unwrap().len() as u64,
+        scene["data"]["entity_count"].as_u64().unwrap()
+    );
+    let (_, names) = run(&[
+        "scene",
+        "inspect",
+        &format!("{root}/scenes/main.rscene"),
+        "--fields",
+        "name",
+    ]);
+    let first = &names["data"]["entities"][0];
+    assert!(
+        first["name"].is_string() && first["id"].is_null(),
+        "{first}"
+    );
     assert_eq!(scene["data"]["scene_version"], 3);
     assert_eq!(
         scene["data"]["loaded_scene_version"],

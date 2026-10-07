@@ -624,6 +624,9 @@ pub fn inspect_scene(path: &Path) -> CliResult {
         "loaded_scene_version": document.format_version,
         "entity_count": document.entities.len(), "cameras": cameras,
         "classes": classes, "referenced_assets": assets,
+        "entities": document.entities.iter()
+            .map(|entity| json!({"id": entity.id, "name": entity.name}))
+            .collect::<Vec<_>>(),
     }));
     result.diagnostics = scene_warnings(path, &document);
     result
