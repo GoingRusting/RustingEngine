@@ -2166,6 +2166,53 @@ impl SceneRenderer {
         render_world: &RenderWorld,
         assets: &AssetServer,
     ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
+        self.render_frame(
+            before,
+            target,
+            extent,
+            options,
+            render_world,
+            assets,
+            false,
+        )
+    }
+
+    /// Advances GPU physics to the render world's tick, with its commands
+    /// and readback, as [`Self::render`] would, but draws nothing. Headless
+    /// tools use it on ticks no image is taken, so GPU bodies simulate the
+    /// same ticks faster than drawing allows.
+    // ponytail: still runs the CPU-side draw preparation (instances, culling
+    // setup); skip it too if it shows up in physics-only profiles.
+    pub fn step_physics(
+        &mut self,
+        before: Box<dyn GpuFuture>,
+        target: Arc<ImageView>,
+        extent: [u32; 2],
+        render_world: &RenderWorld,
+        assets: &AssetServer,
+    ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
+        self.render_frame(
+            before,
+            target,
+            extent,
+            SceneRenderOptions::game(extent),
+            render_world,
+            assets,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_frame(
+        &mut self,
+        before: Box<dyn GpuFuture>,
+        target: Arc<ImageView>,
+        extent: [u32; 2],
+        options: SceneRenderOptions<'_>,
+        render_world: &RenderWorld,
+        assets: &AssetServer,
+        physics_only: bool,
+    ) -> Result<Box<dyn GpuFuture>, SceneRenderError> {
         // A viewport reported past the target (rounding, a resize race) is
         // cropped by the scissor; projecting the clamped extent would squash it.
         let visible = options.viewport.clamped_to(extent);
@@ -3297,6 +3344,39 @@ impl SceneRenderer {
         } else if new_ticks > 0 {
             // Disabled time must not be simulated later when physics resumes.
             self.last_physics_tick = render_world.physics_tick;
+        }
+        if physics_only {
+            self.upscale_to = None;
+            if labels {
+                // Safety: closes the frame's outer label opened above.
+                let _ = unsafe { commands.end_debug_utils_label() };
+            }
+            let command_buffer = commands
+                .build()
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            self.frame_serial += 1;
+            let future = before
+                .then_execute(self.queue.clone(), command_buffer)
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            #[allow(clippy::arc_with_non_send_sync)]
+            let fence = Arc::new(future.boxed().then_signal_fence());
+            self.frame_contexts[self.frame_index].fence = Some(fence.clone());
+            self.frame_index = (self.frame_index + 1) % FRAMES_IN_FLIGHT;
+            if physics_ran {
+                let (_, header, events, states, _, _, hashes) =
+                    physics_resources.unwrap();
+                self.pending_physics.push(PendingPhysicsReadback {
+                    fence: fence.clone(),
+                    submitted_frame: self.frame_serial,
+                    header,
+                    events,
+                    states: states.map(|buffer| {
+                        (buffer, last_tick, readback_full.clone())
+                    }),
+                    hashes: (hashes.1, first_tick, last_tick),
+                });
+            }
+            return Ok(fence.boxed());
         }
         let cull_count = render_instances.cull_source.len() as u32;
         let dispatch_cull = |commands: &mut AutoCommandBufferBuilder<

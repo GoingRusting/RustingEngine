@@ -166,6 +166,32 @@ impl HeadlessCapture {
             .map_err(|error| format!("update: {error}"))
     }
 
+    /// Like [`Self::frame`], but only advances GPU physics: nothing is
+    /// drawn and the tick does not count in `gpu_frames`. GPU state hashes
+    /// match the ones drawn frames give.
+    pub fn step_physics(
+        &mut self,
+        app: &mut App,
+        delta: Duration,
+    ) -> Result<(), String> {
+        self.deliver_physics(app);
+        self.update(app, delta)?;
+        let world = app.world();
+        self.renderer
+            .step_physics(
+                vulkano::sync::now(self.base.device.clone()).boxed(),
+                self.target.clone(),
+                self.extent,
+                world.resource::<RenderWorld>(),
+                world.resource::<AssetServer>(),
+            )
+            .map_err(|error| format!("physics: {error}"))?
+            .then_signal_fence_and_flush()
+            .map_err(|error| format!("submit: {error}"))?
+            .wait(None)
+            .map_err(|error| format!("wait: {error}"))
+    }
+
     /// Delivers completed GPU physics readback, updates `app` by `delta`,
     /// and renders the frame, waiting for it to finish.
     pub fn frame(
@@ -173,6 +199,13 @@ impl HeadlessCapture {
         app: &mut App,
         delta: Duration,
     ) -> Result<(), String> {
+        self.deliver_physics(app);
+        self.update(app, delta)?;
+        self.draw(app)
+    }
+
+    /// Hands completed GPU physics readback to the world.
+    fn deliver_physics(&mut self, app: &mut App) {
         let events = self.renderer.take_completed_physics_events();
         let states = self.renderer.take_completed_physics_states();
         let hashes = self.renderer.take_completed_physics_state_hashes();
@@ -190,7 +223,9 @@ impl HeadlessCapture {
             apply_gpu_state_samples(world, &states);
         }
         record_gpu_state_hashes(world, &hashes);
-        self.update(app, delta)?;
+    }
+
+    fn draw(&mut self, app: &mut App) -> Result<(), String> {
         let world = app.world();
         let render_world = world.resource::<RenderWorld>();
         let split = !render_world.views.is_empty();

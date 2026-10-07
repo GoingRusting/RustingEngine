@@ -3267,11 +3267,15 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
     };
     for tick in 0..=options.tick {
         let delta = crate::scenario::tick_delta(&app, tick);
-        let render = tick + crate::scenario::RENDER_WARMUP_TICKS
-            >= options.tick
-            || crate::scenario::has_gpu_bodies(app.world_mut());
+        let render =
+            tick + crate::scenario::RENDER_WARMUP_TICKS >= options.tick;
         let stepped = match capture.as_mut() {
             Some(capture) if render => capture.frame(&mut app, delta),
+            Some(capture)
+                if crate::scenario::has_gpu_bodies(app.world_mut()) =>
+            {
+                capture.step_physics(&mut app, delta)
+            }
             Some(capture) => capture.update(&mut app, delta),
             None => app
                 .update(delta)

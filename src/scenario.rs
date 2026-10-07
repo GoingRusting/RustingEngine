@@ -617,8 +617,9 @@ pub struct PerfReport {
     pub wall_ms_mean: f64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
     /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
-    /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with GPU physics or a
-    /// render budget, else the few ticks before each image step); and
+    /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with a render
+    /// budget or `gpu`, else the few ticks before each image step; GPU
+    /// physics steps on the other ticks without drawing); and
     /// `cameras`:
     /// `[{name, gpu_ms, draws, triangles}]`, one per viewport camera, then
     /// one per camera screen drawn that frame (with `"screen": true`);
@@ -1459,8 +1460,8 @@ fn check_pixels(
 /// small `update_every` draw its feed.
 pub(crate) const RENDER_WARMUP_TICKS: u32 = 4;
 
-/// GPU bodies advance only while frames render, so a run with any renders
-/// every tick, as the game does.
+/// GPU bodies advance only through the renderer, so a run with any steps
+/// GPU physics every tick, drawn or not.
 pub(crate) fn has_gpu_bodies(world: &mut World) -> bool {
     world
         .query::<&crate::runtime::PhysicsBody>()
@@ -1661,10 +1662,13 @@ pub fn run_scenario(
             || render_budget
             || image_ticks
                 .iter()
-                .any(|(first, last)| (*first..=*last).contains(&tick))
-            || has_gpu_bodies(app.world_mut());
+                .any(|(first, last)| (*first..=*last).contains(&tick));
         let updated = match capture.as_mut() {
             Some(Ok(capture)) if render => capture.frame(app, delta),
+            // GPU bodies advance on every tick, drawn or not.
+            Some(Ok(capture)) if has_gpu_bodies(app.world_mut()) => {
+                capture.step_physics(app, delta)
+            }
             Some(Ok(capture)) => capture.update(app, delta),
             _ => app
                 .update(delta)
@@ -3183,6 +3187,66 @@ mod tests {
         let report = run(&scenario);
         assert!(report.passed, "{:?}", report.steps);
         assert!(!report.perf.render.is_null(), "a renderer was opened");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn gpu_bodies_step_without_drawing_and_hash_the_same() {
+        let gpu_game = || {
+            let mut app = App::new();
+            app.add_plugin(crate::AssetPlugin).unwrap();
+            app.add_plugin(HybridPhysicsPlugin).unwrap();
+            app.add_plugin(RenderExtractPlugin).unwrap();
+            for index in 0..8 {
+                app.world_mut().spawn((
+                    SceneId(Uuid::new_v4()),
+                    Name(format!("Gpu{index}")),
+                    Transform::new([
+                        index as f32 * 0.3,
+                        2.0 + index as f32,
+                        0.0,
+                    ]),
+                    PhysicsBody {
+                        simulation: crate::runtime::SimulationClass::Gpu,
+                        ..PhysicsBody::default()
+                    },
+                    RigidBody::default(),
+                    Collider::default(),
+                ));
+            }
+            app
+        };
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-physics-only-{}", std::process::id()));
+        let mut drawn = scenario(30, json!([]));
+        drawn.gpu = true;
+        drawn.capture_size = [64, 48];
+        let drawn = run_scenario(&mut gpu_game(), &drawn, &folder);
+        let mut skipped =
+            scenario(30, json!([{"tick": 30, "capture": "end.png"}]));
+        skipped.capture_size = [64, 48];
+        let skipped = run_scenario(&mut gpu_game(), &skipped, &folder);
+        let _ = std::fs::remove_dir_all(&folder);
+        assert!(
+            drawn.passed && skipped.passed,
+            "{:?}",
+            skipped.first_failure
+        );
+        assert!(
+            drawn.gpu_state_hashes.len() >= 20,
+            "{:?}",
+            drawn.gpu_state_hashes
+        );
+        assert_eq!(drawn.gpu_state_hashes, skipped.gpu_state_hashes);
+        assert!(drawn.perf.render["gpu_frames"].as_u64().unwrap() >= 30);
+        assert_eq!(
+            skipped.perf.render["gpu_frames"],
+            RENDER_WARMUP_TICKS + 1,
+            "only the ticks before the capture draw"
+        );
     }
 
     #[test]
