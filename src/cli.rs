@@ -745,9 +745,26 @@ pub fn add_model(
         .and_then(|app| {
             let world = app.world_mut();
             let mut assets = world.resource_mut::<crate::assets::AssetServer>();
-            let nodes = assets
+            let mut nodes = assets
                 .import_gltf_scene(model)
                 .map_err(|error| error.to_string())?;
+            let mut taken: std::collections::HashSet<String> =
+                crate::runtime::read_scene_document(scene)
+                    .map(|document| {
+                        document
+                            .entities
+                            .into_iter()
+                            .filter_map(|entity| entity.name)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            if !taken.insert(name.to_owned()) {
+                return Err(format!(
+                    "scene already has an object named `{name}`; pass \
+                     --name to name the model's root differently"
+                ));
+            }
+            unique_node_names(&mut nodes, &mut taken);
             let clips = assets
                 .import_gltf_animations(model, &nodes)
                 .map_err(|error| error.to_string())?;
@@ -806,6 +823,29 @@ pub fn add_model(
             .collect(),
     };
     apply_scene_patch(scene, &patch, None, dry_run)
+}
+
+/// Gives every node and extra primitive a name not in `taken`, adding
+/// " 2", " 3" and so on to repeats, since scene names must be unique.
+#[cfg(feature = "gltf")]
+fn unique_node_names(
+    nodes: &mut [crate::assets::ImportedGltfNode],
+    taken: &mut std::collections::HashSet<String>,
+) {
+    let mut unique = |name: &mut String| {
+        let base = name.clone();
+        let mut count = 1;
+        while !taken.insert(name.clone()) {
+            count += 1;
+            *name = format!("{base} {count}");
+        }
+    };
+    for node in nodes {
+        unique(&mut node.name);
+        for primitive in node.primitives.iter_mut().skip(1) {
+            unique(&mut primitive.name);
+        }
+    }
 }
 
 /// Copies clip `clip` of object `from` onto object `to`'s skeleton (see
@@ -3292,6 +3332,38 @@ mod shape_tests {
             matches!(&mesh.mesh, crate::runtime::SceneMesh::AssetPath(path)
             if path.starts_with("../assets/models"))
         );
+        // A second copy and a root named like a node both get suffixes.
+        let copy = add_model(&scene, &model, "Courtyard 2", false);
+        assert!(copy.ok, "{:?}", copy.diagnostics);
+        let again = add_model(&scene, &model, "Courtyard", false);
+        assert!(!again.ok);
+        assert!(
+            again.diagnostics[0].message.contains("pass --name"),
+            "{:?}",
+            again.diagnostics
+        );
+        let names: Vec<_> = read_scene_document(&scene)
+            .unwrap()
+            .entities
+            .into_iter()
+            .filter_map(|entity| entity.name)
+            .collect();
+        assert!(names.contains(&"Floor 2".to_owned()), "{names:?}");
+        assert!(names.contains(&"West wall 2".to_owned()), "{names:?}");
+        let other = root.join("scenes/other.rscene");
+        std::fs::write(
+            &other,
+            r#"{"version": 9, "name": "Other", "entities": []}"#,
+        )
+        .unwrap();
+        assert!(add_model(&other, &model, "Floor", false).ok);
+        let names: Vec<_> = read_scene_document(&other)
+            .unwrap()
+            .entities
+            .into_iter()
+            .filter_map(|entity| entity.name)
+            .collect();
+        assert!(names.contains(&"Floor 2".to_owned()), "{names:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

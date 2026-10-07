@@ -293,7 +293,9 @@ Steps:
 
 Skinned meshes keep their skin and their clips play; see `guide/animation`,
 "Skinned meshes". Child object names come from the glTF file, so look them
-up under the parent you named rather than by their name alone.
+up under the parent you named rather than by their name alone. A child
+name that is already taken in the scene, or repeated inside the file,
+gets " 2", " 3" and so on.
 
 A shared Rusting model library on a CDN is planned so agents can fetch a
 small set of house models by name. It does not exist yet; use the sources
