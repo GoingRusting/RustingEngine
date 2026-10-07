@@ -194,7 +194,9 @@ Prefer these components over game code when they fit:
   `rusting.bloom`, `rusting.tone_mapping`, `rusting.color_grading`
   (`contrast`, `saturation`, `shadows`/`highlights` tints, `vignette`),
   `rusting.environment_map`, `directional_light`, `point_light`,
-  `spot_light`.
+  `spot_light`. Put `rusting.post_volume` (`extents`, `blend`,
+  `priority`) on an object with its own fog or grading to use them only
+  in that area, such as a foggy hall next to a warm office.
 - Shapes: `BuiltinPrimitive` takes `Cube`, `Sphere`, `Cylinder`, `Cone`,
   `Capsule` (diameter 1, height 2), `RoundedCube` (unit box, edges rounded
   by 0.1), `Torus`, `Plane`, `Quad` and a few solids. Use `RoundedCube` and

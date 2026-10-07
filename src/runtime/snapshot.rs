@@ -473,6 +473,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::ReflectionProbe>();
     types.register::<super::Fog>();
     types.register::<super::ColorGrading>();
+    types.register::<super::PostVolume>();
     types.register::<super::CameraScreen>();
     types.register::<super::Bloom>();
     types.register::<super::AmbientOcclusion>();

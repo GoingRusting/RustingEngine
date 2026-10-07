@@ -13,8 +13,8 @@ use crate::runtime::{
     Connections, Counter, CullingMode, DeterminismMode, Easing, EnvironmentMap,
     FluidBlock, Fog, HudAnchor, HudElement, InputAction, Joint, JointAxis,
     JointKind, JointMotor, JointSpring, PhysicsSettings, PhysicsSyncMode,
-    Pickup, PlatformerController, PlayerController, QualityProfile, RandomSeed,
-    ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
+    Pickup, PlatformerController, PlayerController, PostVolume, QualityProfile,
+    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
     SceneInstance, ShadowQuality, SkyLight, SoundCue, TileKind, TileMap,
     ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, WaterBody,
 };
@@ -818,6 +818,22 @@ crate::reflect! {
         distortion: f32 {
             unit: "factor", min: 0.0, max: 1.0,
             doc: "tube bulge and row wobble over time",
+        },
+    }
+}
+
+crate::reflect! {
+    struct PostVolume {
+        extents: [f32; 3] {
+            unit: "m", min: 0.0,
+            doc: "half size of the box around the object, world axes",
+        },
+        blend: f32 {
+            unit: "m", min: 0.0,
+            doc: "fade-out distance outside the box; 0 switches at the wall",
+        },
+        priority: i32 {
+            doc: "higher volumes blend over lower ones",
         },
     }
 }

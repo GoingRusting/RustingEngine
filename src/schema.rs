@@ -649,7 +649,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.color_grading",
-        summary: "Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, vignette (0..1) darkening the corners, and film/CRT effects (0..1, off at 0): grain, chromatic_aberration, scanlines, color_bleed, noise_band, distortion. Grain and the noise band follow the fixed tick. The first one found is used.",
+        summary: "Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, vignette (0..1) darkening the corners, and film/CRT effects (0..1, off at 0): grain, chromatic_aberration, scanlines, color_bleed, noise_band, distortion. Grain and the noise band follow the fixed tick. The first one found is used; one on an object with rusting.post_volume applies only in that area.",
         gpu: "a few instructions per pixel; chromatic_aberration, color_bleed or distortion add one full-screen copy",
         example: || json!({"contrast": 1.1, "saturation": 0.9, "shadows": [0.92, 0.98, 1.1], "highlights": [1.08, 1.0, 0.9], "vignette": 0.3, "grain": 0.1, "chromatic_aberration": 0.2, "scanlines": 0.0, "color_bleed": 0.0, "noise_band": 0.0, "distortion": 0.0}),
     },
@@ -673,9 +673,15 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.fog",
-        summary: "Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre. Brighter toward the sun by sun_scatter; sky_affect fades the background too. The first one found is used.",
+        summary: "Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre. Brighter toward the sun by sun_scatter; sky_affect fades the background too. The first one found is used; one on an object with rusting.post_volume applies only in that area.",
         gpu: "a few instructions per pixel, plus one full-screen sky pass when sky_affect > 0",
         example: || json!({"color": [0.55, 0.65, 0.75], "density": 0.02, "height": 0.0, "height_falloff": 0.1, "sun_scatter": 0.3, "sky_affect": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.post_volume",
+        summary: "Makes the rusting.fog and rusting.color_grading on the same object apply only near it: fully while the active camera is inside the box of half size extents (world axes, metres), fading out over blend metres outside. Higher priority wins where volumes overlap. Fog and grading without a volume apply everywhere else; a hall with fog and a sickly grade and an office with a warm grade each get one.",
+        gpu: NO_GPU,
+        example: || json!({"extents": [4.0, 2.0, 10.0], "blend": 1.5, "priority": 0}),
     },
     ComponentSection {
         key: "rusting.bloom",

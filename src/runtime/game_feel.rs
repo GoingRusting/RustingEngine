@@ -575,6 +575,73 @@ impl Default for Fog {
     }
 }
 
+impl Fog {
+    /// Blends toward `other` by `t` (0 keeps `self`, 1 gives `other`).
+    #[must_use]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            color: std::array::from_fn(|i| mix(self.color[i], other.color[i])),
+            density: mix(self.density, other.density),
+            height: mix(self.height, other.height),
+            height_falloff: mix(self.height_falloff, other.height_falloff),
+            sun_scatter: mix(self.sun_scatter, other.sun_scatter),
+            sky_affect: mix(self.sky_affect, other.sky_affect),
+        }
+    }
+}
+
+/// Makes this object's `rusting.fog` and `rusting.color_grading` apply only
+/// around it: fully while the active camera is inside the box of half size
+/// `extents` around the object's position (world axes), fading out over
+/// `blend` metres outside the box. Where volumes overlap, the higher
+/// `priority` wins. Fog and grading on objects without a volume apply
+/// everywhere else.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostVolume {
+    /// Half size of the box in metres, along the world axes.
+    pub extents: [f32; 3],
+    /// Distance outside the box, in metres, over which the volume fades
+    /// out. 0 switches at the box wall.
+    pub blend: f32,
+    /// Higher volumes blend over lower ones where they overlap.
+    pub priority: i32,
+}
+
+impl Default for PostVolume {
+    fn default() -> Self {
+        Self {
+            extents: [5.0, 3.0, 5.0],
+            blend: 1.0,
+            priority: 0,
+        }
+    }
+}
+
+impl PostVolume {
+    /// How much the volume applies to a camera at `eye`: 1 inside the box,
+    /// fading to 0 at `blend` metres outside it.
+    #[must_use]
+    pub fn weight(&self, center: [f32; 3], eye: [f32; 3]) -> f32 {
+        let outside = (0..3)
+            .map(|i| {
+                ((eye[i] - center[i]).abs() - self.extents[i])
+                    .max(0.0)
+                    .powi(2)
+            })
+            .sum::<f32>()
+            .sqrt();
+        if outside <= 0.0 {
+            1.0
+        } else if self.blend > 0.0 {
+            (1.0 - outside / self.blend).max(0.0)
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Glow around bright pixels. Light above `threshold` spreads over the
 /// screen before tone mapping. The one on the entity with the lowest ID is
 /// used.
@@ -691,6 +758,30 @@ impl ColorGrading {
         noise_band: 0.0,
         distortion: 0.0,
     };
+
+    /// Blends toward `other` by `t` (0 keeps `self`, 1 gives `other`).
+    #[must_use]
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        let mix3 =
+            |a: [f32; 3], b: [f32; 3]| std::array::from_fn(|i| mix(a[i], b[i]));
+        Self {
+            contrast: mix(self.contrast, other.contrast),
+            saturation: mix(self.saturation, other.saturation),
+            shadows: mix3(self.shadows, other.shadows),
+            highlights: mix3(self.highlights, other.highlights),
+            vignette: mix(self.vignette, other.vignette),
+            grain: mix(self.grain, other.grain),
+            chromatic_aberration: mix(
+                self.chromatic_aberration,
+                other.chromatic_aberration,
+            ),
+            scanlines: mix(self.scanlines, other.scanlines),
+            color_bleed: mix(self.color_bleed, other.color_bleed),
+            noise_band: mix(self.noise_band, other.noise_band),
+            distortion: mix(self.distortion, other.distortion),
+        }
+    }
 }
 
 impl Default for ColorGrading {

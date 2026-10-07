@@ -96,6 +96,18 @@ and off at 0:
 "rusting.color_grading": {"grain": 0.15, "chromatic_aberration": 0.2}
 ```
 
+Grading and fog can change by area. A `rusting.post_volume` on an object
+that also has `rusting.fog` or `rusting.color_grading` makes them apply only
+while the camera is inside its box, fading over `blend` metres at the edge;
+grading and fog without a volume apply everywhere else:
+
+```json
+{"name": "Hall Mood", "transform": {"position": [0, 1.5, -12]},
+ "components": {"rusting.post_volume": {"extents": [3, 2, 10], "blend": 1.5},
+   "rusting.fog": {"color": [0.4, 0.45, 0.3], "density": 0.08},
+   "rusting.color_grading": {"saturation": 0.7, "shadows": [0.95, 1.05, 0.85]}}}
+```
+
 - `grain` adds film grain. The pattern comes from the fixed tick, so the
   same tick always gives the same grain: replays and golden images stay
   repeatable.

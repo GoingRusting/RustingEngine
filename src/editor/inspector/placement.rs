@@ -16,8 +16,8 @@ use crate::runtime::{
     MeshRenderer, Name, PointLight, SceneBackground, SkyLight, SpotLight,
     ToneMapping, AMBIENT_LIGHT_COMPONENT, AMBIENT_OCCLUSION_COMPONENT,
     BACKGROUND_COMPONENT, BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT,
-    FOG_COMPONENT, HUD_ELEMENT_COMPONENT, SKY_LIGHT_COMPONENT,
-    TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
+    FOG_COMPONENT, HUD_ELEMENT_COMPONENT, POST_VOLUME_COMPONENT,
+    SKY_LIGHT_COMPONENT, TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 use crate::runtime::{
     ANIMATION_COMPONENT, ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT,
@@ -56,6 +56,7 @@ fn kind(name: &str) -> Kind {
         | FOG_COMPONENT
         | BLOOM_COMPONENT
         | COLOR_GRADING_COMPONENT
+        | POST_VOLUME_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
         TILE_MAP_COMPONENT => Kind::TileMap,
@@ -97,6 +98,12 @@ pub(in crate::editor) fn placement(
     });
     if built_in || other_kind {
         return Placement::Hidden;
+    }
+    // A post volume's own fog and grading apply only in its area.
+    if object.contains::<crate::runtime::PostVolume>()
+        && matches!(name, FOG_COMPONENT | COLOR_GRADING_COMPONENT)
+    {
+        return Placement::Allowed;
     }
     // The renderer reads the first one it finds, so a second copy would
     // silently do nothing.
@@ -280,6 +287,10 @@ pub(in crate::editor) fn component_help(
         COLOR_GRADING_COMPONENT => (
             "Adjusts contrast, saturation, shadow and highlight tints, and vignette.",
             "Give the whole picture one mood, like a film look.",
+        ),
+        POST_VOLUME_COMPONENT => (
+            "Limits this object's fog and color grading to a box around it.",
+            "A foggy hall next to a warm office.",
         ),
         CAMERA_SCREEN_COMPONENT => (
             "Shows what another camera sees on this mesh.",

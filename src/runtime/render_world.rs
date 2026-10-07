@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use bevy_ecs::change_detection::{DetectChanges, Tick};
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Component, Or, Ref, Resource, With, World};
+use bevy_ecs::prelude::{Component, Or, Ref, Resource, With, Without, World};
 
 use crate::assets::{Handle, MaterialAsset, MeshAsset};
 
@@ -260,9 +260,27 @@ pub fn extract_render_world(world: &mut World) {
             .collect()
     };
     let tone_mapping = collect_first::<ToneMapping>(world);
-    let fog = collect_first::<super::Fog>(world);
+    let eye = active_camera.as_ref().map(|camera| {
+        let [x, y, z, _] = camera.transform.matrix[3];
+        [x, y, z]
+    });
+    let fog = collect_blended(
+        world,
+        eye,
+        super::Fog {
+            density: 0.0,
+            sky_affect: 0.0,
+            ..super::Fog::default()
+        },
+        super::Fog::lerp,
+    );
     let bloom = collect_first::<super::Bloom>(world);
-    let color_grading = collect_first::<super::ColorGrading>(world);
+    let color_grading = collect_blended(
+        world,
+        eye,
+        super::ColorGrading::DEFAULT,
+        super::ColorGrading::lerp,
+    );
     let screens = collect_screens(world);
     let ambient_occlusion = collect_first::<super::AmbientOcclusion>(world);
     let particles = collect_particles(world);
@@ -784,6 +802,52 @@ fn collect_first<T: Component + Copy>(world: &mut World) -> Option<T> {
         .map(|(_, light)| *light)
 }
 
+/// The first `T` outside any [`PostVolume`](super::PostVolume), with the
+/// volumes around `eye` blended over it in priority order. `none` stands in
+/// for a missing global value when a volume applies.
+fn collect_blended<T: Component + Copy>(
+    world: &mut World,
+    eye: Option<[f32; 3]>,
+    none: T,
+    lerp: fn(T, T, f32) -> T,
+) -> Option<T> {
+    let mut query =
+        world.query_filtered::<(Entity, &T), Without<super::PostVolume>>();
+    let global = query
+        .iter(world)
+        .min_by_key(|(entity, _)| entity.index())
+        .map(|(_, value)| *value);
+    let Some(eye) = eye else {
+        return global;
+    };
+    let mut query =
+        world.query::<(Entity, &GlobalTransform, &super::PostVolume, &T)>();
+    let mut volumes = query
+        .iter(world)
+        .filter_map(|(entity, transform, volume, value)| {
+            let [x, y, z, _] = transform.matrix[3];
+            let weight = volume.weight([x, y, z], eye);
+            (weight > 0.0).then_some((
+                volume.priority,
+                entity.index(),
+                weight,
+                *value,
+            ))
+        })
+        .collect::<Vec<_>>();
+    if volumes.is_empty() {
+        return global;
+    }
+    volumes.sort_by_key(|(priority, entity, ..)| (*priority, *entity));
+    Some(
+        volumes
+            .into_iter()
+            .fold(global.unwrap_or(none), |value, (_, _, weight, local)| {
+                lerp(value, local, weight)
+            }),
+    )
+}
+
 /// Reads each distinct custom solver file once, in path order. A file that
 /// cannot be read becomes a shader that fails to compile with the reason, so
 /// it shows up in `SceneRenderer::condition_shader_errors`.
@@ -912,6 +976,62 @@ mod tests {
                 .active_camera
                 .map(|camera| camera.entity),
             Some(expected)
+        );
+    }
+
+    #[test]
+    fn post_volumes_blend_fog_and_grading_around_the_camera() {
+        use crate::runtime::{ColorGrading, Fog, PostVolume};
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let camera = app.spawn((
+            Transform::default(),
+            Camera {
+                active: true,
+                ..Camera::default()
+            },
+        ));
+        // Office: warm grade everywhere without fog.
+        app.spawn(ColorGrading {
+            saturation: 2.0,
+            ..ColorGrading::DEFAULT
+        });
+        // Hall: fog and a grey grade in a box 10 m along X, fading over 2 m.
+        app.spawn((
+            Transform::new([10.0, 0.0, 0.0]),
+            PostVolume {
+                extents: [2.0, 2.0, 2.0],
+                blend: 2.0,
+                priority: 0,
+            },
+            Fog {
+                density: 0.1,
+                ..Fog::default()
+            },
+            ColorGrading {
+                saturation: 0.0,
+                ..ColorGrading::DEFAULT
+            },
+        ));
+        let mut at = |x: f32| {
+            app.world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .position = [x, 0.0, 0.0];
+            app.update(Duration::ZERO).unwrap();
+            let world = app.world().resource::<RenderWorld>();
+            (
+                world.fog.map(|fog| fog.density),
+                world.color_grading.unwrap().saturation,
+            )
+        };
+        assert_eq!(at(0.0), (None, 2.0), "outside: global grade, no fog");
+        assert_eq!(at(10.0), (Some(0.1), 0.0), "inside: the hall's");
+        let (fog, saturation) = at(7.0);
+        assert!((fog.unwrap() - 0.05).abs() < 1e-6, "half way, got {fog:?}");
+        assert!(
+            (saturation - 1.0).abs() < 1e-6,
+            "half way, got {saturation}"
         );
     }
 
