@@ -393,12 +393,25 @@ fn drive(
     state: &mut RagdollState,
     dt: f32,
 ) {
-    // Bones this module wrote last tick take their pose from before the
-    // handoff; the rest hold this tick's animation.
+    // Fields of a bone that still hold what this module wrote last tick
+    // take their value from before the handoff; fields a clip keyed this
+    // tick hold the animation. A clip that keys only the hips' position
+    // must not leave their rotation aimed at the last physics pose.
     for (i, &bone) in bones.iter().enumerate() {
+        let (Some(written), Some(before)) =
+            (state.written.get(i), state.before.get(i))
+        else {
+            continue;
+        };
         if let Some(mut transform) = world.get_mut::<Transform>(bone) {
-            if state.written.get(i) == Some(&*transform) {
-                *transform = state.before[i];
+            if transform.position == written.position {
+                transform.position = before.position;
+            }
+            if transform.rotation == written.rotation {
+                transform.rotation = before.rotation;
+            }
+            if transform.scale == written.scale {
+                transform.scale = before.scale;
             }
         }
     }

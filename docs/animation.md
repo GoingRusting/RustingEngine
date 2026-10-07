@@ -345,6 +345,9 @@ Set `muscle` (Hz) above 0 and the character is physical all the time: its
 bodies exist from the first tick, and muscles turn each body toward its
 bone's animated pose, relative to its parent body. The top body is held to
 the animated hips, so the character stands and walks with its clips.
+Where no clip keys a bone's position, rotation or scale, that part is held
+to the bone's pose from when the muscles took over, so a clip that keys
+only the hips' position still keeps them upright.
 
 - A push or a light hit bends the bodies, and the muscles pull them back.
 - A hit at `hit_speed` or `set_ragdoll(name, true)` drops the muscles. After

@@ -59,6 +59,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting_game!(update, tick: tick)` adds a function called once per fixed tick; `scene.pressed` inside it sees presses made on frames that ran no tick (`run_game_with_tick` for custom scene paths)
 - `GameScene::restart` docs say scene counters reset, `set_counter` counters are dropped and `fixed_tick` keeps counting, with an example that carries a value across; `set_paused` docs say `fixed_tick` and `elapsed` stop while `frame` counts on
 - Ray hits on ragdoll bodies report the bone's name, and `raycast_skipping` skips them by the bone's classes (new `RagdollPart` component links a body to its bone)
+- An active ragdoll holds each unkeyed bone field (position, rotation, scale) to its starting pose, so a clip that keys only the hips' position no longer leaves them turned
 
 ### Fixed
 

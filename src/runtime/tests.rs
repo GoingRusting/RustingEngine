@@ -4805,6 +4805,30 @@ fn phase(app: &App, hero: Entity) -> RagdollPhase {
 }
 
 #[test]
+fn an_active_ragdoll_returns_an_unkeyed_rotation_to_its_pose() {
+    let (mut app, hero, hips, _) = ragdoll_scene(20.0);
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(phase(&app, hero), RagdollPhase::Active);
+    let part = app.world().get::<RagdollState>(hero).unwrap().parts[0];
+    app.world_mut()
+        .get_mut::<RigidBody>(part)
+        .unwrap()
+        .angular_velocity = [0.0, 0.0, 8.0];
+    // A clip that keys only the hips' position, every tick.
+    for _ in 0..90 {
+        app.world_mut().get_mut::<Transform>(hips).unwrap().position =
+            [0.0, 0.1, 0.0];
+        run_fixed_steps(&mut app, 1);
+    }
+    let turn = quaternion_of(&app, hips);
+    assert!(
+        turn.angle() < 0.2,
+        "hips stayed turned by {} rad",
+        turn.angle()
+    );
+}
+
+#[test]
 fn ray_hits_on_ragdoll_bodies_carry_the_bone_name_and_classes() {
     let (mut app, hero, hips, _) = ragdoll_scene(20.0);
     app.world_mut().entity_mut(hips).insert(ObjectClasses {
