@@ -65,6 +65,7 @@ pub mod prelude {
         CubeSpawn, GameObject, GameResult, GameScene, GameSnapshot,
         GpuBodySettings, InitialState, RayHit, SphereSpawn,
     };
+    pub use crate::rendering::scene_renderer::RenderCapacityDiagnostics;
     pub use crate::runtime::{
         BeatClock, BusEffect, Caption, FrameTime, GpuCondition,
         GpuConditionShader, GpuConditionShaders, GpuEventMode, GpuEventPayload,

@@ -343,6 +343,29 @@ GPU sends back an event only when a rule matches. See
 `rigid_body.kind` is `Dynamic` (moved by forces), `Kinematic` (moved by your
 code or a controller), or `Fixed`.
 
+### Many GPU bodies: keep the contact grid uncrowded
+
+GPU contacts use a grid. Each cell is as wide as the largest GPU body and
+holds 8 bodies. A body that finds its cell full goes to a fallback list, and
+every GPU body tests that whole list in each contact round. So more than 8
+bodies per cell costs every body, not only the crowded ones. Do not clamp
+many bodies to one plane, such as a hard ceiling or floor height in a
+shader; give each body a slightly different height instead. One very large
+GPU body makes every cell large, so keep GPU bodies of a similar size.
+
+The latest physics frame's counts are in the `RenderCapacityDiagnostics`
+resource: `physics_grid_overflow` (bodies that found their cell full),
+`physics_oversized_bodies` and `physics_fallback_tests` (pair tests made
+through the fallback list). `rusting test --json` reports the same fields
+under `perf.render`. Game code reads them like this:
+
+```rust
+let overflow = scene
+    .world()
+    .get_resource::<RenderCapacityDiagnostics>()
+    .map_or(0, |counts| counts.physics_grid_overflow);
+```
+
 A `rusting.joint` component joins a CPU body to another CPU body, its
 `target`, or to the world when `target` is null. `anchor` and `frame` place
 the joint on this body; `target_anchor` and `target_frame` place it on the

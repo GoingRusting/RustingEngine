@@ -3683,6 +3683,8 @@ impl ApplicationHandler for ProjectApplication {
                 let hashes =
                     scene_renderer.take_completed_physics_state_hashes();
                 let lost = scene_renderer.take_physics_events_lost();
+                let capacity = scene_renderer.capacity_diagnostics();
+                self.runtime.world_mut().insert_resource(capacity);
                 if lost > 0 {
                     self.runtime
                         .world_mut()

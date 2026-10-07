@@ -211,6 +211,7 @@ impl HeadlessCapture {
         let hashes = self.renderer.take_completed_physics_state_hashes();
         let lost = self.renderer.take_physics_events_lost();
         let world = app.world_mut();
+        world.insert_resource(self.renderer.capacity_diagnostics());
         if lost > 0 {
             world
                 .resource_mut::<EventQueue<GpuPhysicsEventsLost>>()
@@ -404,6 +405,9 @@ impl HeadlessCapture {
             "triangles": counters.triangles,
             "visible_instances": counters.visible_instances,
             "dropped_lights": capacity.dropped_lights,
+            "physics_grid_overflow": capacity.physics_grid_overflow,
+            "physics_oversized_bodies": capacity.physics_oversized_bodies,
+            "physics_fallback_tests": capacity.physics_fallback_tests,
         })
     }
 

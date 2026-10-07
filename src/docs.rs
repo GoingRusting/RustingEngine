@@ -784,6 +784,15 @@ mod tests {
     }
 
     #[test]
+    fn contact_grid_overflow_is_explained() {
+        let (found, _) = search("contact grid overflow", 50);
+        assert!(
+            found.iter().any(|item| item["id"] == "manual/concepts"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
     fn budget_cuts_at_a_line_and_the_brief_fits_it() {
         let (cut, truncated) = within_budget("aaaa\nbbbb\ncccc\n", 3);
         assert!(truncated);

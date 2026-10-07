@@ -2081,6 +2081,9 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
             "gpu_ms_max": meta["gpu_ms_max"],
             "cameras": meta["cameras"],
             "dropped_lights": meta["dropped_lights"],
+            "physics_grid_overflow": meta["physics_grid_overflow"],
+            "physics_oversized_bodies": meta["physics_oversized_bodies"],
+            "physics_fallback_tests": meta["physics_fallback_tests"],
         });
     }
     PerfReport {
@@ -3247,6 +3250,55 @@ mod tests {
             RENDER_WARMUP_TICKS + 1,
             "only the ticks before the capture draw"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn contact_grid_overflow_is_in_perf_and_the_world() {
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.add_plugin(HybridPhysicsPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        // Twenty kinematic bodies in one spot: one cell holds eight.
+        for index in 0..20 {
+            app.world_mut().spawn((
+                SceneId(Uuid::new_v4()),
+                Name(format!("Crowd{index}")),
+                Transform::new([index as f32 * 0.01, 0.0, 0.0]),
+                PhysicsBody {
+                    simulation: crate::runtime::SimulationClass::Gpu,
+                    ..PhysicsBody::default()
+                },
+                RigidBody {
+                    kind: crate::runtime::RigidBodyKind::Kinematic,
+                    ..RigidBody::default()
+                },
+                Collider::default(),
+            ));
+        }
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-grid-overflow-{}", std::process::id()));
+        let mut run = scenario(10, json!([]));
+        run.gpu = true;
+        run.capture_size = [64, 48];
+        let report = run_scenario(&mut app, &run, &folder);
+        let _ = std::fs::remove_dir_all(&folder);
+        assert!(report.passed, "{:?}", report.first_failure);
+        let overflow = &report.perf.render["physics_grid_overflow"];
+        assert!(overflow.as_u64().unwrap() > 0, "{}", report.perf.render);
+        assert!(
+            report.perf.render["physics_fallback_tests"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let world = app
+            .world()
+            .resource::<crate::rendering::scene_renderer::RenderCapacityDiagnostics>();
+        assert!(world.physics_grid_overflow > 0, "{world:?}");
     }
 
     #[test]
