@@ -2269,6 +2269,26 @@ impl GameScene<'_> {
             .collect()
     }
 
+    /// Sets a field of object `name` by the JSON pointer that scenario
+    /// `set` steps use: `/transform/position/1`, `/point_light/intensity`,
+    /// or `/components/rusting.fog/density` for any registered component
+    /// (`rusting.color_grading`, `rusting.player_controller`, ...). The
+    /// error names the object, path and problem.
+    pub fn set_field(
+        &mut self,
+        name: &str,
+        path: &str,
+        value: serde_json::Value,
+    ) -> Result<(), String> {
+        let set = crate::scenario::Assignment {
+            entity: name.to_owned(),
+            counter: None,
+            path: path.to_owned(),
+            value,
+        };
+        crate::scenario::assign(self.world, &set).map(|_| ())
+    }
+
     /// The player controller on a named object, with its live state:
     /// `grounded`, `velocity` (what the body really moved per second last
     /// step), `vertical_speed`, `yaw` and `pitch`. `None` when the object or
@@ -4736,6 +4756,30 @@ mod tests {
                 .get::<crate::runtime::PlayerController>(guard)
                 .unwrap()
                 .mouse_look
+        );
+        world
+            .insert_resource(crate::runtime::SceneComponentRegistry::default());
+        let mut scene = GameScene { world: &mut world };
+        scene
+            .set_field(
+                "Guard",
+                "/components/rusting.player_controller/walk_speed",
+                2.5.into(),
+            )
+            .unwrap();
+        let error = scene.set_field(
+            "Guard",
+            "/components/rusting.player_controller/nope",
+            1.into(),
+        );
+        assert!(error.unwrap_err().contains("nope"));
+        assert!(scene.set_field("Nobody", "/visible", true.into()).is_err());
+        assert_eq!(
+            world
+                .get::<crate::runtime::PlayerController>(guard)
+                .unwrap()
+                .walk_speed,
+            2.5
         );
     }
 

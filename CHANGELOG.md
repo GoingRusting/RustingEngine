@@ -66,6 +66,7 @@ Engine features for the horror game FOREVER BEAR.
 - `scene add-model` suffixes repeated or taken node names (`slice 2`) instead of failing, and a taken root name says to pass `--name`
 - `GameScene::set_exposure` and `GameScene::set_mouse_look` set exposure and free or recapture the cursor without `world()`
 - `scene add-model` help and `guide/look-and-feel` say a model's license and author live in the `.rmeta` from `asset import`
+- `GameScene::set_field(name, path, value)` sets any scene field by the scenario `set` JSON pointer, including registered components such as `rusting.fog`
 
 ### Fixed
 

@@ -181,5 +181,10 @@ objects in a class (`in_class`), runs setup once per round (`once`; `restart`
 runs it again), draws random numbers that repeat for a scenario's seed
 (`random`), switches to another scene file such as a next level
 (`load_scene`, with a path relative to the project folder) and draws UI (`ui`,
-an egui context). `world()` gives the ECS world for anything else.
+an egui context). `set_field(name, path, value)` sets any scene field by
+the JSON pointer scenario `set` steps use, for example
+`scene.set_field("Hall", "/components/rusting.fog/density",
+serde_json::json!(0.08))`; it reaches every registered component such as
+`rusting.color_grading` and `rusting.player_controller`. `world()` gives
+the ECS world for anything else.
 `cargo doc --open` documents the full API.
