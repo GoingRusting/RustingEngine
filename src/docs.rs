@@ -1106,4 +1106,50 @@ mod tests {
         assert_eq!(page.text.matches("\nCode: ").count(), entries);
         assert_eq!(page.text.matches("\nFix: ").count(), entries);
     }
+
+    #[test]
+    fn agent_guides_cover_every_scene_method_and_name_only_real_ones() {
+        let api = super::api_items();
+        let methods: Vec<&str> = api
+            .iter()
+            .filter_map(|item| item.title.split_once("::").map(|(_, m)| m))
+            .collect();
+        let skill = include_str!("../skills/rusting-game/SKILL.md");
+        let agents = include_str!("project_agents.md");
+        let guides: String = PAGES.iter().map(|(_, _, text)| *text).collect();
+        let named = |text: &str, name: &str| {
+            text.match_indices(name).any(|(at, _)| {
+                let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+                !text[..at].ends_with(word)
+                    && !text[at + name.len()..].starts_with(word)
+            })
+        };
+        let unnamed: Vec<_> = api
+            .iter()
+            .filter_map(|item| item.title.strip_prefix("GameScene::"))
+            .filter(|m| !named(&guides, m) && !named(agents, m))
+            .collect();
+        assert!(unnamed.is_empty(), "no guide names {unnamed:?}");
+        // Calls written as `name(..)` or `scene.name(..)` in the agent
+        // guides must be real methods, so a rename cannot leave them stale.
+        let std_calls = ["atan2"];
+        for text in [skill, agents] {
+            for code in text.split('`').skip(1).step_by(2) {
+                let call = code.trim_start_matches("scene.");
+                let Some((name, _)) = call.split_once('(') else {
+                    continue;
+                };
+                if name.starts_with(|c: char| c.is_ascii_lowercase())
+                    && name.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+                    })
+                {
+                    assert!(
+                        methods.contains(&name) || std_calls.contains(&name),
+                        "`{code}` names no API method"
+                    );
+                }
+            }
+        }
+    }
 }
