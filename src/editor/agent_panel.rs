@@ -28,6 +28,9 @@ pub(super) struct ResultRow {
     pub(super) file: String,
     pub(super) ok: bool,
     pub(super) message: String,
+    /// "0.42 ms mean, 0.90 p95, 1.20 max per tick", plus draws and
+    /// triangles when the run rendered; empty for older results files.
+    pub(super) perf: String,
 }
 
 /// Which list the Agent area shows.
@@ -93,8 +96,26 @@ pub(super) fn read_test_results(path: &Path) -> Option<Vec<ResultRow>> {
             .unwrap_or_default(),
         ok: run["ok"].as_bool().unwrap_or(false),
         message: run["message"].as_str().unwrap_or_default().to_owned(),
+        perf: perf_line(&run["perf"]),
     });
     Some(rows.collect())
+}
+
+fn perf_line(perf: &serde_json::Value) -> String {
+    let Some(mean) = perf["tick_ms_mean"].as_f64() else {
+        return String::new();
+    };
+    let ms = |key: &str| perf[key].as_f64().unwrap_or_default();
+    let mut line = format!(
+        "{mean:.2} ms mean, {:.2} p95, {:.2} max per tick",
+        ms("tick_ms_p95"),
+        ms("tick_ms_max")
+    );
+    if let Some(draws) = perf["draws"].as_u64() {
+        let triangles = perf["triangles"].as_u64().unwrap_or_default();
+        line += &format!(", {draws} draws, {triangles} triangles");
+    }
+    line
 }
 
 /// Draws the Journal or Results tab. Returns the IDs of the journal entry
@@ -238,6 +259,9 @@ fn draw_results(ui: &mut Ui, journal: &mut AgentJournal, project_root: &str) {
                     }
                     ui.label(&row.file);
                 });
+                if !row.perf.is_empty() {
+                    ui.colored_label(EditorTheme::TEXT_MUTED, &row.perf);
+                }
                 if !row.ok {
                     ui.colored_label(EditorTheme::ERROR, &row.message);
                 }
@@ -260,7 +284,10 @@ mod tests {
             &path,
             serde_json::json!({"root": "/games/demo", "scenarios": [
                 {"file": "/games/demo/tests/jump.json", "ok": true,
-                 "message": "\"jump\" after 60 ticks", "logs": []},
+                 "message": "\"jump\" after 60 ticks", "logs": [],
+                 "perf": {"tick_ms_mean": 0.5, "tick_ms_p95": 0.75,
+                          "tick_ms_max": 1.0, "draws": 12,
+                          "triangles": 3400}},
                 {"file": "/games/demo/tests/coin.json", "ok": false,
                  "message": "tick 30: expected 1, got 0", "logs": []},
             ]})
@@ -274,6 +301,11 @@ mod tests {
         assert_eq!(rows[1].file, "coin.json");
         assert!(!rows[1].ok);
         assert_eq!(rows[1].message, "tick 30: expected 1, got 0");
+        assert_eq!(
+            rows[0].perf,
+            "0.50 ms mean, 0.75 p95, 1.00 max per tick, 12 draws, 3400 triangles"
+        );
+        assert_eq!(rows[1].perf, "", "an older file has no perf");
         // The panel draws the rows from the project root.
         let mut journal = AgentJournal {
             tab: AgentTab::Results,

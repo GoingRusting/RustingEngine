@@ -2693,11 +2693,19 @@ pub fn test_game_folder(
             })
             .map(|step| json!({"tick": step["tick"], "message": step["message"]}))
             .collect();
+        let perf = &result.data["scenario"]["perf"];
         runs.push(json!({
             "file": file,
             "ok": result.ok,
             "message": message,
             "logs": logs,
+            "perf": {
+                "tick_ms_mean": perf["tick_ms_mean"],
+                "tick_ms_p95": perf["tick_ms_p95"],
+                "tick_ms_max": perf["tick_ms_max"],
+                "draws": perf["render"]["draws"],
+                "triangles": perf["render"]["triangles"],
+            },
         }));
         if !result.ok && first_failure.is_none() {
             first_failure = Some(result);

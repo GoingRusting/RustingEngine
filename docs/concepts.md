@@ -469,7 +469,8 @@ so a game that uses actions is testable without a keyboard.
   checks scene values, collision events, and screenshots.
   `rusting test <project>` runs every scenario in `tests/` and saves the
   results to `build/test-results.json`, which the editor's Agent area shows
-  in its Results tab.
+  in its Results tab: pass or fail, the failure message, and each scenario's
+  tick time (mean, p95, max) with draws and triangles when it rendered.
 - `rusting determinism <project>` checks that debug, release, and one-CPU
   builds produce the same simulation, tick by tick.
 

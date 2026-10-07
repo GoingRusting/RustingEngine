@@ -108,6 +108,7 @@ Engine features for the horror game FOREVER BEAR.
 - The Agent area's pending row lists each touched entity with its changed fields and its own Accept, which applies that entity alone behind one Undo snapshot.
 - The Agent area's pending diff compares the outside write with the scene file as last loaded or saved, so unsaved editor edits no longer show as agent changes.
 - The Agent area's pending row lists entities an outside write removes, each with an Accept that deletes it and its descendants behind one Undo snapshot.
+- `rusting test <project>` saves each scenario's tick time, draws and triangles in `build/test-results.json`, and the Agent area's Results tab shows them.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
