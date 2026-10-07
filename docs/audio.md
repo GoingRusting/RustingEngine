@@ -162,7 +162,7 @@ scene.set_captions(true, 26.0); // on, 26 logical pixels
 ```
 
 Caption times are seconds into the clip, so they follow `rate`, pause and
-seek. The HUD shows the current lines at the bottom center (`ui` feature).
+seek. A paused sound's caption hides until `resume_sound`. The HUD shows the current lines at the bottom center (`ui` feature).
 `CaptionSettings { enabled, size }` is the resource behind the settings
 toggle. `/captions` lists the lines showing now.
 

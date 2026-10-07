@@ -518,7 +518,7 @@ impl AudioQueue {
 
 impl Tracked {
     fn caption_tick_started(&self, tick: u64) -> bool {
-        !self.captions.is_empty() && tick >= self.start
+        !self.captions.is_empty() && !self.paused && tick >= self.start
     }
 }
 

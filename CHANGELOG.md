@@ -103,6 +103,7 @@ Engine features for the horror game FOREVER BEAR.
 - The missing-counter warning lists close counter names ("did you mean `money`?") when the name looks like a typo.
 
 ### Fixed
+- A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
 
 - The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060
 - Each camera screen ran the GPU physics again; screens now reuse the frame's physics, so six screens cost about 3 ms instead of 113 ms

@@ -4169,6 +4169,44 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn a_paused_sound_hides_its_caption_until_resumed() {
+        use crate::runtime::{Caption, Sound, SoundId};
+        let directory = tone_project(1.0);
+        let mut app = audio_game(&directory, |tick, scene| match tick {
+            1 => {
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        captions: vec![Caption::new(0.0, 0.9, "one bear")],
+                        ..Sound::default()
+                    },
+                );
+            }
+            20 => scene.pause_sound(SoundId(0)),
+            40 => scene.resume_sound(SoundId(0)),
+            _ => {}
+        });
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                45,
+                json!([
+                    {"tick": 10, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": ["one bear"]}},
+                    {"tick": 30, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": []}},
+                    {"tick": 45, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": ["one bear"]}},
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn a_wall_between_listener_and_sound_lowers_its_volume() {
         use crate::runtime::{Sound, SoundId};
         let directory = tone_project(2.0);
