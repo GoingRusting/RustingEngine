@@ -212,6 +212,7 @@ impl Default for App {
         world.init_resource::<PhysicsWorld>();
         world.insert_resource(SceneComponentRegistry::default());
         world.init_resource::<CpuFrameTimings>();
+        world.init_resource::<HitStop>();
         // Bevy adds this on the first schedule run. Adding it here keeps its
         // entity id the same before and after, which snapshots rely on.
         world.init_resource::<bevy_ecs::schedule::Schedules>();

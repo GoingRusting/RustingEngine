@@ -129,6 +129,7 @@ Engine features for the horror game FOREVER BEAR.
 - `GameScene::gpu_command(name, command)` moves, pushes or reads a GPU body from game code, and `restart` now puts every GPU body back at its scene-file pose.
 - Scenarios read `"entity": "class:ball in -5,0,-5 5,10,5"` for a class's member count, the bounds of its GPU bodies and how many lie inside the box.
 - `rusting.flash` and `scene.flash(name)` tint an object and its children for a moment on a hit, without touching the shared material.
+- `scene.hit_stop(seconds)` freezes a windowed game for up to a second of real time on a heavy hit; fixed ticks then carry on unchanged, so simulation results and headless runs are not affected.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

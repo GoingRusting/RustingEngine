@@ -536,6 +536,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.ignore::<crate::assets::AssetServer>();
     types.ignore::<crate::assets::DataAssetTypes>();
     types.ignore::<CpuFrameTimings>();
+    types.ignore::<super::HitStop>();
     types.ignore::<RenderWorld>();
     types.ignore::<SceneComponentRegistry>();
     types.ignore::<super::signals::SignalHandlers>();

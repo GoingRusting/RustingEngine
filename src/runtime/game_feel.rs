@@ -26,10 +26,13 @@
 
 use std::collections::BTreeSet;
 use std::f32::consts::{PI, TAU};
+use std::time::Duration;
 
 use bevy_ecs::change_detection::DetectChangesMut;
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Commands, Component, Or, Query, Res, ResMut, With};
+use bevy_ecs::prelude::{
+    Commands, Component, Or, Query, Res, ResMut, Resource, With, World,
+};
 use serde::{Deserialize, Serialize};
 
 use super::sim_math;
@@ -385,6 +388,40 @@ impl Flash {
             0.0
         }
     }
+}
+
+/// Real time left on a hit-stop freeze. The windowed loop holds back that
+/// much real time from the runtime, so fixed ticks pause for a moment and
+/// then carry on exactly as they would have. Simulation results never
+/// change, and headless runs, which step ticks directly, ignore it.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct HitStop {
+    pub remaining: Duration,
+}
+
+impl HitStop {
+    /// Freezes for `seconds` (0 to 1), unless a longer freeze is running.
+    pub fn stop(&mut self, seconds: f32) {
+        // Whole microseconds, so 0.05 is exactly 50 ms rather than f32 noise.
+        let seconds = Duration::from_micros(
+            (seconds.clamp(0.0, 1.0) * 1e6).round() as u64,
+        );
+        self.remaining = self.remaining.max(seconds);
+    }
+}
+
+/// Takes a real frame delta and returns what is left of it after any
+/// running hit-stop has eaten its share.
+pub fn after_hit_stop(world: &mut World, delta: Duration) -> Duration {
+    let Some(mut stop) = world.get_resource_mut::<HitStop>() else {
+        return delta;
+    };
+    if stop.remaining.is_zero() {
+        return delta;
+    }
+    let eaten = stop.remaining.min(delta);
+    stop.remaining -= eaten;
+    delta - eaten
 }
 
 /// Per fixed step: fades hit flashes.

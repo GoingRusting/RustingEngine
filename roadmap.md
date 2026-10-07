@@ -2925,8 +2925,16 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
     a 0.1 s flash, gone after 0.1 s) and the GPU test
     `a_flash_tints_the_drawn_object_and_fades_back` (the centre pixel turns
     green, then returns to the exact material color).
-  - [ ] Hit-stop. It cannot freeze fixed steps, because headless runs count
-    each step as a scenario tick; it needs a visual-only freeze.
+  - [x] Hit-stop: `scene.hit_stop(seconds)` (0 to 1 s, a longer running
+    stop wins) sets the `HitStop` resource, and the windowed loop holds back
+    that much real time before `App::update`. Fixed ticks pause and then
+    carry on exactly as before, so simulation results, replays and headless
+    runs (which step ticks directly) are unchanged. It is a call rather than
+    a component because it freezes the whole game, not one object. Verified
+    by `hit_stop_holds_back_real_time_then_lets_it_through` (a 50 ms stop
+    eats three 16 ms frames and 2 ms of the fourth, a shorter stop does not
+    cut it short, and 9 s clamps to 1 s). How long it feels on screen is a
+    real-hardware check.
   - [ ] Particle and sound presets as registered components.
 - [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
 - [x] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency. `rusting asset generate <root> sfx "coin 7"` synthesizes one of seven presets (jump, coin, hit, explosion, laser, powerup, blip) with a seeded splitmix64 and imports the WAV as CC0 with its preset and seed in the `.rmeta` notes; a project hook named `sfx` still wins. Verified by `presets_are_seeded_short_and_quiet_enough` (each preset repeats for one seed, changes for another, lasts 0.05 to 1 s, peaks at 0.4 and fades to silence) and `the_builtin_sfx_generator_imports_a_seeded_cc0_wav` (same bytes on a second import, bad presets and seeds fail with `GENERATOR_FAILED`). Run on a sample copy, `coin 7` imported a 207 ms 48 kHz stereo WAV.

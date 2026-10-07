@@ -2120,6 +2120,15 @@ impl GameScene<'_> {
         }
     }
 
+    /// Freezes the whole game for `seconds` (0 to 1) of real time on a
+    /// heavy hit. Fixed ticks then carry on as if nothing happened, so
+    /// simulation results and headless runs are unchanged.
+    pub fn hit_stop(&mut self, seconds: f32) {
+        self.world
+            .resource_mut::<crate::runtime::HitStop>()
+            .stop(seconds);
+    }
+
     /// Adds trauma (0 to 1) to the named camera's `rusting.camera_shake`,
     /// giving it a default one first if it has none.
     pub fn add_trauma(&mut self, name: &str, amount: f32) {
@@ -3970,6 +3979,10 @@ impl ApplicationHandler for ProjectApplication {
                 );
                 self.window.begin_ui_frame(window_id, &mut self.runtime);
                 let update_start = Instant::now();
+                let delta = crate::runtime::after_hit_stop(
+                    self.runtime.world_mut(),
+                    delta,
+                );
                 let updated = self.runtime.update(delta);
                 self.perf_spent[0] += update_start.elapsed();
                 if let Err(error) = updated {
@@ -4723,6 +4736,26 @@ mod tests {
             world.resource::<GpuPhysicsCommands>().commands,
             [(id, teleport)]
         );
+    }
+
+    #[test]
+    fn hit_stop_holds_back_real_time_then_lets_it_through() {
+        use crate::runtime::{after_hit_stop, HitStop};
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let mut world = World::new();
+        world.init_resource::<HitStop>();
+        let mut scene = GameScene { world: &mut world };
+        scene.hit_stop(0.05);
+        scene.hit_stop(0.02); // a shorter stop does not cut it short
+        scene.hit_stop(-1.0);
+        assert_eq!(after_hit_stop(&mut world, ms(16)), ms(0));
+        assert_eq!(after_hit_stop(&mut world, ms(16)), ms(0));
+        assert_eq!(after_hit_stop(&mut world, ms(16)), ms(0));
+        assert_eq!(after_hit_stop(&mut world, ms(16)), ms(14));
+        assert_eq!(after_hit_stop(&mut world, ms(16)), ms(16));
+        GameScene { world: &mut world }.hit_stop(9.0);
+        assert_eq!(world.resource::<HitStop>().remaining, ms(1000));
     }
 
     #[test]
