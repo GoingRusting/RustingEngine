@@ -90,6 +90,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/animation.md"),
     ),
+    (
+        "guide/lighting",
+        "guide",
+        include_str!("../docs/lighting.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
@@ -643,6 +648,10 @@ mod tests {
             .collect();
         assert!(api.len() > 30, "only {} api items", api.len());
         assert!(api.iter().all(|i| !i.summary.is_empty()), "undocumented");
+        let lighting = super::find("guide/lighting").expect("lighting");
+        for wanted in ["64", "Eco", "shadows", "dropped_lights"] {
+            assert!(lighting.text.contains(wanted), "{wanted}");
+        }
         let graph = super::find("api/WaypointGraph").expect("waypoints");
         for wanted in ["nodes", "nearest", "disconnect", "path", "length"] {
             assert!(graph.text.contains(wanted), "{wanted}: {}", graph.text);

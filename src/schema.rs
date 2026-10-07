@@ -604,7 +604,7 @@ const ENTITY_SECTIONS: &[Section] = &[
     Section {
         key: "point_light",
         summary: "Light radiating from the object's position.",
-        gpu: "shading cost per lit pixel; up to 64 lights per frame (16 at Eco), the rest are dropped",
+        gpu: "shading cost per lit pixel; up to 64 lights per frame (32 at Balanced, 16 at Eco), the rest are dropped; casts no shadows (guide/lighting)",
         example: || json!({"color": [1.0, 0.8, 0.6], "intensity": 800.0, "range": 8.0}),
         fields: &[
             field("/color", RGB, "0..1", ""),
@@ -614,7 +614,7 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "spot_light",
-        summary: "Cone of light along the object's forward direction.",
+        summary: "Cone of light along the object's forward direction. Casts no shadows.",
         gpu: "as point_light",
         example: || json!({"color": [1.0, 1.0, 1.0], "intensity": 1200.0, "range": 12.0, "inner_angle": 0.3, "outer_angle": 0.5}),
         fields: &[

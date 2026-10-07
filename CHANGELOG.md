@@ -72,6 +72,7 @@ Engine features for the horror game FOREVER BEAR.
 - A scenario with captures, and `rusting capture --tick N`, render only the few ticks before each image instead of the whole run, so long runs with a late capture are no longer slow throughout. Scenes with GPU bodies still render every tick.
 - `rusting docs show api/WaypointGraph` documents the waypoint graph's fields and methods.
 - `--stderr` on `rusting run` and `rusting test` streams game output while the game runs.
+- New `guide/lighting` docs page: shadow support per light type, the light cap per quality and which lights are dropped first. Scenario perf reports include `dropped_lights`.
 
 ### Fixed
 

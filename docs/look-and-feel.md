@@ -35,6 +35,8 @@ Do this after the game works and before calling it done.
 - **Warm key, cool fill.** One strong directional or spot light (the key)
   in a warm color, and a weaker sky or ambient light (the fill) in a cool
   color, or the reverse for night. Equal light from every side looks flat.
+  Only the directional light casts shadows, and at most 64 lights draw a
+  frame; `rusting docs show guide/lighting` has the details.
 - **Materials.** Not everything has roughness 0.5. Metal is metallic and
   smoother; cloth, wood and stone are rough. Emissive is for lights,
   screens and pickups only.

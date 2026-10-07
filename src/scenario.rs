@@ -617,7 +617,8 @@ pub struct PerfReport {
     /// render budget, else the few ticks before each image step); and
     /// `cameras`:
     /// `[{name, gpu_ms, draws, triangles}]`, one per viewport camera, then
-    /// one per camera screen drawn that frame (with `"screen": true`). Null
+    /// one per camera screen drawn that frame (with `"screen": true`);
+    /// and `dropped_lights`, the lights past the frame's light cap. Null
     /// without a renderer (no capture step, `gpu`, or render budget).
     pub render: Value,
 }
@@ -2068,6 +2069,7 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
             "gpu_ms_p95": meta["gpu_ms_p95"],
             "gpu_ms_max": meta["gpu_ms_max"],
             "cameras": meta["cameras"],
+            "dropped_lights": meta["dropped_lights"],
         });
     }
     PerfReport {
@@ -3248,6 +3250,7 @@ mod tests {
         let report = run_scenario(&mut app, &scenario, &std::env::temp_dir());
         assert!(report.perf.render["draws"].as_u64().unwrap() > 0);
         assert!(report.perf.render["gpu_ms"].is_number());
+        assert_eq!(report.perf.render["dropped_lights"], 0);
         let render = &report.perf.render;
         let frames = render["gpu_frames"].as_u64().unwrap();
         assert!(frames >= report.ticks_run, "{render}");
