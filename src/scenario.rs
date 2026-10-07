@@ -1015,6 +1015,10 @@ pub enum StepAction {
     LeftStick([f32; 2]),
     /// Tilts the gamepad's right stick, as `left_stick` does.
     RightStick([f32; 2]),
+    /// Gives the window focus (true) or takes it away (false) before the
+    /// tick's update, as alt-tab does: losing it releases held inputs and
+    /// makes `GameScene::window_focused` false.
+    Focus(bool),
     /// Checks where an entity is in the frame: on screen, inside a screen
     /// rectangle, covering a share of the frame, or hidden behind others.
     ExpectScreen(ScreenExpectation),
@@ -2044,6 +2048,12 @@ pub fn run_scenario(
                 StepAction::RightStick(tilt) => {
                     tilt_stick(app.world_mut(), Stick::Right, *tilt)
                 }
+                StepAction::Focus(focused) => {
+                    app.world_mut()
+                        .resource_mut::<RuntimeInput>()
+                        .record_focus(*focused);
+                    Ok(String::new())
+                }
                 StepAction::Click(label) => click(app.world_mut(), label),
                 StepAction::Restart(true) => restart(app.world_mut()),
                 _ => continue,
@@ -2341,7 +2351,8 @@ pub fn run_scenario(
                 | StepAction::Restart(_)
                 | StepAction::Pointer(_)
                 | StepAction::LeftStick(_)
-                | StepAction::RightStick(_) => continue,
+                | StepAction::RightStick(_)
+                | StepAction::Focus(_) => continue,
             };
             let (ok, message, actual) = match outcome {
                 Ok(message) => (true, message, Value::Null),
@@ -3691,6 +3702,45 @@ mod tests {
             Path::new("."),
         );
         assert!(report.passed, "{:#?}", report.steps);
+    }
+
+    #[test]
+    fn a_focus_step_releases_held_inputs_until_focus_returns() {
+        let mut app = game();
+        let ground = |tick, y: f64| {
+            json!({"tick": tick, "expect": {"entity": "Ground",
+                "path": "/transform/position/1", "equals": y}})
+        };
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                8,
+                json!([
+                    {"tick": 1, "press": "jump"},
+                    ground(2, 1.0),
+                    {"tick": 3, "focus": false},
+                    ground(3, -0.5),
+                    {"tick": 5, "focus": true},
+                    {"tick": 6, "press": "jump"},
+                    ground(6, 1.0),
+                ]),
+            ),
+            Path::new("."),
+        );
+        assert!(report.passed, "{:#?}", report.steps);
+        assert!(app.world().resource::<RuntimeInput>().focused());
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_focus(false);
+        let scene = crate::project_runner::GameScene {
+            world: app.world_mut(),
+        };
+        assert!(!scene.window_focused());
+        scene
+            .world
+            .resource_mut::<RuntimeInput>()
+            .record_focus(true);
+        assert!(scene.window_focused());
     }
 
     #[test]

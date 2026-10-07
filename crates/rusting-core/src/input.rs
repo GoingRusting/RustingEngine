@@ -54,6 +54,9 @@ pub struct RuntimeInput {
     /// When this frame's presses happened, in fractional fixed ticks.
     #[serde(default)]
     press_ticks: Vec<(InputBinding, f64)>,
+    /// The window lost focus (alt-tab) and has not got it back.
+    #[serde(default)]
+    unfocused: bool,
 }
 
 /// A gamepad button, in the layout of an Xbox pad: `South` is A, `East` B.
@@ -218,6 +221,22 @@ impl RuntimeInput {
         self.mouse_just_released.append(&mut self.mouse_held);
         self.pad_just_released.append(&mut self.pad_held);
         self.sticks = [[0.0; 2]; 2];
+    }
+
+    /// Whether the game window has keyboard focus. True until a
+    /// [`Self::record_focus`] says otherwise.
+    #[must_use]
+    pub fn focused(&self) -> bool {
+        !self.unfocused
+    }
+
+    /// Records a `WindowEvent::Focused`. Losing focus also releases every
+    /// held key and button, as [`Self::release_all`] does.
+    pub fn record_focus(&mut self, focused: bool) {
+        self.unfocused = !focused;
+        if !focused {
+            self.release_all();
+        }
     }
 
     /// Records the latest cursor position from a `CursorMoved` event.

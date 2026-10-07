@@ -1371,6 +1371,14 @@ impl GameScene<'_> {
         self.world.resource::<RuntimeInput>().viewport_size()
     }
 
+    /// False while the game window has lost focus (alt-tab): held keys were
+    /// released, so pause here if the game should not run unattended. Always
+    /// true headless; a scenario's `focus` step changes it.
+    #[must_use]
+    pub fn window_focused(&self) -> bool {
+        self.world.resource::<RuntimeInput>().focused()
+    }
+
     /// Names of the keys and gamepad buttons pressed this frame (`KeyA`,
     /// `Space`, `ArrowUp`, `PadSouth`), for a "press a key" rebinding
     /// prompt; pass one to [`Self::rebind`].
@@ -3982,11 +3990,11 @@ impl ApplicationHandler for ProjectApplication {
             WindowEvent::ScaleFactorChanged { .. } => {
                 self.window.resize(window_id);
             }
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(focused) => {
                 self.runtime
                     .world_mut()
                     .resource_mut::<RuntimeInput>()
-                    .release_all();
+                    .record_focus(focused);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {

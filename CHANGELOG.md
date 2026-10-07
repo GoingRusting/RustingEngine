@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `scene.window_focused()` is false while the game window has lost focus (alt-tab), so a game can pause itself, and the scenario step `{"focus": false}` simulates it (FOREVER BEAR F46).
 - `rusting new --template puzzle` creates Box Push, a grid puzzle with game code: push every box onto a goal. Its `tests/solve.json` solves the level.
 - `rusting docs show cookbook/<name>`: tested snippets for common tasks, starting with an enemy that follows the player and a level select.
 - The agent skill now lists every `GameScene` method, and a test fails when a guide misses one or names a method that does not exist.
