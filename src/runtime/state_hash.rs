@@ -2,7 +2,7 @@
 //! Two runs with the same inputs must produce the same hash sequence;
 //! [`StateHashes`] keeps the recent ones for determinism checks and replays.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::{self, Write};
 
 use bevy_ecs::prelude::{Entity, Has, Or, Resource, With, World};
@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::{
     App, AppError, BurstEmitter, Collider, ColliderShape, CollisionLayers,
-    Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Name, PhysicsBody,
-    PhysicsIdRegistry, PhysicsSettings, PhysicsWorld, Pickup,
+    Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Joint, Name,
+    PhysicsBody, PhysicsIdRegistry, PhysicsSettings, PhysicsWorld, Pickup,
     PlatformerController, PlayerController, RandomSeed, RigidBody, SceneId,
     Sleeping, Tween,
 };
@@ -46,17 +46,32 @@ impl StateHashes {
 
 /// FNV-1a over 64-bit words: xor then multiply by an odd constant is a
 /// bijection, so two inputs that differ in one word never hash the same.
-pub struct StateHasher(u64);
+pub struct StateHasher {
+    state: u64,
+    /// See [`Self::entity`].
+    places: HashMap<Entity, u64>,
+}
 
 impl Default for StateHasher {
     fn default() -> Self {
-        Self(0xCBF2_9CE4_8422_2325)
+        Self {
+            state: 0xCBF2_9CE4_8422_2325,
+            places: HashMap::new(),
+        }
     }
 }
 
 impl StateHasher {
     pub fn word(&mut self, value: u64) {
-        self.0 = (self.0 ^ value).wrapping_mul(0x0100_0000_01B3);
+        self.state = (self.state ^ value).wrapping_mul(0x0100_0000_01B3);
+    }
+
+    /// Feeds `entity`'s place among the simulating entities in entity
+    /// order, not its bits: resources are entities too, so a resource only
+    /// the windowed runtime inserts would shift every later entity's index
+    /// and break replays. Entities outside that set feed `u64::MAX`.
+    pub fn entity(&mut self, entity: Entity) {
+        self.word(self.places.get(&entity).copied().unwrap_or(u64::MAX));
     }
 
     pub fn float(&mut self, value: f32) {
@@ -71,7 +86,7 @@ impl StateHasher {
 
     #[must_use]
     pub fn finish(&self) -> u64 {
-        self.0
+        self.state
     }
 }
 
@@ -96,8 +111,9 @@ impl Write for StateHasher {
 pub fn world_state_hash(world: &mut World) -> u64 {
     let mut hasher = StateHasher::default();
     hasher.word(resource_state_hash(world));
+    hasher.places = entity_places(world);
     for (entity, hash) in entity_state_hashes(world) {
-        hasher.word(entity.to_bits());
+        hasher.entity(entity);
         hasher.word(hash);
     }
     hasher.finish()
@@ -106,8 +122,11 @@ pub fn world_state_hash(world: &mut World) -> u64 {
 /// Hash of the simulation resources: clock, seed, physics settings, solver
 /// carry-over, physics ids, and queued GPU commands.
 #[must_use]
-pub fn resource_state_hash(world: &World) -> u64 {
-    let mut hasher = StateHasher::default();
+pub fn resource_state_hash(world: &mut World) -> u64 {
+    let mut hasher = StateHasher {
+        places: entity_places(world),
+        ..StateHasher::default()
+    };
     if let Some(time) = world.get_resource::<FrameTime>() {
         hasher.word(time.fixed_tick);
         hasher.word(time.fixed_delta.as_nanos() as u64);
@@ -132,9 +151,35 @@ pub fn resource_state_hash(world: &World) -> u64 {
     hasher.finish()
 }
 
+/// The place in entity order of each entity [`entity_state_hashes`]
+/// hashes, and of each joint.
+fn entity_places(world: &mut World) -> HashMap<Entity, u64> {
+    let mut entities: Vec<Entity> = world
+        .query_filtered::<Entity, Or<(
+            With<RigidBody>,
+            With<Collider>,
+            With<PhysicsBody>,
+            With<Joint>,
+            With<PlayerController>,
+            With<PlatformerController>,
+            With<Tween>,
+            With<Pickup>,
+            With<Counter>,
+            With<BurstEmitter>,
+        )>>()
+        .iter(world)
+        .collect();
+    entities.sort_unstable();
+    entities.into_iter().zip(0..).collect()
+}
+
 /// Hash of each simulating entity's components, sorted by entity.
 #[must_use]
 pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
+    // Entity fields feed their place; see `StateHasher::entity`.
+    let places = entity_places(world);
+    let place =
+        |entity: Entity| places.get(&entity).copied().unwrap_or(u64::MAX);
     let mut hashers = BTreeMap::<Entity, StateHasher>::new();
     let mut bodies =
         world.query_filtered::<(
@@ -181,7 +226,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         }
         hasher.word(u64::from(sleeping));
         if let Some(proxy) = proxy {
-            hasher.word(proxy.0.to_bits());
+            hasher.word(place(proxy.0));
         }
     }
 
@@ -204,8 +249,30 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
     for (entity, player, platformer, tween, pickup, counter, emitter) in
         gameplay.iter(world)
     {
+        let hasher = hashers.entry(entity).or_default();
+        let floors = [
+            player.map(|player| player.floor),
+            platformer.map(|platformer| platformer.floor),
+        ];
+        let walls =
+            player.map(|player| player.wall.map(|wall| (wall, [0.0; 3])));
+        for touching in floors.into_iter().chain([walls]).flatten() {
+            let (body, at) =
+                touching.unwrap_or((Entity::PLACEHOLDER, [0.0; 3]));
+            hasher.word(place(body));
+            hasher.floats(&at);
+        }
+        let player = player.map(|player| PlayerController {
+            floor: None,
+            wall: None,
+            ..*player
+        });
+        let platformer = platformer.map(|platformer| PlatformerController {
+            floor: None,
+            ..*platformer
+        });
         let _ = write!(
-            hashers.entry(entity).or_default(),
+            hasher,
             "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}"
         );
     }

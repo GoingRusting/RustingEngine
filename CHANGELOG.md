@@ -137,10 +137,15 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
+- `rusting run --replay` no longer reports a divergence at tick 9 on every windowed recording; the state hash no longer depends on entity ids that only the windowed runtime shifts.
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
 
 - The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060
 - Each camera screen ran the GPU physics again; screens now reuse the frame's physics, so six screens cost about 3 ms instead of 113 ms
+
+### Changed
+
+- `resource_state_hash` takes `&mut World` instead of `&World`; pass the world mutably.
 
 ### Performance
 

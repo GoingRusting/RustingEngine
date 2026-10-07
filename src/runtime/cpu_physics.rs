@@ -578,15 +578,15 @@ impl PhysicsWorld {
         let mut rest: Vec<_> = self.rest.iter().collect();
         rest.sort_unstable_by_key(|(entity, _)| **entity);
         for (entity, (steps, position)) in rest {
-            hasher.word(entity.to_bits());
+            hasher.entity(*entity);
             hasher.word(u64::from(*steps));
             hasher.floats(position);
         }
         let mut warm: Vec<_> = self.warm.iter().collect();
         warm.sort_unstable_by_key(|(pair, _)| **pair);
         for ((first, second), points) in warm {
-            hasher.word(first.to_bits());
-            hasher.word(second.to_bits());
+            hasher.entity(*first);
+            hasher.entity(*second);
             for (point, impulses) in points {
                 hasher.floats(point.as_slice());
                 hasher.floats(impulses);
@@ -595,7 +595,7 @@ impl PhysicsWorld {
         let mut joints: Vec<_> = self.joint_warm.iter().collect();
         joints.sort_unstable_by_key(|(entity, _)| **entity);
         for (entity, rows) in joints {
-            hasher.word(entity.to_bits());
+            hasher.entity(*entity);
             for (key, impulse) in rows {
                 hasher.word(u64::from(*key));
                 hasher.floats(&[*impulse]);

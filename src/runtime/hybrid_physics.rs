@@ -68,7 +68,10 @@ impl PhysicsIdRegistry {
     pub(crate) fn hash_state(&self, hasher: &mut super::StateHasher) {
         for slot in &self.slots {
             hasher.word(u64::from(slot.generation));
-            hasher.word(slot.entity.map_or(u64::MAX, Entity::to_bits));
+            match slot.entity {
+                Some(entity) => hasher.entity(entity),
+                None => hasher.word(u64::MAX - 1),
+            }
         }
         for slot in &self.free_slots {
             hasher.word(u64::from(*slot));

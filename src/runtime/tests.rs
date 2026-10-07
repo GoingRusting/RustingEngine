@@ -3257,6 +3257,47 @@ fn state_hashes_cover_every_tick_and_only_simulation_state() {
 }
 
 #[test]
+fn state_hash_ignores_resources_that_shift_entity_ids() {
+    // Resources are entities: the windowed runtime inserting one more than
+    // a headless replay must not change the hash of the same bodies.
+    #[derive(Resource)]
+    struct WindowOnly;
+    let hashes = |extra: bool| {
+        let mut app = App::new();
+        app.add_plugin(crate::assets::AssetPlugin).unwrap();
+        if extra {
+            app.world_mut().insert_resource(WindowOnly);
+        }
+        cpu_ground(app.world_mut());
+        // Lands and rests, so the solver's per-entity carry-over is hashed.
+        cpu_body(
+            app.world_mut(),
+            [0.0, 0.6, 0.0],
+            UNIT_BOX,
+            RigidBodyKind::Dynamic,
+        );
+        // Tiles spawn during the first update, and the player's floor
+        // names one of them.
+        app.spawn((
+            Transform::new([-5.0, 3.0, 0.0]),
+            TileMap {
+                rows: vec!["####".into()],
+                ..TileMap::default()
+            },
+        ));
+        let player = app.spawn((
+            Transform::new([-3.5, 4.0, 0.0]),
+            PlatformerController::default(),
+        ));
+        run_fixed_steps(&mut app, 60);
+        let floor = app.world().get::<PlatformerController>(player).unwrap();
+        assert!(floor.floor.is_some());
+        app.world().resource::<StateHashes>().recent.clone()
+    };
+    assert_eq!(hashes(false), hashes(true));
+}
+
+#[test]
 fn compare_runs_reports_the_first_divergent_tick_and_body() {
     #[derive(Resource)]
     struct Nudge(u64);
