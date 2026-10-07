@@ -119,6 +119,11 @@ pub const TICK_TIME_MARKER: &str = "[rusting] headless ms per tick";
 /// [`BENCH_MARKER`]; set by `rusting run --bench FRAMES`.
 pub const BENCH_FRAMES_ENV: &str = "RUSTING_BENCH_FRAMES";
 
+/// Comma-separated scene component names (`collider`, `rigid_body`, or a
+/// registered component) that every scene load leaves out, set by
+/// `rusting test --without`.
+pub const WITHOUT_ENV: &str = "RUSTING_WITHOUT";
+
 /// Frames a bench run skips before measuring: the first frames build
 /// pipelines and upload assets.
 pub const BENCH_WARMUP_FRAMES: u32 = 60;

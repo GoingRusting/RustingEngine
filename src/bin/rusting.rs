@@ -323,6 +323,10 @@ fn execute(args: &[String]) -> CliResult {
                         Some(path) => options.replay = Some(path.into()),
                         _ => return usage("--replay requires a file"),
                     },
+                    "--without" => match flags.next() {
+                        Some(name) => options.without.push(name.to_string()),
+                        _ => return usage("--without requires a component name"),
+                    },
                     _ => return usage(format!("unknown run flag `{flag}`")),
                 }
             }

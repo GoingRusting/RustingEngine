@@ -337,6 +337,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting test tests/win.json --json",
     ),
     code(
+        "SCENARIO_TOO_WEAK",
+        "A scenario still passed with `--without` components left out, so it does not prove the game depends on them.",
+        "Add a check that fails when those components are missing, such as an `expect` on a value they drive.",
+        "rusting test tests/win.json --without rusting.player_controller --json",
+    ),
+    code(
         "SCENE_COLLIDER_WITHOUT_BODY",
         "An entity has a collider but no `physics_body`, so physics, `raycast` and `aim` skip it.",
         "Add a `physics_body`: `Static` for a collider that never moves, `Cpu` for one that does. Player and platformer controllers need none.",

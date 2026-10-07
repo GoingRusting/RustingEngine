@@ -2186,6 +2186,20 @@ pub fn load_scene_document(
     }
     let document =
         &*super::scene_instance::expand_instances(document, &mut Vec::new())?;
+    static WITHOUT: std::sync::OnceLock<Vec<String>> =
+        std::sync::OnceLock::new();
+    let without = WITHOUT.get_or_init(|| {
+        std::env::var(crate::project::WITHOUT_ENV)
+            .map(|names| names.split(',').map(str::to_owned).collect())
+            .unwrap_or_default()
+    });
+    let stripped;
+    let document = if without.is_empty() {
+        document
+    } else {
+        stripped = without_components(document, without);
+        &stripped
+    };
     validate_scene_structure(document)?;
     let registry = world.resource::<SceneComponentRegistry>();
     let registrations = registry.registrations.clone();
@@ -2350,6 +2364,30 @@ pub fn load_scene_document(
         world.despawn(entity);
     }
     linked.map(|()| document.entities.len())
+}
+
+/// `document` with these components left out of every entity: a built-in
+/// section such as `collider`, or a registered component by name.
+pub fn without_components(
+    document: &SceneDocument,
+    names: &[String],
+) -> SceneDocument {
+    let mut document = document.clone();
+    for entity in &mut document.entities {
+        let mut value = serde_json::to_value(&*entity).unwrap_or_default();
+        for name in names {
+            if !matches!(name.as_str(), "id" | "parent" | "name") {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove(name);
+                }
+            }
+        }
+        if let Ok(mut stripped) = serde_json::from_value::<SceneEntity>(value) {
+            stripped.components.retain(|name, _| !names.contains(name));
+            *entity = stripped;
+        }
+    }
+    document
 }
 
 /// Checks every stable ID and parent chain before replacing the open scene.
@@ -2839,6 +2877,40 @@ fn runtime_camera(camera: SceneCamera) -> Camera {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn without_components_leaves_out_sections_and_registered_components() {
+        let document: SceneDocument = serde_json::from_value(serde_json::json!({
+            "format_version": SCENE_FORMAT_VERSION,
+            "name": "Main",
+            "entities": [{
+                "id": uuid::Uuid::new_v4(),
+                "parent": null,
+                "name": "Crate",
+                "transform": null,
+                "mesh_renderer": null,
+                "camera": null,
+                "visible": null,
+                "collider": {"shape": {"Box": {"half_extents": [0.5, 0.5, 0.5]}},
+                    "friction": 0.5, "restitution": 0.0, "sensor": false},
+                "components": {"rusting.hud": "{}", "game.spin": "{}"},
+            }],
+        }))
+        .unwrap();
+        assert!(document.entities[0].collider.is_some());
+        let names = ["collider".to_owned(), "game.spin".to_owned()];
+        let stripped = without_components(&document, &names);
+        let entity = &stripped.entities[0];
+        assert!(entity.collider.is_none());
+        assert_eq!(
+            entity.components.keys().collect::<Vec<_>>(),
+            ["rusting.hud"]
+        );
+        assert_eq!(entity.name.as_deref(), Some("Crate"));
+        // `id`, `parent` and `name` are never left out.
+        let kept = without_components(&document, &["name".to_owned()]);
+        assert_eq!(kept.entities[0].name.as_deref(), Some("Crate"));
+    }
+
     use std::time::Duration;
 
     use super::*;

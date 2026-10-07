@@ -491,6 +491,15 @@ including several at the same tick, set `"keep_going": true` in the
 scenario, pass `--keep-going` to `rusting test`, or set the environment
 variable `RUSTING_KEEP_GOING=1`.
 
+To prove a scenario checks a mechanic, run it with that mechanic's
+component switched off: `rusting test <project> tests/jump.json --without
+rusting.player_controller`. Every scene the game loads leaves the component
+out (a built-in section such as `collider` or `rigid_body`, or a registered
+component name; repeat `--without` for more), and the result inverts: the
+run passes when the scenario fails or the game crashes, and fails with
+`SCENARIO_TOO_WEAK` when the scenario still passes. A `--without` run does
+not update `build/test-results.json`.
+
 ## Determinism
 
 `determinism` in `project.json` is `Off`, `Local` (reproduces on one

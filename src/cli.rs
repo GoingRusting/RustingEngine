@@ -2363,6 +2363,9 @@ pub struct RunOptions {
     /// Copy the game's stderr to this process's stderr as it arrives
     /// (`--stderr`), as well as keeping it for the result.
     pub echo_stderr: bool,
+    /// Scene components every scene load leaves out (`--without`); the run
+    /// then passes only when its scenario fails.
+    pub without: Vec<String>,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -2413,6 +2416,40 @@ pub fn debug_game_project(root: &Path) -> CliResult {
 /// Cooks the main scene, builds the game, and runs it from the project
 /// folder, the same way the editor's Build and Run does.
 pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
+    if options.without.is_empty() || options.scenario.is_none() {
+        return run_game_project_once(root, options);
+    }
+    let names = options.without.join(", ");
+    let scenario = options.scenario.clone();
+    let mut result = run_game_project_once(root, options);
+    let scenario_failed =
+        result.diagnostics.first().is_some_and(|diagnostic| {
+            // A game that crashes without the component also fails.
+            matches!(diagnostic.code, "SCENARIO_FAILED" | "GAME_FAILED")
+        });
+    if scenario_failed {
+        let failure = result.diagnostics.remove(0).message;
+        result.ok = true;
+        result.data["without"] =
+            json!({"components": names, "failure": failure});
+        result
+    } else if result.ok {
+        CliResult::failure(
+            "SCENARIO_TOO_WEAK",
+            format!(
+                "the scenario still passes without {names}, so it does not \
+                 check what {names} does; add a step that fails without it, \
+                 or check the name against the scene (`collider`, \
+                 `rigid_body`, or a registered component)"
+            ),
+            scenario,
+        )
+    } else {
+        result
+    }
+}
+
+fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
     let start = Instant::now();
     let headless =
         options.headless_ticks.is_some() || options.scenario.is_some();
@@ -2511,6 +2548,9 @@ pub fn run_game_project(root: &Path, options: RunOptions) -> CliResult {
         }
         if options.keep_going {
             game.env(crate::scenario::KEEP_GOING_ENV, "1");
+        }
+        if !options.without.is_empty() {
+            game.env(crate::project::WITHOUT_ENV, options.without.join(","));
         }
     }
     // A recording game closes itself at the timeout so it can save; the
@@ -2712,11 +2752,14 @@ pub fn test_game_folder(
         }
     }
     let data = json!({"root": root, "scenarios": runs});
-    // The editor's Agent panel shows the newest run from this file.
-    let _ = std::fs::write(
-        root.join(crate::project::TEST_RESULTS_FILE),
-        serde_json::to_vec_pretty(&data).unwrap_or_default(),
-    );
+    // The editor's Agent panel shows the newest run from this file; a
+    // `--without` run inverts pass and fail, so it is not saved there.
+    if options.without.is_empty() {
+        let _ = std::fs::write(
+            root.join(crate::project::TEST_RESULTS_FILE),
+            serde_json::to_vec_pretty(&data).unwrap_or_default(),
+        );
+    }
     match first_failure {
         None => CliResult::success(data),
         Some(mut result) => {
