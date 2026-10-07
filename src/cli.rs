@@ -1049,6 +1049,134 @@ pub fn validate_project(root: &Path) -> CliResult {
     }
 }
 
+/// `rusting lint`: presentation checks on the main scene, as warnings.
+pub fn lint_project(root: &Path) -> CliResult {
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let document = match read_scene(&project.scene_path) {
+        Ok(document) => document,
+        Err(result) => return result,
+    };
+    let diagnostics = lint_scene(&document);
+    CliResult {
+        schema_version: 1,
+        ok: diagnostics.is_empty(),
+        data: json!({"root": project.root, "main_scene": project.scene_path, "warnings": diagnostics.len()}),
+        diagnostics,
+    }
+}
+
+/// The `LINT_*` warnings of one scene document.
+fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
+    use crate::runtime::{
+        ColliderShape, DEFAULT_PLAYER_SHAPE, PLAYER_CONTROLLER_COMPONENT,
+    };
+    let by_id: std::collections::HashMap<_, _> =
+        document.entities.iter().map(|e| (e.id, e)).collect();
+    // ponytail: scales multiply per axis and ignore rotation; enough for
+    // sanity ranges, not for exact sizes under rotated parents.
+    let world_scale = |entity: &SceneEntity| {
+        let mut scale = [1.0f32; 3];
+        let mut next = Some(entity);
+        for _ in 0..64 {
+            let Some(current) = next else { break };
+            if let Some(transform) = &current.transform {
+                for (total, own) in scale.iter_mut().zip(transform.scale) {
+                    *total *= own;
+                }
+            }
+            next = current.parent.and_then(|id| by_id.get(&id).copied());
+        }
+        scale
+    };
+    let mut diagnostics = Vec::new();
+    let mut warn = |code, index: usize, location: &str, message: String| {
+        let entity = &document.entities[index];
+        diagnostics.push(Diagnostic {
+            code,
+            severity: "warning",
+            message: format!(
+                "`{}` {message}",
+                entity.name.as_deref().unwrap_or("unnamed entity")
+            ),
+            scene_location: Some(format!("/entities/{index}{location}")),
+            entity: Some(EntityRef::of(entity)),
+            ..Diagnostic::default()
+        });
+    };
+    for (index, entity) in document.entities.iter().enumerate() {
+        if let Some(transform) = &entity.transform {
+            if transform.scale.contains(&0.0) {
+                warn(
+                    "LINT_ZERO_SCALE",
+                    index,
+                    "/transform/scale",
+                    format!("has scale {:?}, so it vanishes", transform.scale),
+                );
+            }
+        }
+        if entity.components.contains_key(PLAYER_CONTROLLER_COMPONENT) {
+            let shape = entity
+                .collider
+                .as_ref()
+                .map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
+            let local = match shape {
+                ColliderShape::Capsule {
+                    half_height,
+                    radius,
+                } => 2.0 * (half_height + radius),
+                ColliderShape::Box { half_extents } => 2.0 * half_extents[1],
+                ColliderShape::Sphere { radius } => 2.0 * radius,
+                _ => 1.8,
+            };
+            let height = local * world_scale(entity)[1].abs();
+            if !(0.5..=3.0).contains(&height) {
+                warn(
+                    "LINT_PLAYER_SCALE",
+                    index,
+                    "/transform/scale",
+                    format!(
+                        "is a player {height:.2} m tall; expected 0.5 to 3 m"
+                    ),
+                );
+            }
+        }
+        let lights = [
+            entity.directional_light.as_ref().map(|light| {
+                ("directional_light", light.illuminance, 1.0, light.color)
+            }),
+            entity.point_light.as_ref().map(|light| {
+                ("point_light", light.intensity, light.range, light.color)
+            }),
+            entity.spot_light.as_ref().map(|light| {
+                ("spot_light", light.intensity, light.range, light.color)
+            }),
+        ];
+        for (key, intensity, range, color) in lights.into_iter().flatten() {
+            // Intensity 0 is how games start a light they switch on in
+            // code (a flashlight, a scare flash), so only below 0 counts.
+            let problem = if intensity < 0.0 {
+                format!("intensity {intensity}")
+            } else if range <= 0.0 {
+                format!("range {range}")
+            } else if color == [0.0; 3] {
+                "a black color".to_owned()
+            } else {
+                continue;
+            };
+            warn(
+                "LINT_LIGHT_OFF",
+                index,
+                &format!("/{key}"),
+                format!("has a {key} with {problem}, so it gives no light"),
+            );
+        }
+    }
+    diagnostics
+}
+
 /// Applies every certain fix `validate` finds to the main scene. Each fix
 /// renames one misspelled key in place in the file text, so nothing else in
 /// the file changes; validation then runs again, because a file that did not
@@ -3835,6 +3963,45 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         assert_eq!(hints[0].line, Some(12));
         assert_eq!(hints[0].file.as_deref(), Some(Path::new("/p/src/main.rs")));
         assert!(hints[1].message.contains("rusting docs search"));
+    }
+
+    #[test]
+    fn lint_flags_giant_players_zero_scales_and_dead_lights() {
+        let id = |n: u8| format!("00000000-0000-0000-0000-0000000000{n:02}");
+        let scale = |s: [f32; 3]| json!({"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": s});
+        let player = json!({"rusting.player_controller": "{}"});
+        let scene = json!({"format_version": 7, "name": "Lint", "entities": [
+            {"id": id(1), "name": "Giant", "transform": scale([1.0, 20.0, 1.0]),
+             "components": player},
+            // 1.8 m capsule under a 0.5 parent scale: 0.9 m, fine.
+            {"id": id(2), "name": "Rig", "transform": scale([0.5, 0.5, 0.5])},
+            {"id": id(3), "parent": id(2), "name": "Kid",
+             "transform": scale([1.0, 1.0, 1.0]), "components": player},
+            {"id": id(4), "name": "Flat", "transform": scale([1.0, 0.0, 1.0])},
+            {"id": id(5), "name": "Lamp", "point_light":
+             {"color": [1.0, 1.0, 1.0], "intensity": 5.0, "range": 0.0}},
+            {"id": id(6), "name": "Torch", "point_light":
+             {"color": [1.0, 1.0, 1.0], "intensity": 0.0, "range": 8.0}},
+            {"id": id(7), "name": "Sun", "directional_light":
+             {"color": [0.0, 0.0, 0.0], "illuminance": 1.0, "shadows": true}},
+        ]});
+        let document =
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap();
+        let found: Vec<_> = lint_scene(&document)
+            .into_iter()
+            .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("LINT_PLAYER_SCALE", "Giant".to_owned()),
+                ("LINT_ZERO_SCALE", "Flat".to_owned()),
+                ("LINT_LIGHT_OFF", "Lamp".to_owned()),
+                ("LINT_LIGHT_OFF", "Sun".to_owned()),
+            ],
+            "Kid (0.9 m) and Torch (switched on in code) pass"
+        );
     }
 
     #[test]

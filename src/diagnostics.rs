@@ -235,6 +235,24 @@ pub const CODES: &[CodeInfo] = &[
         "rusting determinism --json",
     ),
     code(
+        "LINT_LIGHT_OFF",
+        "A light can never light anything: negative intensity, a zero range, or a black color. Intensity 0 is allowed, for lights game code switches on.",
+        "Raise the intensity (illuminance for a directional light) and range, or remove the light.",
+        "rusting lint --json",
+    ),
+    code(
+        "LINT_PLAYER_SCALE",
+        "A player body is outside 0.5 to 3 m tall, usually a scale left on it or a parent.",
+        "Set the scale on the player and its parents to 1 and size the collider instead.",
+        "rusting lint --json",
+    ),
+    code(
+        "LINT_ZERO_SCALE",
+        "An entity has a zero scale on some axis, so its mesh and collider vanish.",
+        "Set every scale axis above zero; hide the entity with `visible: false` instead.",
+        "rusting lint --json",
+    ),
+    code(
         "MODEL_IMPORT",
         "`scene add-model` could not import the glTF model.",
         "Check that the file is a valid .gltf or .glb and that its buffers and images sit next to it.",

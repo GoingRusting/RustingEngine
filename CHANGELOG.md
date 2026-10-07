@@ -115,6 +115,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting fuzz <project> <scenario>` runs a scenario over many seeds with random action presses and writes the first failing seed to `build/fuzz/seed-N.json` as a ready scenario; scenarios accept a `fuzz` section and reports list `fuzz_steps`.
 - `rusting run --record FILE.scenario.json` saves the windowed session as a scenario: press, release and tap steps for the named actions the player held, so a human can hand an agent a bug as a test.
 - Scenarios take an `explore` section: an explorer bot walks the `PlayerController` to each goal (every sensor by default), jumps when stuck, and fails naming the goals it could not reach; the report lists them as `explore`.
+- `rusting lint [project]` checks the main scene for a player body outside 0.5 to 3 m tall, zero scale axes, and lights that can never light anything, as `LINT_*` warnings.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

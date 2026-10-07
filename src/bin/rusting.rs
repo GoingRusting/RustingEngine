@@ -95,6 +95,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["check"], 0),
         (&["inspect"], 0),
         (&["validate"], 0),
+        (&["lint"], 0),
         (&["cook"], 0),
         (&["fix"], 0),
         (&["run"], 0),
@@ -242,6 +243,7 @@ fn execute(args: &[String]) -> CliResult {
             Err(_) => usage("--ticks requires a tick count"),
         },
         ["validate", root] => cli::validate_project(Path::new(root)),
+        ["lint", root] => cli::lint_project(Path::new(root)),
         ["cook", root] => cli::cook_project(Path::new(root)),
         ["add", "scenario", root, name] => {
             cli::add_scenario(Path::new(root), name)
