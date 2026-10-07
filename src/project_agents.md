@@ -26,6 +26,10 @@ command takes `--json` for output a program can read.
    batch of operations: `create`, `set`, `remove`, `reparent`, `duplicate`,
    `delete` and `set_scene` (scene-level fields). Built-in sections and
    components may be partial; missing fields take their defaults.
+   `set`, `remove`, `reparent` and `delete` name their entity with `id`
+   (an ID or unique name) or `name`: `{"op": "delete", "name": "Crate 1",
+   "missing_ok": true}`, `{"op": "set", "name": "Sun", "path":
+   "/directional_light", "value": null}`.
    `rusting explain PATCH_JSON` prints a full patch that creates a parent
    and a child with a mesh and a component.
 4. `rusting check` builds the game code and validates the scene. Project

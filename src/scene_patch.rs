@@ -64,6 +64,7 @@ pub enum PatchOperation {
     /// Replaces or inserts the value at `path`. With `expected`, the current
     /// value must equal it first.
     Set {
+        #[serde(alias = "name")]
         id: EntityRef,
         path: String,
         value: Value,
@@ -73,6 +74,7 @@ pub enum PatchOperation {
     /// Removes an object key or array element, for example an optional
     /// section such as `/collider`.
     Remove {
+        #[serde(alias = "name")]
         id: EntityRef,
         path: String,
         #[serde(default)]
@@ -80,6 +82,7 @@ pub enum PatchOperation {
     },
     /// Moves an entity under `parent`, or to the root with `null`.
     Reparent {
+        #[serde(alias = "name")]
         id: EntityRef,
         parent: Option<EntityRef>,
     },
@@ -93,8 +96,11 @@ pub enum PatchOperation {
         name: Option<String>,
     },
     /// Deletes an entity and all of its descendants. With `missing_ok`, a
-    /// missing entity is skipped, so a patch can run again.
+    /// missing entity is skipped, so a patch can run again. Here and in
+    /// `set`, `remove` and `reparent`, `id` takes a persistent ID or a
+    /// unique name, and may be spelled `name`.
     Delete {
+        #[serde(alias = "name")]
         id: EntityRef,
         #[serde(default)]
         missing_ok: bool,
@@ -1360,10 +1366,33 @@ mod tests {
     }
 
     #[test]
+    fn set_and_delete_name_their_entity_with_name() {
+        let path = scene_file("by-name");
+        patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+                {"op": "set", "name": "Cube", "path": "/visible", "value": false},
+                {"op": "delete", "name": "Lamp"},
+            ]})),
+            false,
+        )
+        .unwrap();
+        let after =
+            parse_scene_document(&std::fs::read(&path).unwrap()).unwrap();
+        let names: Vec<_> = after
+            .entities
+            .iter()
+            .filter_map(|entity| entity.name.as_deref())
+            .collect();
+        assert_eq!(names, ["Cube"]);
+        assert_eq!(after.entities[0].visible, Some(false));
+    }
+
+    #[test]
     fn delete_can_skip_a_missing_entity_and_upsert_can_merge() {
         let path = scene_file("merge");
         let run = patch(json!({"operations": [
-            {"op": "delete", "id": "Gone", "missing_ok": true},
+            {"op": "delete", "name": "Gone", "missing_ok": true},
             {"op": "upsert", "merge": true,
              "entity": {"name": "Cube", "transform": {"position": [0, 5, 0]}, "visible": null}},
         ]}));
