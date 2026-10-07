@@ -210,6 +210,88 @@ pub struct SoundEvent {
     pub volume: f32,
 }
 
+/// Camera trauma shake: game code adds trauma on a hit or explosion, the
+/// shake strength is `trauma` squared, and trauma falls by `decay` per
+/// second. The shake moves only the drawn view, never the camera's
+/// `Transform`, so it cannot drift.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraShake {
+    /// 0 to 1.
+    pub trauma: f32,
+    /// Trauma lost per second.
+    pub decay: f32,
+    /// Largest offset in metres along the camera's right, up and back axes.
+    pub max_offset: [f32; 3],
+    /// Largest roll in radians.
+    pub max_roll: f32,
+    /// Shake speed in hertz.
+    pub frequency: f32,
+}
+
+impl Default for CameraShake {
+    fn default() -> Self {
+        Self {
+            trauma: 0.0,
+            decay: 1.5,
+            max_offset: [0.3, 0.3, 0.0],
+            max_roll: 0.05,
+            frequency: 12.0,
+        }
+    }
+}
+
+impl CameraShake {
+    /// Adds trauma, kept within 0 to 1.
+    pub fn add_trauma(&mut self, amount: f32) {
+        self.trauma = (self.trauma + amount).clamp(0.0, 1.0);
+    }
+
+    /// `matrix` moved and rolled in its own frame by the shake at
+    /// `seconds` of game time.
+    #[must_use]
+    pub fn apply(&self, matrix: [[f32; 4]; 4], seconds: f32) -> [[f32; 4]; 4] {
+        let strength = self.trauma * self.trauma;
+        if strength <= 0.0 {
+            return matrix;
+        }
+        // Two sines per axis at unrelated phases read as noise and stay
+        // smooth from frame to frame.
+        let phase = TAU * self.frequency * seconds;
+        let wave = |axis: f32| {
+            strength
+                * (0.6 * (phase + axis * 1.7).sin()
+                    + 0.4 * (2.3 * phase + axis * 4.1).sin())
+        };
+        let mut out = matrix;
+        for (axis, offset) in self.max_offset.into_iter().enumerate() {
+            let amount = offset * wave(axis as f32);
+            for row in 0..3 {
+                out[3][row] += matrix[axis][row] * amount;
+            }
+        }
+        let (sin, cos) = (self.max_roll * wave(3.0)).sin_cos();
+        for row in 0..3 {
+            out[0][row] = matrix[0][row] * cos + matrix[1][row] * sin;
+            out[1][row] = matrix[1][row] * cos - matrix[0][row] * sin;
+        }
+        out
+    }
+}
+
+/// Per fixed step: lets camera trauma fade.
+pub(super) fn decay_camera_shake(
+    time: Res<FrameTime>,
+    mut shakes: Query<&mut CameraShake>,
+) {
+    let dt = time.fixed_delta.as_secs_f32();
+    for mut shake in &mut shakes {
+        if shake.trauma > 0.0 {
+            shake.trauma = (shake.trauma - shake.decay * dt).max(0.0);
+        }
+    }
+}
+
 /// Asks for a sound. See the module docs.
 #[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

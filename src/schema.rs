@@ -757,6 +757,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"property": "Scale", "from": [1.0, 1.0, 1.0], "to": [1.2, 1.2, 1.2], "duration": 0.4, "delay": 0.0, "easing": "BackOut", "repeat": "PingPong"}),
     },
     ComponentSection {
+        key: "rusting.camera_shake",
+        summary: "Trauma shake on a camera. Game code calls add_trauma(name, amount) on a hit or explosion; the shake strength is trauma squared, trauma falls by decay per second, and only the drawn view moves (the camera's Transform keeps its pose).",
+        gpu: NO_GPU,
+        example: || json!({"trauma": 0.0, "decay": 1.5, "max_offset": [0.3, 0.3, 0.0], "max_roll": 0.05, "frequency": 12.0}),
+    },
+    ComponentSection {
         key: "rusting.sound_cue",
         summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`).",
         gpu: NO_GPU,

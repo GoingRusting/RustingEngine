@@ -1088,6 +1088,8 @@ pub const AUTO_SIMULATION_COMPONENT: &str = "rusting.auto_simulation";
 pub const PLAYER_CONTROLLER_COMPONENT: &str = "rusting.player_controller";
 /// Registry name of the built-in transform tween.
 pub const TWEEN_COMPONENT: &str = "rusting.tween";
+/// Registry name of the built-in camera trauma shake.
+pub const CAMERA_SHAKE_COMPONENT: &str = "rusting.camera_shake";
 /// Registry name of the built-in event-triggered sound cue.
 pub const SOUND_CUE_COMPONENT: &str = "rusting.sound_cue";
 /// Registry name of the built-in particle burst emitter.
@@ -1174,6 +1176,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::SoundCue>(SOUND_CUE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::CameraShake>(CAMERA_SHAKE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::BurstEmitter>(BURST_EMITTER_COMPONENT)

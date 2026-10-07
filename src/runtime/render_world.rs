@@ -225,8 +225,18 @@ pub fn extract_render_world(world: &mut World) {
     };
     let renderables = (previous_renderables_signature != renderables_signature)
         .then(|| collect_renderables(world));
-    let active_camera = collect_active_camera(world);
-    let views = collect_views(world);
+    let mut active_camera = collect_active_camera(world);
+    let mut views = collect_views(world);
+    let seconds = world.resource::<super::FrameTime>().elapsed.as_secs_f32();
+    for camera in active_camera
+        .iter_mut()
+        .chain(views.iter_mut().map(|(camera, _)| camera))
+    {
+        if let Some(shake) = world.get::<super::CameraShake>(camera.entity) {
+            camera.transform.matrix =
+                shake.apply(camera.transform.matrix, seconds);
+        }
+    }
     let directional_lights = collect_directional_lights(world);
     let point_lights = collect_point_lights(world);
     let spot_lights = collect_spot_lights(world);
@@ -946,6 +956,62 @@ mod tests {
         let render_world = app.world().resource::<RenderWorld>();
         assert_eq!(render_world.report.removed, 1);
         assert_eq!(render_world.report.total, 1);
+    }
+
+    #[test]
+    fn camera_shake_moves_the_drawn_view_and_fades_back_to_rest() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let rest = Transform {
+            position: [1.0, 2.0, 3.0],
+            ..Transform::default()
+        };
+        let camera = app.spawn((
+            rest,
+            Camera {
+                active: true,
+                ..Camera::default()
+            },
+            super::super::CameraShake::default(),
+        ));
+        let drawn = |app: &App| {
+            app.world()
+                .resource::<RenderWorld>()
+                .active_camera
+                .unwrap()
+                .transform
+                .matrix
+        };
+        let frame = |app: &mut App| {
+            app.update(Duration::from_secs_f64(1.0 / 60.0)).unwrap();
+        };
+        frame(&mut app);
+        let still = drawn(&app);
+        assert_eq!(still[3], [1.0, 2.0, 3.0, 1.0]);
+
+        app.world_mut()
+            .get_mut::<super::super::CameraShake>(camera)
+            .unwrap()
+            .add_trauma(5.0);
+        frame(&mut app);
+        let shaken = drawn(&app);
+        let moved = (0..3)
+            .map(|i| (shaken[3][i] - still[3][i]).abs())
+            .sum::<f32>();
+        assert!(moved > 0.01 && moved < 0.6, "{shaken:?}");
+        assert_eq!(app.world().get::<Transform>(camera), Some(&rest));
+        // Trauma 1 at 1.5 per second is gone within 40 ticks.
+        for _ in 0..40 {
+            frame(&mut app);
+        }
+        assert_eq!(drawn(&app), still);
+        assert_eq!(
+            app.world()
+                .get::<super::super::CameraShake>(camera)
+                .unwrap()
+                .trauma,
+            0.0
+        );
     }
 
     #[test]

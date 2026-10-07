@@ -29,7 +29,9 @@ use crate::runtime::{
     RENDER_BOUNDS_COMPONENT, SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT,
     SOUND_CUE_COMPONENT, TWEEN_COMPONENT, WATER_COMPONENT,
 };
-use crate::runtime::{CAMERA_SCREEN_COMPONENT, COLOR_GRADING_COMPONENT};
+use crate::runtime::{
+    CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
+};
 
 /// Components that together make a World Environment object.
 pub(in crate::editor) const ENVIRONMENT_COMPONENTS: [&str; 3] = [
@@ -171,6 +173,10 @@ pub(in crate::editor) fn component_help(
         TWEEN_COMPONENT => (
             "Moves, rotates or scales the object smoothly over time.",
             "Doors, lifts, spinning pickups, simple animation without code.",
+        ),
+        CAMERA_SHAKE_COMPONENT => (
+            "Shakes the camera's view while trauma lasts.",
+            "Hits, explosions, landings; game code calls add_trauma.",
         ),
         SOUND_CUE_COMPONENT => (
             "Plays a sound when its trigger happens.",

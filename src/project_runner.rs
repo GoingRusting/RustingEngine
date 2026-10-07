@@ -2082,6 +2082,22 @@ impl GameScene<'_> {
         self.particles(name, crate::runtime::ParticleCommand::Restart);
     }
 
+    /// Adds trauma (0 to 1) to the named camera's `rusting.camera_shake`,
+    /// giving it a default one first if it has none.
+    pub fn add_trauma(&mut self, name: &str, amount: f32) {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        if !entity.contains::<crate::runtime::CameraShake>() {
+            entity.insert(crate::runtime::CameraShake::default());
+        }
+        if let Some(mut shake) = entity.get_mut::<crate::runtime::CameraShake>()
+        {
+            shake.add_trauma(amount);
+        }
+    }
+
     /// Plays, pauses, stops or restarts the named object's
     /// `rusting.particle_emitter` on the next fixed tick. `Stop` lets live
     /// particles finish.
