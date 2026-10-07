@@ -127,6 +127,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting asset generate <root> sfx "coin 7"` synthesizes a seeded sfxr-style sound (jump, coin, hit, explosion, laser, powerup or blip) and imports it as a CC0 WAV, with no hook to set up.
 - `rusting.spawn_grid` copies an object and its children onto a grid when the game starts, so a scene can hold hundreds of balls without game code.
 - `GameScene::gpu_command(name, command)` moves, pushes or reads a GPU body from game code, and `restart` now puts every GPU body back at its scene-file pose.
+- Scenarios read `"entity": "class:ball in -5,0,-5 5,10,5"` for a class's member count, the bounds of its GPU bodies and how many lie inside the box.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

@@ -114,6 +114,14 @@ pub const COUNTER_PREFIX: &str = "counter:";
 /// caption lines showing.
 pub const AUDIO_ENTITY: &str = "audio:";
 
+/// `class:<name>` in place of an entity name reads the members of an object
+/// class as `{"count": n, "gpu": {"count": n, "min": [x, y, z], "max": [x,
+/// y, z]}}`, where `gpu` covers the members whose GPU pose has arrived.
+/// `class:<name> in x,y,z x,y,z` adds `"inside"`: how many of those lie in
+/// that box. Reading it asks for a fresh GPU snapshot of the class, which
+/// arrives one to three ticks later, so check it with `within` or `until`.
+pub const CLASS_PREFIX: &str = "class:";
+
 /// The offline mix as `audio:` reports it after the last tick.
 #[derive(bevy_ecs::prelude::Resource, Clone, Default)]
 struct AudioMix {
@@ -2849,6 +2857,72 @@ fn inputs_at(scenario: &Scenario, tick: u32) -> String {
 
 type Check = Result<String, (String, Value)>;
 
+/// What `class:<name>[ in min max]` reads; see [`CLASS_PREFIX`].
+fn class_state(world: &mut World, wanted: &str) -> Result<Value, String> {
+    let (class, bounds) = match wanted.split_once(" in ") {
+        None => (wanted, None),
+        Some((class, bounds)) => {
+            let corner = |text: &str| -> Option<[f32; 3]> {
+                let values = text
+                    .split(',')
+                    .map(|part| part.trim().parse().ok())
+                    .collect::<Option<Vec<f32>>>()?;
+                values.try_into().ok()
+            };
+            let corners = bounds
+                .split_whitespace()
+                .map(corner)
+                .collect::<Option<Vec<_>>>();
+            match corners.as_deref() {
+                Some(&[min, max]) => (class, Some((min, max))),
+                _ => {
+                    return Err(format!(
+                        "`{CLASS_PREFIX}{wanted}`: write the box as \
+                         `in minX,minY,minZ maxX,maxY,maxZ`"
+                    ))
+                }
+            }
+        }
+    };
+    // ponytail: a check every tick reads the whole class back every tick;
+    // fine for tests, add a snapshot interval if big classes get slow.
+    if world.contains_resource::<crate::runtime::GpuPhysicsCommands>() {
+        crate::runtime::request_gpu_class_snapshot(world, class);
+    }
+    let mut count = 0;
+    let mut positions = Vec::new();
+    for (classes, mirror) in world
+        .query::<(
+            &crate::runtime::ObjectClasses,
+            Option<&crate::runtime::GpuStateMirror>,
+        )>()
+        .iter(world)
+    {
+        if classes.contains(class) {
+            count += 1;
+            positions.extend(mirror.map(|mirror| mirror.transform.position));
+        }
+    }
+    let fold = |pick: fn(f32, f32) -> f32| {
+        positions.iter().copied().reduce(|a, b| {
+            [pick(a[0], b[0]), pick(a[1], b[1]), pick(a[2], b[2])]
+        })
+    };
+    let mut gpu = json!({
+        "count": positions.len(),
+        "min": fold(f32::min),
+        "max": fold(f32::max),
+    });
+    if let Some((min, max)) = bounds {
+        gpu["inside"] = json!(positions
+            .iter()
+            .filter(|at| (0..3)
+                .all(|axis| (min[axis]..=max[axis]).contains(&at[axis])))
+            .count());
+    }
+    Ok(json!({"count": count, "gpu": gpu}))
+}
+
 /// The entity's scene form, with registered components parsed.
 pub(crate) fn reflected(
     world: &mut World,
@@ -2875,6 +2949,9 @@ pub(crate) fn reflected(
                 .map(|bus| bus.dropped + bus.stolen).sum::<u64>(),
             "captions": queue.captions(),
         }));
+    }
+    if let Some(class) = wanted.strip_prefix(CLASS_PREFIX) {
+        return class_state(world, class);
     }
     let found = find_entity(world, wanted, |_, _| true);
     if let (None, Some(counter)) = (found, wanted.strip_prefix(COUNTER_PREFIX))
@@ -5226,6 +5303,39 @@ mod tests {
         let state = reflected(world, "Ground").unwrap();
         assert_eq!(state["gpu_state"]["position"], json!([1.0, 2.0, 3.0]));
         assert_eq!(state["gpu_state"]["tick"], 4);
+    }
+
+    #[test]
+    fn class_entities_count_members_and_gpu_bodies_in_a_box() {
+        use crate::runtime::{GpuStateMirror, ObjectClasses};
+        let mut world = World::new();
+        for x in [0.0, 1.0, 4.0] {
+            world.spawn((
+                ObjectClasses::new(["ball"]),
+                GpuStateMirror {
+                    tick: 2,
+                    transform: Transform::new([x, 0.5, -x]),
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                    custom_values: None,
+                },
+            ));
+        }
+        world.spawn(ObjectClasses::new(["ball"]));
+        world.spawn(ObjectClasses::new(["crate"]));
+        let state =
+            reflected(&mut world, "class:ball in -1,0,-2 2,1,1").unwrap();
+        assert_eq!(state["count"], 4);
+        assert_eq!(state["gpu"]["count"], 3);
+        assert_eq!(state["gpu"]["min"], json!([0.0, 0.5, -4.0]));
+        assert_eq!(state["gpu"]["max"], json!([4.0, 0.5, 0.0]));
+        assert_eq!(state["gpu"]["inside"], 2);
+        let crates = reflected(&mut world, "class:crate").unwrap();
+        assert_eq!(
+            crates,
+            json!({"count": 1, "gpu": {"count": 0, "min": null, "max": null}})
+        );
+        assert!(reflected(&mut world, "class:ball in 1,2 3").is_err());
     }
 
     #[test]

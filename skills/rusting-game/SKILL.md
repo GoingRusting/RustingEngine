@@ -383,6 +383,11 @@ A scenario is a JSON file in `tests/`. `rusting test` runs them all.
   copies save fixtures into it. Menus, saves and rebinding:
   `rusting docs show guide/menus-and-ui`.
 - Game code sees `time.fixed_tick == N` on scenario tick N.
+- `"entity": "class:ball"` reads `/count` (members of the object class)
+  and `/gpu/count`, `/gpu/min`, `/gpu/max` (bounds of their GPU poses);
+  `"class:ball in -5,0,-5 5,10,5"` adds `/gpu/inside`, the GPU bodies in
+  that box. The poses land 1 to 3 ticks after the read, so check with
+  `within` or `until`.
 - `"entity": "audio:"` reads the sounds game code and sound cues asked for:
   `/requested` (all plays), `/clips/<clip>` (plays of one clip; write `/`
   in the clip path as `~1`: `/clips/sfx~1hit.wav`; a clip never played reads 0), `/level` (`[l, r]` RMS
