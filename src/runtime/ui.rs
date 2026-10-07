@@ -58,7 +58,8 @@ impl RuntimeUi {
 
     /// Like [`Self::find_text`], but `prefix` matches texts that start with
     /// `label`, and `index` picks the nth match (0-based) in reading order:
-    /// top to bottom, then left to right.
+    /// top to bottom, then left to right. Copies of a text drawn within
+    /// 4 px of each other, such as a drop shadow, count as one place.
     ///
     /// # Errors
     /// Returns the texts on screen when no match has that index.
@@ -85,6 +86,17 @@ impl RuntimeUi {
         let rect = match index {
             None => found.last().copied(),
             Some(index) => {
+                // A later copy is drawn on top, so it replaces the earlier.
+                let mut places: Vec<egui::Rect> = Vec::new();
+                for rect in found {
+                    match places.iter_mut().find(|place| {
+                        place.center().distance(rect.center()) <= 4.0
+                    }) {
+                        Some(place) => *place = rect,
+                        None => places.push(rect),
+                    }
+                }
+                found = places;
                 found.sort_by(|a, b| {
                     (a.center().y, a.center().x)
                         .partial_cmp(&(b.center().y, b.center().x))
@@ -274,9 +286,18 @@ mod tests {
         input.record_viewport_size([640.0, 360.0]);
         ui.begin_pass(&input);
         egui::CentralPanel::default().show(ui.context(), |panel| {
+            let mut last = None;
             for _ in 0..3 {
-                let _ = panel.button("-");
+                last = Some(panel.button("-").rect);
             }
+            // A shadow copy 1 px below the last `-` adds no place.
+            panel.painter().text(
+                last.unwrap().center() + egui::vec2(0.0, 1.0),
+                egui::Align2::CENTER_CENTER,
+                "-",
+                egui::FontId::default(),
+                egui::Color32::BLACK,
+            );
             let _ = panel.button("Slot 1: Night 1, $30.00");
         });
         ui.end_pass();

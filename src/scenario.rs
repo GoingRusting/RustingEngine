@@ -724,6 +724,7 @@ pub enum ClickTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         starts_with: Option<String>,
         /// 0-based, in reading order (top to bottom, then left to right).
+        /// Copies drawn within 4 px of each other count once.
         /// Without it the topmost drawn match wins.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<usize>,
