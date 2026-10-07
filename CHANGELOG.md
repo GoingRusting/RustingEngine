@@ -104,7 +104,7 @@ Engine features for the horror game FOREVER BEAR.
 - `set_color`, `trigger`, `spawn_copy` and the other name-taking setters that return nothing warn once, with the nearest object names, when the name does not exist.
 - docs/concepts.md "Build times" states the 3 s edit-to-diagnostic budget and shows how to share one `CARGO_TARGET_DIR` across games so the engine builds once.
 - `rusting test <project>` saves its results to `build/test-results.json`, and the editor's Agent area shows them in a new Results tab.
-- The editor's Agent area can pause agent edits; an outside scene write that arrives while paused or while the scene has unsaved edits waits as a pending row with Accept (undoable) and Reject.
+- The editor's Agent area can pause agent edits; an outside scene write that arrives while paused or while the scene has unsaved edits waits as a pending row with Accept (undoable) and Reject. Accept applies only the revision shown; a newer write replaces the pending row.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

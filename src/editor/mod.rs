@@ -178,16 +178,18 @@ fn reload_external_scene_change(
     let modified = std::fs::metadata(&path)
         .and_then(|metadata| metadata.modified())
         .ok();
-    let (accept, reject, paused) = world
+    let (accepted, reject, paused) = world
         .get_resource_mut::<agent_panel::AgentJournal>()
-        .map_or((false, false, false), |mut journal| {
-            let pending = journal.pending.is_some();
+        .map_or((None, false, false), |mut journal| {
+            let pending = journal.pending.as_ref().map(|p| p.revision.clone());
+            let accept = std::mem::take(&mut journal.accept_requested);
+            let reject = std::mem::take(&mut journal.reject_requested);
             let answer = (
-                std::mem::take(&mut journal.accept_requested) && pending,
-                std::mem::take(&mut journal.reject_requested) && pending,
+                pending.clone().filter(|_| accept),
+                reject && pending.is_some(),
                 journal.paused,
             );
-            if answer.0 || answer.1 {
+            if answer.0.is_some() || answer.1 {
                 journal.pending = None;
             }
             answer
@@ -200,7 +202,7 @@ fn reload_external_scene_change(
         return;
     }
     let known = world.resource::<SceneFileRevision>();
-    if !accept && modified == known.modified {
+    if accepted.is_none() && modified == known.modified {
         return;
     }
     let known = known.revision.clone();
@@ -211,7 +213,11 @@ fn reload_external_scene_change(
         world.resource_mut::<SceneFileRevision>().modified = disk.modified;
         return;
     }
-    if !accept && (state.scene_dirty || paused) {
+    // Accept applies only the revision the user reviewed; a newer write
+    // becomes the pending entry instead.
+    let stale = accepted.as_ref().is_some_and(|r| *r != disk.revision);
+    let accept = accepted.is_some() && !stale;
+    if !accept && (stale || state.scene_dirty || paused) {
         world.resource_mut::<SceneFileRevision>().modified = disk.modified;
         let diff = scene_document(world, "Editor Scene")
             .ok()
@@ -225,9 +231,16 @@ fn reload_external_scene_change(
                 path: path.display().to_string(),
                 summary: diff.summary(),
                 ids: diff.touched(),
+                revision: disk.revision.clone(),
             });
         }
-        state.scene_message = Some(if paused && !state.scene_dirty {
+        state.scene_message = Some(if stale {
+            format!(
+                "{} changed again before Accept; review the new pending \
+                 change in the Agent area",
+                path.display()
+            )
+        } else if paused && !state.scene_dirty {
             format!(
                 "{} changed on disk while agent edits are paused; Accept \
                  or Reject it in the Agent area",
@@ -253,6 +266,7 @@ fn reload_external_scene_change(
     state.scene_message = Some(match result {
         Ok(()) => {
             history.redo.clear();
+            let revision = disk.revision.clone();
             world.insert_resource(disk);
             let diff = history
                 .undo
@@ -268,6 +282,7 @@ fn reload_external_scene_change(
                     path: path.display().to_string(),
                     summary: diff.summary(),
                     ids: diff.touched(),
+                    revision,
                 });
             }
             format!(

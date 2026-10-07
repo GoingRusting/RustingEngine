@@ -17,6 +17,9 @@ pub(super) struct JournalEntry {
     pub(super) summary: String,
     /// Scene IDs of entities the write added or changed.
     pub(super) ids: Vec<uuid::Uuid>,
+    /// Revision of the scene file this entry describes, so Accept applies
+    /// only the write the user reviewed.
+    pub(super) revision: String,
 }
 
 /// One scenario of the newest `rusting test` run.

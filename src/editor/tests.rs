@@ -1849,10 +1849,21 @@ fn outside_scene_patch_reloads_under_undo_or_conflicts_with_unsaved_edits() {
         .pending
         .is_none());
     assert!(std::fs::read_to_string(&path).unwrap().contains("Paused"));
-    // Accept applies a later pending write behind one Undo snapshot.
-    rename(world, "Accepted");
+    // Accept applies only the reviewed revision: a write that lands after
+    // the pending row appeared becomes the new pending entry.
+    rename(world, "Reviewed");
     reload_external_scene_change(world, &mut state, &mut history);
-    assert_eq!(name(world), "Cube");
+    rename(world, "Accepted");
+    world
+        .resource_mut::<agent_panel::AgentJournal>()
+        .accept_requested = true;
+    reload_external_scene_change(world, &mut state, &mut history);
+    assert_eq!(name(world), "Cube", "an unreviewed write is not applied");
+    assert!(world
+        .resource::<agent_panel::AgentJournal>()
+        .pending
+        .is_some());
+    // Accept applies the pending write behind one Undo snapshot.
     world
         .resource_mut::<agent_panel::AgentJournal>()
         .accept_requested = true;
