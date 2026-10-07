@@ -273,6 +273,9 @@ Steps:
      --license CC0-1.0 --author "Kenney" --url https://kenney.nl/assets/...
    ```
 
+   The license, author and URL go into the model's `.rmeta` next to it.
+   That file is the record; `scene add-model` takes no provenance flags.
+
 4. Place it in a scene:
 
    ```sh

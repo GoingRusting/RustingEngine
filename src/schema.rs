@@ -158,7 +158,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "scene add-model",
         usage: "scene add-model <scene-path> <model.glb|gltf> [--name NAME] [--dry-run] [--json]",
-        summary: "Place a glTF or GLB model in a scene as one object (named after the file, or NAME) with a child per node and primitive, keeping its materials and textures. Import the model under assets/ first with `asset import`; move the object with a patch afterwards.",
+        summary: "Place a glTF or GLB model in a scene as one object (named after the file, or NAME) with a child per node and primitive, keeping its materials and textures. Import the model under assets/ first with `asset import`, which records its license and author in the `.rmeta`; add-model takes no provenance flags. Move the object with a patch afterwards.",
         gpu: NO_GPU,
         defaults: &[("dry-run", "false")],
         example: "scene add-model my_game/scenes/main.rscene my_game/assets/models/tree.glb --name Tree --json",
