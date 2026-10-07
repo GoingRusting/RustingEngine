@@ -2105,6 +2105,21 @@ impl GameScene<'_> {
         }
     }
 
+    /// Flashes the named object and its children through its
+    /// `rusting.flash`, giving it a default white one first if it has none.
+    pub fn flash(&mut self, name: &str) {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        if !entity.contains::<crate::runtime::Flash>() {
+            entity.insert(crate::runtime::Flash::default());
+        }
+        if let Some(mut flash) = entity.get_mut::<crate::runtime::Flash>() {
+            flash.flash();
+        }
+    }
+
     /// Adds trauma (0 to 1) to the named camera's `rusting.camera_shake`,
     /// giving it a default one first if it has none.
     pub fn add_trauma(&mut self, name: &str, amount: f32) {

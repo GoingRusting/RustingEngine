@@ -193,6 +193,9 @@ pub struct RenderWorld {
     /// Set from `RenderSettings::reflections` being off; the default keeps
     /// reflections on.
     pub reflections_disabled: bool,
+    /// Drawn tint of each flashing renderable, sorted by entity: rgb from
+    /// its own or an ancestor's [`super::Flash`], a the strength.
+    pub flashes: Vec<(Entity, [f32; 4])>,
     cached: HashMap<Entity, ExtractedRenderable>,
     renderables_signature: Option<u64>,
     /// Tick and component counts seen by the last signature hash.
@@ -363,7 +366,9 @@ pub fn extract_render_world(world: &mut World) {
         render_settings.reflections,
     );
 
+    let flashes = collect_flashes(world);
     let mut render_world = world.resource_mut::<RenderWorld>();
+    render_world.flashes = flashes;
     match renderables {
         None => {
             // GPU-owned effects usually leave their canonical ECS transforms
@@ -611,6 +616,37 @@ pub fn visible_in_hierarchy(world: &World, entity: Entity) -> bool {
         current = world.get::<super::Parent>(entity).map(|parent| parent.0);
     }
     true
+}
+
+/// Renderables under an active [`super::Flash`], with the nearest flashing
+/// ancestor's tint (the object itself counts).
+fn collect_flashes(world: &mut World) -> Vec<(Entity, [f32; 4])> {
+    let mut active = world.query::<&super::Flash>();
+    if !active.iter(world).any(|flash| flash.strength() > 0.0) {
+        return Vec::new();
+    }
+    let mut renderers = world.query_filtered::<Entity, With<MeshRenderer>>();
+    let mut flashes = renderers
+        .iter(world)
+        .filter_map(|entity| {
+            let mut current = Some(entity);
+            // The step limit guards against a damaged scene with a cycle.
+            for _ in 0..1024 {
+                let at = current?;
+                if let Some(flash) = world.get::<super::Flash>(at) {
+                    let strength = flash.strength();
+                    if strength > 0.0 {
+                        let [r, g, b] = flash.color;
+                        return Some((entity, [r, g, b, strength]));
+                    }
+                }
+                current = world.get::<super::Parent>(at).map(|parent| parent.0);
+            }
+            None
+        })
+        .collect::<Vec<_>>();
+    flashes.sort_by_key(|(entity, _)| *entity);
+    flashes
 }
 
 fn collect_renderables(world: &mut World) -> Vec<ExtractedRenderable> {
@@ -1270,6 +1306,57 @@ mod tests {
         app.world_mut().entity_mut(entity).remove::<RenderBounds>();
         app.update(Duration::ZERO).unwrap();
         assert_eq!(bounds(&app), None, "the renderer uses the mesh box");
+    }
+
+    #[test]
+    fn a_flash_tints_the_object_and_its_children_then_fades() {
+        let mut app = App::new();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let server = AssetServer::default();
+        let renderer = renderer(&server);
+        app.insert_resource(server);
+        let enemy = app.spawn((
+            Transform::default(),
+            renderer,
+            super::super::Flash {
+                color: [1.0, 0.0, 0.0],
+                duration: 0.1,
+                ..Default::default()
+            },
+        ));
+        let body = app.spawn((
+            Transform::default(),
+            renderer,
+            super::super::Parent(enemy),
+        ));
+        app.spawn((Transform::default(), renderer));
+        let frame = |app: &mut App| {
+            app.update(Duration::from_secs_f64(1.0 / 60.0)).unwrap();
+            app.world().resource::<RenderWorld>().flashes.clone()
+        };
+        assert!(frame(&mut app).is_empty(), "no flash until one starts");
+        app.world_mut()
+            .get_mut::<super::super::Flash>(enemy)
+            .unwrap()
+            .flash();
+        let flashes = frame(&mut app);
+        let mut expected = vec![enemy, body];
+        expected.sort();
+        assert_eq!(
+            flashes
+                .iter()
+                .map(|(entity, _)| *entity)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let [r, g, b, strength] = flashes[0].1;
+        assert_eq!([r, g, b], [1.0, 0.0, 0.0]);
+        // One 1/60 s tick into a 0.1 s flash.
+        assert!((strength - (1.0 - 1.0 / 6.0)).abs() < 1e-3, "{strength}");
+        for _ in 0..6 {
+            frame(&mut app);
+        }
+        assert!(frame(&mut app).is_empty(), "faded after 0.1 s");
     }
 
     #[test]

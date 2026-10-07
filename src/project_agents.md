@@ -83,7 +83,9 @@ command takes `--json` for output a program can read.
   `rusting.sound_cue`, `rusting.burst_emitter`, `rusting.player_controller`,
   `rusting.joint`, `rusting.camera_shake` (shake a camera with
   `scene.add_trauma("Camera", 0.5)`), `rusting.squash` (wobble a visible
-  child with `scene.squash("Body", 0.4)`), `rusting.spawn_grid` (copy an
+  child with `scene.squash("Body", 0.4)`), `rusting.flash` (tint an object
+  and its children for a moment with `scene.flash("Enemy")`),
+  `rusting.spawn_grid` (copy an
   object onto a grid at game start, for example `{"count":[10,1,10],
   "spacing":[0.5,0.5,0.5]}`; copies are named `Ball#1`, `Ball#2`, ...).
   Components with `requires` wait for that counter to reach its target.

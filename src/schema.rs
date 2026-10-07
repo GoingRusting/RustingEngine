@@ -775,6 +775,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"stiffness": 400.0, "damping": 14.0}),
     },
     ComponentSection {
+        key: "rusting.flash",
+        summary: "Hit flash. Game code calls flash(name) on a hit or pickup; the object and its children draw tinted toward color (linear RGB, also used as glow), fading back over duration seconds. Only the drawn colors change, not the shared material, so other objects using it stay as they are.",
+        gpu: NO_GPU,
+        example: || json!({"color": [1.0, 1.0, 1.0], "duration": 0.12}),
+    },
+    ComponentSection {
         key: "rusting.sound_cue",
         summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`).",
         gpu: NO_GPU,

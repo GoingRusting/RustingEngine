@@ -484,6 +484,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<SoundCue>();
     types.register::<super::CameraShake>();
     types.register::<super::Squash>();
+    types.register::<super::Flash>();
     types.register::<super::SpawnGrid>();
     types.register::<SpotLight>();
     types.register::<TileMap>();

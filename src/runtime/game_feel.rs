@@ -345,6 +345,61 @@ impl Squash {
     }
 }
 
+/// Hit flash: game code calls `scene.flash(name)` and the object and its
+/// children draw tinted toward `color`, fading back over `duration`
+/// seconds. Only the drawn colors change; the shared material does not.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Flash {
+    /// Linear RGB the object turns at full strength.
+    pub color: [f32; 3],
+    /// Seconds to fade from full tint back to none.
+    pub duration: f32,
+    /// Seconds of fade left.
+    #[serde(skip)]
+    pub remaining: f32,
+}
+
+impl Default for Flash {
+    fn default() -> Self {
+        Self {
+            color: [1.0; 3],
+            duration: 0.12,
+            remaining: 0.0,
+        }
+    }
+}
+
+impl Flash {
+    /// Starts the flash again at full strength.
+    pub fn flash(&mut self) {
+        self.remaining = self.duration;
+    }
+
+    /// Tint strength now, 1 when the flash starts and 0 once it ends.
+    #[must_use]
+    pub fn strength(&self) -> f32 {
+        if self.duration > 0.0 {
+            (self.remaining / self.duration).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Per fixed step: fades hit flashes.
+pub(super) fn fade_flashes(
+    time: Res<FrameTime>,
+    mut flashes: Query<&mut Flash>,
+) {
+    let dt = time.fixed_delta.as_secs_f32();
+    for mut flash in &mut flashes {
+        if flash.remaining > 0.0 {
+            flash.remaining = (flash.remaining - dt).max(0.0);
+        }
+    }
+}
+
 /// Per fixed step: moves squash springs and scales their objects.
 pub(super) fn spring_squash(
     time: Res<FrameTime>,

@@ -551,6 +551,63 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn a_flash_tints_the_drawn_object_and_fades_back() {
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        app.spawn((
+            Transform::new([0.0, 0.0, 3.0]),
+            Camera {
+                active: true,
+                ..Camera::default()
+            },
+        ));
+        let cube = app.spawn((
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: false,
+                receive_shadows: false,
+            },
+            crate::runtime::Flash {
+                color: [0.0, 1.0, 0.0],
+                duration: 0.3,
+                ..Default::default()
+            },
+        ));
+        let mut capture = HeadlessCapture::new([32, 32]).unwrap();
+        let mut centre = |app: &mut App| {
+            capture.frame(app, Duration::from_millis(16)).unwrap();
+            let at = (16 * 32 + 16) * 4;
+            capture.rgba()[at..at + 3].to_vec()
+        };
+        let before = centre(&mut app);
+        app.world_mut()
+            .get_mut::<crate::runtime::Flash>(cube)
+            .unwrap()
+            .flash();
+        let flashed = centre(&mut app);
+        assert!(
+            flashed[1] > before[1].saturating_add(80)
+                && flashed[0] < before[0].max(1),
+            "green flash: {before:?} then {flashed:?}"
+        );
+        for _ in 0..30 {
+            centre(&mut app);
+        }
+        assert_eq!(centre(&mut app), before, "back to the material color");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn viewport_cameras_split_the_frame() {
         let mut app = App::new();
         app.add_plugin(AssetPlugin).unwrap();

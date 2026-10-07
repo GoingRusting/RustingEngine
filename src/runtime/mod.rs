@@ -280,6 +280,7 @@ impl Default for App {
                     game_feel::advance_tweens,
                     game_feel::spring_squash,
                     game_feel::decay_camera_shake,
+                    game_feel::fade_flashes,
                 )
                     .chain(),
                 animation::advance_animations,

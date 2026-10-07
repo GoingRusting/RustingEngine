@@ -11,8 +11,8 @@ use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
     Connection, Connections, Counter, CullingMode, DeterminismMode, Easing,
-    EnvironmentMap, FluidBlock, Fog, HudAnchor, HudElement, InputAction, Joint,
-    JointAxis, JointKind, JointMotor, JointSpring, PhysicsSettings,
+    EnvironmentMap, Flash, FluidBlock, Fog, HudAnchor, HudElement, InputAction,
+    Joint, JointAxis, JointKind, JointMotor, JointSpring, PhysicsSettings,
     PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
     PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
     RenderSettings, SceneBackground, SceneInstance, ShadowQuality, SkyLight,
@@ -280,6 +280,14 @@ crate::reflect! {
     struct SpawnGrid {
         count: [u32; 3] { unit: "cells", doc: "along X, Y and Z, original included" },
         spacing: [f32; 3] { unit: "m" },
+    }
+}
+
+crate::reflect! {
+    struct Flash {
+        color: [f32; 3] { unit: "linear RGB" },
+        duration: f32 { unit: "s", min: 0.0, doc: "fade back to no tint" },
+        #[skip] remaining: f32,
     }
 }
 

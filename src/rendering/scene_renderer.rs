@@ -879,6 +879,7 @@ struct BlendedInstance {
 /// Cached instance data rebuilt only when extracted render data changes.
 struct PreparedRenderInstances {
     renderables_revision: u64,
+    flashes: Vec<(bevy_ecs::entity::Entity, [f32; 4])>,
     physics_revision: u64,
     material_revisions: Vec<(Handle<MaterialAsset>, u64)>,
     instances: Subbuffer<[RenderInstanceUpload]>,
@@ -4820,6 +4821,7 @@ impl SceneRenderer {
         screens.sort_unstable();
         if self.prepared_instances.as_ref().is_some_and(|prepared| {
             prepared.renderables_revision == render_world.renderables_revision
+                && prepared.flashes == render_world.flashes
                 && prepared.lod_signature == lod_signature
                 && prepared.screens == screens
                 && prepared.physics_revision
@@ -4910,9 +4912,9 @@ impl SceneRenderer {
         for &index in &order {
             let renderable = renderables[index];
             let material = assets.materials.get(renderable.material);
-            let color = material
+            let mut color = material
                 .map_or([1.0, 0.0, 1.0, 1.0], |material| material.base_color);
-            let (emissive, surface) =
+            let (mut emissive, surface) =
                 material.map_or(([0.0, 0.0, 0.0, 1.0], [0.0; 4]), |material| {
                     let unlit = material.model == MaterialModel::Unlit;
                     (
@@ -4932,6 +4934,18 @@ impl SceneRenderer {
                         ],
                     )
                 });
+            if let Ok(found) = render_world
+                .flashes
+                .binary_search_by_key(&renderable.entity, |(entity, _)| *entity)
+            {
+                let tint = render_world.flashes[found].1;
+                for channel in 0..3 {
+                    color[channel] +=
+                        (tint[channel] - color[channel]) * tint[3];
+                    emissive[channel] +=
+                        (tint[channel] - emissive[channel]) * tint[3];
+                }
+            }
             let (alpha_mode, cutoff) =
                 match material.map(|material| material.alpha_mode) {
                     Some(AlphaMode::Mask { cutoff }) => (1, cutoff),
@@ -5093,6 +5107,7 @@ impl SceneRenderer {
         let instances = upload;
         self.prepared_instances = Some(PreparedRenderInstances {
             renderables_revision: render_world.renderables_revision,
+            flashes: render_world.flashes.clone(),
             physics_revision: render_world.gpu_physics_revision,
             material_revisions,
             refractive,

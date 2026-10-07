@@ -31,7 +31,7 @@ use crate::runtime::{
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
-    SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
+    FLASH_COMPONENT, SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
 };
 
 /// Components that together make a World Environment object.
@@ -178,6 +178,10 @@ pub(in crate::editor) fn component_help(
         SPAWN_GRID_COMPONENT => (
             "Copies this object onto a grid when the game runs.",
             "Ball pits, crowds, rows of crates; one object instead of thousands.",
+        ),
+        FLASH_COMPONENT => (
+            "Tints the object and its children for a moment.",
+            "Hits, damage, pickups; game code calls flash.",
         ),
         SQUASH_COMPONENT => (
             "Wobbles the object's scale back to rest after a squash.",

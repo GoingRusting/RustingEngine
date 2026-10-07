@@ -2915,10 +2915,18 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
     volume. Verified by `squash_flattens_keeps_volume_and_springs_back_to_rest`
     (volume stays 8 within 1e-3, it overshoots into a stretch, and it ends at
     the exact rest scale).
-  - [ ] Hit-stop and flashes. Hit-stop cannot freeze fixed steps, because
-    headless runs count each step as a scenario tick; it needs a visual-only
-    freeze. Flashes need per-object material overrides, since materials are
-    shared handles.
+  - [x] Flashes: `rusting.flash` (`color`, `duration`) and
+    `scene.flash(name)` tint an object and its children toward a color,
+    fading back over the duration. Extraction lists the flashing renderables
+    (nearest flashing ancestor wins) and the renderer mixes the tint into
+    each instance's color and emissive, so the shared material is untouched.
+    Verified by `a_flash_tints_the_object_and_its_children_then_fades`
+    (parent and child tinted, a sibling not, strength 5/6 after one tick of
+    a 0.1 s flash, gone after 0.1 s) and the GPU test
+    `a_flash_tints_the_drawn_object_and_fades_back` (the centre pixel turns
+    green, then returns to the exact material color).
+  - [ ] Hit-stop. It cannot freeze fixed steps, because headless runs count
+    each step as a scenario tick; it needs a visual-only freeze.
   - [ ] Particle and sound presets as registered components.
 - [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
 - [x] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency. `rusting asset generate <root> sfx "coin 7"` synthesizes one of seven presets (jump, coin, hit, explosion, laser, powerup, blip) with a seeded splitmix64 and imports the WAV as CC0 with its preset and seed in the `.rmeta` notes; a project hook named `sfx` still wins. Verified by `presets_are_seeded_short_and_quiet_enough` (each preset repeats for one seed, changes for another, lasts 0.05 to 1 s, peaks at 0.4 and fades to silence) and `the_builtin_sfx_generator_imports_a_seeded_cc0_wav` (same bytes on a second import, bad presets and seeds fail with `GENERATOR_FAILED`). Run on a sample copy, `coin 7` imported a 207 ms 48 kHz stereo WAV.
