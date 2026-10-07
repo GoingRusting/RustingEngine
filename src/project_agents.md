@@ -167,7 +167,8 @@ direction, `pointer_ray` the ray through the mouse cursor), launches bodies
 (`set_body_kind`, `set_linear_velocity`, `set_angular_velocity`; each wakes a
 sleeping body, and a body made `Kinematic` or `Fixed` stops) and reads their
 velocity (`linear_velocity`, `angular_velocity`), stops a body completely
-(`reset_body`), turns a player controller (`set_look`) and reads its
+(`reset_body`), turns a player controller (`set_look`), dashes a player
+or platformer controller (`dash`) and reads its
 state (`player`: grounded, floor, wall, velocity), reparents objects
 (`reparent`), changes a light (`set_light`), removes objects
 (`despawn`), shows and

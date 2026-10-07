@@ -166,6 +166,13 @@ pub struct PlayerController {
     /// walking speed it really reached, including slides and platforms.
     #[serde(skip)]
     pub velocity: [f32; 3],
+    /// Velocity of a dash set by `GameScene::dash`, in metres per second;
+    /// while `dash_left` lasts it replaces walking, jumping and gravity.
+    #[serde(skip)]
+    pub dash_velocity: [f32; 3],
+    /// Seconds of the dash still to go.
+    #[serde(skip)]
+    pub dash_left: f32,
 }
 
 impl Default for PlayerController {
@@ -202,6 +209,8 @@ impl Default for PlayerController {
             floor: None,
             wall: None,
             velocity: [0.0; 3],
+            dash_velocity: [0.0; 3],
+            dash_left: 0.0,
         }
     }
 }
@@ -524,6 +533,11 @@ pub(super) fn player_move(
         player.jump_requested = false;
         player.vertical_speed -= player.gravity * dt;
         motion[1] = player.vertical_speed * dt;
+        if player.dash_left > 0.0 {
+            motion = player.dash_velocity.map(|value| value * dt);
+            player.vertical_speed = 0.0;
+            player.dash_left = (player.dash_left - dt).max(0.0);
+        }
         let start = CharacterMove::ride(
             &physics,
             shape,

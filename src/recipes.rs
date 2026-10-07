@@ -76,6 +76,12 @@ pub const RECIPES: &[Recipe] = &[Recipe {
     source: Some(include_str!("recipes/turret.rs")),
     call: Some("turret::turret(scene, time);"),
     build: turret_scene,
+}, Recipe {
+    name: "dash",
+    summary: "The action `dash` (Q, gamepad West) sends the player 15 m/s for 0.2 s with no gravity, the way the movement keys point (forward when none is held; a platformer the way it last ran), at most once every 0.6 s; walls still stop it. Uses `GameScene::dash`. Adds the input action `Dash Action`.",
+    source: Some(include_str!("recipes/dash.rs")),
+    call: Some("dash::dash(scene, time);"),
+    build: dash_scene,
 }];
 
 /// The recipe called `name`.
@@ -368,6 +374,64 @@ fn turret_scene(player: &SceneEntity) -> Built {
     Ok((creates(entities), scenario))
 }
 
+fn dash_scene(player: &SceneEntity) -> Built {
+    // Which way an idle player dashes: forward by its yaw in 3D, +X in 2D.
+    let yaw = if let Some(text) =
+        player.components.get("rusting.player_controller")
+    {
+        let c: PlayerController =
+            serde_json::from_str(text).map_err(|e| e.to_string())?;
+        Some(c.yaw)
+    } else if player
+        .components
+        .contains_key("rusting.platformer_controller")
+    {
+        None
+    } else {
+        return Err("`Player` has no `rusting.player_controller` or `rusting.platformer_controller`".into());
+    };
+    let way = yaw.map_or([1.0, 0.0], |yaw| [-yaw.sin(), -yaw.cos()]);
+    let (axis, sign) = if way[0].abs() >= way[1].abs() {
+        (0, way[0])
+    } else {
+        (2, way[1])
+    };
+    let start = position(player)[axis];
+    let entities = vec![
+        json!({"name": "Dash Action", "components": {"rusting.input_action": {"action": "dash", "inputs": ["KeyQ", "PadWest"]}}}),
+    ];
+    let path = format!("/transform/position/{axis}");
+    // Lifted clear of low blocks, one dash covers 3 m; a second press
+    // during the cooldown does nothing.
+    let lifted = position(player)[1] + 1.0;
+    let along = |metres: f32| start + sign.signum() * metres;
+    let (past, short) = if sign > 0.0 {
+        ("greater_than", "less_than")
+    } else {
+        ("less_than", "greater_than")
+    };
+    let moved = json!({"entity": "Player", "path": path, past: along(2.5)});
+    let not_far = json!({"entity": "Player", "path": path, short: along(3.5)});
+    let scenario = json!({
+        "name": "dash: a press dashes 3 m and a second press inside the cooldown does nothing",
+        "ticks": 80,
+        "steps": [
+            {"tick": 19, "set": {"entity": "Player", "path": "/transform/position/1", "value": lifted}},
+            {"tick": 20, "press": "dash"},
+            {"tick": 22, "release": "dash"},
+            {"tick": 40, "expect": moved},
+            {"tick": 42, "press": "dash"},
+            {"tick": 44, "release": "dash"},
+            {"tick": 80, "expect": not_far},
+        ]
+    });
+    Ok((creates(entities), scenario))
+}
+
+#[cfg(test)]
+#[path = "recipes/dash.rs"]
+mod dash;
+
 #[cfg(test)]
 #[path = "recipes/checkpoints.rs"]
 mod checkpoints;
@@ -528,6 +592,14 @@ mod tests {
         applies_and_passes("turret", |world| {
             let time = *world.resource::<FrameTime>();
             super::turret::turret(&mut GameScene { world }, &time);
+        });
+    }
+
+    #[test]
+    fn dash_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
+        applies_and_passes("dash", |world| {
+            let time = *world.resource::<FrameTime>();
+            super::dash::dash(&mut GameScene { world }, &time);
         });
     }
 }

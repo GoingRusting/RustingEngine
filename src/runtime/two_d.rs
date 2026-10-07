@@ -429,6 +429,13 @@ pub struct PlatformerController {
     /// it was, so a moving platform carries the controller.
     #[serde(skip)]
     pub floor: Option<(Entity, [f32; 3])>,
+    /// Velocity of a dash set by `GameScene::dash`, in metres per second;
+    /// while `dash_left` lasts it replaces walking, jumping and gravity.
+    #[serde(skip)]
+    pub dash_velocity: [f32; 3],
+    /// Seconds of the dash still to go.
+    #[serde(skip)]
+    pub dash_left: f32,
 }
 
 /// A jump pressed up to this long before landing, or this long after
@@ -449,6 +456,8 @@ impl Default for PlatformerController {
             jump_buffer: 0.0,
             air_time: 0.0,
             floor: None,
+            dash_velocity: [0.0; 3],
+            dash_left: 0.0,
         }
     }
 }
@@ -521,10 +530,21 @@ pub(super) fn platformer_move(
             entity,
             floor_at,
         );
+        let mut motion =
+            [run * player.run_speed * dt, player.vertical_speed * dt, 0.0];
+        if player.dash_left > 0.0 {
+            motion = [
+                player.dash_velocity[0] * dt,
+                player.dash_velocity[1] * dt,
+                0.0,
+            ];
+            player.vertical_speed = 0.0;
+            player.dash_left = (player.dash_left - dt).max(0.0);
+        }
         let moved = physics.move_character(
             shape,
             start,
-            [run * player.run_speed * dt, player.vertical_speed * dt, 0.0],
+            motion,
             player.collision_mask,
             Some(entity),
         );

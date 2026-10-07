@@ -147,6 +147,8 @@ crate::reflect! {
         #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
         #[skip] wall: Option<bevy_ecs::entity::Entity>,
         #[skip] velocity: [f32; 3],
+        #[skip] dash_velocity: [f32; 3],
+        #[skip] dash_left: f32,
     }
 }
 
@@ -947,6 +949,8 @@ crate::reflect! {
         #[skip] jump_buffer: f32,
         #[skip] air_time: f32,
         #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
+        #[skip] dash_velocity: [f32; 3],
+        #[skip] dash_left: f32,
     }
 }
 

@@ -984,6 +984,36 @@ impl GameScene<'_> {
         self.edit_body(name, |body| body.linear_velocity = velocity)
     }
 
+    /// Moves the named player or platformer controller at `velocity`
+    /// (metres per second; a platformer ignores Z) for `seconds`, in place
+    /// of walking, jumping and gravity; walls still stop it. False when the
+    /// object has no controller.
+    pub fn dash(
+        &mut self,
+        name: &str,
+        velocity: [f32; 3],
+        seconds: f32,
+    ) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let mut object = self.world.entity_mut(entity);
+        if let Some(mut player) =
+            object.get_mut::<crate::runtime::PlayerController>()
+        {
+            player.dash_velocity = velocity;
+            player.dash_left = seconds;
+        } else if let Some(mut player) =
+            object.get_mut::<crate::runtime::PlatformerController>()
+        {
+            player.dash_velocity = velocity;
+            player.dash_left = seconds;
+        } else {
+            return false;
+        }
+        true
+    }
+
     /// A body's linear velocity in metres per second, or `None` when the
     /// object or its rigid body does not exist.
     #[must_use]
