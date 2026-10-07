@@ -1257,6 +1257,15 @@ pub struct ScenarioReport {
     /// The steps a `fuzz` scenario pressed, in the scenario step form.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fuzz_steps: Vec<Value>,
+    /// What the run exercised, comparing the scene before tick 0 with the
+    /// scene at the end: `entities_changed` (`{name, id, sections}`),
+    /// `entities_added`, `entities_removed`, `entities_unchanged` (a
+    /// count), `sections_changed` and `sections_untouched` (scene sections
+    /// and components no entity changed), `inputs` (actions pressed) and
+    /// `events` (trace entries by kind). A value that changed and came back
+    /// counts as unchanged.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub coverage: Value,
 }
 
 /// Most trace entries one report keeps.
@@ -1611,6 +1620,7 @@ pub fn run_scenario(
         gpu_state_hashes: Vec::new(),
         state_hashes: Vec::new(),
         fuzz_steps: Vec::new(),
+        coverage: Value::Null,
     };
     if let Err(message) = scenario.validate() {
         report.first_failure = Some(StepResult {
@@ -1701,6 +1711,8 @@ pub fn run_scenario(
     let mut frames: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut tick_ms: Vec<f64> = Vec::new();
     let run_started = std::time::Instant::now();
+    let scene_at_start =
+        crate::runtime::scene_document_lenient(app.world_mut(), "").ok();
     // Repeated checks report once; this holds their last passing result.
     let mut pending: Vec<Option<StepResult>> = vec![None; scenario.steps.len()];
     // `within` checks that already passed.
@@ -2173,6 +2185,12 @@ pub fn run_scenario(
     report.perf.wall_ms_mean = run_started.elapsed().as_secs_f64() * 1000.0
         / tick_ms.len().max(1) as f64;
     collect_hashes(app.world(), &mut report);
+    if let (Some(start), Ok(end)) = (
+        &scene_at_start,
+        crate::runtime::scene_document_lenient(app.world_mut(), ""),
+    ) {
+        report.coverage = coverage(start, &end, &report.trace);
+    }
     if let Some(budgets) = &scenario.budgets {
         for message in over_budget(budgets, &report.perf) {
             report.steps.push(StepResult {
@@ -2187,6 +2205,101 @@ pub fn run_scenario(
     report.first_failure = report.steps.iter().find(|step| !step.ok).cloned();
     report.passed = report.first_failure.is_none();
     report
+}
+
+/// [`ScenarioReport::coverage`] from the scene before and after a run.
+fn coverage(
+    start: &crate::runtime::SceneDocument,
+    end: &crate::runtime::SceneDocument,
+    trace: &[TraceEvent],
+) -> Value {
+    use std::collections::BTreeSet;
+    // Each entity's sections as "transform", "components/rusting.counter".
+    let sections = |entity: &crate::runtime::SceneEntity| {
+        let value = serde_json::to_value(entity).unwrap_or_default();
+        let mut out = BTreeMap::new();
+        for (key, part) in value.as_object().into_iter().flatten() {
+            match (key.as_str(), part) {
+                ("id" | "name" | "parent", _) => {}
+                ("components", Value::Object(components)) => {
+                    for (name, component) in components {
+                        out.insert(
+                            format!("components/{name}"),
+                            component.clone(),
+                        );
+                    }
+                }
+                _ => {
+                    out.insert(key.clone(), part.clone());
+                }
+            }
+        }
+        out
+    };
+    let label = |entity: &crate::runtime::SceneEntity| json!({"name": entity.name, "id": entity.id});
+    let before: BTreeMap<_, _> = start
+        .entities
+        .iter()
+        .map(|entity| (entity.id, entity))
+        .collect();
+    let after: BTreeMap<_, _> = end
+        .entities
+        .iter()
+        .map(|entity| (entity.id, entity))
+        .collect();
+    let (mut changed, mut unchanged) = (Vec::new(), 0);
+    let (mut touched, mut present) = (BTreeSet::new(), BTreeSet::new());
+    for (id, old) in &before {
+        let old_sections = sections(old);
+        present.extend(old_sections.keys().cloned());
+        let Some(new) = after.get(id) else { continue };
+        let new_sections = sections(new);
+        let keys: BTreeSet<_> = old_sections
+            .keys()
+            .chain(new_sections.keys())
+            .cloned()
+            .collect();
+        let differ: Vec<_> = keys
+            .into_iter()
+            .filter(|key| old_sections.get(key) != new_sections.get(key))
+            .collect();
+        if differ.is_empty() {
+            unchanged += 1;
+        } else {
+            touched.extend(differ.iter().cloned());
+            let mut entry = label(new);
+            entry["sections"] = json!(differ);
+            changed.push(entry);
+        }
+    }
+    let added: Vec<_> = after
+        .iter()
+        .filter(|(id, _)| !before.contains_key(id))
+        .map(|(_, entity)| label(entity))
+        .collect();
+    let removed: Vec<_> = before
+        .iter()
+        .filter(|(id, _)| !after.contains_key(id))
+        .map(|(_, entity)| label(entity))
+        .collect();
+    let mut events = BTreeMap::<&str, u64>::new();
+    let mut inputs = BTreeSet::new();
+    for event in trace {
+        *events.entry(event.kind.as_str()).or_default() += 1;
+        if let Some(action) = event.detail["press"].as_str() {
+            inputs.insert(action);
+        }
+    }
+    json!({
+        "entities_changed": changed,
+        "entities_added": added,
+        "entities_removed": removed,
+        "entities_unchanged": unchanged,
+        "sections_changed": touched,
+        "sections_untouched": present.difference(&touched).collect::<Vec<_>>(),
+        "inputs": inputs,
+        "events": events,
+    })
 }
 
 fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
@@ -3318,6 +3431,33 @@ mod tests {
             .unwrap()
             .message
             .contains("invariant 0"));
+    }
+
+    #[test]
+    fn coverage_lists_what_a_run_changed_and_left_alone() {
+        let mut app = game();
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Sign".into()),
+            Transform::new([4.0, 0.0, 0.0]),
+        ));
+        let scenario = scenario(30, json!([{"tick": 2, "press": "jump"}]));
+        let coverage =
+            run_scenario(&mut app, &scenario, Path::new(".")).coverage;
+        let changed: Vec<_> = coverage["entities_changed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entity| entity["name"].as_str().unwrap())
+            .collect();
+        assert!(changed.contains(&"Cube"), "{coverage}");
+        assert!(!changed.contains(&"Sign"), "{coverage}");
+        assert_eq!(coverage["entities_unchanged"], 1, "{coverage}");
+        assert_eq!(coverage["inputs"], json!(["jump"]));
+        assert_eq!(coverage["events"]["input"], 1, "{coverage}");
+        let untouched = coverage["sections_untouched"].as_array().unwrap();
+        assert!(!untouched.is_empty(), "{coverage}");
+        assert!(!untouched.contains(&json!("transform")), "{coverage}");
     }
 
     #[test]
@@ -4604,6 +4744,7 @@ mod tests {
             gpu_state_hashes: Vec::new(),
             state_hashes: Vec::new(),
             fuzz_steps: Vec::new(),
+            coverage: Value::Null,
         };
         for tick in 0..3000_u64 {
             let mut hashes =

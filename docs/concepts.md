@@ -515,6 +515,14 @@ replays it and the file can become a regression test. A scenario can also
 carry the random input itself as `"fuzz": {"seed": 3, "actions": [], "rate":
 0.1}`; its report then lists the presses as `fuzz_steps`.
 
+Every scenario report also carries `coverage`: the scene before tick 0
+compared with the scene at the end. It lists the entities that changed and
+which sections changed in each (`transform`, `components/rusting.counter`),
+the entities added and removed, how many stayed the same, the sections and
+components no entity changed (`sections_untouched`, the mechanics this
+scenario does not exercise), the actions pressed, and the trace events by
+kind. A value that changed and came back by the end counts as unchanged.
+
 ## Determinism
 
 `determinism` in `project.json` is `Off`, `Local` (reproduces on one

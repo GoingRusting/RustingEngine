@@ -110,6 +110,7 @@ Engine features for the horror game FOREVER BEAR.
 - The Agent area's pending row lists entities an outside write removes, each with an Accept that deletes it and its descendants behind one Undo snapshot.
 - `rusting test <project>` saves each scenario's tick time, draws and triangles in `build/test-results.json`, and the Agent area's Results tab shows them.
 - `rusting test --without COMPONENT` runs a scenario with that component left out of every scene and passes only when the scenario then fails, or fails with `SCENARIO_TOO_WEAK`.
+- Scenario reports carry `coverage`: the entities and scene sections a run changed, added or removed, the sections it never touched, the actions pressed and trace events by kind.
 - `rusting bisect <project> <other-root>` runs two copies of a game headless and names the first tick and entity whose state hashes differ; divergent entities now pair by scene ID, also in `rusting determinism`.
 - `rusting fuzz <project> <scenario>` runs a scenario over many seeds with random action presses and writes the first failing seed to `build/fuzz/seed-N.json` as a ready scenario; scenarios accept a `fuzz` section and reports list `fuzz_steps`.
 
