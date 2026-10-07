@@ -2321,6 +2321,38 @@ fn tweens_play_once_loop_and_ping_pong_on_the_fixed_step() {
 }
 
 #[test]
+fn squash_flattens_keeps_volume_and_springs_back_to_rest() {
+    let mut app = App::new();
+    let rest = [2.0, 2.0, 2.0];
+    let body = app.spawn((
+        Transform {
+            scale: rest,
+            ..Transform::default()
+        },
+        Squash::default(),
+    ));
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(app.world().get::<Transform>(body).unwrap().scale, rest);
+    app.world_mut().get_mut::<Squash>(body).unwrap().squash(0.4);
+    run_fixed_steps(&mut app, 1);
+    let scale = app.world().get::<Transform>(body).unwrap().scale;
+    assert!(scale[1] < 1.4 && scale[0] > 2.0, "{scale:?}");
+    let volume = scale[0] * scale[1] * scale[2];
+    assert!((volume - 8.0).abs() < 1e-3, "{volume}");
+    // It overshoots into a stretch before settling.
+    let mut tallest = 0.0f32;
+    for _ in 0..30 {
+        run_fixed_steps(&mut app, 1);
+        tallest =
+            tallest.max(app.world().get::<Transform>(body).unwrap().scale[1]);
+    }
+    assert!(tallest > 2.0, "{tallest}");
+    run_fixed_steps(&mut app, 180);
+    assert_eq!(app.world().get::<Transform>(body).unwrap().scale, rest);
+    assert_eq!(app.world().get::<Squash>(body).unwrap().rest, None);
+}
+
+#[test]
 fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
     let run = || {
         let mut app = App::new();

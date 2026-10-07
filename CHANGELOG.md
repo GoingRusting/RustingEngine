@@ -121,6 +121,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting new --template empty` creates a project whose scene holds only a camera, so game code can spawn objects under any name (playplace friction 3).
 - `rusting inspect --tick N` reports `feel` for player and platformer controllers: speeds, jump apex height and time, air time and jump distance, compared with genre ranges.
 - `rusting.camera_shake` and `scene.add_trauma(name, amount)` shake a camera's drawn view by trauma squared, fading by `decay` per second without moving its `Transform`.
+- `rusting.squash` and `scene.squash(name, amount)` squash or stretch an object on a damped spring that keeps its volume and returns to the rest scale.
 
 ### Fixed
 - A paused sound's caption no longer stays on screen; it hides until `resume_sound`.

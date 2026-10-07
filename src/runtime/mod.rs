@@ -276,7 +276,11 @@ impl Default for App {
                     particles::update_particles,
                 )
                     .chain(),
-                (game_feel::advance_tweens, game_feel::decay_camera_shake)
+                (
+                    game_feel::advance_tweens,
+                    game_feel::spring_squash,
+                    game_feel::decay_camera_shake,
+                )
                     .chain(),
                 animation::advance_animations,
                 fluid::spawn_fluid_volumes,

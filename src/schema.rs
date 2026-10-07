@@ -763,6 +763,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"trauma": 0.0, "decay": 1.5, "max_offset": [0.3, 0.3, 0.0], "max_roll": 0.05, "frequency": 12.0}),
     },
     ComponentSection {
+        key: "rusting.squash",
+        summary: "Squash and stretch spring. Game code calls squash(name, amount) on a landing or hit (positive flattens, negative stretches, -0.8 to 0.8); the object's Transform scale wobbles back to rest keeping its volume. Colliders scale too, so put it on a visible child, not the physics body.",
+        gpu: NO_GPU,
+        example: || json!({"stiffness": 400.0, "damping": 14.0}),
+    },
+    ComponentSection {
         key: "rusting.sound_cue",
         summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`).",
         gpu: NO_GPU,

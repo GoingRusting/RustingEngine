@@ -2900,7 +2900,15 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
 - [x] Controller feel metrics in physical units (jump apex height and time, time to top speed, stopping distance, air control), reported by `rusting inspect` and compared with documented genre ranges. Done 2026-10-07: `rusting inspect --tick N` adds `feel` to each entity with a player or platformer controller, with genre ranges (first or third person: 3 to 8 m/s, 0.4 to 1.6 m apex, 0.4 to 1.2 s air time; 2D platformer: 4 to 12 m/s, 1 to 5 m, 0.5 to 1.2 s) and `notes` for numbers outside them. Both controllers set their speed directly, so time to top speed is one fixed step, stopping distance 0 and air control full. Evidence: unit test `controller_feel_reports_jump_and_speed_in_physical_units` (default player 1.27 m apex and 1.02 s air time with no notes; a 20 m moon jump at 2 m/s gets three notes), and a real `rusting inspect` of a copy of `hammer_run` reported 1.27 m apex, 4.08 m jump distance and 7.2 m/s sprint for its player.
 - [ ] (Partly) More data-driven juice: screen shake, hit-stop, squash and stretch, camera trauma, flashes, and particle and sound presets, each a registered component with schema entries.
   - [x] Screen shake and camera trauma. Done 2026-10-07: `rusting.camera_shake` (`CameraShake`: trauma, decay, max_offset, max_roll, frequency) is registered with schema, reflect and snapshot entries; game code calls `scene.add_trauma(name, amount)`, strength is trauma squared, trauma decays on the fixed step, and render extraction moves and rolls only the drawn view, so the camera's `Transform` never drifts. Evidence: unit test `camera_shake_moves_the_drawn_view_and_fades_back_to_rest` (trauma moves the extracted view by more than 1 cm and less than 60 cm, the `Transform` is unchanged, and after 40 ticks the view is exactly at rest and trauma is 0).
-  - [ ] Hit-stop, squash and stretch, and flashes.
+  - [x] Squash and stretch: `rusting.squash` and `scene.squash(name, amount)`
+    wobble an object's `Transform` scale on a damped spring and keep its
+    volume. Verified by `squash_flattens_keeps_volume_and_springs_back_to_rest`
+    (volume stays 8 within 1e-3, it overshoots into a stretch, and it ends at
+    the exact rest scale).
+  - [ ] Hit-stop and flashes. Hit-stop cannot freeze fixed steps, because
+    headless runs count each step as a scenario tick; it needs a visual-only
+    freeze. Flashes need per-object material overrides, since materials are
+    shared handles.
   - [ ] Particle and sound presets as registered components.
 - [ ] A built-in placeholder asset pack: CC0 meshes, sprites, fonts, and sounds in one consistent style, so a first build does not look like grey cubes. Its provenance goes through the existing `.rmeta` records.
 - [ ] A deterministic procedural sound-effect generator (sfxr style: jump, coin, hit, explosion, from parameters and a seed) with no new dependency.

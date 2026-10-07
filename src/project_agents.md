@@ -82,7 +82,8 @@ command takes `--json` for output a program can read.
   `rusting.hud` (text with `{counter}` placeholders), `rusting.tween`,
   `rusting.sound_cue`, `rusting.burst_emitter`, `rusting.player_controller`,
   `rusting.joint`, `rusting.camera_shake` (shake a camera with
-  `scene.add_trauma("Camera", 0.5)`). Components with `requires` wait for
+  `scene.add_trauma("Camera", 0.5)`), `rusting.squash` (wobble a visible
+  child with `scene.squash("Body", 0.4)`). Components with `requires` wait for
   that counter to reach its target.
 - Quads are one-sided: a sprite turned more than 90 degrees about Y
   disappears. Animate 2D sprites with a `Scale` tween instead.

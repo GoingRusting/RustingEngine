@@ -279,6 +279,75 @@ impl CameraShake {
     }
 }
 
+/// Squash and stretch: game code calls `scene.squash(name, amount)` on a
+/// landing or hit, and a damped spring wobbles the object's `Transform`
+/// scale back to rest, keeping its volume. Positive amounts flatten it,
+/// negative ones stretch it tall. Colliders scale with the `Transform`, so
+/// put this on a visible child, not the physics body.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Squash {
+    /// Spring stiffness per second squared; higher wobbles faster.
+    pub stiffness: f32,
+    /// Damping per second; higher settles sooner.
+    pub damping: f32,
+    /// Current squash, -0.8 to 0.8; 0 is at rest.
+    #[serde(skip)]
+    pub amount: f32,
+    #[serde(skip)]
+    pub velocity: f32,
+    /// The scale the object returns to, taken when a squash starts.
+    #[serde(skip)]
+    pub rest: Option<[f32; 3]>,
+}
+
+impl Default for Squash {
+    fn default() -> Self {
+        Self {
+            stiffness: 400.0,
+            damping: 14.0,
+            amount: 0.0,
+            velocity: 0.0,
+            rest: None,
+        }
+    }
+}
+
+impl Squash {
+    /// Adds `amount` of squash (negative stretches).
+    pub fn squash(&mut self, amount: f32) {
+        self.amount = (self.amount + amount).clamp(-0.8, 0.8);
+    }
+}
+
+/// Per fixed step: moves squash springs and scales their objects.
+pub(super) fn spring_squash(
+    time: Res<FrameTime>,
+    mut squashes: Query<(&mut Squash, &mut Transform)>,
+) {
+    let dt = time.fixed_delta.as_secs_f32();
+    for (mut squash, mut transform) in &mut squashes {
+        if squash.amount == 0.0 && squash.velocity == 0.0 {
+            continue;
+        }
+        let rest = *squash.rest.get_or_insert(transform.scale);
+        let force = -squash.stiffness * squash.amount
+            - squash.damping * squash.velocity;
+        squash.velocity += force * dt;
+        squash.amount = (squash.amount + squash.velocity * dt).clamp(-0.8, 0.8);
+        if squash.amount.abs() < 1e-4 && squash.velocity.abs() < 1e-3 {
+            squash.amount = 0.0;
+            squash.velocity = 0.0;
+            squash.rest = None;
+            transform.scale = rest;
+            continue;
+        }
+        let tall = 1.0 - squash.amount;
+        let wide = 1.0 / tall.sqrt();
+        transform.scale = [rest[0] * wide, rest[1] * tall, rest[2] * wide];
+    }
+}
+
 /// Per fixed step: lets camera trauma fade.
 pub(super) fn decay_camera_shake(
     time: Res<FrameTime>,

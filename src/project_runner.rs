@@ -2082,6 +2082,22 @@ impl GameScene<'_> {
         self.particles(name, crate::runtime::ParticleCommand::Restart);
     }
 
+    /// Squashes the named object by `amount` (positive flattens, negative
+    /// stretches) through its `rusting.squash`, giving it a default one
+    /// first if it has none.
+    pub fn squash(&mut self, name: &str, amount: f32) {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        if !entity.contains::<crate::runtime::Squash>() {
+            entity.insert(crate::runtime::Squash::default());
+        }
+        if let Some(mut squash) = entity.get_mut::<crate::runtime::Squash>() {
+            squash.squash(amount);
+        }
+    }
+
     /// Adds trauma (0 to 1) to the named camera's `rusting.camera_shake`,
     /// giving it a default one first if it has none.
     pub fn add_trauma(&mut self, name: &str, amount: f32) {
