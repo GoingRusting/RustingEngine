@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting systems [root]` also lists the game code functions of a project (stage `Game`, with file and line) and the components each reads and writes, from bevy system parameters and `GameScene` calls, so `rusting systems --writes Health` answers for game components too.
 - Operation journal: each CLI or daemon command that writes project files is recorded in `.rusting/journal.jsonl`; `rusting log` lists operations and `rusting revert <op>` undoes one unless a later operation changed the same file (`REVERT_CONFLICT`). `add scenario`, `add system`, recipes and the AGENTS.md refresh now write atomically and respect leases.
 - `rusting provenance [root]`: a portable record of engine crates, a game-code hash, asset hashes with their `.rmeta` provenance, generator hooks, scene hashes, and scenario seeds and hashes.
 - `rusting lease claim|release|list`: scoped leases for parallel agents. A scene or prefab write to a path another agent leases fails with `LEASE_HELD` naming the holder; agents name themselves with `RUSTING_AGENT` or `--as`.

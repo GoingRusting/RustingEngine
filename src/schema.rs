@@ -136,8 +136,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "systems",
-        usage: "systems [--reads TYPE | --writes TYPE] [--json]",
-        summary: "The engine's ECS systems by stage with the components and resources each reads and writes (short type names, such as Transform). --reads or --writes keeps the systems that touch that type; systems with `all: true` take the whole World, may touch anything, and are always kept. Game code runs inside one such system, so this lists engine systems only.",
+        usage: "systems [root] [--reads TYPE | --writes TYPE] [--json]",
+        summary: "The engine's ECS systems by stage with the components and resources each reads and writes (short type names, such as Transform). --reads or --writes keeps the systems that touch that type; systems with `all: true` take the whole World, may touch anything, and are always kept. Inside a project (root defaults to `.`) it adds the game code functions with stage `Game`, `file` and `line`: bevy system parameters (`Query<&mut Health>` writes Health, `Res<T>` reads T) and the `GameScene` calls each makes (`set_position` writes Transform, `set_counter` writes Counter, `set_field` with `/components/game.health/..` writes game.health). The game scan reads source text, so calls through helpers or macros are missed.",
         gpu: NO_GPU,
         defaults: &[],
         example: "systems --writes Transform --json",

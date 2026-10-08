@@ -106,6 +106,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["determinism"], 0),
         (&["project", "inspect"], 0),
         (&["project", "summary"], 0),
+        (&["systems"], 0),
         (&["impact"], 1),
         (&["lease", "list"], 0),
         (&["provenance"], 0),
@@ -207,9 +208,13 @@ fn execute(args: &[String]) -> CliResult {
             Path::new(theirs),
             Path::new(output),
         ),
-        ["systems"] => cli::system_access(None, None),
-        ["systems", "--reads", name] => cli::system_access(Some(name), None),
-        ["systems", "--writes", name] => cli::system_access(None, Some(name)),
+        ["systems", root] => cli::system_access(Path::new(root), None, None),
+        ["systems", root, "--reads", name] => {
+            cli::system_access(Path::new(root), Some(name), None)
+        }
+        ["systems", root, "--writes", name] => {
+            cli::system_access(Path::new(root), None, Some(name))
+        }
         ["project", "summary", root] => {
             cli::project_summary(Path::new(root), DOCS_BUDGET)
         }
@@ -853,6 +858,11 @@ fn render_human(result: &CliResult) -> String {
                         join(&system["writes"])
                     )
                 });
+                if let Some(file) = system["file"].as_str() {
+                    if let Some(last) = lines.last_mut() {
+                        last.push_str(&format!(" ({file}:{})", system["line"]));
+                    }
+                }
                 continue;
             }
             lines.push(format!(

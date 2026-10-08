@@ -328,10 +328,15 @@ pub fn new_project(
 }
 
 /// `rusting systems`: the engine's ECS systems with the components and
-/// resources each reads and writes. `reads` or `writes` keeps the systems
-/// that read or write that type name; systems with `all` access may touch
-/// anything, so they are always kept.
-pub fn system_access(reads: Option<&str>, writes: Option<&str>) -> CliResult {
+/// resources each reads and writes, plus the game code functions of the
+/// project at `root` (if it is one; see [`game_system_access`]). `reads` or
+/// `writes` keeps the systems that read or write that type name; systems
+/// with `all` access may touch anything, so they are always kept.
+pub fn system_access(
+    root: &Path,
+    reads: Option<&str>,
+    writes: Option<&str>,
+) -> CliResult {
     use crate::runtime::{HybridPhysicsPlugin, RenderExtractPlugin};
     use crate::{App, AssetPlugin};
     let mut app = App::new();
@@ -342,14 +347,9 @@ pub fn system_access(reads: Option<&str>, writes: Option<&str>) -> CliResult {
     let names = |list: &[String], wanted: Option<&str>| {
         wanted.is_none_or(|wanted| list.iter().any(|name| name == wanted))
     };
-    let systems: Vec<_> = app
+    let mut systems: Vec<_> = app
         .into_system_access()
         .into_iter()
-        .filter(|system| {
-            system.all
-                || (names(&system.reads, reads) || names(&system.writes, reads))
-                    && names(&system.writes, writes)
-        })
         .map(|system| {
             json!({
                 "stage": format!("{:?}", system.stage),
@@ -360,7 +360,229 @@ pub fn system_access(reads: Option<&str>, writes: Option<&str>) -> CliResult {
             })
         })
         .collect();
+    if root.join("project.json").is_file() {
+        systems.extend(game_system_access(root));
+    }
+    let list = |system: &Value, key: &str| -> Vec<String> {
+        serde_json::from_value(system[key].clone()).unwrap_or_default()
+    };
+    systems.retain(|system| {
+        system["all"] == true
+            || (names(&list(system, "reads"), reads)
+                || names(&list(system, "writes"), reads))
+                && names(&list(system, "writes"), writes)
+    });
     CliResult::success(json!({ "systems": systems }))
+}
+
+/// What a `GameScene` method reads (`false`) or writes (`true`).
+const GAME_SCENE_ACCESS: &[(&str, bool, &str)] = &[
+    ("set_position", true, "Transform"),
+    ("move_by", true, "Transform"),
+    ("move_x", true, "Transform"),
+    ("move_y", true, "Transform"),
+    ("move_z", true, "Transform"),
+    ("set_rotation", true, "Transform"),
+    ("rotate_by", true, "Transform"),
+    ("rotate_x", true, "Transform"),
+    ("rotate_y", true, "Transform"),
+    ("rotate_z", true, "Transform"),
+    ("set_scale", true, "Transform"),
+    ("position", false, "Transform"),
+    ("rotation", false, "Transform"),
+    ("scale", false, "Transform"),
+    ("reparent", true, "Parent"),
+    ("set_counter", true, "Counter"),
+    ("add_to_counter", true, "Counter"),
+    ("counter", true, "Counter"),
+    ("counter_value", false, "Counter"),
+    ("counter_or", false, "Counter"),
+    ("counter_complete", false, "Counter"),
+    ("counters", false, "Counter"),
+    ("set_visible", true, "Visibility"),
+    ("set_color", true, "MeshRenderer"),
+    ("set_emissive", true, "MeshRenderer"),
+    ("set_material", true, "MeshRenderer"),
+    ("color", false, "MeshRenderer"),
+    ("set_player", true, "PlayerController"),
+    ("player", false, "PlayerController"),
+    ("set_linear_velocity", true, "RigidBody"),
+    ("set_angular_velocity", true, "RigidBody"),
+    ("reset_body", true, "RigidBody"),
+    ("set_body_kind", true, "RigidBody"),
+    ("linear_velocity", false, "RigidBody"),
+    ("angular_velocity", false, "RigidBody"),
+    ("set_light", true, "PointLight"),
+    ("set_light", true, "SpotLight"),
+    ("set_tile", true, "TileMap"),
+    ("tile", false, "TileMap"),
+];
+
+/// The game code functions under `root/src` that touch components, found
+/// by a text scan: bevy system parameters (`Query<&mut T>` writes `T`,
+/// `Res<T>` reads it, a `World` parameter is `all`), `GameScene` calls from
+/// [`GAME_SCENE_ACCESS`], `set_field` paths (`/components/game.health/..`
+/// writes `game.health`, `/point_light/..` writes `PointLight`) and
+/// `world()` (`all`). Stage is `Game`; `file` and `line` locate the `fn`.
+// ponytail: a text scan, so calls through helpers, macros or variables named
+// like a method are missed or misread; per-call tracking in GameScene would be
+// exact.
+fn game_system_access(root: &Path) -> Vec<Value> {
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    files.sort();
+    let mut systems = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (start, _) in text.match_indices("fn ") {
+            if text[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let rest = &text[start + 3..];
+            let Some(open) = rest.find(['{', ';']) else {
+                continue;
+            };
+            if rest.as_bytes()[open] == b';' {
+                continue;
+            }
+            let signature = &rest[..open];
+            let mut depth = 0;
+            let close = rest[open..]
+                .find(|c| {
+                    depth += match c {
+                        '{' => 1,
+                        '}' => -1,
+                        _ => 0,
+                    };
+                    depth == 0
+                })
+                .map_or(rest.len(), |end| open + end);
+            let body = &rest[open..close];
+            let mut reads = BTreeSet::new();
+            let mut writes = BTreeSet::new();
+            let mut all = has_word(signature, "World");
+            for (kind, written) in [("ResMut<", true), ("Res<", false)] {
+                for (at, _) in signature.match_indices(kind) {
+                    if signature[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        continue;
+                    }
+                    let name = path_tail(&signature[at + kind.len()..]);
+                    if written { &mut writes } else { &mut reads }.insert(name);
+                }
+            }
+            for (at, _) in signature.match_indices("Query<") {
+                let mut depth = 0;
+                let inner = &signature[at + 6..];
+                let end = inner
+                    .find(|c| {
+                        depth += match c {
+                            '<' => 1,
+                            '>' => -1,
+                            _ => 0,
+                        };
+                        depth < 0
+                    })
+                    .unwrap_or(inner.len());
+                for part in inner[..end].split('&').skip(1) {
+                    match part.trim_start().strip_prefix("mut ") {
+                        Some(name) => writes.insert(path_tail(name)),
+                        None => reads.insert(path_tail(part)),
+                    };
+                }
+            }
+            if signature.contains("GameScene") {
+                all |= body.contains(".world()");
+                for (method, written, name) in GAME_SCENE_ACCESS {
+                    let call = format!(".{method}(");
+                    let called = body.match_indices(&call).any(|(at, _)| {
+                        let argument = body[at + call.len()..].trim_start();
+                        !argument.starts_with('|')
+                            && !argument.starts_with("move")
+                    });
+                    if called {
+                        if *written { &mut writes } else { &mut reads }
+                            .insert((*name).to_owned());
+                    }
+                }
+                for (at, _) in body.match_indices(".set_field(") {
+                    let statement = &body[at..];
+                    let statement = &statement
+                        [..statement.find(';').unwrap_or(statement.len())];
+                    let Some(path) = statement.split("\"/").nth(1) else {
+                        continue;
+                    };
+                    let mut parts = path.split(['/', '"']);
+                    let name = match parts.next() {
+                        Some("components") => {
+                            parts.next().unwrap_or_default().to_owned()
+                        }
+                        Some(section) => section
+                            .split('_')
+                            .map(|word| {
+                                let mut chars = word.chars();
+                                chars.next().map_or_else(String::new, |first| {
+                                    first.to_uppercase().chain(chars).collect()
+                                })
+                            })
+                            .collect(),
+                        None => continue,
+                    };
+                    writes.insert(name);
+                }
+            }
+            reads.retain(|name: &String| {
+                !name.is_empty() && !writes.contains(name)
+            });
+            writes.retain(|name| !name.is_empty());
+            if reads.is_empty() && writes.is_empty() && !all {
+                continue;
+            }
+            systems.push(json!({
+                "stage": "Game",
+                "name": signature
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>(),
+                "file": file.strip_prefix(root).unwrap_or(&file),
+                "line": text[..start].lines().count() + 1,
+                "reads": reads,
+                "writes": writes,
+                "all": all,
+            }));
+        }
+    }
+    systems
+}
+
+/// Whether `name` appears in `text` as a whole word.
+fn has_word(text: &str, name: &str) -> bool {
+    let word =
+        |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    text.match_indices(name).any(|(at, _)| {
+        !word(text[..at].chars().next_back())
+            && !word(text[at + name.len()..].chars().next())
+    })
+}
+
+/// The last segment of the type path at the start of `text`:
+/// `crate::game::Health, ...` gives `Health`.
+fn path_tail(text: &str) -> String {
+    let path: String = text
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    path.rsplit("::").next().unwrap_or_default().to_owned()
 }
 
 /// `rusting merge`: three-way merge of scene files by entity and field (see
@@ -5550,7 +5772,7 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
 
     #[test]
     fn systems_name_who_writes_a_component() {
-        let writers = system_access(None, Some("Transform"));
+        let writers = system_access(Path::new("."), None, Some("Transform"));
         assert!(writers.ok);
         let systems = writers.data["systems"].as_array().unwrap();
         let named = |name: &str| systems.iter().find(|s| s["name"] == name);
@@ -5566,11 +5788,66 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             .contains(&json!("FrameTime")));
         assert!(named("draw_hud").is_none());
         assert_eq!(named("propagate_transforms").unwrap()["all"], true);
-        let all = system_access(None, None).data["systems"]
+        let all = system_access(Path::new("."), None, None).data["systems"]
             .as_array()
             .unwrap()
             .len();
         assert!(systems.len() < all);
+    }
+
+    #[test]
+    fn systems_scan_game_code_for_who_writes_a_component() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-systems-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        std::fs::write(
+            root.join("src/extra.rs"),
+            "fn regen(mut q: Query<(Entity, &mut game::Health), With<Enemy>>, t: Res<Time>) {}\n\
+             fn shove(scene: &mut GameScene<'_>) {\n    \
+                 scene.object(\"Crate\").set_position([0.0; 3]);\n    \
+                 scene.add_to_counter(\"moves\", 1);\n    \
+                 let _ = scene.set_field(\"Boss\", \"/components/game.health/value\", json!(3));\n    \
+                 let i = [1].iter().position(|x| *x == 1);\n\
+             }\n\
+             fn raw(world: &mut World) {}\n\
+             fn plain(x: i32) -> i32 { x }\n",
+        )
+        .unwrap();
+        let game = |writes: &str| -> Vec<Value> {
+            let result = system_access(&root, None, Some(writes));
+            assert!(result.ok);
+            result.data["systems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| s["stage"] == "Game" && s["file"] == "src/extra.rs")
+                .cloned()
+                .collect()
+        };
+        let health = game("Health");
+        let regen = health.iter().find(|s| s["name"] == "regen").unwrap();
+        assert_eq!(regen["line"], 1);
+        assert_eq!(regen["reads"], json!(["Time"]));
+        assert!(health
+            .iter()
+            .any(|s| s["name"] == "raw" && s["all"] == true));
+        assert!(health.iter().all(|s| s["name"] != "shove"));
+        let shove = &game("Transform")[0];
+        assert_eq!(
+            (shove["name"].as_str(), shove["line"].as_u64()),
+            (Some("shove"), Some(2))
+        );
+        assert_eq!(shove["reads"], json!([]));
+        assert_eq!(
+            shove["writes"],
+            json!(["Counter", "Transform", "game.health"])
+        );
+        assert!(game("game.health").iter().any(|s| s["name"] == "shove"));
+        let all = system_access(&root, None, None).data["systems"].clone();
+        assert!(all.as_array().unwrap().iter().all(|s| s["name"] != "plain"));
+        std::fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]
