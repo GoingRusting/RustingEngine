@@ -1913,7 +1913,7 @@ pub fn lint_project(root: &Path) -> CliResult {
         Ok(document) => document,
         Err(result) => return result,
     };
-    let diagnostics = lint_scene(&document);
+    let diagnostics = lint_scene(&document, &code_strings(&project.root));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
@@ -1966,7 +1966,30 @@ const MIN_HUD_FONT_SIZE: f32 = 14.0;
 /// The smallest view, in logical pixels, that HUD text must fit.
 const LINT_VIEW: [f32; 2] = [1280.0, 720.0];
 
-fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
+/// Every string literal in the game code under `root/src`: the object
+/// names game code may move, hide or delete.
+fn code_strings(root: &Path) -> BTreeSet<String> {
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    files
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .flat_map(|text| {
+            text.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// `named_in_code` are the names game code mentions; walls with those names
+/// may be doors, so the reachability check walks through them.
+fn lint_scene(
+    document: &SceneDocument,
+    named_in_code: &BTreeSet<String>,
+) -> Vec<Diagnostic> {
     use crate::runtime::{
         ColliderShape, HudAnchor, HudElement, DEFAULT_PLAYER_SHAPE,
         HUD_ELEMENT_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
@@ -2084,6 +2107,30 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             })
             .skip(budget)
             .collect();
+    // Whether the world point `at` is inside a collider with this inverse
+    // world matrix.
+    // ponytail: mesh colliders are skipped; the scene file has no mesh
+    // bounds.
+    let inside = |shape: &ColliderShape,
+                  inverse: &nalgebra::Matrix4<f32>,
+                  at: nalgebra::Vector4<f32>| {
+        let local = (inverse * at).xyz();
+        match shape {
+            ColliderShape::Box { half_extents } => {
+                (0..3).all(|axis| local[axis].abs() < half_extents[axis])
+            }
+            ColliderShape::Sphere { radius } => local.norm() < *radius,
+            ColliderShape::Capsule {
+                half_height,
+                radius,
+            } => {
+                let core = local[1].clamp(-half_height, *half_height);
+                (local - nalgebra::Vector3::new(0.0, core, 0.0)).norm()
+                    < *radius
+            }
+            _ => false,
+        }
+    };
     // Cameras and sensors (pickups, goals, triggers) whose centre starts
     // inside a solid, with that solid's name.
     let mut inside_solid = Vec::new();
@@ -2097,31 +2144,35 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
             if solid.id == entity.id || is_ancestor(solid.id, entity) {
                 continue;
             }
-            let local = (inverse * at).xyz();
-            // ponytail: mesh colliders are skipped; the scene file has no
-            // mesh bounds.
-            let inside = match shape {
-                ColliderShape::Box { half_extents } => {
-                    (0..3).all(|axis| local[axis].abs() < half_extents[axis])
-                }
-                ColliderShape::Sphere { radius } => local.norm() < *radius,
-                ColliderShape::Capsule {
-                    half_height,
-                    radius,
-                } => {
-                    let core = local[1].clamp(-half_height, *half_height);
-                    (local - nalgebra::Vector3::new(0.0, core, 0.0)).norm()
-                        < *radius
-                }
-                _ => false,
-            };
-            if inside {
+            if inside(shape, inverse, at) {
                 inside_solid.push((index, solid.name.clone()));
                 break;
             }
         }
     }
+    let unreachable = unreachable_goals(
+        document,
+        &solids,
+        named_in_code,
+        &world_matrix,
+        &is_ancestor,
+        &inside,
+    );
     for (index, entity) in document.entities.iter().enumerate() {
+        if let Some(player) = unreachable
+            .iter()
+            .find(|(goal, _)| *goal == index)
+            .map(|(_, player)| player)
+        {
+            warn(
+                "LINT_GOAL_UNREACHABLE",
+                index,
+                "/transform/position",
+                format!(
+                    "is a sensor at the height of player `{player}` that no walk or jump from the player's start reaches; walls or ledges too high to jump close off every route"
+                ),
+            );
+        }
         if let Some((_, solid)) =
             inside_solid.iter().find(|(inside, _)| *inside == index)
         {
@@ -2278,6 +2329,244 @@ fn lint_scene(document: &SceneDocument) -> Vec<Diagnostic> {
         }
     }
     diagnostics
+}
+
+/// Sensors (pickups, goals, triggers) at the first player's height that no
+/// walk from the player's start reaches, as (entity index, player name).
+/// Fixed solids (no body, or a `Fixed` one) are rasterized into an XZ grid
+/// wherever they cover the part of the player's body above what it can step
+/// or jump over; the grid is flood-filled from the player. A sensor in a
+/// blocked cell sits on or in something and is not judged, nor is one above
+/// or below the player's floor. Walls named in game code may be doors and
+/// do not block.
+// ponytail: one floor, a point-sized body and cell-centre samples, so thin
+// gaps and walls under a cell are missed (a miss, never a false warning
+// from them); a door found only through a parent's name or a computed name
+// is a wall here.
+/// Whether a world point lies inside a collider shape placed by a world matrix.
+type InsideTest = dyn Fn(
+    &crate::runtime::ColliderShape,
+    &nalgebra::Matrix4<f32>,
+    nalgebra::Vector4<f32>,
+) -> bool;
+
+fn unreachable_goals(
+    document: &SceneDocument,
+    solids: &[(
+        &SceneEntity,
+        crate::runtime::ColliderShape,
+        nalgebra::Matrix4<f32>,
+    )],
+    named_in_code: &BTreeSet<String>,
+    world_matrix: &dyn Fn(&SceneEntity) -> nalgebra::Matrix4<f32>,
+    is_ancestor: &dyn Fn(uuid::Uuid, &SceneEntity) -> bool,
+    inside: &InsideTest,
+) -> Vec<(usize, String)> {
+    use crate::runtime::{
+        ColliderShape, PlayerController, RigidBodyKind, DEFAULT_PLAYER_SHAPE,
+        PLAYER_CONTROLLER_COMPONENT,
+    };
+    let Some(player) = document
+        .entities
+        .iter()
+        .find(|e| e.components.contains_key(PLAYER_CONTROLLER_COMPONENT))
+    else {
+        return Vec::new();
+    };
+    let controller: PlayerController =
+        serde_json::from_str(&player.components[PLAYER_CONTROLLER_COMPONENT])
+            .unwrap_or_default();
+    let matrix = world_matrix(player);
+    let half = match player
+        .collider
+        .as_ref()
+        .map_or(DEFAULT_PLAYER_SHAPE, |c| c.shape)
+    {
+        ColliderShape::Capsule {
+            half_height,
+            radius,
+        } => half_height + radius,
+        ColliderShape::Box { half_extents } => half_extents[1],
+        ColliderShape::Sphere { radius } => radius,
+        _ => 0.9,
+    } * matrix.fixed_view::<3, 1>(0, 1).norm();
+    let centre = matrix.column(3).xyz();
+    let feet = centre.y - half;
+    let apex = if controller.gravity > 0.0 {
+        controller.jump_speed.powi(2) / (2.0 * controller.gravity)
+    } else {
+        0.0
+    };
+    // The part of the body a wall must cover to stop the player.
+    let band = [
+        feet + controller.max_step_height.max(apex) + 0.01,
+        feet + 2.0 * half,
+    ];
+    if band[0] >= band[1] {
+        return Vec::new();
+    }
+    // World bounds of every fixed solid that reaches into the band.
+    let walls: Vec<_> = solids
+        .iter()
+        .filter(|(entity, ..)| {
+            entity.id != player.id
+                && !is_ancestor(entity.id, player)
+                && entity
+                    .name
+                    .as_ref()
+                    .is_none_or(|name| !named_in_code.contains(name))
+                && entity
+                    .rigid_body
+                    .as_ref()
+                    .is_none_or(|body| body.kind == RigidBodyKind::Fixed)
+        })
+        .filter_map(|(entity, shape, inverse)| {
+            let extent = match shape {
+                ColliderShape::Box { half_extents } => *half_extents,
+                ColliderShape::Sphere { radius } => [*radius; 3],
+                ColliderShape::Capsule {
+                    half_height,
+                    radius,
+                } => [*radius, half_height + radius, *radius],
+                _ => return None,
+            };
+            let to_world = world_matrix(entity);
+            let mut low = [f32::INFINITY; 3];
+            let mut high = [f32::NEG_INFINITY; 3];
+            for corner in 0..8 {
+                let local = nalgebra::Vector4::new(
+                    if corner & 1 == 0 {
+                        -extent[0]
+                    } else {
+                        extent[0]
+                    },
+                    if corner & 2 == 0 {
+                        -extent[1]
+                    } else {
+                        extent[1]
+                    },
+                    if corner & 4 == 0 {
+                        -extent[2]
+                    } else {
+                        extent[2]
+                    },
+                    1.0,
+                );
+                let at = to_world * local;
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(at[axis]);
+                    high[axis] = high[axis].max(at[axis]);
+                }
+            }
+            (low[1] < band[1] && high[1] > band[0])
+                .then_some((shape, inverse, low, high))
+        })
+        .collect();
+    let goals: Vec<_> = document
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| {
+            e.collider.as_ref().is_some_and(|c| c.sensor)
+                && e.id != player.id
+                && !is_ancestor(player.id, e)
+                && !is_ancestor(e.id, player)
+        })
+        .map(|(index, e)| (index, world_matrix(e).column(3).xyz()))
+        .filter(|(_, at)| (feet - 0.5..=band[1] + 0.5).contains(&at.y))
+        .collect();
+    if walls.is_empty() || goals.is_empty() {
+        return Vec::new();
+    }
+    let mut low = [centre.x, centre.z];
+    let mut high = low;
+    for (.., wall_low, wall_high) in &walls {
+        for (axis, world) in [(0, 0), (1, 2)] {
+            low[axis] = low[axis].min(wall_low[world]);
+            high[axis] = high[axis].max(wall_high[world]);
+        }
+    }
+    // One open cell of margin all round, so the outside connects.
+    let cell = ((high[0] - low[0]).max(high[1] - low[1]) / 1024.0).max(0.25);
+    let low = [low[0] - cell, low[1] - cell];
+    let size = [
+        ((high[0] - low[0]) / cell) as usize + 2,
+        ((high[1] - low[1]) / cell) as usize + 2,
+    ];
+    let index_of = |x: f32, z: f32| {
+        let column = ((x - low[0]) / cell) as usize;
+        let row = ((z - low[1]) / cell) as usize;
+        (column < size[0] && row < size[1]).then_some(row * size[0] + column)
+    };
+    let heights: Vec<f32> = {
+        let steps = ((band[1] - band[0]) / 0.25).ceil().max(1.0) as usize;
+        (0..=steps)
+            .map(|step| {
+                band[0] + (band[1] - band[0]) * step as f32 / steps as f32
+            })
+            .collect()
+    };
+    let mut blocked = vec![false; size[0] * size[1]];
+    for (shape, inverse, wall_low, wall_high) in &walls {
+        let first = [
+            ((wall_low[0] - low[0]) / cell).floor().max(0.0) as usize,
+            ((wall_low[2] - low[1]) / cell).floor().max(0.0) as usize,
+        ];
+        let last = [
+            (((wall_high[0] - low[0]) / cell) as usize).min(size[0] - 1),
+            (((wall_high[2] - low[1]) / cell) as usize).min(size[1] - 1),
+        ];
+        for row in first[1]..=last[1] {
+            for column in first[0]..=last[0] {
+                let x = low[0] + (column as f32 + 0.5) * cell;
+                let z = low[1] + (row as f32 + 0.5) * cell;
+                let cell_blocked = &mut blocked[row * size[0] + column];
+                if !*cell_blocked {
+                    *cell_blocked = heights.iter().any(|y| {
+                        inside(
+                            shape,
+                            inverse,
+                            nalgebra::Vector4::new(x, *y, z, 1.0),
+                        )
+                    });
+                }
+            }
+        }
+    }
+    let Some(start) = index_of(centre.x, centre.z).filter(|at| !blocked[*at])
+    else {
+        return Vec::new();
+    };
+    let mut reached = vec![false; blocked.len()];
+    reached[start] = true;
+    let mut queue = std::collections::VecDeque::from([start]);
+    while let Some(at) = queue.pop_front() {
+        let (column, row) = (at % size[0], at / size[0]);
+        let neighbours = [
+            (column > 0).then(|| at - 1),
+            (column + 1 < size[0]).then(|| at + 1),
+            (row > 0).then(|| at - size[0]),
+            (row + 1 < size[1]).then(|| at + size[0]),
+        ];
+        for next in neighbours.into_iter().flatten() {
+            if !blocked[next] && !reached[next] {
+                reached[next] = true;
+                queue.push_back(next);
+            }
+        }
+    }
+    let name = player
+        .name
+        .clone()
+        .unwrap_or_else(|| "unnamed entity".into());
+    goals
+        .into_iter()
+        .filter(|(_, at)| {
+            index_of(at.x, at.z)
+                .is_some_and(|cell| !blocked[cell] && !reached[cell])
+        })
+        .map(|(index, _)| (index, name.clone()))
+        .collect()
 }
 
 /// Applies every certain fix `validate` finds to the main scene. Each fix
@@ -5531,7 +5820,7 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         let document =
             crate::runtime::parse_scene_document(scene.to_string().as_bytes())
                 .unwrap();
-        let found: Vec<_> = lint_scene(&document)
+        let found: Vec<_> = lint_scene(&document, &BTreeSet::new())
             .into_iter()
             .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
             .collect();
@@ -5574,11 +5863,82 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         let document =
             crate::runtime::parse_scene_document(scene.to_string().as_bytes())
                 .unwrap();
-        let found: Vec<_> = lint_scene(&document)
+        let found: Vec<_> = lint_scene(&document, &BTreeSet::new())
             .into_iter()
             .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
             .collect();
         assert_eq!(found, [("LINT_LIGHT_BUDGET", "Spot".to_owned())]);
+    }
+
+    #[test]
+    fn lint_flags_goals_walled_off_from_the_player() {
+        let mut next = 0u8;
+        let mut id = || {
+            next += 1;
+            format!("00000000-0000-0000-0000-0000000000{next:02}")
+        };
+        let at = |x: f32, y: f32, z: f32| json!({"position": [x, y, z], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]});
+        let solid = |half: [f32; 3]| {
+            json!({"shape": {"Box": {"half_extents": half}}, "friction": 0.5,
+                "restitution": 0.0, "sensor": false})
+        };
+        let coin = json!({"shape": {"Sphere": {"radius": 0.3}}, "friction": 0.5,
+            "restitution": 0.0, "sensor": true});
+        let mut entities = vec![
+            json!({"id": id(), "name": "Player", "transform": at(0.0, 0.9, 0.0),
+            "components": {"rusting.player_controller": "{}"}}),
+        ];
+        // Four walls of a 4 m room around (x, 0), `height` m tall; the first
+        // wall is called `first`.
+        let mut room = |x: f32, height: f32, first: &str| {
+            let walls = [
+                (x - 2.1, 0.0, [0.1, height / 2.0, 2.2]),
+                (x + 2.1, 0.0, [0.1, height / 2.0, 2.2]),
+                (x, -2.1, [2.2, height / 2.0, 0.1]),
+                (x, 2.1, [2.2, height / 2.0, 0.1]),
+            ];
+            for (n, (wx, wz, half)) in walls.into_iter().enumerate() {
+                let name = if n == 0 {
+                    first.to_owned()
+                } else {
+                    format!("Wall {x} {n}")
+                };
+                entities.push(json!({"id": id(), "name": name,
+                    "transform": at(wx, height / 2.0, wz), "collider": solid(half)}));
+            }
+        };
+        room(8.0, 3.0, "Wall");
+        room(16.0, 3.0, "Door");
+        room(24.0, 1.0, "Low Wall");
+        for (name, x, y) in [
+            ("Locked Coin", 8.0, 1.0),
+            ("High Coin", 8.0, 6.0),
+            ("Door Coin", 16.0, 1.0),
+            ("Ledge Coin", 24.0, 1.0),
+            ("Free Coin", -3.0, 1.0),
+        ] {
+            entities.push(
+                json!({"id": id(), "name": name, "transform": at(x, y, 0.0),
+                "collider": coin}),
+            );
+        }
+        let scene =
+            json!({"format_version": 7, "name": "Rooms", "entities": entities});
+        let document =
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap();
+        let found: Vec<_> =
+            lint_scene(&document, &BTreeSet::from(["Door".to_owned()]))
+                .into_iter()
+                .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
+                .collect();
+        assert_eq!(
+            found,
+            [("LINT_GOAL_UNREACHABLE", "Locked Coin".to_owned())],
+            "the 3 m room is closed; a door named in code, a 1 m wall the player jumps, a coin above the floor and an open coin pass"
+        );
+        let doors_closed = lint_scene(&document, &BTreeSet::new());
+        assert_eq!(doors_closed.len(), 2);
     }
 
     #[test]

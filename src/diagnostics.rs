@@ -271,6 +271,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_GOAL_UNREACHABLE",
+        "A sensor collider (a pickup, goal or trigger) at the player's height cannot be reached on foot from the player's start: fixed walls, or ledges higher than the player can step or jump, close off every route on that floor.",
+        "Open a gap in the walls, lower a ledge, or move the sensor. Walls whose names appear as strings in game code count as doors and do not block; a door reached another way (a parent's name, a name built at run time) still does.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_LIGHT_BUDGET",
         "More lights are visible than the quality profile uploads (Eco 16, Balanced 32, High and Auto 64). The renderer takes visible directional, then point, then spot lights in scene order and drops the rest without lighting anything.",
         "Hide lights that are not needed yet with `visible: false` (hidden lights are not uploaded), remove lights, or raise `render.quality`.",
