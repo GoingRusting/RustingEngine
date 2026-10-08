@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Scenario `explore.goals` takes `[x, y, z]` points, so a list of points walks a scripted route (surveyor F17).
 - `scene.set_text_in_font` and `text_texture_in_font` draw text in a TTF or OTF font from the game (unclaimed F11).
 - `scene.seed()` reads the run seed (unclaimed F5).
 - `perf.render.lights` counts the lights a frame uploaded and `budgets.max_lights` limits it (unclaimed F6).
@@ -178,6 +179,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `Explore::goals` is `Vec<ExploreGoal>`. Migration: `"Coin".into()` still builds a name goal; match `ExploreGoal::Entity(name)` where the code read the string.
 - A scenario `set` of `/transform/rotation` on an entity with a player controller sets its `yaw` and `pitch`; before, the controller overwrote it on the next tick (unclaimed F9).
 - `resource_state_hash` takes `&mut World` instead of `&World`; pass the world mutably.
 

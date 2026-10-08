@@ -660,13 +660,44 @@ impl Fuzz {
 /// A scenario's explorer bot, see [`Scenario::explore`].
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Explore {
-    /// Entity names or IDs to reach, in order. Empty means every sensor
-    /// collider, nearest first.
+    /// Entity names or IDs, or `[x, y, z]` points, to reach in order, so a
+    /// list of points walks a route. Empty means every sensor collider,
+    /// nearest first.
     #[serde(default)]
-    pub goals: Vec<String>,
+    pub goals: Vec<ExploreGoal>,
     /// Ticks to spend on one goal before calling it unreachable.
     #[serde(default = "default_goal_ticks")]
     pub ticks_per_goal: u32,
+}
+
+/// One goal of [`Explore`]: an entity by name or ID, or a world point.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum ExploreGoal {
+    Entity(String),
+    Point([f32; 3]),
+}
+
+impl From<&str> for ExploreGoal {
+    fn from(name: &str) -> Self {
+        Self::Entity(name.to_owned())
+    }
+}
+
+/// Where an explorer goal is: a live entity or a fixed point.
+#[derive(Clone, Copy)]
+enum GoalSpot {
+    Entity(Entity),
+    Point([f32; 3]),
+}
+
+impl GoalSpot {
+    fn at(self, world: &World) -> Option<[f32; 3]> {
+        match self {
+            Self::Entity(entity) => position(world, entity),
+            Self::Point(point) => Some(point),
+        }
+    }
 }
 
 fn default_goal_ticks() -> u32 {
@@ -682,7 +713,7 @@ const EXPLORE_STUCK_TICKS: u32 = 30;
 struct Explorer {
     settings: Explore,
     /// Goals not yet tried; the first is the current one.
-    pending: Vec<(Entity, String)>,
+    pending: Vec<(GoalSpot, String)>,
     /// Set when the goal order was not given and the nearest goal must be
     /// picked again.
     resort: bool,
@@ -703,9 +734,18 @@ impl Explorer {
     fn new(world: &mut World, settings: &Explore) -> Result<Self, String> {
         let mut pending = Vec::new();
         for goal in &settings.goals {
-            let entity = find_entity(world, goal, |_, _| true)
-                .ok_or_else(|| format!("explore: no entity `{goal}`"))?;
-            pending.push((entity, goal.clone()));
+            pending.push(match goal {
+                ExploreGoal::Entity(name) => {
+                    let entity = find_entity(world, name, |_, _| true)
+                        .ok_or_else(|| {
+                            format!("explore: no entity `{name}`")
+                        })?;
+                    (GoalSpot::Entity(entity), name.clone())
+                }
+                ExploreGoal::Point(point) => {
+                    (GoalSpot::Point(*point), format!("{point:?}"))
+                }
+            });
         }
         let resort = pending.is_empty();
         if resort {
@@ -733,7 +773,7 @@ impl Explorer {
             sensors.sort();
             pending = sensors
                 .into_iter()
-                .map(|(_, e, label)| (e, label))
+                .map(|(_, e, label)| (GoalSpot::Entity(e), label))
                 .collect();
         }
         Ok(Self {
@@ -771,8 +811,8 @@ impl Explorer {
                 self.resort = false;
                 // A stable sort keeps scene-ID order between equal distances.
                 self.pending.sort_by(|a, b| {
-                    let distance = |entity| {
-                        position(world, entity).map_or(f32::MAX, |p| {
+                    let distance = |spot: GoalSpot| {
+                        spot.at(world).map_or(f32::MAX, |p| {
                             (p[0] - at[0]).hypot(p[2] - at[2])
                         })
                     };
@@ -782,7 +822,7 @@ impl Explorer {
             let Some(&(goal, ref name)) = self.pending.first() else {
                 break;
             };
-            let target = position(world, goal);
+            let target = goal.at(world);
             let reached = target.is_none_or(|target| {
                 (target[0] - at[0]).hypot(target[2] - at[2]) < EXPLORE_REACH
             });
@@ -4063,6 +4103,26 @@ mod tests {
         );
         let failure = report.first_failure.unwrap();
         assert_eq!(failure.message, "explore: could not reach `Caged`");
+        let mixed: Explore =
+            serde_json::from_value(json!({"goals": ["Coin", [1, 0, 2.5]]}))
+                .unwrap();
+        assert_eq!(
+            mixed.goals,
+            ["Coin".into(), ExploreGoal::Point([1.0, 0.0, 2.5])]
+        );
+        // A list of points walks a route in its order.
+        let route = [[2.0, 1.0, 2.0], [-3.0, 1.0, -1.0]];
+        scenario.explore = Some(Explore {
+            goals: route.map(ExploreGoal::Point).to_vec(),
+            ticks_per_goal: 400,
+        });
+        let report = run_scenario(&mut app, &scenario, Path::new("."));
+        let goals = report.explore["goals"].as_array().unwrap();
+        assert_eq!(goals.len(), 2, "{}", report.explore);
+        assert_eq!(goals[0]["name"], "[2.0, 1.0, 2.0]");
+        let ticks: Vec<_> =
+            goals.iter().map(|goal| goal["reached"].as_u64()).collect();
+        assert!(ticks[0].unwrap() < ticks[1].unwrap(), "{}", report.explore);
         // A named goal list is walked in its order.
         scenario.explore = Some(Explore {
             goals: vec!["Nowhere".into()],
