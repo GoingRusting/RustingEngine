@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus any `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
 - `rusting lint` warns `LINT_TEXT_OVERFLOW` when HUD text, measured in the HUD's font, runs past the edge of a 1280 x 720 view.
 - `rusting lint` warns `LINT_GOAL_UNREACHABLE` for a sensor (pickup, goal, trigger) at the player's height that no walk or jump from the player's start reaches past fixed walls. Walls named as strings in game code count as doors.
 - `rusting systems [root]` also lists the game code functions of a project (stage `Game`, with file and line) and the components each reads and writes, from bevy system parameters and `GameScene` calls, so `rusting systems --writes Health` answers for game components too.

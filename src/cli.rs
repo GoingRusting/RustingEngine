@@ -974,6 +974,69 @@ pub fn lease(
     }
 }
 
+/// Commands that write no file: the only ones `--read-only` lets run,
+/// besides any `--dry-run`. `inspect --tick`, `check`, `run` and `test`
+/// build the game into `target/` and `build/`, so they are not here.
+pub const READ_ONLY_COMMANDS: &[&[&str]] = &[
+    &["--version"],
+    &["-V"],
+    &["version"],
+    &["doctor"],
+    &["project", "inspect"],
+    &["project", "summary"],
+    &["impact"],
+    &["lease", "list"],
+    &["provenance"],
+    &["log"],
+    &["systems"],
+    &["docs"],
+    &["explain"],
+    &["schema"],
+    &["validate"],
+    &["lint"],
+    &["diff"],
+    &["scene", "inspect"],
+    &["scene", "map"],
+    &["scene", "query"],
+    &["asset", "list"],
+    &["preset", "list"],
+    &["effect", "list"],
+    &["recipe", "list"],
+];
+
+/// Environment variable that turns on read-only mode like `--read-only`.
+pub const READ_ONLY_ENV: &str = "RUSTING_READ_ONLY";
+
+/// `READ_ONLY` for a command that may write files, so read-only mode
+/// refuses it before it starts.
+pub fn read_only_refusal(command: &[&str]) -> Option<CliResult> {
+    let allowed = command.contains(&"--dry-run")
+        || READ_ONLY_COMMANDS
+            .iter()
+            .any(|words| command.starts_with(words));
+    (!allowed).then(|| {
+        let name = command
+            .iter()
+            .take_while(|word| !word.starts_with('-'))
+            .take(2)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        CliResult::failure(
+            "READ_ONLY",
+            format!(
+                "`{name}` can write files, and --read-only (or {READ_ONLY_ENV}) allows only commands that do not: {}, and any --dry-run",
+                READ_ONLY_COMMANDS
+                    .iter()
+                    .map(|words| words.join(" "))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            None,
+        )
+    })
+}
+
 /// Operations recorded in the project's journal, newest first, each with
 /// the files it changed and their content hashes before and after.
 pub fn journal_log(root: &Path) -> CliResult {

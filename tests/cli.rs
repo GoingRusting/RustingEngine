@@ -157,6 +157,65 @@ fn scene_patch_dry_runs_writes_and_reports_revision_conflicts() {
 }
 
 #[test]
+fn read_only_mode_runs_inspection_and_refuses_writes() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    let scene = root.join("scenes/main.rscene");
+    let path = scene.to_str().unwrap();
+    let (_, queried) = run(&["scene", "query", path, "--read-only"]);
+    let id = queried["data"]["entities"][0]["id"].as_str().unwrap();
+    let patch_path = parent.join("patch.json");
+    let patch = serde_json::json!({"operations": [
+        {"op": "set", "id": id, "path": "/name", "value": "Patched"}]});
+    std::fs::write(&patch_path, patch.to_string()).unwrap();
+    let patch_arg = patch_path.to_str().unwrap();
+    let original = std::fs::read(&scene).unwrap();
+    let code = std::fs::read(root.join("src/main.rs")).unwrap();
+
+    let (output, dry) = run(&[
+        "scene",
+        "patch",
+        path,
+        patch_arg,
+        "--dry-run",
+        "--read-only",
+    ]);
+    assert!(output.status.success(), "{dry}");
+    let (output, linted) =
+        run(&["lint", root.to_str().unwrap(), "--read-only"]);
+    assert!(output.status.success(), "{linted}");
+
+    let (output, refused) =
+        run(&["scene", "patch", path, patch_arg, "--read-only"]);
+    assert_eq!(output.status.code(), Some(1), "{refused}");
+    assert_eq!(refused["diagnostics"][0]["code"], "READ_ONLY");
+    let (output, refused) = run(&[
+        "add",
+        "system",
+        root.to_str().unwrap(),
+        "spin",
+        "--read-only",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{refused}");
+    assert_eq!(refused["diagnostics"][0]["code"], "READ_ONLY");
+
+    // RUSTING_READ_ONLY sets the mode for a session; 0 leaves it off.
+    let with_env = |value: &str| {
+        Command::new(env!("CARGO_BIN_EXE_rusting"))
+            .args(["scene", "patch", path, patch_arg, "--json"])
+            .env("RUSTING_READ_ONLY", value)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(with_env("1").status.code(), Some(1));
+    assert_eq!(std::fs::read(&scene).unwrap(), original);
+    assert_eq!(std::fs::read(root.join("src/main.rs")).unwrap(), code);
+    assert!(with_env("0").status.success());
+    assert_ne!(std::fs::read(&scene).unwrap(), original);
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
 fn malformed_and_missing_inputs_have_json_diagnostics_and_nonzero_exit() {
     let parent = temporary_parent();
     let root = generated_project(&parent);

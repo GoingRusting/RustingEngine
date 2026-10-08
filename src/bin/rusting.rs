@@ -147,10 +147,19 @@ fn execute(args: &[String]) -> CliResult {
     let _operation = rusting_engine::runtime::journal::begin(&args.join(" "));
     let positional = default_root(
         args.iter()
-            .filter(|arg| arg.as_str() != "--json")
+            .filter(|arg| !matches!(arg.as_str(), "--json" | "--read-only"))
             .map(String::as_str)
             .collect(),
     );
+    let read_only = args.iter().any(|arg| arg == "--read-only")
+        || std::env::var(cli::READ_ONLY_ENV)
+            .is_ok_and(|value| !value.is_empty() && value != "0");
+    if read_only {
+        if let Some(refusal) = cli::read_only_refusal(&positional) {
+            return refusal;
+        }
+        rusting_engine::runtime::lease::set_read_only();
+    }
     match positional.as_slice() {
         ["--version" | "-V" | "version"] => cli::CliResult::success(
             serde_json::json!({"engine_version": env!("CARGO_PKG_VERSION")}),

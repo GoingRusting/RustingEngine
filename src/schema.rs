@@ -1445,6 +1445,11 @@ pub fn catalog() -> Value {
         "catalog_version": SCHEMA_CATALOG_VERSION,
         "engine_version": env!("CARGO_PKG_VERSION"),
         "scene_format_version": SCENE_FORMAT_VERSION,
+        "read_only": {
+            "summary": "Any command takes --read-only, and RUSTING_READ_ONLY=1 sets it for a whole session. Only these commands run then, and any with --dry-run; others fail with READ_ONLY before they start, and a file write fails the same way.",
+            "commands": crate::cli::READ_ONLY_COMMANDS.iter()
+                .map(|words| words.join(" ")).collect::<Vec<_>>(),
+        },
         "operations": OPERATIONS.iter().map(|operation| json!({
             "name": operation.name,
             "usage": format!("rusting {}", operation.usage),

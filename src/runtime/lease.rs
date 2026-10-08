@@ -96,8 +96,24 @@ fn held_error(lease: &Lease) -> std::io::Error {
     )
 }
 
-/// Refuses a write to `path` that another agent's lease covers.
+static READ_ONLY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Refuses every later write through [`super::write_atomic`] in this
+/// process, behind `rusting --read-only`.
+pub fn set_read_only() {
+    READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Refuses a write to `path` that another agent's lease covers, or any
+/// write in read-only mode.
 pub fn check_write(path: &Path) -> std::io::Result<()> {
+    if READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("read-only mode refuses to write `{}`", path.display()),
+        ));
+    }
     let Some((root, relative)) = locate(path) else {
         return Ok(());
     };

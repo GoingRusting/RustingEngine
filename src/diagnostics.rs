@@ -397,6 +397,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting doctor",
     ),
     code(
+        "READ_ONLY",
+        "Read-only mode (--read-only or RUSTING_READ_ONLY) refused a command or a file write. Only commands that write no file run: inspection, lint, validate, docs, schema, diff, log, provenance, list commands and any --dry-run.",
+        "Run the command without --read-only and with RUSTING_READ_ONLY unset, or use its --dry-run form to see the change.",
+        "rusting lint --read-only --json",
+    ),
+    code(
         "RECIPE_NEEDS_CONTROLLER",
         "The recipe changes the player's controller, and `Player` has no `rusting.player_controller` or `rusting.platformer_controller` it can use.",
         "Give `Player` one of those controllers with a jump speed and gravity above 0, or start from a player template.",
