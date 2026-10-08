@@ -752,6 +752,55 @@ pub fn lease(
     }
 }
 
+/// Operations recorded in the project's journal, newest first, each with
+/// the files it changed and their content hashes before and after.
+pub fn journal_log(root: &Path) -> CliResult {
+    let mut operations: Vec<Value> = Vec::new();
+    for entry in crate::runtime::journal::entries(root) {
+        let change = json!({"file": entry.file, "before": entry.before, "after": entry.after});
+        match operations
+            .iter_mut()
+            .find(|op| op["op"] == entry.op.as_str())
+        {
+            Some(op) => op["files"].as_array_mut().unwrap().push(change),
+            None => operations.push(json!({
+                "op": entry.op,
+                "time": entry.time,
+                "tool": entry.tool,
+                "command": entry.command,
+                "files": [change],
+            })),
+        }
+    }
+    operations.reverse();
+    CliResult::success(json!({ "journal": operations }))
+}
+
+/// Undoes one journaled operation; see [`crate::runtime::journal::revert`].
+pub fn revert(root: &Path, op: &str) -> CliResult {
+    use crate::runtime::journal::RevertError;
+    match crate::runtime::journal::revert(root, op) {
+        Ok(files) => CliResult::success(json!({ "reverted": op, "files": files })),
+        Err(RevertError::UnknownOperation(op)) => CliResult::failure(
+            "JOURNAL_UNKNOWN_OP",
+            format!("no operation `{op}` in the journal; `rusting log` lists them"),
+            None,
+        ),
+        Err(RevertError::Changed { file, by }) => CliResult::failure(
+            "REVERT_CONFLICT",
+            match by {
+                Some(by) => format!("`{file}` was changed again by operation `{by}`; revert that one first"),
+                None => format!("`{file}` was changed outside the journal since"),
+            },
+            Some(root.join(file)),
+        ),
+        Err(RevertError::Io(error)) if error.kind() == std::io::ErrorKind::ResourceBusy => {
+            CliResult::failure("LEASE_HELD", error.to_string(), None)
+        }
+        Err(RevertError::Io(error)) => CliResult::failure("IO_ERROR", error.to_string(), None),
+    }
+}
+
 /// Live leases of the project at `root`.
 pub fn lease_list(root: &Path) -> CliResult {
     CliResult::success(json!({ "leases": crate::runtime::lease::leases(root) }))
@@ -2021,7 +2070,12 @@ pub fn fix_project(root: &Path, dry_run: bool) -> CliResult {
         let path = root.join("AGENTS.md");
         if !dry_run {
             let refreshed = std::fs::copy(&path, root.join("AGENTS.md.old"))
-                .and_then(|_| std::fs::write(&path, PROJECT_AGENTS));
+                .and_then(|_| {
+                    crate::runtime::write_atomic(
+                        &path,
+                        PROJECT_AGENTS.as_bytes(),
+                    )
+                });
             if let Err(error) = refreshed {
                 return CliResult::failure(
                     "IO_ERROR",
@@ -2623,12 +2677,14 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
         let written = source
             .iter()
             .zip(recipe.source)
-            .try_for_each(|(path, text)| std::fs::write(path, text))
+            .try_for_each(|(path, text)| {
+                crate::runtime::write_atomic(path, text.as_bytes())
+            })
             .and_then(|()| {
                 std::fs::create_dir_all(project.root.join("tests"))?;
-                std::fs::write(
+                crate::runtime::write_atomic(
                     &scenario,
-                    serde_json::to_string_pretty(&test).unwrap(),
+                    serde_json::to_string_pretty(&test).unwrap().as_bytes(),
                 )
             });
         if let Err(error) = written {
@@ -2943,7 +2999,10 @@ fn scaffold_scenario(root: &Path, name: &str) -> Result<PathBuf, CliResult> {
         }}]
     });
     let written = std::fs::create_dir_all(root.join("tests")).and_then(|()| {
-        std::fs::write(&path, serde_json::to_string_pretty(&scenario).unwrap())
+        crate::runtime::write_atomic(
+            &path,
+            serde_json::to_string_pretty(&scenario).unwrap().as_bytes(),
+        )
     });
     match written {
         Ok(()) => Ok(path),
@@ -3015,7 +3074,9 @@ pub fn add_system(root: &Path, name: &str) -> CliResult {
     let stub = format!(
         "\n/// TODO: describe what `{name}` does each tick.\nfn {name}(_scene: &mut GameScene<'_>, _time: &FrameTime) {{\n    todo!(\"implement {name}\");\n}}\n"
     );
-    if let Err(error) = std::fs::write(&code_path, source + &stub) {
+    if let Err(error) =
+        crate::runtime::write_atomic(&code_path, (source + &stub).as_bytes())
+    {
         return CliResult::failure(
             "IO_ERROR",
             error.to_string(),
@@ -5347,6 +5408,43 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         let after = provenance(&root).data;
         assert_ne!(after["code_hash"], before["code_hash"]);
         assert_eq!(after["scene_hashes"], before["scene_hashes"]);
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn log_lists_operations_and_revert_undoes_one() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-journal-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        let original = std::fs::read(root.join("src/main.rs")).unwrap();
+        {
+            let _op = crate::runtime::journal::begin("add system . spin");
+            assert!(add_system(&root, "spin").ok);
+        }
+        let log = journal_log(&root).data;
+        let op = log["journal"][0]["op"].as_str().unwrap().to_owned();
+        assert_eq!(log["journal"][0]["command"], "add system . spin");
+        let files: Vec<_> = log["journal"][0]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["file"].as_str().unwrap())
+            .collect();
+        assert!(files.contains(&"src/main.rs"), "{files:?}");
+
+        assert_eq!(
+            revert(&root, "nope").diagnostics[0].code,
+            "JOURNAL_UNKNOWN_OP"
+        );
+        assert!(revert(&root, &op).ok);
+        assert_eq!(std::fs::read(root.join("src/main.rs")).unwrap(), original);
+        assert!(!root.join("tests/spin.json").exists());
+        assert_eq!(
+            journal_log(&root).data["journal"][0]["command"],
+            format!("revert {op}")
+        );
         std::fs::remove_dir_all(parent).unwrap();
     }
 

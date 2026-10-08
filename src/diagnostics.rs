@@ -235,6 +235,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting determinism --json",
     ),
     code(
+        "JOURNAL_UNKNOWN_OP",
+        "`rusting revert` was given an operation ID the project's journal does not have.",
+        "Run `rusting log` and copy the 8-character `op` of the operation to undo.",
+        "rusting revert 3fa2c1d9 --json",
+    ),
+    code(
         "LEASE_HELD",
         "Another agent leases this file or folder, so the claim or write was refused. The message names the holder and how long the lease has left.",
         "Wait for the holder to finish, or work on another file. The holder releases with `rusting lease release <path>`; an abandoned lease expires on its own.",
@@ -401,6 +407,12 @@ pub const CODES: &[CodeInfo] = &[
         "`scene retarget` could not find an object or clip, or the clip is a blend space.",
         "Check both object names and the clip name; retarget the point clips of a blend space one by one.",
         "rusting scene retarget scenes/main.rscene Mixamo walk Knight --dry-run",
+    ),
+    code(
+        "REVERT_CONFLICT",
+        "A file the operation changed was changed again later, so reverting it would lose that later change. Nothing was written.",
+        "Revert the later operation the message names first, or edit the file by hand.",
+        "rusting revert 3fa2c1d9 --json",
     ),
     code(
         "RUST_BUILD_ERROR",

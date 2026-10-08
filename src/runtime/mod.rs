@@ -20,6 +20,7 @@ pub(crate) mod hierarchy;
 mod hybrid_physics;
 mod ik;
 mod input;
+pub mod journal;
 pub mod lease;
 mod particles;
 mod physics_benchmark;

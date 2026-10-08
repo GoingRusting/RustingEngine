@@ -26,7 +26,7 @@ pub fn current_agent() -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs())
@@ -34,7 +34,7 @@ fn now() -> u64 {
 
 /// The project root holding `path` (the nearest folder with
 /// `project.json`) and `path` relative to it.
-fn locate(path: &Path) -> Option<(PathBuf, String)> {
+pub(crate) fn locate(path: &Path) -> Option<(PathBuf, String)> {
     let path = std::path::absolute(path).ok()?;
     let root = path
         .ancestors()

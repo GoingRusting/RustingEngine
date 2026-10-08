@@ -109,6 +109,8 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["impact"], 1),
         (&["lease", "list"], 0),
         (&["provenance"], 0),
+        (&["log"], 0),
+        (&["revert"], 1),
         (&["asset", "list"], 0),
         (&["test"], 1),
         (&["fuzz"], 1),
@@ -140,6 +142,8 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
 }
 
 fn execute(args: &[String]) -> CliResult {
+    // Files written by the command are one operation in the journal.
+    let _operation = rusting_engine::runtime::journal::begin(&args.join(" "));
     let positional = default_root(
         args.iter()
             .filter(|arg| arg.as_str() != "--json")
@@ -169,6 +173,8 @@ fn execute(args: &[String]) -> CliResult {
         ["impact", root, target] => cli::impact(Path::new(root), target),
         ["lease", "list", root] => cli::lease_list(Path::new(root)),
         ["provenance", root] => cli::provenance(Path::new(root)),
+        ["log", root] => cli::journal_log(Path::new(root)),
+        ["revert", root, op] => cli::revert(Path::new(root), op),
         ["lease", verb @ ("claim" | "release"), path, flags @ ..] => {
             let (mut holder, mut seconds) = (None, Some(LEASE_SECONDS));
             for pair in flags.chunks(2) {
@@ -881,6 +887,22 @@ fn render_human(result: &CliResult) -> String {
                 data["assets"].as_array().map_or(0, Vec::len),
                 data["scene_hashes"].as_array().map_or(0, Vec::len),
                 data["scenario_hashes"].as_array().map_or(0, Vec::len)
+            ));
+        }
+        for op in data["journal"].as_array().into_iter().flatten() {
+            let files: Vec<_> = op["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|file| file["file"].as_str())
+                .collect();
+            lines.push(format!(
+                "{} {} {}: rusting {} ({})",
+                op["op"].as_str().unwrap_or("?"),
+                op["time"],
+                op["tool"].as_str().unwrap_or("?"),
+                op["command"].as_str().unwrap_or("?"),
+                files.join(", ")
             ));
         }
         let one_lease = data.get("lease").into_iter();

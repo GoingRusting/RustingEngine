@@ -191,6 +191,22 @@ pub const OPERATIONS: &[Operation] = &[
         example: "provenance --json",
     },
     Operation {
+        name: "log",
+        usage: "log [project-root] [--json]",
+        summary: "The operation journal, newest first. Every command that writes a project file through rusting (scene and prefab edits, merges, fixes, recipes, add scenario, add system, AGENTS.md refresh) is one operation: an 8-character ID, the Unix time, the tool (RUSTING_AGENT, or rusting), the command line, and each file with its content hash before and after (null before means created, null after means deleted). Contents are kept in .rusting/blobs/<hash>, so `diff .rusting/blobs/<before> .rusting/blobs/<after>` shows a change. Imported asset files and editor saves are not journaled.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "log --json",
+    },
+    Operation {
+        name: "revert",
+        usage: "revert [project-root] <op> [--json]",
+        summary: "Undo one journaled operation by putting back every file it changed (deleting files it created). Refused with REVERT_CONFLICT, writing nothing, when one of those files changed since; the message names the later operation to revert first. The revert is itself an operation, so it can be reverted.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "revert 3fa2c1d9 --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",
