@@ -235,6 +235,18 @@ pub const CODES: &[CodeInfo] = &[
         "rusting determinism --json",
     ),
     code(
+        "LEASE_HELD",
+        "Another agent leases this file or folder, so the claim or write was refused. The message names the holder and how long the lease has left.",
+        "Wait for the holder to finish, or work on another file. The holder releases with `rusting lease release <path>`; an abandoned lease expires on its own.",
+        "rusting lease claim scenes/main.rscene --as builder --json",
+    ),
+    code(
+        "LEASE_IO",
+        "A lease claim or release could not read or write `.rusting/leases.json`, or the path is not inside a project.",
+        "Run it on a path inside a folder with `project.json`; if `.rusting/leases.lock` is left over from a killed process, delete it.",
+        "rusting lease claim scenes/main.rscene --as builder --json",
+    ),
+    code(
         "LINT_CAMERA_INSIDE",
         "A camera starts inside another entity's box, sphere or capsule collider (player bodies aside), so the first frame shows the inside of that geometry.",
         "Move the camera or its parent out of the collider, or make the collider a sensor if it is not solid.",

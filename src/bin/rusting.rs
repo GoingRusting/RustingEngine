@@ -47,6 +47,8 @@ const DOCS_SEARCH_LIMIT: usize = 10;
 /// Token budget `rusting docs` and `rusting project summary` use when
 /// `--budget` is left out.
 const DOCS_BUDGET: usize = 2000;
+/// How long `rusting lease claim` holds a path without `--for`.
+const LEASE_SECONDS: u64 = 1800;
 
 fn docs_command(args: &[&str]) -> CliResult {
     let mut words = Vec::new();
@@ -105,6 +107,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["project", "inspect"], 0),
         (&["project", "summary"], 0),
         (&["impact"], 1),
+        (&["lease", "list"], 0),
         (&["asset", "list"], 0),
         (&["test"], 1),
         (&["fuzz"], 1),
@@ -163,6 +166,27 @@ fn execute(args: &[String]) -> CliResult {
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
         ["impact", root, target] => cli::impact(Path::new(root), target),
+        ["lease", "list", root] => cli::lease_list(Path::new(root)),
+        ["lease", verb @ ("claim" | "release"), path, flags @ ..] => {
+            let (mut holder, mut seconds) = (None, Some(LEASE_SECONDS));
+            for pair in flags.chunks(2) {
+                match pair {
+                    ["--as", name] => holder = Some(*name),
+                    ["--for", value] if *verb == "claim" => {
+                        seconds = value.parse().ok().filter(|s| *s > 0);
+                    }
+                    _ => return usage("lease takes --as NAME and --for SECONDS"),
+                }
+            }
+            let action = match (*verb, seconds) {
+                ("release", _) => cli::LeaseAction::Release,
+                (_, Some(seconds)) => cli::LeaseAction::Claim(
+                    std::time::Duration::from_secs(seconds),
+                ),
+                (_, None) => return usage("--for takes seconds above 0"),
+            };
+            cli::lease(Path::new(path), holder, action)
+        }
         ["merge", base, ours, theirs] => cli::merge_scene(
             Path::new(base),
             Path::new(ours),
@@ -839,6 +863,17 @@ fn render_human(result: &CliResult) -> String {
         }
         for path in data["scenario_files"].as_array().into_iter().flatten() {
             lines.push(format!("Scenario {}", path.as_str().unwrap_or("?")));
+        }
+        let one_lease = data.get("lease").into_iter();
+        for lease in
+            one_lease.chain(data["leases"].as_array().into_iter().flatten())
+        {
+            lines.push(format!(
+                "Lease {} held by {} until {}",
+                lease["path"].as_str().unwrap_or("?"),
+                lease["holder"].as_str().unwrap_or("?"),
+                lease["expires"]
+            ));
         }
         if let Some(omitted) = data["omitted"].as_u64().filter(|n| *n > 0) {
             lines.push(format!(

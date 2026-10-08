@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lease claim|release|list`: scoped leases for parallel agents. A scene or prefab write to a path another agent leases fails with `LEASE_HELD` naming the holder; agents name themselves with `RUSTING_AGENT` or `--as`. New projects ignore `/.rusting`.
 - A test pins stable scene saves: entities sorted by ID, fields and components in a fixed order, so save-load-save is byte-identical and one edit changes one line.
 - `rusting merge <base> <ours> <theirs> [--output PATH]`: a three-way scene merge by entity ID and field, for use as a git merge driver. Conflicts are `SCENE_MERGE_CONFLICT` errors naming the entity and field. `rusting new` writes `.gitattributes` with `*.rscene merge=rusting-scene`; enable it with `git config merge.rusting-scene.driver "rusting merge %O %A %B"`.
 - `rusting impact <file-or-component>` lists the scenes, entities, code lines and scenarios a change to an asset, prefab or component would touch.

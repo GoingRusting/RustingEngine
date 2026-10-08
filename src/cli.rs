@@ -174,6 +174,11 @@ fn project_error(error: ProjectError, path: &Path) -> CliResult {
 
 fn scene_error(error: SceneIoError, path: &Path) -> CliResult {
     let code = match error {
+        SceneIoError::Io(ref error)
+            if error.kind() == std::io::ErrorKind::ResourceBusy =>
+        {
+            "LEASE_HELD"
+        }
         SceneIoError::Io(_) => "SCENE_IO",
         SceneIoError::Source(_) => "SCENE_JSON",
         SceneIoError::UnsupportedVersion(_) => "SCENE_VERSION",
@@ -702,6 +707,54 @@ fn entity_components(entity: &SceneEntity) -> BTreeSet<String> {
     }
     names.extend(entity.components.keys().cloned());
     names
+}
+
+/// What `rusting lease` does to a path.
+pub enum LeaseAction {
+    Claim(std::time::Duration),
+    Release,
+}
+
+/// Claims or releases a lease on `path` for `holder` (default
+/// `RUSTING_AGENT`). A lease held by someone else is `LEASE_HELD`.
+pub fn lease(
+    path: &Path,
+    holder: Option<&str>,
+    action: LeaseAction,
+) -> CliResult {
+    use crate::runtime::lease;
+    let Some(holder) = holder.map(str::to_owned).or_else(lease::current_agent)
+    else {
+        return CliResult::failure(
+            "CLI_USAGE",
+            format!("name the holder with --as NAME or {}", lease::AGENT_ENV),
+            None,
+        );
+    };
+    let done = match action {
+        LeaseAction::Claim(duration) => lease::claim(path, &holder, duration)
+            .map(|lease| json!({ "lease": lease })),
+        LeaseAction::Release => {
+            lease::release(path, &holder).map(|()| json!({ "released": path }))
+        }
+    };
+    match done {
+        Ok(data) => CliResult::success(data),
+        Err(error) => CliResult::failure(
+            if error.kind() == std::io::ErrorKind::ResourceBusy {
+                "LEASE_HELD"
+            } else {
+                "LEASE_IO"
+            },
+            error.to_string(),
+            Some(path.to_owned()),
+        ),
+    }
+}
+
+/// Live leases of the project at `root`.
+pub fn lease_list(root: &Path) -> CliResult {
+    CliResult::success(json!({ "leases": crate::runtime::lease::leases(root) }))
 }
 
 /// `rusting impact`: what a change to `target` touches. A target that is a
@@ -5148,6 +5201,34 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_leased_scene_refuses_writes_from_other_agents() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-lease-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        let scene = root.join("scenes/main.rscene");
+        let hour = LeaseAction::Claim(std::time::Duration::from_secs(3600));
+
+        assert!(lease(&scene, Some("alice"), hour).ok);
+        let taken = lease(
+            &root.join("scenes"),
+            Some("bob"),
+            LeaseAction::Claim(std::time::Duration::from_secs(60)),
+        );
+        assert_eq!(taken.diagnostics[0].code, "LEASE_HELD");
+        assert!(taken.diagnostics[0].message.contains("`alice`"));
+        assert_eq!(lease_list(&root).data["leases"][0]["holder"], "alice");
+        // This test process is not alice, so its write is refused.
+        let refused = merge_scene(&scene, &scene, &scene, &scene);
+        assert_eq!(refused.diagnostics[0].code, "LEASE_HELD");
+
+        assert!(lease(&scene, Some("alice"), LeaseAction::Release).ok);
+        assert!(merge_scene(&scene, &scene, &scene, &scene).ok);
+        std::fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

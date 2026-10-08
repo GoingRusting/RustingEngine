@@ -1977,8 +1977,17 @@ pub fn save_scene_variant(
 /// Writes through a synced temporary file and renames it over `path`, so a
 /// crash mid-write never leaves a truncated file behind. Each call has its
 /// own temporary name, so parallel runs that cook the same scene do not
-/// rename one another's file away.
+/// rename one another's file away. Refused while another agent leases
+/// `path` (see [`super::lease`]).
 pub fn write_atomic(
+    path: impl AsRef<Path>,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    super::lease::check_write(path.as_ref())?;
+    write_atomic_unchecked(path, bytes)
+}
+
+pub(crate) fn write_atomic_unchecked(
     path: impl AsRef<Path>,
     bytes: &[u8],
 ) -> std::io::Result<()> {
