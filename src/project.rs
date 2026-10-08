@@ -727,10 +727,7 @@ fn write_project_template(
         root.join("skills/rusting-game/SKILL.md"),
         include_str!("../skills/rusting-game/SKILL.md"),
     )?;
-    std::fs::write(
-        root.join(".gitignore"),
-        "/target\n/build\n/tests/shots\n/.rusting\n",
-    )?;
+    std::fs::write(root.join(".gitignore"), "/target\n/build\n/tests/shots\n")?;
     // Scene merges go through `rusting merge` once the driver is configured.
     std::fs::write(
         root.join(".gitattributes"),

@@ -49,6 +49,18 @@ pub(crate) fn locate(path: &Path) -> Option<(PathBuf, String)> {
     Some((root.to_owned(), relative))
 }
 
+/// Creates `<root>/.rusting/<sub>`. The folder ignores itself in git, so
+/// projects need no `.gitignore` entry for it.
+pub(crate) fn state_dir(root: &Path, sub: &str) -> std::io::Result<PathBuf> {
+    let dir = root.join(".rusting").join(sub);
+    std::fs::create_dir_all(&dir)?;
+    let ignore = root.join(".rusting/.gitignore");
+    if !ignore.is_file() {
+        std::fs::write(ignore, "*\n")?;
+    }
+    Ok(dir)
+}
+
 fn file(root: &Path) -> PathBuf {
     root.join(".rusting/leases.json")
 }
@@ -109,7 +121,7 @@ fn update<T>(
     root: &Path,
     change: impl FnOnce(&mut Vec<Lease>) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    std::fs::create_dir_all(root.join(".rusting"))?;
+    state_dir(root, "")?;
     let lock = root.join(".rusting/leases.lock");
     let mut tries = 0;
     // ponytail: a lock file left by a killed process blocks claims until it

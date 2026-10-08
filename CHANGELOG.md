@@ -8,7 +8,7 @@ Engine features for the horror game FOREVER BEAR.
 
 - Operation journal: each CLI or daemon command that writes project files is recorded in `.rusting/journal.jsonl`; `rusting log` lists operations and `rusting revert <op>` undoes one unless a later operation changed the same file (`REVERT_CONFLICT`). `add scenario`, `add system`, recipes and the AGENTS.md refresh now write atomically and respect leases.
 - `rusting provenance [root]`: a portable record of engine crates, a game-code hash, asset hashes with their `.rmeta` provenance, generator hooks, scene hashes, and scenario seeds and hashes.
-- `rusting lease claim|release|list`: scoped leases for parallel agents. A scene or prefab write to a path another agent leases fails with `LEASE_HELD` naming the holder; agents name themselves with `RUSTING_AGENT` or `--as`. New projects ignore `/.rusting`.
+- `rusting lease claim|release|list`: scoped leases for parallel agents. A scene or prefab write to a path another agent leases fails with `LEASE_HELD` naming the holder; agents name themselves with `RUSTING_AGENT` or `--as`.
 - A test pins stable scene saves: entities sorted by ID, fields and components in a fixed order, so save-load-save is byte-identical and one edit changes one line.
 - `rusting merge <base> <ours> <theirs> [--output PATH]`: a three-way scene merge by entity ID and field, for use as a git merge driver. Conflicts are `SCENE_MERGE_CONFLICT` errors naming the entity and field. `rusting new` writes `.gitattributes` with `*.rscene merge=rusting-scene`; enable it with `git config merge.rusting-scene.driver "rusting merge %O %A %B"`.
 - `rusting impact <file-or-component>` lists the scenes, entities, code lines and scenarios a change to an asset, prefab or component would touch.
@@ -199,6 +199,7 @@ Engine features for the horror game FOREVER BEAR.
 - `Explore::goals` is `Vec<ExploreGoal>`. Migration: `"Coin".into()` still builds a name goal; match `ExploreGoal::Entity(name)` where the code read the string.
 - A scenario `set` of `/transform/rotation` on an entity with a player controller sets its `yaw` and `pitch`; before, the controller overwrote it on the next tick (unclaimed F9).
 - `resource_state_hash` takes `&mut World` instead of `&World`; pass the world mutably.
+- Commands that write project files now create `.rusting/` (operation journal, content blobs, leases) in the project. It holds its own `.gitignore`, so git ignores it with no project change.
 
 ### Performance
 

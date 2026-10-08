@@ -77,7 +77,7 @@ fn store(root: &Path, bytes: &[u8]) -> std::io::Result<String> {
     let hash = super::scene_revision(bytes);
     let path = blob(root, &hash);
     if !path.is_file() {
-        std::fs::create_dir_all(root.join(".rusting/blobs"))?;
+        super::lease::state_dir(root, "blobs")?;
         super::write_atomic_unchecked(&path, bytes)?;
     }
     Ok(hash)
@@ -158,6 +158,21 @@ pub fn revert(root: &Path, op: &str) -> Result<Vec<String>, RevertError> {
     // file -> (content before the operation, content after it)
     let mut files: Vec<(String, Option<String>, Option<String>)> = Vec::new();
     for entry in all.iter().filter(|entry| entry.op == op) {
+        // The journal is a plain file: never follow it out of the project.
+        let inside = Path::new(&entry.file)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+        let hash_ok = |hash: &Option<String>| {
+            hash.as_ref().is_none_or(|hash| {
+                !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        };
+        if !inside || !hash_ok(&entry.before) || !hash_ok(&entry.after) {
+            return Err(RevertError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("journal entry for `{}` is malformed", entry.file),
+            )));
+        }
         match files.iter_mut().find(|(file, ..)| *file == entry.file) {
             Some(change) => change.2.clone_from(&entry.after),
             None => files.push((
@@ -247,6 +262,16 @@ mod tests {
         assert_eq!(std::fs::read(&scene).unwrap(), b"two");
         assert!(!new.exists());
         assert_eq!(entries(&root).len(), 6);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".rusting/.gitignore")).unwrap(),
+            "*\n"
+        );
+        let mut journal = std::fs::OpenOptions::new()
+            .append(true)
+            .open(journal_file(&root))
+            .unwrap();
+        writeln!(journal, r#"{{"op":"evil","time":0,"tool":"x","command":"x","file":"../escape","before":null,"after":null}}"#).unwrap();
+        assert!(matches!(revert(&root, "evil"), Err(RevertError::Io(_))));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
