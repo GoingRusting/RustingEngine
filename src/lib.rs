@@ -42,8 +42,8 @@ pub use assets::{
     spawn_gltf_nodes, spawn_gltf_nodes_in_world, AlphaMode, AssetPlugin,
     AssetServer, DataAsset, Handle, ImportedGltfLight, ImportedGltfNode,
     ImportedGltfPrimitive, MaterialAsset, MaterialModel, MeshAsset,
-    PrimitiveShape, SceneAsset, TextureAsset, TextureFilter, TextureSampler,
-    TextureWrap,
+    PrimitiveShape, SceneAsset, TextureAsset, TextureColorSpace, TextureFilter,
+    TextureSampler, TextureWrap,
 };
 /// For game code that saves settings or state as JSON.
 pub use bevy_ecs;
@@ -85,6 +85,7 @@ pub mod prelude {
     pub use crate::rusting_game;
     pub use crate::{AlphaMode, MaterialAsset, MaterialModel};
     pub use crate::{AssetServer, Transform};
+    pub use crate::{TextureAsset, TextureColorSpace, TextureSampler};
     pub use bevy_ecs::entity::Entity;
     pub use bevy_ecs::world::World;
     // A game's own components need `#[derive(Component, Serialize,

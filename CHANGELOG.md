@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `scene.edit_texture(handle, |texture| ..)` draws into a created texture while the game runs; `TextureAsset`, `TextureColorSpace` and `TextureSampler` are in the prelude (surveyor F14).
 - `scene.spawn_copy_at_root(template, name, transform)` spawns a copy with no parent and a full transform (surveyor F4, F6).
 - `scene.set_player(name, |pc| ..)` edits a player controller's speeds and other settings from game code (surveyor F9, unclaimed F7).
 - `rusting test --json` reports `perf.entities_max`, the most live entities after any tick, and `budgets.max_entities` limits it (surveyor F8, F13).

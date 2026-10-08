@@ -2025,6 +2025,23 @@ impl GameScene<'_> {
             .insert(texture)
     }
 
+    /// Edits a texture from [`Self::create_texture`], to draw into it while
+    /// the game runs (paper, a map, a monitor). Changing its pixels, or its
+    /// size, uploads it again before the next frame. Returns false when the
+    /// handle is unknown.
+    pub fn edit_texture(
+        &mut self,
+        handle: crate::assets::Handle<crate::assets::TextureAsset>,
+        edit: impl FnOnce(&mut crate::assets::TextureAsset),
+    ) -> bool {
+        let mut assets = self.world.resource_mut::<AssetServer>();
+        let Some(texture) = assets.textures.get_mut(handle) else {
+            return false;
+        };
+        edit(texture);
+        true
+    }
+
     /// Draws `text` into a texture and shows it as the named object's base
     /// color map, for signs, labels, paper and monitor overlays. Lines split
     /// on `\n`. Returns the texture size in texels, so the mesh can be
@@ -5955,6 +5972,28 @@ mod tests {
         assert_eq!(scene.player("Player").unwrap().walk_speed, 9.5);
         assert!(!scene.set_player("Crate", |pc| pc.walk_speed = 1.0));
         assert!(!scene.set_player("Nobody", |pc| pc.walk_speed = 1.0));
+    }
+
+    #[test]
+    fn game_code_draws_into_a_texture_it_created() {
+        let mut world = World::new();
+        world.insert_resource(AssetServer::default());
+        let mut scene = GameScene { world: &mut world };
+        let paper = scene.create_texture(crate::assets::TextureAsset {
+            size: [1, 1],
+            rgba8: vec![255; 4],
+            color_space: crate::assets::TextureColorSpace::Srgb,
+            sampler: crate::assets::TextureSampler::default(),
+        });
+        let revision = |world: &World| {
+            world.resource::<AssetServer>().textures.revision(paper)
+        };
+        let before = revision(scene.world);
+        assert!(scene.edit_texture(paper, |texture| texture.rgba8[0] = 0));
+        // The renderer uploads a texture again when its revision moves.
+        assert!(revision(scene.world) > before);
+        let texture = scene.world.resource::<AssetServer>().textures.get(paper);
+        assert_eq!(texture.unwrap().rgba8[0], 0);
     }
 
     #[test]
