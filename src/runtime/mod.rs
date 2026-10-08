@@ -753,6 +753,86 @@ impl App {
             ScheduleStage::RenderExtract => &mut self.render_extract,
         }
     }
+
+    /// Which components and resources each ECS system reads and writes, by
+    /// stage, in the order the systems were added. Reading the access
+    /// initializes every system again, so this consumes the app.
+    #[must_use]
+    pub fn into_system_access(mut self) -> Vec<SystemAccess> {
+        use bevy_ecs::query::ComponentAccessKind;
+        use bevy_ecs::system::System;
+        let mut found = Vec::new();
+        for stage in [
+            ScheduleStage::Startup,
+            ScheduleStage::FixedUpdate,
+            ScheduleStage::Update,
+            ScheduleStage::PostUpdate,
+            ScheduleStage::RenderExtract,
+        ] {
+            let schedule = match stage {
+                ScheduleStage::Startup => &mut self.startup,
+                ScheduleStage::FixedUpdate => &mut self.fixed_update,
+                ScheduleStage::Update => &mut self.update,
+                ScheduleStage::PostUpdate => &mut self.post_update,
+                ScheduleStage::RenderExtract => &mut self.render_extract,
+            };
+            let systems = &mut schedule.graph_mut().systems;
+            let keys: Vec<_> = systems.iter().map(|(key, ..)| key).collect();
+            for key in keys {
+                let Some(system) = systems.get_mut(key) else {
+                    continue;
+                };
+                let access = system.initialize(&mut self.world);
+                let mut entry = SystemAccess {
+                    stage,
+                    name: system.name().shortname().to_string(),
+                    reads: Vec::new(),
+                    writes: Vec::new(),
+                    all: system.is_exclusive(),
+                };
+                match access.combined_access().try_iter_access() {
+                    Ok(kinds) => {
+                        let components = self.world.components();
+                        let name = |id| {
+                            components.get_name(id).map_or_else(
+                                || format!("{id:?}"),
+                                |name| name.shortname().to_string(),
+                            )
+                        };
+                        for kind in kinds {
+                            match kind {
+                                ComponentAccessKind::Shared(id) => {
+                                    entry.reads.push(name(id));
+                                }
+                                ComponentAccessKind::Exclusive(id) => {
+                                    entry.writes.push(name(id));
+                                }
+                                ComponentAccessKind::Archetypal(_) => {}
+                            }
+                        }
+                    }
+                    Err(_) => entry.all = true,
+                }
+                entry.reads.sort();
+                entry.writes.sort();
+                found.push(entry);
+            }
+        }
+        found
+    }
+}
+
+/// One ECS system's data access; see [`App::into_system_access`].
+#[derive(Debug, Clone)]
+pub struct SystemAccess {
+    pub stage: ScheduleStage,
+    pub name: String,
+    /// Components and resources read but not written.
+    pub reads: Vec<String>,
+    pub writes: Vec<String>,
+    /// The system takes the whole `World` (or unbounded access), so it may
+    /// read and write anything.
+    pub all: bool,
 }
 
 /// Fallible builder for the ECS runtime.

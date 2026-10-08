@@ -322,6 +322,42 @@ pub fn new_project(
     }
 }
 
+/// `rusting systems`: the engine's ECS systems with the components and
+/// resources each reads and writes. `reads` or `writes` keeps the systems
+/// that read or write that type name; systems with `all` access may touch
+/// anything, so they are always kept.
+pub fn system_access(reads: Option<&str>, writes: Option<&str>) -> CliResult {
+    use crate::runtime::{HybridPhysicsPlugin, RenderExtractPlugin};
+    use crate::{App, AssetPlugin};
+    let mut app = App::new();
+    app.add_plugin(AssetPlugin)
+        .and_then(|app| app.add_plugin(HybridPhysicsPlugin))
+        .and_then(|app| app.add_plugin(RenderExtractPlugin))
+        .expect("the engine plugins build on a new app");
+    let names = |list: &[String], wanted: Option<&str>| {
+        wanted.is_none_or(|wanted| list.iter().any(|name| name == wanted))
+    };
+    let systems: Vec<_> = app
+        .into_system_access()
+        .into_iter()
+        .filter(|system| {
+            system.all
+                || (names(&system.reads, reads) || names(&system.writes, reads))
+                    && names(&system.writes, writes)
+        })
+        .map(|system| {
+            json!({
+                "stage": format!("{:?}", system.stage),
+                "name": system.name,
+                "reads": system.reads,
+                "writes": system.writes,
+                "all": system.all,
+            })
+        })
+        .collect();
+    CliResult::success(json!({ "systems": systems }))
+}
+
 pub fn inspect_project(root: &Path) -> CliResult {
     match open_project(root) {
         Ok(project) => CliResult::success(project_data(&project)),
@@ -4922,6 +4958,31 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn systems_name_who_writes_a_component() {
+        let writers = system_access(None, Some("Transform"));
+        assert!(writers.ok);
+        let systems = writers.data["systems"].as_array().unwrap();
+        let named = |name: &str| systems.iter().find(|s| s["name"] == name);
+        let face = named("player_face").unwrap();
+        assert_eq!(face["stage"], "FixedUpdate");
+        assert!(face["writes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("Transform")));
+        assert!(face["reads"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("FrameTime")));
+        assert!(named("draw_hud").is_none());
+        assert_eq!(named("propagate_transforms").unwrap()["all"], true);
+        let all = system_access(None, None).data["systems"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert!(systems.len() < all);
     }
 
     #[test]

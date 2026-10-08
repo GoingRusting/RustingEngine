@@ -161,6 +161,9 @@ fn execute(args: &[String]) -> CliResult {
             }
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
+        ["systems"] => cli::system_access(None, None),
+        ["systems", "--reads", name] => cli::system_access(Some(name), None),
+        ["systems", "--writes", name] => cli::system_access(None, Some(name)),
         ["project", "summary", root] => {
             cli::project_summary(Path::new(root), DOCS_BUDGET)
         }
@@ -781,6 +784,22 @@ fn render_human(result: &CliResult) -> String {
             ));
         }
         for system in data["systems"].as_array().into_iter().flatten() {
+            if let Some(stage) = system["stage"].as_str() {
+                lines.push(if system["all"] == true {
+                    format!(
+                        "{stage} {}: whole World",
+                        system["name"].as_str().unwrap_or("?")
+                    )
+                } else {
+                    format!(
+                        "{stage} {}: reads {}; writes {}",
+                        system["name"].as_str().unwrap_or("?"),
+                        join(&system["reads"]),
+                        join(&system["writes"])
+                    )
+                });
+                continue;
+            }
             lines.push(format!(
                 "Code {}: {}; assets {}",
                 system["file"].as_str().unwrap_or("?"),

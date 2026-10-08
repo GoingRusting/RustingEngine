@@ -158,7 +158,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     code(
         "CODE_MISSING_ASSET",
-        "Game code names an asset path in `load_text` or `play_sound*` that is not a file under `assets/`.",
+        "Game code names an asset path in `load_text`, `play_sound*` or `spawn_prefab` that is not a file under `assets/`.",
         "Fix the path in the code (it is relative to `assets/`) or add the file.",
         "rusting validate --json",
     ),

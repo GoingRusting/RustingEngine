@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting systems [--reads TYPE | --writes TYPE]` lists the engine's ECS systems by stage with the components and resources each reads and writes, so an agent can ask who writes `Transform`. `App::into_system_access` returns the same data.
 - `rusting project summary [--budget N]`: a token-budgeted overview of a project's scenes and prefabs (entities, components, assets), game code files (functions taking `GameScene`, literal asset paths) and component use counts. `CODE_MISSING_ASSET` now also checks `spawn_prefab("...")` paths.
 - `scene.spawn_prefab(path, name, transform)` places a prefab scene file from game code in one call (surveyor F4).
 - `perf.stages_ms_mean` in scenario results and the `RUSTING_PERF` line split tick CPU time into `fixed`, `update`, `post_update` and `extract` (unclaimed F8).

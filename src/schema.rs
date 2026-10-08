@@ -135,6 +135,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "project summary my_game --budget 1000 --json",
     },
     Operation {
+        name: "systems",
+        usage: "systems [--reads TYPE | --writes TYPE] [--json]",
+        summary: "The engine's ECS systems by stage with the components and resources each reads and writes (short type names, such as Transform). --reads or --writes keeps the systems that touch that type; systems with `all: true` take the whole World, may touch anything, and are always kept. Game code runs inside one such system, so this lists engine systems only.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "systems --writes Transform --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",
