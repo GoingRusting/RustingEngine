@@ -29,6 +29,7 @@ pub mod reflect;
 pub mod rendering;
 pub mod runtime;
 pub mod scenario;
+pub mod scene_merge;
 pub mod scene_patch;
 pub mod schema;
 pub mod sfx;

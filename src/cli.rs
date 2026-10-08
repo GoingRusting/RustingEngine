@@ -358,6 +358,65 @@ pub fn system_access(reads: Option<&str>, writes: Option<&str>) -> CliResult {
     CliResult::success(json!({ "systems": systems }))
 }
 
+/// `rusting merge`: three-way merge of scene files by entity and field (see
+/// [`crate::scene_merge::merge_scenes`]), written to `output`. Each
+/// conflict is a `SCENE_MERGE_CONFLICT` error and keeps our value, so a git
+/// merge driver sees a failed merge.
+pub fn merge_scene(
+    base: &Path,
+    ours: &Path,
+    theirs: &Path,
+    output: &Path,
+) -> CliResult {
+    let mut sides = Vec::new();
+    for path in [base, ours, theirs] {
+        match read_scene(path).map(serde_json::to_value) {
+            Ok(Ok(value)) => sides.push(value),
+            Ok(Err(error)) => {
+                return CliResult::failure(
+                    "SCENE_JSON",
+                    error.to_string(),
+                    Some(path.to_owned()),
+                )
+            }
+            Err(result) => return result,
+        }
+    }
+    let (merged, conflicts) =
+        crate::scene_merge::merge_scenes(&sides[0], &sides[1], &sides[2]);
+    let written = serde_json::to_vec(&merged)
+        .map_err(SceneIoError::from)
+        .and_then(|bytes| crate::runtime::parse_scene_document(&bytes))
+        .and_then(|document| Ok(serde_json::to_vec_pretty(&document)?))
+        .and_then(|bytes| Ok(crate::runtime::write_atomic(output, &bytes)?));
+    if let Err(error) = written {
+        return scene_error(error, output);
+    }
+    CliResult {
+        schema_version: 1,
+        ok: conflicts.is_empty(),
+        data: json!({ "output": output, "conflicts": conflicts }),
+        diagnostics: conflicts
+            .iter()
+            .map(|conflict| Diagnostic {
+                code: "SCENE_MERGE_CONFLICT",
+                severity: "error",
+                message: format!(
+                    "both sides changed `{}` of {}; kept ours",
+                    conflict.field,
+                    match (&conflict.name, &conflict.entity) {
+                        (Some(name), _) => format!("`{name}`"),
+                        (None, Some(id)) => format!("entity {id}"),
+                        (None, None) => "the scene".to_owned(),
+                    }
+                ),
+                file: Some(output.to_owned()),
+                ..Diagnostic::default()
+            })
+            .collect(),
+    }
+}
+
 pub fn inspect_project(root: &Path) -> CliResult {
     match open_project(root) {
         Ok(project) => CliResult::success(project_data(&project)),
@@ -5089,6 +5148,45 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn merge_combines_scene_edits_and_names_real_conflicts() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-merge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        assert!(std::fs::read_to_string(root.join(".gitattributes"))
+            .unwrap()
+            .contains("merge=rusting-scene"));
+        let base = root.join("scenes/main.rscene");
+        let scene: Value =
+            serde_json::from_slice(&std::fs::read(&base).unwrap()).unwrap();
+        let side = |name: &str, entity: usize, new_name: &str| {
+            let mut scene = scene.clone();
+            scene["entities"][entity]["name"] = json!(new_name);
+            let path = parent.join(name);
+            std::fs::write(&path, serde_json::to_vec(&scene).unwrap()).unwrap();
+            path
+        };
+        let ours = side("ours.rscene", 0, "Ours");
+        let theirs = side("theirs.rscene", 1, "Theirs");
+        let output = parent.join("merged.rscene");
+
+        let clean = merge_scene(&base, &ours, &theirs, &output);
+        assert!(clean.ok, "{:?}", clean.diagnostics);
+        let merged: Value =
+            serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(merged["entities"][0]["name"], "Ours");
+        assert_eq!(merged["entities"][1]["name"], "Theirs");
+
+        let theirs = side("theirs.rscene", 0, "Theirs");
+        let conflict = merge_scene(&base, &ours, &theirs, &output);
+        assert!(!conflict.ok);
+        assert_eq!(conflict.diagnostics[0].code, "SCENE_MERGE_CONFLICT");
+        assert_eq!(conflict.data["conflicts"][0]["field"], "name");
+        std::fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

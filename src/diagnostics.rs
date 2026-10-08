@@ -451,6 +451,12 @@ pub const CODES: &[CodeInfo] = &[
         "git checkout -- scenes/main.rscene",
     ),
     code(
+        "SCENE_MERGE_CONFLICT",
+        "`rusting merge` found a field (or a whole entity) that both sides changed differently; the merged scene keeps our value.",
+        "Open the merged scene, set the field to the value you want, and finish the merge with `git add`.",
+        "rusting merge base.rscene ours.rscene theirs.rscene --json",
+    ),
+    code(
         "SCENE_MISSING_ASSET",
         "The scene references an asset file that does not exist.",
         "Import the asset, or patch the reference to an existing path; paths are relative to the scene file.",

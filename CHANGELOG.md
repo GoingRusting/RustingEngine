@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting merge <base> <ours> <theirs> [--output PATH]`: a three-way scene merge by entity ID and field, for use as a git merge driver. Conflicts are `SCENE_MERGE_CONFLICT` errors naming the entity and field. `rusting new` writes `.gitattributes` with `*.rscene merge=rusting-scene`; enable it with `git config merge.rusting-scene.driver "rusting merge %O %A %B"`.
 - `rusting impact <file-or-component>` lists the scenes, entities, code lines and scenarios a change to an asset, prefab or component would touch.
 - `rusting systems [--reads TYPE | --writes TYPE]` lists the engine's ECS systems by stage with the components and resources each reads and writes, so an agent can ask who writes `Transform`. `App::into_system_access` returns the same data.
 - `rusting project summary [--budget N]`: a token-budgeted overview of a project's scenes and prefabs (entities, components, assets), game code files (functions taking `GameScene`, literal asset paths) and component use counts. `CODE_MISSING_ASSET` now also checks `spawn_prefab("...")` paths.

@@ -151,6 +151,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "impact textures/crate.png --json",
     },
     Operation {
+        name: "merge",
+        usage: "merge <base> <ours> <theirs> [--output PATH] [--json]",
+        summary: "Three-way merge of a scene file by entity ID and field, for git. Each side is read and migrated; a change on one side wins; each components entry merges on its own; an entity one side deleted and the other changed is kept. A field both sides changed differently keeps ours and is a SCENE_MERGE_CONFLICT error naming the entity and field, so git marks the file conflicted. Writes the result to <ours> (git's %A) unless --output is given. Set it up with `*.rscene merge=rusting-scene` in .gitattributes and `git config merge.rusting-scene.driver \"rusting merge %O %A %B\"`.",
+        gpu: NO_GPU,
+        defaults: &[("output", "<ours>")],
+        example: "merge base.rscene scenes/main.rscene theirs.rscene --output merged.rscene --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",

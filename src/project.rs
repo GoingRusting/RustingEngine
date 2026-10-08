@@ -728,6 +728,11 @@ fn write_project_template(
         include_str!("../skills/rusting-game/SKILL.md"),
     )?;
     std::fs::write(root.join(".gitignore"), "/target\n/build\n/tests/shots\n")?;
+    // Scene merges go through `rusting merge` once the driver is configured.
+    std::fs::write(
+        root.join(".gitattributes"),
+        "*.rscene merge=rusting-scene\n",
+    )?;
     std::fs::write(
         root.join("scenes/main.rscene"),
         serde_json::to_vec_pretty(&match template {

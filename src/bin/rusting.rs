@@ -163,6 +163,18 @@ fn execute(args: &[String]) -> CliResult {
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
         ["impact", root, target] => cli::impact(Path::new(root), target),
+        ["merge", base, ours, theirs] => cli::merge_scene(
+            Path::new(base),
+            Path::new(ours),
+            Path::new(theirs),
+            Path::new(ours),
+        ),
+        ["merge", base, ours, theirs, "--output", output] => cli::merge_scene(
+            Path::new(base),
+            Path::new(ours),
+            Path::new(theirs),
+            Path::new(output),
+        ),
         ["systems"] => cli::system_access(None, None),
         ["systems", "--reads", name] => cli::system_access(Some(name), None),
         ["systems", "--writes", name] => cli::system_access(None, Some(name)),
