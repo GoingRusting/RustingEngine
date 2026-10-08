@@ -795,6 +795,17 @@ mod tests {
     }
 
     #[test]
+    fn the_headless_render_size_is_found_by_its_usual_names() {
+        for query in ["resolution", "render size", "1080p"] {
+            let (found, _) = search(query, 50);
+            assert!(
+                found.iter().any(|item| item["id"] == "guide/look-and-feel"),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
     fn the_lighting_guide_explains_brightness_and_direction() {
         for query in ["illuminance intensity", "spot light axis"] {
             let (found, _) = search(query, 50);

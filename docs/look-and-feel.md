@@ -310,6 +310,11 @@ per tick and reports `perf.render.gpu_ms_p50`, `gpu_ms_p95` and
 `gpu_ms_max` over those frames (`gpu_frames` counts them). These are GPU
 pass times only, without present or CPU work.
 
+`capture_size` is the render size (resolution) of every headless frame,
+captures and `perf.render` included: `[1920, 1080]` for 1080p, `[2560,
+1440]` for 1440p. It defaults to `[1280, 720]`. Windowed runs use the
+window's size.
+
 ## Free models
 
 A real model beats any pile of primitives. Many good game models are free
