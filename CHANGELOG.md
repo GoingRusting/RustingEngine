@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Transform propagation recomputes only the entities that moved and their children, so static props cost nothing per tick (unclaimed F8).
 - `scene.on_screen(point)` and `scene.raycast_visible` answer "is this in view and not behind a wall" without mirroring the camera in game code or hitting hidden templates (surveyor F18).
 - Scenario `explore.goals` takes `[x, y, z]` points, so a list of points walks a scripted route (surveyor F17).
 - `scene.set_text_in_font` and `text_texture_in_font` draw text in a TTF or OTF font from the game (unclaimed F11).

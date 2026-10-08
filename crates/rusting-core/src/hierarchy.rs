@@ -114,45 +114,67 @@ pub fn clear_parent(
 ///
 /// Returns early when no `Transform` or `Parent` changed since the last run
 /// and no entity lost one of them or `Children`. Removing or despawning such
-/// an entity lowers a count; adding one back is itself a change.
-// ponytail: any single moved object still rebuilds everything; walk only the
-// changed subtrees if many moving objects make this hot.
+/// an entity lowers a count; adding one back is itself a change. When only
+/// `Transform` values changed in a hierarchy without cycles or missing
+/// parents, only the moved entities and their descendants are rebuilt, with
+/// the same arithmetic as a full rebuild, so static scenery costs a scan and
+/// no matrix work.
+// ponytail: a Transform removed from one entity while another gains one in
+// the same tick keeps the counts and skips a full rebuild, so the first
+// entity's children keep their old globals until anything reparents.
 pub fn propagate_transforms(world: &mut World) {
     let this_run = world.increment_change_tick();
     let mut counts = [0; 3];
-    let mut changed = false;
+    let mut moved = Vec::new();
+    let mut reparented = false;
     let last_run = world
         .get_resource::<PropagationFingerprint>()
         .map(|fingerprint| fingerprint.last_run);
     let mut query = world.query_filtered::<(
+        Entity,
         Option<Ref<Transform>>,
         Option<Ref<Parent>>,
         Option<&Children>,
     ), Or<(With<Transform>, With<Parent>, With<Children>)>>(
     );
-    for (transform, parent, children) in query.iter(world) {
+    for (entity, transform, parent, children) in query.iter(world) {
         counts[0] += usize::from(transform.is_some());
         counts[1] += usize::from(parent.is_some());
         counts[2] += usize::from(children.is_some());
-        changed |= last_run.is_some_and(|last_run| {
-            transform.is_some_and(|value| {
+        if let Some(last_run) = last_run {
+            if transform.is_some_and(|value| {
                 value.last_changed().is_newer_than(last_run, this_run)
-            }) || parent.is_some_and(|value| {
+            }) {
+                moved.push(entity);
+            }
+            reparented |= parent.is_some_and(|value| {
                 value.last_changed().is_newer_than(last_run, this_run)
-            })
-        });
+            });
+        }
     }
-    let unchanged = world
-        .get_resource::<PropagationFingerprint>()
-        .is_some_and(|fingerprint| fingerprint.counts == counts)
-        && !changed
-        && world.contains_resource::<HierarchyDiagnostics>();
+    let same_shape = last_run.is_some()
+        && world
+            .get_resource::<PropagationFingerprint>()
+            .is_some_and(|fingerprint| fingerprint.counts == counts)
+        && !reparented;
+    let clean_hierarchy = world
+        .get_resource::<HierarchyDiagnostics>()
+        .is_some_and(|diagnostics| {
+            diagnostics.cycles.is_empty()
+                && diagnostics.missing_parents.is_empty()
+        });
     world.insert_resource(PropagationFingerprint {
         last_run: this_run,
         counts,
     });
-    if unchanged {
-        return;
+    if same_shape && world.contains_resource::<HierarchyDiagnostics>() {
+        if moved.is_empty() {
+            return;
+        }
+        if clean_hierarchy {
+            update_moved(world, &moved);
+            return;
+        }
     }
 
     if !world.contains_resource::<HierarchyDiagnostics>() {
@@ -214,6 +236,60 @@ pub fn propagate_transforms(world: &mut World) {
     let mut diagnostics = world.resource_mut::<HierarchyDiagnostics>();
     diagnostics.cycles = cycles;
     diagnostics.missing_parents = missing_parents;
+}
+
+/// Rebuilds the globals of `moved` entities and their descendants, parents
+/// first, from the stored globals of everything above them.
+fn update_moved(world: &mut World, moved: &[Entity]) {
+    let moved: HashSet<Entity> = moved.iter().copied().collect();
+    let mut affected = Vec::new();
+    let mut query = world.query_filtered::<Entity, With<Transform>>();
+    for entity in query.iter(world) {
+        let mut depth = 0_usize;
+        let mut hit = moved.contains(&entity);
+        let mut current = entity;
+        // A clean hierarchy has no cycles, so the walk ends.
+        while let Some(parent) = world.get::<Parent>(current) {
+            current = parent.0;
+            depth += 1;
+            hit |= moved.contains(&current);
+        }
+        if hit {
+            affected.push((depth, entity));
+        }
+    }
+    affected.sort_unstable();
+    for (_, entity) in affected {
+        let local = matrix_from_array(
+            world.get::<Transform>(entity).unwrap().to_matrix(),
+        );
+        let global = match world.get::<Parent>(entity) {
+            Some(parent) => world_of(world, parent.0) * local,
+            None => local,
+        };
+        let global = GlobalTransform {
+            matrix: global.into(),
+        };
+        if world.get::<GlobalTransform>(entity) != Some(&global) {
+            world.entity_mut(entity).insert(global);
+        }
+    }
+}
+
+/// The world matrix a full rebuild resolves for `entity`: its stored global,
+/// or for a transformless node its parent's times identity.
+fn world_of(world: &World, entity: Entity) -> Matrix4<f32> {
+    if world.get::<Transform>(entity).is_some() {
+        return world
+            .get::<GlobalTransform>(entity)
+            .map_or_else(Matrix4::identity, |global| {
+                matrix_from_array(global.matrix)
+            });
+    }
+    match world.get::<Parent>(entity) {
+        Some(parent) => world_of(world, parent.0) * Matrix4::identity(),
+        None => Matrix4::identity(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,6 +368,61 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(HierarchyDiagnostics::default());
         world
+    }
+
+    #[test]
+    fn moving_part_of_a_hierarchy_matches_a_full_rebuild_bit_for_bit() {
+        let mut world = world_with_diagnostics();
+        let mut entities = Vec::new();
+        let at = |i: usize| [i as f32 * 0.37, (i % 5) as f32, -(i as f32)];
+        for i in 0..60 {
+            let entity = if i % 7 == 3 {
+                // Transformless nodes pass their parent's matrix on.
+                world.spawn_empty().id()
+            } else {
+                let mut transform = Transform::new(at(i));
+                transform.rotation = [0.1 * i as f32, 0.3, -0.2];
+                transform.scale = [1.0 + 0.01 * i as f32; 3];
+                world.spawn(transform).id()
+            };
+            if i % 4 != 0 {
+                set_parent(&mut world, entity, entities[i * 2 / 3]).unwrap();
+            }
+            entities.push(entity);
+        }
+        propagate_transforms(&mut world);
+        let globals = |world: &mut World| {
+            entities
+                .iter()
+                .map(|entity| world.get::<GlobalTransform>(*entity).copied())
+                .collect::<Vec<_>>()
+        };
+        for tick in 0..4 {
+            for (n, &entity) in entities.iter().enumerate() {
+                if n % (3 + tick) == 1 {
+                    if let Some(mut transform) =
+                        world.get_mut::<Transform>(entity)
+                    {
+                        transform.position[1] += 0.25 * tick as f32 + 0.1;
+                        transform.rotation[1] -= 0.05;
+                    }
+                }
+            }
+            propagate_transforms(&mut world);
+            let incremental = globals(&mut world);
+            // No fingerprint forces the full rebuild.
+            world.remove_resource::<PropagationFingerprint>();
+            propagate_transforms(&mut world);
+            assert_eq!(incremental, globals(&mut world), "tick {tick}");
+            let bits = |list: Vec<Option<GlobalTransform>>| {
+                list.iter()
+                    .flatten()
+                    .flat_map(|global| global.matrix.concat())
+                    .map(f32::to_bits)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bits(incremental), bits(globals(&mut world)));
+        }
     }
 
     #[test]
