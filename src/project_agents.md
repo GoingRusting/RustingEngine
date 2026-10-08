@@ -170,8 +170,9 @@ rusting_game!(update);
 `rotation` and `scale` read them back), reports contacts (`touching`), reads
 and changes counters (`counter`, or the shorthands `counter_value`,
 `set_counter`, `add_to_counter` and `counter_complete`), reads input actions
-(`pressed` for this frame, `held`), casts rays (`raycast`, and `aim` along the
-active camera; `camera_ray` gives that camera's position and forward
+(`pressed` for this frame, `held`), casts rays (`raycast`, `raycast_visible` through hidden
+objects, and `aim` along the active camera; `on_screen` tells whether a point
+is in the view; `camera_ray` gives that camera's position and forward
 direction, `pointer_ray` the ray through the mouse cursor), launches bodies
 (`set_body_kind`, `set_linear_velocity`, `set_angular_velocity`; each wakes a
 sleeping body, and a body made `Kinematic` or `Fixed` stops) and reads their

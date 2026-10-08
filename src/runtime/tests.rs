@@ -4754,6 +4754,30 @@ fn a_water_body_draws_one_surface_floats_a_light_ball_and_carries_it() {
 }
 
 #[test]
+fn raycast_visible_passes_through_hidden_objects_and_their_children() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let wall =
+        cpu_body(world, [0.0, 0.0, -6.0], UNIT_BOX, RigidBodyKind::Fixed);
+    world.entity_mut(wall).insert(Name("Wall".into()));
+    let template = world
+        .spawn((Name("Template".into()), Visibility { visible: false }))
+        .id();
+    let desk =
+        cpu_body(world, [0.0, 0.0, -3.0], UNIT_BOX, RigidBodyKind::Fixed);
+    world.entity_mut(desk).insert(Name("Desk".into()));
+    rusting_core::hierarchy::set_parent(world, desk, template).unwrap();
+    run_fixed_steps(&mut app, 2);
+    let scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    let ahead = [0.0, 0.0, -1.0];
+    let hit = |hit: Option<crate::project_runner::RayHit>| hit.unwrap().name;
+    assert_eq!(hit(scene.raycast([0.0; 3], ahead, 10.0)), "Desk");
+    assert_eq!(hit(scene.raycast_visible([0.0; 3], ahead, 10.0)), "Wall");
+}
+
+#[test]
 fn a_fixed_gpu_box_is_solid_to_cpu_queries_but_a_dynamic_one_is_not() {
     let mut app = App::new();
     let world = app.world_mut();

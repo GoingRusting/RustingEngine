@@ -1571,6 +1571,31 @@ impl GameScene<'_> {
         max_distance: f32,
         skip_classes: &[&str],
     ) -> Option<RayHit> {
+        self.cast(origin, direction, max_distance, skip_classes, false)
+    }
+
+    /// [`Self::raycast`] that passes through hidden objects: one whose
+    /// `visible` is false, or that has a hidden parent, such as a template
+    /// kept for [`Self::spawn_copy`]. Use it for line of sight; plain
+    /// `raycast` keeps hitting invisible walls.
+    #[must_use]
+    pub fn raycast_visible(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+    ) -> Option<RayHit> {
+        self.cast(origin, direction, max_distance, &[], true)
+    }
+
+    fn cast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        skip_classes: &[&str],
+        visible_only: bool,
+    ) -> Option<RayHit> {
         // A ragdoll body stands for its bone.
         let owner = |entity| {
             self.world
@@ -1579,10 +1604,15 @@ impl GameScene<'_> {
         };
         // No lookups per collider unless classes are skipped.
         let keep = |entity| {
+            let entity = owner(entity);
+            if visible_only
+                && !crate::runtime::visible_in_hierarchy(self.world, entity)
+            {
+                return false;
+            }
             if skip_classes.is_empty() {
                 return true;
             }
-            let entity = owner(entity);
             self.world
                 .get::<crate::runtime::ObjectClasses>(entity)
                 .is_none_or(|classes| {
@@ -1666,6 +1696,32 @@ impl GameScene<'_> {
             cursor, [0.0; 2], size, camera, transform,
         )?;
         Some((ray.origin.into(), ray.direction.into()))
+    }
+
+    /// Where the world `point` shows in the active camera's view, as
+    /// fractions from the top-left corner (`[0.5, 0.5]` is the center, as a
+    /// scenario `pointer` step takes it). `None` when the point is behind
+    /// the camera, nearer than its near plane, past its far plane or outside
+    /// the view, or without an active camera. A wall in front does not
+    /// count: cast [`Self::raycast_visible`] toward the point for that.
+    #[must_use]
+    pub fn on_screen(&mut self, point: [f32; 3]) -> Option<[f32; 2]> {
+        let size = self.viewport_size();
+        let (entity, camera) = self.active_camera()?;
+        let transform = crate::runtime::GlobalTransform {
+            matrix: world_matrix(self.world, entity).into(),
+        };
+        let clip =
+            crate::runtime::picking::clip_from_world(size, camera, transform)?
+                * nalgebra::Vector4::new(point[0], point[1], point[2], 1.0);
+        if clip.w <= f32::EPSILON {
+            return None;
+        }
+        let ndc = clip.xyz() / clip.w;
+        let inside = |v: f32, low: f32| (low..=1.0).contains(&v);
+        (inside(ndc.x, -1.0) && inside(ndc.y, -1.0) && inside(ndc.z, 0.0))
+            // Vulkan puts the top of the view at NDC y = -1.
+            .then(|| [(ndc.x + 1.0) * 0.5, (ndc.y + 1.0) * 0.5])
     }
 
     /// Makes the named camera the only active one, so it renders and aims.
@@ -6480,6 +6536,40 @@ mod tests {
             .record_cursor_position([800.0, 300.0]);
         let (_, right) = scene.pointer_ray().unwrap();
         assert!(right[0] > 0.1 && right[1] < 0.0, "{right:?}");
+    }
+
+    #[test]
+    fn on_screen_places_points_in_the_view_and_rejects_the_rest() {
+        let mut app = App::new();
+        // 10 m up, looking straight down.
+        app.world_mut().spawn((
+            Transform::new([0.0, 10.0, 0.0]).with_rotation(
+                -std::f32::consts::FRAC_PI_2,
+                0.0,
+                0.0,
+            ),
+            crate::runtime::Camera {
+                active: true,
+                ..Default::default()
+            },
+        ));
+        let mut scene = GameScene {
+            world: app.world_mut(),
+        };
+        scene
+            .world
+            .resource_mut::<RuntimeInput>()
+            .record_viewport_size([800.0, 600.0]);
+        let center = scene.on_screen([0.0; 3]).unwrap();
+        assert!((center[0] - 0.5).abs() < 1e-4, "{center:?}");
+        assert!((center[1] - 0.5).abs() < 1e-4, "{center:?}");
+        let right = scene.on_screen([2.0, 0.0, 0.0]).unwrap();
+        assert!(right[0] > 0.6, "{right:?}");
+        // -Z is the top of a view looking down with no yaw.
+        let top = scene.on_screen([0.0, 0.0, -2.0]).unwrap();
+        assert!(top[1] < 0.4, "{top:?}");
+        assert_eq!(scene.on_screen([0.0, 20.0, 0.0]), None, "behind");
+        assert_eq!(scene.on_screen([100.0, 0.0, 0.0]), None, "off the side");
     }
 
     #[test]

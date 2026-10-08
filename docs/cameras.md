@@ -72,7 +72,15 @@ if let Some([_, _, forward]) = scene.basis("P1 Camera") {
 ```
 
 `raycast_skipping(eye, dir, 50.0, &["glass"])` passes through objects in
-those classes.
+those classes. `raycast_visible(eye, dir, 50.0)` passes through hidden
+objects and their children, such as templates kept for `spawn_copy`, so it
+answers "can the player see this" where plain `raycast` still hits invisible
+walls.
+
+`on_screen(point)` gives where a world point shows in the active camera's
+view, as fractions from the top-left corner, or `None` when the point is
+behind the camera or outside the view. It ignores walls in front: follow it
+with `raycast_visible` from `camera_ray`'s eye toward the point.
 
 Raycasts and `aim` only hit colliders that have a `physics_body`. Give a
 collider that never moves `{"simulation": "Static", "solver": "Full"}`.
