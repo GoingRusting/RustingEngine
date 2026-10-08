@@ -1105,7 +1105,8 @@ pub enum ClickTarget {
 pub struct CaptureStep {
     pub path: PathBuf,
     /// Renders through this camera (ID or name), full frame, in place of
-    /// the game's own view. Such a capture has no HUD.
+    /// the game's own view. Such a capture has no HUD, unless the camera is
+    /// the one the game already shows in a single view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<String>,
     /// False leaves the HUD and other runtime UI out.
@@ -1922,6 +1923,19 @@ pub(crate) fn has_gpu_bodies(world: &mut World) -> bool {
         .any(|body| body.simulation == crate::runtime::SimulationClass::Gpu)
 }
 
+/// Whether `camera` is the only view the game drew last frame, so a capture
+/// through it is the game's own frame, HUD included.
+fn shown_alone(world: &World, camera: Entity) -> bool {
+    world
+        .get_resource::<crate::runtime::RenderWorld>()
+        .is_some_and(|render| {
+            render.views.is_empty()
+                && render
+                    .active_camera
+                    .is_some_and(|shown| shown.entity == camera)
+        })
+}
+
 pub fn run_scenario(
     app: &mut App,
     scenario: &Scenario,
@@ -2324,6 +2338,8 @@ pub fn run_scenario(
                                 ),
                                 None => None,
                             };
+                            let camera =
+                                camera.filter(|&c| !shown_alone(world, c));
                             let pixels = if camera.is_some() || !step.hud {
                                 capture
                                     .view_rgba(world, camera)
@@ -4582,6 +4598,35 @@ mod tests {
             "{failure:?}"
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn capturing_through_the_shown_camera_keeps_the_hud() {
+        use crate::runtime::{ExtractedCamera, Projection, RenderWorld};
+        let mut world = World::new();
+        let (shown, other) =
+            (world.spawn_empty().id(), world.spawn_empty().id());
+        assert!(!shown_alone(&world, shown), "nothing drawn yet");
+        let view = |entity| ExtractedCamera {
+            entity,
+            transform: Default::default(),
+            projection: Projection::Orthographic {
+                vertical_size: 1.0,
+                near: 0.1,
+                far: 10.0,
+            },
+            priority: 0,
+        };
+        let mut render = RenderWorld::default();
+        render.active_camera = Some(view(shown));
+        world.insert_resource(render);
+        assert!(shown_alone(&world, shown));
+        assert!(!shown_alone(&world, other));
+        world
+            .resource_mut::<RenderWorld>()
+            .views
+            .push((view(other), [0.0, 0.0, 0.5, 1.0]));
+        assert!(!shown_alone(&world, shown), "a split view is not one frame");
     }
 
     #[test]
