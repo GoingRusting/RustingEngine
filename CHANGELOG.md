@@ -181,6 +181,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `rusting test` with one scenario leaves `scenario.state_hashes` and `scenario.gpu_state_hashes` out of its result. Migration: pass `--full`, or read build/scenario-report.json (unclaimed F10).
 - A scenario `capture` whose `camera` is the camera the game already shows alone keeps the HUD; before, any named camera dropped it (unclaimed F12).
 - `Explore::goals` is `Vec<ExploreGoal>`. Migration: `"Coin".into()` still builds a name goal; match `ExploreGoal::Entity(name)` where the code read the string.
 - A scenario `set` of `/transform/rotation` on an entity with a player controller sets its `yaw` and `pitch`; before, the controller overwrote it on the next tick (unclaimed F9).

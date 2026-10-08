@@ -288,6 +288,7 @@ fn execute(args: &[String]) -> CliResult {
         ["check", root] => cli::check_project(Path::new(root)),
         ["run", root, flags @ ..] | ["test", root, _, flags @ ..] => {
             let mut options = cli::RunOptions::default();
+            let mut full = false;
             if let ["test", _, scenario, ..] = positional.as_slice() {
                 // A scenario path is looked up in the project root first.
                 let in_root = Path::new(root).join(scenario);
@@ -303,6 +304,7 @@ fn execute(args: &[String]) -> CliResult {
                     "--release" => options.release = true,
                     "--update-golden" => options.update_golden = true,
                     "--keep-going" => options.keep_going = true,
+                    "--full" => full = true,
                     "--stderr" => options.echo_stderr = true,
                     "--ticks" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
@@ -342,13 +344,17 @@ fn execute(args: &[String]) -> CliResult {
                     _ => return usage(format!("unknown run flag `{flag}`")),
                 }
             }
-            match &options.scenario {
+            let mut result = match &options.scenario {
                 Some(folder) if folder.is_dir() => {
                     let folder = folder.clone();
                     cli::test_game_folder(Path::new(root), &folder, options)
                 }
                 _ => cli::run_game_project(Path::new(root), options),
+            };
+            if !full {
+                drop_state_hashes(&mut result.data);
             }
+            result
         }
         ["bisect", first, second, flags @ ..] => {
             let ticks = match flags {
@@ -1381,6 +1387,17 @@ fn main() {
     std::process::exit(result.exit_code());
 }
 
+/// Every tick's hashes dwarf the rest of a `test` result; they stay in
+/// build/scenario-report.json and come back with `--full`.
+fn drop_state_hashes(data: &mut serde_json::Value) {
+    if let Some(scenario) =
+        data.get_mut("scenario").and_then(|s| s.as_object_mut())
+    {
+        scenario.remove("state_hashes");
+        scenario.remove("gpu_state_hashes");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,6 +1432,18 @@ mod tests {
             "--keep-going".into(),
         ]);
         assert_ne!(result.diagnostics[0].code, "CLI_USAGE");
+    }
+
+    #[test]
+    fn test_results_leave_the_state_hashes_out() {
+        use serde_json::json;
+        let mut data = json!({"scenario": {"passed": true,
+            "state_hashes": [[0, 1]], "gpu_state_hashes": [], "trace": []}});
+        drop_state_hashes(&mut data);
+        assert_eq!(data, json!({"scenario": {"passed": true, "trace": []}}));
+        let mut data = json!(null);
+        drop_state_hashes(&mut data);
+        assert_eq!(data, json!(null));
     }
 
     #[test]
