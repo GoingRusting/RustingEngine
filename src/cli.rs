@@ -2858,8 +2858,9 @@ fn outdated_cli(root: &Path) -> Option<Diagnostic> {
             _ => format!("{} days", later / 86_400),
         };
         format!(
-            "the engine source changed after this CLI was built: {} is {later} newer",
-            file.display()
+            "the engine source changed after this CLI was built: {} is {later} newer{}",
+            file.display(),
+            engine_commits_since(&source, installed)
         )
     };
     Some(Diagnostic {
@@ -2870,6 +2871,42 @@ fn outdated_cli(root: &Path) -> Option<Diagnostic> {
         ),
         ..Diagnostic::default()
     })
+}
+
+/// The engine's git commits under `source` after `since`, newest first, as
+/// "; engine commits since: ..." so a reader sees what the CLI misses.
+/// Empty outside a git checkout or without such commits.
+fn engine_commits_since(source: &Path, since: std::time::SystemTime) -> String {
+    let Ok(since) = since.duration_since(std::time::UNIX_EPOCH) else {
+        return String::new();
+    };
+    let log = Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["log", "--format=%h %s"])
+        .arg(format!("--since=@{}", since.as_secs()))
+        .args(["--", "."])
+        .output();
+    let log = match log {
+        Ok(log) if log.status.success() => log.stdout,
+        _ => return String::new(),
+    };
+    let commits: Vec<_> = String::from_utf8_lossy(&log)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    if commits.is_empty() {
+        return String::new();
+    }
+    let more = commits.len().saturating_sub(5);
+    let mut text = format!(
+        "; engine commits since: {}",
+        commits[..commits.len() - more].join("; ")
+    );
+    if more > 0 {
+        text += &format!("; and {more} more");
+    }
+    text
 }
 
 /// True, and touches `marker`, when `marker` is missing or older than a
@@ -4375,6 +4412,32 @@ mod shape_tests {
             .collect();
         assert!(names.contains(&"Floor 2".to_owned()), "{names:?}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn outdated_cli_names_the_engine_commits_it_misses() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let head = Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["log", "-1", "--format=%ct %h %s", "--", "."])
+            .output();
+        let Some(head) = head
+            .ok()
+            .filter(|out| out.status.success() && !out.stdout.is_empty())
+        else {
+            return; // Not a git checkout, such as a crates.io download.
+        };
+        let head = String::from_utf8(head.stdout).unwrap();
+        let (time, subject) = head.trim().split_once(' ').unwrap();
+        let time = std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(time.parse::<u64>().unwrap() - 1);
+        let text = engine_commits_since(&source, time);
+        assert!(text.starts_with("; engine commits since: "), "{text}");
+        assert!(text.contains(subject), "{text}");
+        let later =
+            std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert_eq!(engine_commits_since(&source, later), "");
     }
 
     #[test]
