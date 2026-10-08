@@ -3074,9 +3074,9 @@ Goal: build a real game from `researches/game2/research` (PLAYPLACE, the pick in
 - [x] Fix: scenario `expect` on a game with code-spawned meshes failed with "mesh N has no asset path and cannot be saved". `reflected` now uses `scene_document_lenient`. Verification: the gpu-test `the_gpu_flag_opens_the_device_without_a_capture_step` and the playplace scenario above.
 - [x] Scenario `"gpu": true` opens the headless Vulkan device without a capture step and fails with `gpu: no Vulkan device` when none opens. Documented in `rusting schema`, `docs/concepts.md` and tutorial 4. Answers PLAYPLACE research gap #1 (GPU physics does run in `rusting test`).
   Full check, 2026-10-01, lavapipe: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` exit 0, 16 result lines, 0 failed; same with `--features gpu-tests`.
-- [ ] A `--template empty` (no leftover `Ball`/`Box`/`Wall` names), or a clearer error when code-spawned names collide with the scene.
-- [ ] A bulk spawn for scenes (emitter component or a patch grid operation), so large uniform sets need no game code.
-- [ ] A built-in "bodies inside this box" count for GPU classes readable from a scenario, for `escaped` and zone-mass checks.
+- [x] A `--template empty` (no leftover `Ball`/`Box`/`Wall` names), or a clearer error when code-spawned names collide with the scene. Done in 79501b0 (`rusting new --template empty`, camera only); a name collision panics with "scene object `X` already exists; object names are unique". Evidence: unit tests `the_empty_template_has_no_named_objects_to_clash_with` and `spawn_copy_refuses_a_child_name_that_is_taken`.
+- [x] A bulk spawn for scenes (emitter component or a patch grid operation), so large uniform sets need no game code. Done in 18d0738: the `rusting.spawn_grid` component copies its object onto a grid at load. Evidence: unit test `spawn_grids_copy_the_tree_onto_cells_once`.
+- [x] A built-in "bodies inside this box" count for GPU classes readable from a scenario, for `escaped` and zone-mass checks. Done in de53851 (class entities with a box count GPU bodies inside it). Evidence: unit test `class_entities_count_members_and_gpu_bodies_in_a_box`.
 - [ ] Week 2: noise-attraction force field as a custom GLSL solver; scenario `w2_flow`.
 - [ ] Measure 40,000 spheres on real hardware (60 FPS at 1080p, RTX 3060) once the GPU driver is healthy.
 
