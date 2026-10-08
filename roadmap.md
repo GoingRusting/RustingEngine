@@ -3024,7 +3024,8 @@ Depends on: Milestone 9 WASM scripting host and Rust hot reload.
 - [ ] A promotion path from a WASM script to native Rust with no behaviour change, checked by state hashes.
 - [ ] Permission scopes for agent-facing commands: project-root confinement, a `--read-only` mode, `--confirm` for destructive operations, and no network access unless a generator hook asks for it.
 - [ ] An operation journal: every mutating command records the tool, the command, the diff, and the time. `rusting log` lists it and `rusting revert <op>` undoes one operation when later operations do not depend on it.
-- [ ] A portable provenance report: engine and plugin versions, asset hashes, generator metadata, seeds, and scenario versions (from `missingFeatures.md` P2).
+- [x] A portable provenance report: engine and plugin versions, asset hashes, generator metadata, seeds, and scenario versions (from `missingFeatures.md` P2).
+  Evidence: `rusting provenance [root]` reports the tool version, every `rusting*` crate in `Cargo.lock` (version and source; a git source carries the commit), one hash over `src/`, every imported asset's hash, ID and `.rmeta` provenance, the generator hooks, each scene's hash, and each scenario's seed, ticks and hash. `cli::hint_tests::provenance_records_crates_code_assets_scenes_and_scenarios` (a lock with `rusting_engine` and `serde` lists only the engine with its git source; scene and scenario entries; adding a code file changes `code_hash` but not scene hashes). On forever-bear: 2 crates, 20 code files, 1 scene, 61 scenarios with seeds. Full AGENTS.md check green. Limit: `Cargo.lock` is read line by line (no TOML dependency); determinism mode is included, but GPU driver and hardware are not.
 
 ### Exit gate
 

@@ -942,6 +942,124 @@ fn longest_list(value: &Value, pointer: String) -> Option<(usize, String)> {
         .max_by_key(|(len, _)| *len)
 }
 
+/// A portable record of what a build of the project is made of: the
+/// engine and `rusting*` crates from `Cargo.lock`, a hash of the game code,
+/// every imported asset with its hash and provenance, generator hooks,
+/// scene hashes, and each scenario's seed, ticks and hash. Hashes are the
+/// FNV-1a 64 that `.rmeta` files record, so two reports compare line by line.
+pub fn provenance(root: &Path) -> CliResult {
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let root = &project.root;
+    let relative = |path: &Path| {
+        path.strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+    // `Cargo.lock` is TOML; each package is a `[[package]]` block of
+    // `key = "value"` lines.
+    let lock =
+        std::fs::read_to_string(root.join("Cargo.lock")).unwrap_or_default();
+    let crates: Vec<Value> = lock
+        .split("[[package]]")
+        .filter_map(|block| {
+            let field = |key: &str| {
+                block.lines().find_map(|line| {
+                    let value = line.strip_prefix(key)?.trim_start();
+                    Some(value.strip_prefix('=')?.trim().trim_matches('"').to_owned())
+                })
+            };
+            let name = field("name ")?;
+            name.starts_with("rusting").then(|| {
+                json!({"name": name, "version": field("version "), "source": field("source ")})
+            })
+        })
+        .collect();
+    let mut code = Vec::new();
+    rust_files(&root.join("src"), &mut code);
+    code.sort();
+    let code_bytes: Vec<u8> = code
+        .iter()
+        .flat_map(|path| {
+            let mut bytes = relative(path).into_bytes();
+            bytes.extend(std::fs::read(path).unwrap_or_default());
+            bytes
+        })
+        .collect();
+    let assets: Vec<Value> = crate::asset_import::list_assets(root)
+        .assets
+        .into_iter()
+        .map(|asset| {
+            json!({
+                "path": asset.path,
+                "id": asset.id,
+                "hash": file_revision(&root.join(&asset.path)),
+                "source": asset.source,
+            })
+        })
+        .collect();
+    let mut scene_files = Vec::new();
+    for folder in ["scenes", "assets"] {
+        scene_files_in(&root.join(folder), &mut scene_files);
+    }
+    scene_files.sort();
+    let scenes: Vec<Value> = scene_files
+        .iter()
+        .map(
+            |path| json!({"path": relative(path), "hash": file_revision(path)}),
+        )
+        .collect();
+    let mut scenario_files: Vec<_> = std::fs::read_dir(root.join("tests"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    scenario_files.sort();
+    let scenarios: Vec<Value> = scenario_files
+        .iter()
+        .map(|path| {
+            let scenario: Value = std::fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            json!({
+                "path": relative(path),
+                "seed": scenario.get("seed").cloned().unwrap_or(json!(0)),
+                "ticks": scenario["ticks"],
+                "hash": file_revision(path),
+            })
+        })
+        .collect();
+    let generators: BTreeMap<_, _> = project
+        .manifest
+        .generators
+        .iter()
+        .map(|(name, hook)| {
+            (
+                name,
+                json!({"command": hook.command, "license": hook.license}),
+            )
+        })
+        .collect();
+    CliResult::success(json!({
+        "project": project.manifest.name,
+        "tool_version": env!("CARGO_PKG_VERSION"),
+        "crates": crates,
+        "code_hash": crate::runtime::scene_revision(&code_bytes),
+        "code_files": code.len(),
+        "determinism": project.manifest.determinism,
+        "assets": assets,
+        "generators": generators,
+        "scene_hashes": scenes,
+        "scenario_hashes": scenarios,
+    }))
+}
+
 fn rust_files(folder: &Path, files: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
         let path = entry.path();
@@ -5201,6 +5319,35 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn provenance_records_crates_code_assets_scenes_and_scenarios() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-provenance-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "[[package]]\nname = \"rusting_engine\"\nversion = \"0.1.0\"\nsource = \"git+https://example.com/e#abc\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let before = provenance(&root).data;
+        assert_eq!(
+            before["crates"],
+            json!([{"name": "rusting_engine", "version": "0.1.0", "source": "git+https://example.com/e#abc"}])
+        );
+        assert_eq!(before["scene_hashes"][0]["path"], "scenes/main.rscene");
+        assert_eq!(before["scenario_hashes"][0]["path"], "tests/solve.json");
+        assert!(before["scenario_hashes"][0]["ticks"].as_u64().is_some());
+
+        std::fs::write(root.join("src/extra.rs"), "fn f() {}\n").unwrap();
+        let after = provenance(&root).data;
+        assert_ne!(after["code_hash"], before["code_hash"]);
+        assert_eq!(after["scene_hashes"], before["scene_hashes"]);
+        std::fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

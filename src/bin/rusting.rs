@@ -108,6 +108,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["project", "summary"], 0),
         (&["impact"], 1),
         (&["lease", "list"], 0),
+        (&["provenance"], 0),
         (&["asset", "list"], 0),
         (&["test"], 1),
         (&["fuzz"], 1),
@@ -167,6 +168,7 @@ fn execute(args: &[String]) -> CliResult {
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
         ["impact", root, target] => cli::impact(Path::new(root), target),
         ["lease", "list", root] => cli::lease_list(Path::new(root)),
+        ["provenance", root] => cli::provenance(Path::new(root)),
         ["lease", verb @ ("claim" | "release"), path, flags @ ..] => {
             let (mut holder, mut seconds) = (None, Some(LEASE_SECONDS));
             for pair in flags.chunks(2) {
@@ -863,6 +865,23 @@ fn render_human(result: &CliResult) -> String {
         }
         for path in data["scenario_files"].as_array().into_iter().flatten() {
             lines.push(format!("Scenario {}", path.as_str().unwrap_or("?")));
+        }
+        for krate in data["crates"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "Crate {} {} {}",
+                krate["name"].as_str().unwrap_or("?"),
+                krate["version"].as_str().unwrap_or("?"),
+                krate["source"].as_str().unwrap_or("(path)")
+            ));
+        }
+        if let Some(hash) = data["code_hash"].as_str() {
+            lines.push(format!(
+                "Code {hash} ({} files); {} assets, {} scenes, {} scenarios; --json lists each hash",
+                data["code_files"],
+                data["assets"].as_array().map_or(0, Vec::len),
+                data["scene_hashes"].as_array().map_or(0, Vec::len),
+                data["scenario_hashes"].as_array().map_or(0, Vec::len)
+            ));
         }
         let one_lease = data.get("lease").into_iter();
         for lease in

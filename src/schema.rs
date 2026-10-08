@@ -183,6 +183,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "lease list --json",
     },
     Operation {
+        name: "provenance",
+        usage: "provenance [project-root] [--json]",
+        summary: "A portable record of what the project is made of, to attach to a build or compare between two: the tool version, every `rusting*` crate in Cargo.lock with its version and source (a git source carries the commit), one hash over the game code in src/, every imported asset with its hash, ID and .rmeta provenance (original, author, license, url, generator), the generator hooks in project.json, each scene's hash, and each scenario's seed, ticks and hash. Hashes are FNV-1a 64, as in .rmeta; a missing file hashes to null.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "provenance --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",
