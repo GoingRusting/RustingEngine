@@ -1294,6 +1294,8 @@ pub const MAX_LIGHTS: usize = 64;
 pub struct RenderCapacityDiagnostics {
     /// Lights beyond [`MAX_LIGHTS`] left out of the latest light upload.
     pub dropped_lights: usize,
+    /// Lights in the latest light upload: directional, point and spot.
+    pub lights: usize,
     /// Distinct missing meshes of visible objects; they draw the fallback
     /// cube.
     pub missing_meshes: usize,
@@ -4747,6 +4749,7 @@ impl SceneRenderer {
             + render_world.point_lights.len()
             + render_world.spot_lights.len()
             - uploads.len();
+        self.capacity.lights = uploads.len();
         let count = uploads.len() as u32;
         if uploads.is_empty() {
             uploads.push(LightUpload::default());

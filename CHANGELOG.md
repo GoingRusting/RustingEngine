@@ -6,6 +6,8 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `scene.seed()` reads the run seed (unclaimed F5).
+- `perf.render.lights` counts the lights a frame uploaded and `budgets.max_lights` limits it (unclaimed F6).
 - `perf.environment` reports `cpus` and `load_average`, and a timing budget failure on a busy machine says to rerun it alone (surveyor F20).
 - `rusting docs search resolution` (or `render size`, `1080p`) finds `capture_size`, the headless render size (surveyor F12).
 - `scene.edit_texture(handle, |texture| ..)` draws into a created texture while the game runs; `TextureAsset`, `TextureColorSpace` and `TextureSampler` are in the prelude (surveyor F14).

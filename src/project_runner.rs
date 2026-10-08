@@ -1274,6 +1274,16 @@ impl GameScene<'_> {
         self.counter(name).expect("created above")
     }
 
+    /// The run's seed: a scenario's `seed`, `rusting run --seed`, or 0.
+    /// Use it for things that must not change with the tick, such as a
+    /// level layout generated once.
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.world
+            .get_resource::<crate::runtime::RandomSeed>()
+            .map_or(0, |seed| seed.0)
+    }
+
     /// A value in `[0, 1)` from the run's seed, the fixed tick and
     /// `stream`. The same seed gives the same game, so scenarios repeat;
     /// draw with a different `stream` for each value needed in one tick.
@@ -5954,9 +5964,12 @@ mod tests {
         assert_ne!(value, draw(8, 3, 0));
         assert_ne!(value, draw(7, 4, 0));
         assert_ne!(value, draw(7, 3, 1));
-        // A world without a seed or time still draws.
+        // A world without a seed or time still draws, and its seed is 0.
         let mut world = World::new();
         let _ = GameScene { world: &mut world }.random(0);
+        assert_eq!(GameScene { world: &mut world }.seed(), 0);
+        world.insert_resource(crate::runtime::RandomSeed(42));
+        assert_eq!(GameScene { world: &mut world }.seed(), 42);
     }
 
     #[test]

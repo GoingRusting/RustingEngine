@@ -430,6 +430,7 @@ impl HeadlessCapture {
             "triangles": counters.triangles,
             "visible_instances": counters.visible_instances,
             "dropped_lights": capacity.dropped_lights,
+            "lights": capacity.lights,
             "physics_grid_overflow": capacity.physics_grid_overflow,
             "physics_oversized_bodies": capacity.physics_oversized_bodies,
             "physics_fallback_tests": capacity.physics_fallback_tests,

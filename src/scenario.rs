@@ -913,6 +913,9 @@ pub struct Budgets {
     pub p95_tick_ms: Option<f64>,
     pub max_draws: Option<u32>,
     pub max_triangles: Option<u64>,
+    /// Limit on `perf.render.lights`; renders every tick like `max_draws`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_lights: Option<u32>,
     /// Limit on [`PerfReport::entities_max`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_entities: Option<u64>,
@@ -1959,7 +1962,9 @@ pub fn run_scenario(
         return report;
     }
     let render_budget = scenario.budgets.as_ref().is_some_and(|budgets| {
-        budgets.max_draws.is_some() || budgets.max_triangles.is_some()
+        budgets.max_draws.is_some()
+            || budgets.max_triangles.is_some()
+            || budgets.max_lights.is_some()
     });
     let wants_capture = scenario.gpu
         || render_budget
@@ -2678,6 +2683,7 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
             "gpu_ms_max": meta["gpu_ms_max"],
             "cameras": meta["cameras"],
             "dropped_lights": meta["dropped_lights"],
+            "lights": meta["lights"],
             "physics_grid_overflow": meta["physics_grid_overflow"],
             "physics_oversized_bodies": meta["physics_oversized_bodies"],
             "physics_fallback_tests": meta["physics_fallback_tests"],
@@ -2742,6 +2748,15 @@ fn over_budget(budgets: &Budgets, perf: &PerfReport) -> Vec<String> {
     {
         if triangles > limit {
             over.push(format!("max_triangles: {triangles} triangles, over the limit of {limit}"));
+        }
+    }
+    if let (Some(limit), Some(lights)) =
+        (budgets.max_lights, perf.render["lights"].as_u64())
+    {
+        if lights > u64::from(limit) {
+            over.push(format!(
+                "max_lights: {lights} lights, over the limit of {limit}"
+            ));
         }
     }
     if let Some(limit) = budgets
@@ -4275,6 +4290,15 @@ mod tests {
         assert!(message.ends_with("(load average 6.5 on 4 CPUs: rerun it alone before treating it as real)"), "{message}");
         busy.environment["load_average"] = json!(1.0);
         assert!(over_budget(&limit, &busy)[0].ends_with("ms limit"));
+        busy.render = json!({"lights": 33});
+        let lights = Budgets {
+            max_lights: Some(32),
+            ..Budgets::default()
+        };
+        assert_eq!(
+            over_budget(&lights, &busy),
+            ["max_lights: 33 lights, over the limit of 32"]
+        );
 
         let mut crowded = scenario(3, json!([]));
         crowded.budgets = Some(Budgets {
@@ -4340,6 +4364,10 @@ mod tests {
                 receive_shadows: true,
             },
         ));
+        app.spawn((
+            Transform::new([0.0, 2.0, 0.0]),
+            crate::runtime::PointLight::default(),
+        ));
         // A render budget renders without a capture step.
         let mut scenario = scenario(2, json!([]));
         scenario.capture_size = [160, 90];
@@ -4351,6 +4379,7 @@ mod tests {
         assert!(report.perf.render["draws"].as_u64().unwrap() > 0);
         assert!(report.perf.render["gpu_ms"].is_number());
         assert_eq!(report.perf.render["dropped_lights"], 0);
+        assert_eq!(report.perf.render["lights"], 1);
         let render = &report.perf.render;
         let frames = render["gpu_frames"].as_u64().unwrap();
         assert!(frames >= report.ticks_run, "{render}");
