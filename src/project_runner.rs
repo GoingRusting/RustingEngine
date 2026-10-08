@@ -1883,6 +1883,39 @@ impl GameScene<'_> {
         Some(copy)
     }
 
+    /// Places the scene file `path` (relative to the project's `assets`
+    /// folder, such as `"prefabs/tile.rscene"`) as a prefab: a new root
+    /// object called `name` at `transform`, with the file's objects as its
+    /// children under their own names. The file is read once per path.
+    /// Returns `None` and warns when the file does not load.
+    pub fn spawn_prefab(
+        &mut self,
+        path: &str,
+        name: impl Into<String>,
+        transform: Transform,
+    ) -> Option<Entity> {
+        let file = self.assets_folder().join(path);
+        let placed = self
+            .world
+            .resource_mut::<crate::AssetServer>()
+            .load_prefab(&file)
+            .map_err(|error| error.to_string())
+            .and_then(|prefab| {
+                crate::runtime::spawn_prefab(self.world, prefab, transform)
+                    .map_err(|error| error.to_string())
+            });
+        match placed {
+            Ok(root) => {
+                self.world.entity_mut(root).insert(Name(name.into()));
+                Some(root)
+            }
+            Err(error) => {
+                eprintln!("warning: prefab `{path}` was not placed: {error}");
+                None
+            }
+        }
+    }
+
     /// The name of `entity`, such as [`crate::runtime::PlayerController`]'s
     /// `wall` or `floor`; `None` when it is unnamed or gone.
     #[must_use]
@@ -6572,6 +6605,42 @@ mod tests {
         assert!(top[1] < 0.4, "{top:?}");
         assert_eq!(scene.on_screen([0.0, 20.0, 0.0]), None, "behind");
         assert_eq!(scene.on_screen([100.0, 0.0, 0.0]), None, "off the side");
+    }
+
+    #[test]
+    fn spawn_prefab_places_a_scene_file_under_a_named_root() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-spawn-prefab-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join("assets/prefabs")).unwrap();
+        std::fs::write(
+            folder.join("assets/prefabs/tile.rscene"),
+            serde_json::json!({"version": 9, "name": "Tile", "entities": [
+                {"id": uuid::Uuid::new_v4(), "name": "Wall"}]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut app = App::new();
+        app.add_plugin(crate::AssetPlugin).unwrap();
+        app.insert_resource(ProjectFolder(folder.clone()));
+        let turned = Transform {
+            rotation: [0.0, 1.5, 0.0],
+            ..Transform::new([4.0, 0.0, 2.0])
+        };
+        let mut scene = GameScene {
+            world: app.world_mut(),
+        };
+        let root = scene
+            .spawn_prefab("prefabs/tile.rscene", "Tile 1", turned)
+            .unwrap();
+        assert!(scene
+            .spawn_prefab("prefabs/none.rscene", "x", turned)
+            .is_none());
+        let world = app.world();
+        assert_eq!(world.get::<Name>(root).unwrap().0, "Tile 1");
+        assert_eq!(world.get::<Transform>(root), Some(&turned));
+        let children = &world.get::<crate::runtime::Children>(root).unwrap().0;
+        assert_eq!(world.get::<Name>(children[0]).unwrap().0, "Wall");
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

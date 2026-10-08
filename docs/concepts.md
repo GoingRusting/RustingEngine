@@ -53,6 +53,9 @@ Each placement gets a root named `coin #1`, `coin #2`, and so on, with IDs
 that are the same when the game replays the same placements in the same
 order. Paths are relative to the project folder, where games run. Keep
 runtime prefabs under `assets/` so that export includes them.
+From a `GameScene`, `scene.spawn_prefab("prefabs/coin.rscene", "Coin 3",
+transform)` does the same in one call, with the path relative to `assets/`
+and the root named `Coin 3`.
 
 **Cooking** turns the JSON scene into a compact binary
 (`build/main.rscene.bin`) that the game loads. Play, `rusting run`, `test`,
