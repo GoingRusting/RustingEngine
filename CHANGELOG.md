@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `perf.environment` reports `cpus` and `load_average`, and a timing budget failure on a busy machine says to rerun it alone (surveyor F20).
 - `rusting docs search resolution` (or `render size`, `1080p`) finds `capture_size`, the headless render size (surveyor F12).
 - `scene.edit_texture(handle, |texture| ..)` draws into a created texture while the game runs; `TextureAsset`, `TextureColorSpace` and `TextureSampler` are in the prelude (surveyor F14).
 - `scene.spawn_copy_at_root(template, name, transform)` spawns a copy with no parent and a full transform (surveyor F4, F6).

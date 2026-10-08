@@ -2660,6 +2660,8 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "cpus": std::thread::available_parallelism().map_or(1, usize::from),
+        "load_average": load_average(),
     });
     let mut counters = Value::Null;
     if let Some(meta) = render {
@@ -2692,12 +2694,34 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
     }
 }
 
+/// The one-minute load average on Linux, `None` elsewhere.
+fn load_average() -> Option<f64> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 fn over_budget(budgets: &Budgets, perf: &PerfReport) -> Vec<String> {
     let mut over = Vec::new();
+    // Wall-clock budgets fail on a busy machine with nothing wrong in the
+    // game, so say how busy it was.
+    let load = match (
+        perf.environment["load_average"].as_f64(),
+        perf.environment["cpus"].as_u64(),
+    ) {
+        (Some(load), Some(cpus)) if load > cpus as f64 / 2.0 => format!(
+            " (load average {load:.1} on {cpus} CPUs: rerun it alone \
+             before treating it as real)"
+        ),
+        _ => String::new(),
+    };
     let mut ms = |name: &str, limit: Option<f64>, value: f64| {
         if let Some(limit) = limit.filter(|limit| value > *limit) {
             over.push(format!(
-                "{name} is {value:.3} ms, over the {limit} ms limit"
+                "{name} is {value:.3} ms, over the {limit} ms limit{load}"
             ));
         }
     };
@@ -4238,6 +4262,19 @@ mod tests {
         assert_eq!(report.perf.environment["os"], std::env::consts::OS);
         assert!(report.perf.render.is_null());
         assert!(report.perf.entities_max > 0);
+        assert!(report.perf.environment["cpus"].as_u64() > Some(0));
+        let mut busy = report.perf.clone();
+        busy.tick_ms_max = 50.0;
+        busy.environment["cpus"] = json!(4);
+        busy.environment["load_average"] = json!(6.5);
+        let limit = Budgets {
+            max_tick_ms: Some(10.0),
+            ..Budgets::default()
+        };
+        let message = &over_budget(&limit, &busy)[0];
+        assert!(message.ends_with("(load average 6.5 on 4 CPUs: rerun it alone before treating it as real)"), "{message}");
+        busy.environment["load_average"] = json!(1.0);
+        assert!(over_budget(&limit, &busy)[0].ends_with("ms limit"));
 
         let mut crowded = scenario(3, json!([]));
         crowded.budgets = Some(Budgets {
