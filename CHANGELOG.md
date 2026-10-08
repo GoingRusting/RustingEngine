@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `scene.set_text_in_font` and `text_texture_in_font` draw text in a TTF or OTF font from the game (unclaimed F11).
 - `scene.seed()` reads the run seed (unclaimed F5).
 - `perf.render.lights` counts the lights a frame uploaded and `budgets.max_lights` limits it (unclaimed F6).
 - `perf.environment` reports `cpus` and `load_average`, and a timing budget failure on a busy machine says to rerun it alone (surveyor F20).

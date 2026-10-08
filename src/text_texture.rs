@@ -40,7 +40,34 @@ impl Default for TextStyle {
 /// Draws `text` (lines split on `\n`, no wrapping) into a new sRGB texture
 /// just large enough to hold it plus the padding.
 pub fn text_texture(text: &str, style: TextStyle) -> TextureAsset {
+    draw(text, style, None)
+}
+
+/// Like [`text_texture`], in a TTF or OTF font given as file bytes, such as
+/// a handwriting font. Glyphs the font lacks fall back to the built-in
+/// fonts. Returns `None` when the bytes are not a font.
+pub fn text_texture_in_font(
+    text: &str,
+    style: TextStyle,
+    font: &[u8],
+) -> Option<TextureAsset> {
+    // egui panics on a font it cannot parse; turn that into None.
+    std::panic::catch_unwind(|| draw(text, style, Some(font))).ok()
+}
+
+fn draw(text: &str, style: TextStyle, font: Option<&[u8]>) -> TextureAsset {
     let ctx = egui::Context::default();
+    if let Some(font) = font {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "game".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(font.to_vec())),
+        );
+        for family in fonts.families.values_mut() {
+            family.insert(0, "game".to_owned());
+        }
+        ctx.set_fonts(fonts);
+    }
     let font = if style.monospace {
         egui::FontId::monospace(style.size)
     } else {
@@ -148,5 +175,18 @@ mod tests {
         assert!(tall.size[1] > one.size[1] + 20);
         assert_eq!(text_texture("REC", style), one, "repeatable");
         assert_eq!(ink(&text_texture("", style)), 0);
+    }
+
+    #[test]
+    fn a_font_file_changes_the_glyphs_and_bad_bytes_give_none() {
+        let style = TextStyle::default();
+        let built_in = text_texture("Tag 42", style);
+        // egui's monospace font, as a file a game would ship.
+        let fonts = egui::FontDefinitions::default();
+        let font = &fonts.font_data["Hack"].font;
+        let other = text_texture_in_font("Tag 42", style, font).unwrap();
+        assert!(ink(&other) > 100, "{} lit texels", ink(&other));
+        assert_ne!(other, built_in);
+        assert_eq!(text_texture_in_font("Tag 42", style, b"not a font"), None);
     }
 }

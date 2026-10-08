@@ -248,12 +248,14 @@ impl GameScene<'_> {
     /// # Errors
     /// Returns the error from reading the file.
     pub fn load_text(&self, path: &str) -> std::io::Result<String> {
-        let folder = self
-            .world
+        std::fs::read_to_string(self.assets_folder().join(path))
+    }
+
+    fn assets_folder(&self) -> PathBuf {
+        self.world
             .get_resource::<ProjectFolder>()
             .map(|folder| folder.0.join("assets"))
-            .unwrap_or_else(|| PathBuf::from("assets"));
-        std::fs::read_to_string(folder.join(path))
+            .unwrap_or_else(|| PathBuf::from("assets"))
     }
 
     /// Plays a clip once. `clip` is relative to the project's `assets`
@@ -2066,8 +2068,33 @@ impl GameScene<'_> {
         text: &str,
         style: crate::text_texture::TextStyle,
     ) -> Option<[u32; 2]> {
+        self.draw_text(name, text, style, None)
+    }
+
+    /// Like [`Self::set_text`], in a TTF or OTF font file relative to the
+    /// project's `assets` folder (`"fonts/pencil.ttf"`). Returns `None`,
+    /// with a warning, when the file is missing or not a font.
+    #[cfg(feature = "ui")]
+    pub fn set_text_in_font(
+        &mut self,
+        name: &str,
+        text: &str,
+        style: crate::text_texture::TextStyle,
+        font: &str,
+    ) -> Option<[u32; 2]> {
+        self.draw_text(name, text, style, Some(font))
+    }
+
+    #[cfg(feature = "ui")]
+    fn draw_text(
+        &mut self,
+        name: &str,
+        text: &str,
+        style: crate::text_texture::TextStyle,
+        font: Option<&str>,
+    ) -> Option<[u32; 2]> {
         find_named_entity(self.world, name)?;
-        let key = format!("{text}\u{0}{style:?}");
+        let key = format!("{text}\u{0}{style:?}\u{0}{font:?}");
         let cached = self
             .world
             .get_resource::<TextTextures>()
@@ -2075,9 +2102,28 @@ impl GameScene<'_> {
         let texture = match cached {
             Some(texture) => texture,
             None => {
-                let texture = self.create_texture(
-                    crate::text_texture::text_texture(text, style),
-                );
+                let drawn = match font {
+                    None => crate::text_texture::text_texture(text, style),
+                    Some(font) => {
+                        let path = self.assets_folder().join(font);
+                        let drawn =
+                            std::fs::read(&path).ok().and_then(|bytes| {
+                                crate::text_texture::text_texture_in_font(
+                                    text, style, &bytes,
+                                )
+                            });
+                        let Some(drawn) = drawn else {
+                            eprintln!(
+                                "warning: set_text_in_font: {} is not a \
+                                 readable TTF or OTF font; the call did nothing.",
+                                path.display()
+                            );
+                            return None;
+                        };
+                        drawn
+                    }
+                };
+                let texture = self.create_texture(drawn);
                 self.world
                     .get_resource_or_insert_with(TextTextures::default)
                     .0
@@ -3455,7 +3501,7 @@ fn project_source_scene(folder: &Path, scene_path: &Path) -> Option<PathBuf> {
         .then_some(source)
 }
 
-/// Textures drawn by [`GameScene::set_text`], by text and style.
+/// Textures drawn by [`GameScene::set_text`], by text, style and font.
 #[cfg(feature = "ui")]
 #[derive(Resource, Default)]
 struct TextTextures(
@@ -6197,6 +6243,23 @@ mod tests {
         assert_eq!(texture_of(&mut scene, "Sign"), Some(first));
         assert_eq!(textures(scene.world), before + 2);
         assert_eq!(scene.set_text("Nowhere", "x", style), None);
+        // A font file under assets/ draws the same text as a new texture.
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-set-text-font-{}", std::process::id()));
+        std::fs::create_dir_all(folder.join("assets/fonts")).unwrap();
+        let hack = &egui::FontDefinitions::default().font_data["Hack"].font;
+        std::fs::write(folder.join("assets/fonts/hack.ttf"), hack).unwrap();
+        std::fs::write(folder.join("assets/fonts/bad.ttf"), "no").unwrap();
+        scene.world.insert_resource(ProjectFolder(folder.clone()));
+        scene
+            .set_text_in_font("Sign", "AISLE 4", style, "fonts/hack.ttf")
+            .unwrap();
+        assert_ne!(texture_of(&mut scene, "Sign"), Some(first));
+        assert_eq!(textures(scene.world), before + 3);
+        for font in ["fonts/bad.ttf", "fonts/missing.ttf"] {
+            assert_eq!(scene.set_text_in_font("Sign", "x", style, font), None);
+        }
+        std::fs::remove_dir_all(folder).unwrap();
         // set_material swaps in a whole material made by game code.
         let red = scene.create_material(crate::assets::MaterialAsset {
             base_color: [1.0, 0.0, 0.0, 1.0],

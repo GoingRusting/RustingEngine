@@ -189,6 +189,10 @@ let [w, h] = scene.set_text("Clock", &format!("{hour:02}:{minute:02}"), style).u
 
 Each distinct string is drawn once and kept, so a clock costs one texture
 per string it shows. Give the object an Unlit material for glowing text.
+The built-in fonts are egui's. For handwriting or a themed font, put a TTF
+or OTF file under `assets/` and call
+`scene.set_text_in_font("Tag", "aisle C", style, "fonts/pencil.ttf")`;
+glyphs the font lacks fall back to the built-in ones.
 `set_material` puts any material from `create_material` on an object, and
 `create_texture` registers a texture for one.
 
