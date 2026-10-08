@@ -451,11 +451,14 @@ pub enum ProjectTemplate {
     /// Arena, a top-down action game with code: move, attack the
     /// enemies that chase the player, and win before taking three hits.
     TopDown,
+    /// Circuit, a racing game with code: drive three laps through the
+    /// checkpoints of a rectangular track.
+    Racing,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -464,6 +467,7 @@ impl ProjectTemplate {
         Self::Starter,
         Self::Puzzle,
         Self::TopDown,
+        Self::Racing,
         Self::Empty,
     ];
 
@@ -480,6 +484,7 @@ impl ProjectTemplate {
             Self::Empty => "empty",
             Self::Puzzle => "puzzle",
             Self::TopDown => "top-down",
+            Self::Racing => "racing",
         }
     }
 
@@ -496,6 +501,7 @@ impl ProjectTemplate {
             Self::Empty => "Empty (camera only)",
             Self::Puzzle => "Box Push (grid puzzle)",
             Self::TopDown => "Arena (top-down action)",
+            Self::Racing => "Circuit (racing)",
         }
     }
 
@@ -718,6 +724,7 @@ fn write_project_template(
         match template {
             ProjectTemplate::Puzzle => include_str!("templates/puzzle.rs"),
             ProjectTemplate::TopDown => include_str!("templates/arena.rs"),
+            ProjectTemplate::Racing => include_str!("templates/racing.rs"),
             _ => default_game_source(),
         },
     )?;
@@ -727,6 +734,9 @@ fn write_project_template(
         }
         ProjectTemplate::TopDown => {
             Some(("fight.json", include_str!("templates/arena_fight.json")))
+        }
+        ProjectTemplate::Racing => {
+            Some(("lap.json", include_str!("templates/racing_lap.json")))
         }
         _ => None,
     };
@@ -761,6 +771,7 @@ fn write_project_template(
             ProjectTemplate::Starter => starter_scene(name),
             ProjectTemplate::Puzzle => puzzle_scene(name),
             ProjectTemplate::TopDown => arena_scene(name),
+            ProjectTemplate::Racing => racing_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1673,6 +1684,143 @@ fn arena_scene(name: &str) -> SceneDocument {
     json_scene(name, entities)
 }
 
+/// Circuit: grass, four road pieces (class `road`) around a rectangle,
+/// four checkpoints with the finish line last, a car, a camera above the
+/// track, and the `laps`, `checkpoint` and `speed` counters. The game
+/// code is `src/templates/racing.rs`.
+fn racing_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    // The road's center line is a rectangle 32 by 20 m; the road is 8 m wide.
+    let (half_x, half_z, road) = (16.0, 10.0, 8.0);
+    let asphalt = [0.22, 0.22, 0.25];
+    let mut entities = vec![
+        mesh_object(
+            "Grass",
+            None,
+            "Cube",
+            [0.25, 0.5, 0.25],
+            [0.0, -0.2, 0.0],
+            [60.0, 0.2, 44.0],
+        ),
+        mesh_object(
+            "Road South",
+            Some("road"),
+            "Cube",
+            asphalt,
+            [0.0, -0.05, half_z],
+            [2.0 * half_x + road, 0.1, road],
+        ),
+        mesh_object(
+            "Road North",
+            Some("road"),
+            "Cube",
+            asphalt,
+            [0.0, -0.05, -half_z],
+            [2.0 * half_x + road, 0.1, road],
+        ),
+        mesh_object(
+            "Road East",
+            Some("road"),
+            "Cube",
+            asphalt,
+            [half_x, -0.05, 0.0],
+            [road, 0.1, 2.0 * half_z + road],
+        ),
+        mesh_object(
+            "Road West",
+            Some("road"),
+            "Cube",
+            asphalt,
+            [-half_x, -0.05, 0.0],
+            [road, 0.1, 2.0 * half_z + road],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Car",
+            "transform": {"position": [0.0, 0.3, half_z], "rotation": [0.0, -std::f32::consts::FRAC_PI_2, 0.0], "scale": [0.9, 0.5, 1.6]},
+            "mesh_renderer": mesh_object("", None, "Cube", [0.9, 0.2, 0.15], [0.0; 3], [1.0; 3])["mesh_renderer"],
+            "visible": true
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 34.0, 14.0], "rotation": [-1.18, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    // Checkpoints mid-way along each side, counterclockwise from the
+    // start; the last is the finish line under the car.
+    let checkpoints =
+        [[half_x, 0.0], [0.0, -half_z], [-half_x, 0.0], [0.0, half_z]];
+    for (n, [x, z]) in checkpoints.iter().enumerate() {
+        let across_x = n % 2 == 1;
+        let size = if across_x {
+            [0.6, 0.02, road]
+        } else {
+            [road, 0.02, 0.6]
+        };
+        entities.push(mesh_object(
+            &format!("Checkpoint {}", n + 1),
+            Some("checkpoint"),
+            "Cube",
+            if n + 1 == checkpoints.len() {
+                [0.95, 0.95, 0.95]
+            } else {
+                [0.95, 0.8, 0.2]
+            },
+            [*x, 0.01, *z],
+            size,
+        ));
+    }
+    let counter = |name: &str, target: Option<i32>| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target,
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Laps",
+            "components": {
+                "rusting.counter": counter("laps", Some(3)),
+                "rusting.hud": hud_component("Lap {laps}/3", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Next Checkpoint",
+            "components": {"rusting.counter": counter("checkpoint", None)}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Speed",
+            "components": {"rusting.counter": counter("speed", None)}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Finished",
+            "components": {"rusting.hud": hud_component("Finished! R restarts.", HudAnchor::Center, 48.0, Some("laps"))}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Help",
+            "components": {"rusting.hud": hud_component("Up accelerates, down brakes, left and right steer. Pass the yellow checkpoints in order.", HudAnchor::BottomLeft, 20.0, None)}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Restart",
+            "components": {"rusting.input_action": component(&json!({"action": "restart", "inputs": ["KeyR", "PadStart"]}))}
+        }),
+    ]);
+    entities.extend(move_actions());
+    json_scene(name, entities)
+}
+
 /// Uses the process folder only for editor settings, never project creation.
 fn default_project_parent() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -1970,6 +2118,10 @@ mod arena_template;
 #[allow(dead_code)]
 #[path = "templates/puzzle.rs"]
 mod puzzle_template;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/racing.rs"]
+mod racing_template;
 
 #[cfg(test)]
 mod tests {
@@ -2563,6 +2715,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/fight.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_racing_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-racing-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Circuit", ProjectTemplate::Racing)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/racing.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::racing_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/lap.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();

@@ -39,6 +39,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting scene inspect` lists every entity's id and name under `entities`, so `--fields` and `--limit` apply to it; `scene map` help says an empty `maps` list means no tile map.
 - Scene patch `set`, `remove`, `reparent` and `delete` accept `name` for the entity as well as `id`, and the project AGENTS.md shows an example (surveyor F1, unclaimed F1).
 - `scene.window_focused()` is false while the game window has lost focus (alt-tab), so a game can pause itself, and the scenario step `{"focus": false}` simulates it (FOREVER BEAR F46).
+- `rusting new --template racing` creates Circuit, a racing game with game code: drive three laps through the checkpoints in order; off the road the car is slow. Its `tests/lap.json` drives a lap.
 - `rusting new --template top-down` creates Arena, a top-down action game with game code: move, attack the enemies that chase you, and defeat all three before taking three hits. Its `tests/fight.json` plays a winning round.
 - `rusting new --template puzzle` creates Box Push, a grid puzzle with game code: push every box onto a goal. Its `tests/solve.json` solves the level.
 - `rusting docs show cookbook/<name>`: tested snippets for common tasks, starting with an enemy that follows the player and a level select.

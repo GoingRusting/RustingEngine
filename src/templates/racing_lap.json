@@ -1,0 +1,22 @@
+{
+  "name": "lap: holding up and steering left through the four corners passes every checkpoint in order and counts a lap",
+  "ticks": 450,
+  "steps": [
+    {"tick": 0, "press": "up"},
+    {"tick": 60, "expect": {"entity": "Car", "path": "/transform/position/2", "equals": 10.0, "tolerance": 0.01}},
+    {"tick": 83, "press": "left"},
+    {"tick": 126, "release": "left"},
+    {"tick": 100, "expect": {"counter": "checkpoint", "equals": 1}, "within": 135},
+    {"tick": 157, "press": "left"},
+    {"tick": 200, "release": "left"},
+    {"tick": 200, "expect": {"counter": "checkpoint", "equals": 2}, "within": 235},
+    {"tick": 282, "press": "left"},
+    {"tick": 325, "release": "left"},
+    {"tick": 300, "expect": {"counter": "checkpoint", "equals": 3}, "within": 335},
+    {"tick": 354, "press": "left"},
+    {"tick": 397, "release": "left"},
+    {"tick": 400, "expect": {"counter": "laps", "equals": 1}, "within": 430},
+    {"tick": 431, "expect": {"counter": "checkpoint", "equals": 0}},
+    {"tick": 431, "expect": {"counter": "speed", "equals": 1400}}
+  ]
+}
