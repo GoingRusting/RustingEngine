@@ -417,6 +417,11 @@ With thousands of bodies, a few per-body costs decide the frame rate:
   `perf.render` is filled when the scenario renders: a `max_draws` or
   `max_triangles` budget, `"gpu": true`, or a capture or `expect_pixels`
   step. Without one it is null.
+- Entity count. `perf.entities_max` in `rusting test --json` is the most
+  live entities after any tick: scene objects, spawned copies and counters,
+  not engine resources. A `"budgets": {"max_entities": 3000}` limit fails
+  the run when a scenario goes over it. Through `scene.world()`,
+  `entities().len()` counts allocated slots, not live entities.
 
 A `rusting.joint` component joins a CPU body to another CPU body, its
 `target`, or to the world when `target` is null. `anchor` and `frame` place

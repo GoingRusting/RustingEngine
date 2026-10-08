@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting test --json` reports `perf.entities_max`, the most live entities after any tick, and `budgets.max_entities` limits it (surveyor F8, F13).
 - `rusting run --bench` reports `cpu_p50_ms`, `gpu_p50_ms` and `bound` (`"cpu"` or `"gpu"`), and guide/look-and-feel says which cuts help which side; LOD only helps a GPU-bound frame (FOREVER BEAR F49).
 - `rusting test <project> <scenario> --exe <game>` runs a scenario against an already built game, such as an export, from the game's own folder without cooking or building (FOREVER BEAR F48).
 - `rusting scene inspect` lists every entity's id and name under `entities`, so `--fields` and `--limit` apply to it; `scene map` help says an empty `maps` list means no tile map.

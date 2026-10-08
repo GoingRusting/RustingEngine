@@ -913,6 +913,9 @@ pub struct Budgets {
     pub p95_tick_ms: Option<f64>,
     pub max_draws: Option<u32>,
     pub max_triangles: Option<u64>,
+    /// Limit on [`PerfReport::entities_max`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entities: Option<u64>,
 }
 
 /// What a run cost, in a stable JSON shape.
@@ -930,6 +933,10 @@ pub struct PerfReport {
     /// checks, captures and logs between ticks that `tick_ms_*` leave out.
     #[serde(default)]
     pub wall_ms_mean: f64,
+    /// The most live entities after any tick: scene objects, spawned
+    /// copies, counters and other game entities, not engine resources.
+    #[serde(default)]
+    pub entities_max: u64,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
     /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
     /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with a render
@@ -2001,6 +2008,8 @@ pub fn run_scenario(
     let mut events = Vec::new();
     let mut frames: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut tick_ms: Vec<f64> = Vec::new();
+    let mut live = app.world_mut().query_filtered::<(), bevy_ecs::query::Without<bevy_ecs::resource::IsResource>>();
+    let mut entities_max = 0;
     let run_started = std::time::Instant::now();
     let scene_at_start =
         crate::runtime::scene_document_lenient(app.world_mut(), "").ok();
@@ -2154,6 +2163,7 @@ pub fn run_scenario(
             break;
         }
         tick_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        entities_max = entities_max.max(live.iter(app.world()).count() as u64);
         report.ticks_run = app.world().resource::<FrameTime>().fixed_tick;
         TICKS_FINISHED
             .store(u64::from(tick) + 1, std::sync::atomic::Ordering::Relaxed);
@@ -2494,6 +2504,7 @@ pub fn run_scenario(
     report.perf = perf_report(&tick_ms, render);
     report.perf.wall_ms_mean = run_started.elapsed().as_secs_f64() * 1000.0
         / tick_ms.len().max(1) as f64;
+    report.perf.entities_max = entities_max;
     collect_hashes(app.world(), &mut report);
     if let (Some(start), Ok(end)) = (
         &scene_at_start,
@@ -2676,6 +2687,7 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         tick_ms_p95: at(0.95),
         tick_ms_max: at(1.0),
         wall_ms_mean: 0.0,
+        entities_max: 0,
         render: counters,
     }
 }
@@ -2707,6 +2719,15 @@ fn over_budget(budgets: &Budgets, perf: &PerfReport) -> Vec<String> {
         if triangles > limit {
             over.push(format!("max_triangles: {triangles} triangles, over the limit of {limit}"));
         }
+    }
+    if let Some(limit) = budgets
+        .max_entities
+        .filter(|limit| perf.entities_max > *limit)
+    {
+        over.push(format!(
+            "max_entities: {} entities, over the limit of {limit}",
+            perf.entities_max
+        ));
     }
     over
 }
@@ -4216,6 +4237,20 @@ mod tests {
         assert!(report.perf.tick_ms_p95 > 0.0);
         assert_eq!(report.perf.environment["os"], std::env::consts::OS);
         assert!(report.perf.render.is_null());
+        assert!(report.perf.entities_max > 0);
+
+        let mut crowded = scenario(3, json!([]));
+        crowded.budgets = Some(Budgets {
+            max_entities: Some(report.perf.entities_max - 1),
+            ..Budgets::default()
+        });
+        let crowded = run(&crowded);
+        assert!(!crowded.passed);
+        assert!(crowded
+            .first_failure
+            .unwrap()
+            .message
+            .starts_with("budget: max_entities"));
 
         let mut failing = scenario(3, json!([]));
         failing.budgets = Some(Budgets {
