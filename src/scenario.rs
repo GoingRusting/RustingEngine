@@ -3127,7 +3127,18 @@ pub(crate) fn assign(
         *slot = set.value.clone();
         let transform: SceneTransform = serde_json::from_value(value)
             .map_err(|error| format!("{subject}: {error}"))?;
-        world.entity_mut(entity).insert(Transform::from(transform));
+        let transform = Transform::from(transform);
+        // The controller rewrites its body's rotation from yaw every tick,
+        // so a rotation set turns the controller instead.
+        if field.starts_with("/rotation") {
+            if let Some(mut player) =
+                world.get_mut::<crate::runtime::PlayerController>(entity)
+            {
+                player.pitch = transform.rotation[0];
+                player.yaw = transform.rotation[1];
+            }
+        }
+        world.entity_mut(entity).insert(transform);
     } else if let Some(field) = set.path.strip_prefix("/visible") {
         if !field.is_empty() {
             return Err(format!("{subject} does not exist"));
@@ -3751,7 +3762,7 @@ mod tests {
         let report = run_scenario(
             &mut app,
             &scenario(
-                3,
+                4,
                 json!([
                     {"tick": 1, "set": {"entity": "Seat",
                         "path": format!("{look}/yaw"), "value": 1.0}},
@@ -3762,6 +3773,18 @@ mod tests {
                         "tolerance": 1e-5}},
                     {"tick": 2, "expect": {"entity": "Seat",
                         "path": format!("{look}/pitch"), "equals": -0.3,
+                        "tolerance": 1e-5}},
+                    // A rotation set turns the controller, which owns it.
+                    {"tick": 3, "set": {"entity": "Seat",
+                        "path": "/transform/rotation", "value": [0.2, 1.5, 0.0]}},
+                    {"tick": 4, "expect": {"entity": "Seat",
+                        "path": format!("{look}/yaw"), "equals": 1.5,
+                        "tolerance": 1e-5}},
+                    {"tick": 4, "expect": {"entity": "Seat",
+                        "path": format!("{look}/pitch"), "equals": 0.2,
+                        "tolerance": 1e-5}},
+                    {"tick": 4, "expect": {"entity": "Seat",
+                        "path": "/transform/rotation/1", "equals": 1.5,
                         "tolerance": 1e-5}},
                 ]),
             ),

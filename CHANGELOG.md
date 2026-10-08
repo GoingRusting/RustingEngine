@@ -178,6 +178,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- A scenario `set` of `/transform/rotation` on an entity with a player controller sets its `yaw` and `pitch`; before, the controller overwrote it on the next tick (unclaimed F9).
 - `resource_state_hash` takes `&mut World` instead of `&World`; pass the world mutably.
 
 ### Performance

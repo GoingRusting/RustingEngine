@@ -39,7 +39,8 @@ command takes `--json` for output a program can read.
    ticks, sets values, and checks values; `"exists": false` checks that an
    object is gone, and `tolerance` applies to every number in a position or
    other array. Use `set` to place the player or
-   fill a counter before a check, `within` for "eventually by tick N" and
+   fill a counter before a check (`/transform/rotation` on the player
+   sets its controller's yaw and pitch), `within` for "eventually by tick N" and
    `until` for "holds every tick through N". Both take an absolute tick,
    not a count. A `pointer` step puts the mouse cursor at a point of the
    view, given as fractions: `{"tick": 1, "pointer": [0.5, 0.5]}` is the
