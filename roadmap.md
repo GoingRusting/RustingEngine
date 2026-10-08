@@ -3060,7 +3060,8 @@ Depends on: Milestones L1, L3, and L4.
 - [ ] Scene files that merge well: stable key and entity order, and an optional folder form with one file per entity or prefab.
 - [ ] `rusting merge`: a semantic three-way merge driver for scenes, registered through `.gitattributes`, that reports real conflicts by entity and field.
 - [ ] Scoped leases: an agent can claim scenes, prefabs, or source files through the daemon; conflicting writes are refused with the holder named.
-- [ ] Impact reports: before a change to a prefab, component, or asset, list every scene and scenario it affects.
+- [x] Impact reports: before a change to a prefab, component, or asset, list every scene and scenario it affects.
+  Evidence: `rusting impact <file-or-component> [root]`; `cli::hint_tests::impact_lists_the_scenes_code_and_scenarios_a_change_touches` (a data file named in game code gives the code line and every scenario; `camera` gives the main scene and every scenario; an unused name gives nothing); on forever-bear `impact models/bear.mesh-0-0.rmesh` lists 1876 entities of the main scene. Full AGENTS.md check green. Limits: prefabs are referenced only from code (`spawn_prefab` literals), so a prefab hit is a code hit; paths built at run time are not found; a scenario is tied to a target only through the main scene, game code, or naming it.
 
 ### Exit gate
 

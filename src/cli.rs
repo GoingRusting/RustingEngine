@@ -560,17 +560,7 @@ pub fn project_summary(root: &Path, budget: usize) -> CliResult {
         };
         let mut used = BTreeSet::new();
         for entity in &document.entities {
-            let mut names = BTreeSet::new();
-            if let Ok(Value::Object(fields)) = serde_json::to_value(entity) {
-                names.extend(fields.into_iter().filter_map(|(key, value)| {
-                    let skip = matches!(
-                        key.as_str(),
-                        "id" | "parent" | "name" | "classes" | "components"
-                    );
-                    (!skip && !value.is_null()).then_some(key)
-                }));
-            }
-            names.extend(entity.components.keys().cloned());
+            let names = entity_components(entity);
             for name in &names {
                 *component_entities.entry(name.clone()).or_default() += 1;
             }
@@ -636,6 +626,147 @@ pub fn project_summary(root: &Path, budget: usize) -> CliResult {
         diagnostics,
         ..CliResult::success(data)
     }
+}
+
+/// The built-in sections (`collider`, `camera`, ...) and named components
+/// (`rusting.sound_cue`, game components) an entity has.
+fn entity_components(entity: &SceneEntity) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    if let Ok(Value::Object(fields)) = serde_json::to_value(entity) {
+        names.extend(fields.into_iter().filter_map(|(key, value)| {
+            let skip = matches!(
+                key.as_str(),
+                "id" | "parent" | "name" | "classes" | "components"
+            );
+            (!skip && !value.is_null()).then_some(key)
+        }));
+    }
+    names.extend(entity.components.keys().cloned());
+    names
+}
+
+/// `rusting impact`: what a change to `target` touches. A target that is a
+/// file (relative to the project or to `assets/`) matches scenes that
+/// reference it and code that names it; any other target is a component
+/// name, matching entities that have it and code lines that mention it.
+/// Scenarios run the main scene and the game code, so a hit in either
+/// affects every scenario; otherwise only scenarios whose text names the
+/// target are listed (`scenario_files`).
+pub fn impact(root: &Path, target: &str) -> CliResult {
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let root = &project.root;
+    let relative =
+        |path: &Path| path.strip_prefix(root).unwrap_or(path).to_owned();
+    let canonical = |path: PathBuf| path.canonicalize().ok();
+    let file = [root.join(target), root.join("assets").join(target)]
+        .into_iter()
+        .find(|path| path.is_file())
+        .and_then(canonical);
+    let mut scene_files = Vec::new();
+    for folder in ["scenes", "assets"] {
+        scene_files_in(&root.join(folder), &mut scene_files);
+    }
+    scene_files.sort();
+    let main_scene = canonical(project.scene_path.clone());
+    let mut main_hit = false;
+    let mut scenes = Vec::new();
+    for path in &scene_files {
+        let Ok(document) = read_scene(path) else {
+            continue;
+        };
+        let base = path.parent().unwrap_or(root);
+        let mut entities: BTreeSet<String> = BTreeSet::new();
+        let name = |index: usize| {
+            let entity = &document.entities[index];
+            entity.name.clone().unwrap_or_else(|| entity.id.to_string())
+        };
+        match &file {
+            Some(file) => entities.extend(
+                asset_references(&document)
+                    .into_iter()
+                    .filter(|(asset, _)| {
+                        canonical(base.join(asset)).as_ref() == Some(file)
+                    })
+                    .map(|(_, index)| name(index)),
+            ),
+            None => entities.extend(
+                (0..document.entities.len())
+                    .filter(|&index| {
+                        entity_components(&document.entities[index])
+                            .contains(target)
+                    })
+                    .map(name),
+            ),
+        }
+        let itself = canonical(path.clone()) == file && file.is_some();
+        if entities.is_empty() && !itself {
+            continue;
+        }
+        main_hit |= canonical(path.clone()) == main_scene;
+        // ponytail: first 10 names; `scene query --component` lists all.
+        let count = entities.len();
+        let entities: Vec<_> = entities.into_iter().take(10).collect();
+        scenes.push(json!({
+            "path": relative(path),
+            "entity_count": count,
+            "entities": entities,
+        }));
+    }
+    let code: Vec<_> = match &file {
+        Some(file) => code_asset_literals(root)
+            .into_iter()
+            .filter(|(_, _, path)| {
+                canonical(root.join("assets").join(path)).as_ref() == Some(file)
+            })
+            .map(|(source, line, _)| (source, line))
+            .collect(),
+        None => {
+            let mut sources = Vec::new();
+            rust_files(&root.join("src"), &mut sources);
+            sources.sort();
+            sources
+                .into_iter()
+                .flat_map(|source| {
+                    let text =
+                        std::fs::read_to_string(&source).unwrap_or_default();
+                    text.lines()
+                        .enumerate()
+                        .filter(|(_, line)| line.contains(target))
+                        .map(|(line, _)| (source.clone(), line + 1))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+    };
+    let code: Vec<_> = code
+        .into_iter()
+        .map(|(source, line)| json!({"file": relative(&source), "line": line}))
+        .collect();
+    let every = main_hit || !code.is_empty();
+    let mut scenarios: Vec<_> = std::fs::read_dir(root.join("tests"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter(|path| {
+            every
+                || std::fs::read_to_string(path)
+                    .is_ok_and(|text| text.contains(target))
+        })
+        .map(|path| relative(&path))
+        .collect();
+    scenarios.sort();
+    CliResult::success(json!({
+        "target": target,
+        "kind": if file.is_some() { "file" } else { "component" },
+        "scenes": scenes,
+        "code": code,
+        "scenario_files": scenarios,
+    }))
 }
 
 fn scene_files_in(folder: &Path, files: &mut Vec<PathBuf>) {
@@ -4958,6 +5089,39 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn impact_lists_the_scenes_code_and_scenarios_a_change_touches() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-impact-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        std::fs::create_dir_all(root.join("assets/data")).unwrap();
+        std::fs::write(root.join("assets/data/level.json"), "{}").unwrap();
+        std::fs::write(
+            root.join("src/extra.rs"),
+            "fn f(scene: &GameScene) {\n    scene.load_text(\"data/level.json\");\n}\n",
+        )
+        .unwrap();
+
+        let file = impact(&root, "data/level.json").data;
+        assert_eq!(file["kind"], "file");
+        assert_eq!(file["code"], json!([{"file": "src/extra.rs", "line": 2}]));
+        assert_eq!(file["scenario_files"], json!(["tests/solve.json"]));
+
+        let camera = impact(&root, "camera").data;
+        assert_eq!(camera["kind"], "component");
+        assert_eq!(camera["scenes"][0]["path"], "scenes/main.rscene");
+        assert!(camera["scenes"][0]["entity_count"].as_u64().unwrap() > 0);
+        assert_eq!(camera["scenario_files"], json!(["tests/solve.json"]));
+
+        let none = impact(&root, "game.nothing_uses_this").data;
+        assert_eq!(none["scenes"], json!([]));
+        assert_eq!(none["code"], json!([]));
+        assert_eq!(none["scenario_files"], json!([]));
+        std::fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

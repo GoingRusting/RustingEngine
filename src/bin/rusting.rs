@@ -104,6 +104,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["determinism"], 0),
         (&["project", "inspect"], 0),
         (&["project", "summary"], 0),
+        (&["impact"], 1),
         (&["asset", "list"], 0),
         (&["test"], 1),
         (&["fuzz"], 1),
@@ -161,6 +162,7 @@ fn execute(args: &[String]) -> CliResult {
             }
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
+        ["impact", root, target] => cli::impact(Path::new(root), target),
         ["systems"] => cli::system_access(None, None),
         ["systems", "--reads", name] => cli::system_access(Some(name), None),
         ["systems", "--writes", name] => cli::system_access(None, Some(name)),
@@ -775,6 +777,15 @@ fn render_human(result: &CliResult) -> String {
             items.join(", ")
         };
         for scene in data["scenes"].as_array().into_iter().flatten() {
+            if scene["entities"].is_array() {
+                lines.push(format!(
+                    "Scene {}: {} entities: {}",
+                    scene["path"].as_str().unwrap_or("?"),
+                    scene["entity_count"],
+                    join(&scene["entities"])
+                ));
+                continue;
+            }
             lines.push(format!(
                 "Scene {}: {} entities; components {}; assets {}",
                 scene["path"].as_str().unwrap_or("?"),
@@ -806,6 +817,16 @@ fn render_human(result: &CliResult) -> String {
                 join(&system["functions"]),
                 join(&system["assets"])
             ));
+        }
+        for code in data["code"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "Code {}:{}",
+                code["file"].as_str().unwrap_or("?"),
+                code["line"]
+            ));
+        }
+        for path in data["scenario_files"].as_array().into_iter().flatten() {
+            lines.push(format!("Scenario {}", path.as_str().unwrap_or("?")));
         }
         if let Some(omitted) = data["omitted"].as_u64().filter(|n| *n > 0) {
             lines.push(format!(

@@ -143,6 +143,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "systems --writes Transform --json",
     },
     Operation {
+        name: "impact",
+        usage: "impact <file-or-component> [project-root] [--json]",
+        summary: "What a change would touch, before you make it. A file (relative to the project or to assets/: a texture, mesh, sound, data file or prefab) lists the scenes and entities that reference it and the code lines that name it; anything else is a component name (collider, rusting.sound_cue, game.health) and lists the entities that have it and the code lines that mention it. Scenarios run the main scene and the game code, so a hit in either lists every scenario in tests/; otherwise only scenarios that name the target. Each scene shows its first 10 entity names and entity_count.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder")],
+        example: "impact textures/crate.png --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",
