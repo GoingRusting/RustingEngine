@@ -1,0 +1,18 @@
+{
+  "name": "fight: an attack in reach defeats an enemy, a touch costs a hit, and defeating all three wins",
+  "ticks": 260,
+  "steps": [
+    {"tick": 60, "tap": "attack"},
+    {"tick": 62, "expect": {"counter": "kills", "equals": 1}},
+    {"tick": 62, "expect": {"counter": "hits", "equals": 0}},
+    {"tick": 150, "expect": {"counter": "hits", "equals": 1}, "within": 175},
+    {"tick": 170, "press": "left"},
+    {"tick": 185, "release": "left"},
+    {"tick": 186, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": -1.25, "tolerance": 0.1}},
+    {"tick": 187, "tap": "attack"},
+    {"tick": 189, "expect": {"counter": "kills", "equals": 2}},
+    {"tick": 225, "tap": "attack"},
+    {"tick": 227, "expect": {"counter": "kills", "equals": 3}},
+    {"tick": 255, "expect": {"counter": "hits", "equals": 1}}
+  ]
+}

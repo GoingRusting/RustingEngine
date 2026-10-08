@@ -448,11 +448,14 @@ pub enum ProjectTemplate {
     /// Box Push, a grid puzzle with game code: step on a grid and push
     /// every box onto a goal.
     Puzzle,
+    /// Arena, a top-down action game with code: move, attack the
+    /// enemies that chase the player, and win before taking three hits.
+    TopDown,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -460,6 +463,7 @@ impl ProjectTemplate {
         Self::Platformer2d,
         Self::Starter,
         Self::Puzzle,
+        Self::TopDown,
         Self::Empty,
     ];
 
@@ -475,6 +479,7 @@ impl ProjectTemplate {
             Self::PhysicsSandbox => "sandbox",
             Self::Empty => "empty",
             Self::Puzzle => "puzzle",
+            Self::TopDown => "top-down",
         }
     }
 
@@ -490,6 +495,7 @@ impl ProjectTemplate {
             Self::PhysicsSandbox => "Physics sandbox",
             Self::Empty => "Empty (camera only)",
             Self::Puzzle => "Box Push (grid puzzle)",
+            Self::TopDown => "Arena (top-down action)",
         }
     }
 
@@ -711,15 +717,22 @@ fn write_project_template(
         root.join("src/main.rs"),
         match template {
             ProjectTemplate::Puzzle => include_str!("templates/puzzle.rs"),
+            ProjectTemplate::TopDown => include_str!("templates/arena.rs"),
             _ => default_game_source(),
         },
     )?;
-    if template == ProjectTemplate::Puzzle {
+    let scenario = match template {
+        ProjectTemplate::Puzzle => {
+            Some(("solve.json", include_str!("templates/puzzle_solve.json")))
+        }
+        ProjectTemplate::TopDown => {
+            Some(("fight.json", include_str!("templates/arena_fight.json")))
+        }
+        _ => None,
+    };
+    if let Some((file, text)) = scenario {
         std::fs::create_dir_all(root.join("tests"))?;
-        std::fs::write(
-            root.join("tests/solve.json"),
-            include_str!("templates/puzzle_solve.json"),
-        )?;
+        std::fs::write(root.join("tests").join(file), text)?;
     }
     std::fs::write(root.join("AGENTS.md"), include_str!("project_agents.md"))?;
     std::fs::create_dir_all(root.join("skills/rusting-game"))?;
@@ -747,6 +760,7 @@ fn write_project_template(
             ProjectTemplate::Platformer2d => platformer_scene(name),
             ProjectTemplate::Starter => starter_scene(name),
             ProjectTemplate::Puzzle => puzzle_scene(name),
+            ProjectTemplate::TopDown => arena_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -872,9 +886,6 @@ fn platformer_scene(name: &str) -> SceneDocument {
         BurstEmitter, HudElement, PlatformerController, TileKind, TileMap,
     };
 
-    fn component(value: &impl Serialize) -> String {
-        serde_json::to_string(value).expect("components serialize")
-    }
     let sprite = |color: [f32; 4]| {
         json!({
             "mesh": {"BuiltinPrimitive": "Quad"},
@@ -998,9 +1009,6 @@ fn scene_3d(name: &str, template: ProjectTemplate) -> SceneDocument {
 
     use crate::runtime::{HudElement, PlayerController};
 
-    fn component(value: &impl Serialize) -> String {
-        serde_json::to_string(value).expect("components serialize")
-    }
     let mesh = |shape: &str, color: [f32; 3]| {
         json!({
             "mesh": {"BuiltinPrimitive": shape},
@@ -1185,9 +1193,6 @@ fn starter_scene(name: &str) -> SceneDocument {
         SceneEntity, TileKind, TileMap,
     };
 
-    fn component(value: &impl Serialize) -> String {
-        serde_json::to_string(value).expect("components serialize")
-    }
     fn find<'a>(
         scene: &'a mut SceneDocument,
         name: &str,
@@ -1359,43 +1364,14 @@ fn starter_scene(name: &str) -> SceneDocument {
 /// X and Z cells, a ball player, a camera looking down at the grid, and the
 /// `boxes` counter. The game code is `src/templates/puzzle.rs`.
 fn puzzle_scene(name: &str) -> SceneDocument {
-    use serde_json::{json, Value};
+    use serde_json::json;
 
-    use crate::runtime::{Counter, HudAnchor, HudElement};
+    use crate::runtime::{Counter, HudAnchor};
 
-    fn component(value: &impl Serialize) -> String {
-        serde_json::to_string(value).expect("components serialize")
-    }
     const MAP: [&str; 6] = [
         "########", "#......#", "#.@.B..#", "#......#", "#.B.GG.#", "########",
     ];
-    let mesh = |shape: &str, color: [f32; 3]| {
-        json!({
-            "mesh": {"BuiltinPrimitive": shape},
-            "material": {"Inline": {
-                "model": "Pbr", "alpha_mode": "Opaque",
-                "base_color": [color[0], color[1], color[2], 1.0],
-                "emissive": [0.0, 0.0, 0.0], "metallic": 0.0, "roughness": 0.7,
-                "base_color_texture": null, "normal_texture": null,
-                "metallic_roughness_texture": null,
-                "occlusion_texture": null, "emissive_texture": null
-            }},
-            "cast_shadows": true, "receive_shadows": true
-        })
-    };
-    let object = |name: &str,
-                  class: Option<&str>,
-                  shape: &str,
-                  color,
-                  position: [f32; 3],
-                  scale: [f32; 3]| {
-        json!({
-            "id": Uuid::new_v4(), "parent": null, "name": name,
-            "classes": class.into_iter().collect::<Vec<_>>(),
-            "transform": {"position": position, "rotation": [0.0, 0.0, 0.0], "scale": scale},
-            "mesh_renderer": mesh(shape, color), "visible": true
-        })
-    };
+    let object = mesh_object;
     let mut entities = vec![
         // Top face at y = 0, under every cell.
         object(
@@ -1467,15 +1443,7 @@ fn puzzle_scene(name: &str) -> SceneDocument {
             });
         }
     }
-    let hud = |text: &str, anchor, font_size, requires: Option<&str>| {
-        component(&HudElement {
-            text: text.into(),
-            anchor,
-            font_size,
-            requires: requires.map(String::from),
-            ..HudElement::default()
-        })
-    };
+    let hud = hud_component;
     let goals = MAP.concat().matches('G').count() as i32;
     entities.push(json!({
         "id": Uuid::new_v4(), "parent": null, "name": "Score",
@@ -1492,28 +1460,217 @@ fn puzzle_scene(name: &str) -> SceneDocument {
         "id": Uuid::new_v4(), "parent": null, "name": "Help",
         "components": {"rusting.hud": hud("Arrows or WASD move. Push every box onto a green goal.", HudAnchor::BottomLeft, 20.0, None)}
     }));
-    for (action, inputs) in [
+    entities.extend(move_actions());
+    json_scene(name, entities)
+}
+
+/// Serializes a runtime component for a scene's `components` map.
+fn component(value: &impl Serialize) -> String {
+    serde_json::to_string(value).expect("components serialize")
+}
+
+/// A named object with a builtin mesh in a flat PBR color.
+fn mesh_object(
+    name: &str,
+    class: Option<&str>,
+    shape: &str,
+    color: [f32; 3],
+    position: [f32; 3],
+    scale: [f32; 3],
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": Uuid::new_v4(), "parent": null, "name": name,
+        "classes": class.into_iter().collect::<Vec<_>>(),
+        "transform": {"position": position, "rotation": [0.0, 0.0, 0.0], "scale": scale},
+        "mesh_renderer": {
+            "mesh": {"BuiltinPrimitive": shape},
+            "material": {"Inline": {
+                "model": "Pbr", "alpha_mode": "Opaque",
+                "base_color": [color[0], color[1], color[2], 1.0],
+                "emissive": [0.0, 0.0, 0.0], "metallic": 0.0, "roughness": 0.7,
+                "base_color_texture": null, "normal_texture": null,
+                "metallic_roughness_texture": null,
+                "occlusion_texture": null, "emissive_texture": null
+            }},
+            "cast_shadows": true, "receive_shadows": true
+        },
+        "visible": true
+    })
+}
+
+/// A `rusting.hud` component, shown only once `requires` completes.
+fn hud_component(
+    text: &str,
+    anchor: crate::runtime::HudAnchor,
+    font_size: f32,
+    requires: Option<&str>,
+) -> String {
+    component(&crate::runtime::HudElement {
+        text: text.into(),
+        anchor,
+        font_size,
+        requires: requires.map(String::from),
+        ..Default::default()
+    })
+}
+
+/// The `up`, `down`, `left` and `right` actions on WASD, the arrows and
+/// the d-pad.
+fn move_actions() -> Vec<serde_json::Value> {
+    [
         ("up", ["KeyW", "ArrowUp", "PadDpadUp"]),
         ("down", ["KeyS", "ArrowDown", "PadDpadDown"]),
         ("left", ["KeyA", "ArrowLeft", "PadDpadLeft"]),
         ("right", ["KeyD", "ArrowRight", "PadDpadRight"]),
-    ] {
-        entities.push(json!({
+    ]
+    .into_iter()
+    .map(|(action, inputs)| {
+        serde_json::json!({
             "id": Uuid::new_v4(), "parent": null, "name": format!("Move {action}"),
-            "components": {"rusting.input_action": component(&json!({"action": action, "inputs": inputs}))}
-        }));
-    }
+            "components": {"rusting.input_action": component(&serde_json::json!({"action": action, "inputs": inputs}))}
+        })
+    })
+    .collect()
+}
+
+fn json_scene(name: &str, entities: Vec<serde_json::Value>) -> SceneDocument {
     SceneDocument {
         format_version: SCENE_FORMAT_VERSION,
         name: format!("{name} Main Scene"),
         entities: entities
             .into_iter()
-            .map(|entity: Value| serde_json::from_value(entity))
+            .map(serde_json::from_value)
             .collect::<Result<Vec<_>, _>>()
-            .expect("the puzzle template is a valid scene"),
+            .expect("templates are valid scenes"),
         render: Default::default(),
         simulation: Default::default(),
     }
+}
+
+/// Arena: a floor with low walls, a ball player, three enemies, a camera
+/// looking down, and the `kills` and `hits` counters. The game code is
+/// `src/templates/arena.rs`.
+fn arena_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    let wall = [0.45, 0.47, 0.52];
+    let mut entities = vec![
+        mesh_object(
+            "Floor",
+            None,
+            "Cube",
+            [0.3, 0.32, 0.36],
+            [0.0, -0.1, 0.0],
+            [16.0, 0.2, 16.0],
+        ),
+        mesh_object(
+            "Wall North",
+            None,
+            "Cube",
+            wall,
+            [0.0, 0.3, -8.0],
+            [16.0, 0.6, 0.4],
+        ),
+        mesh_object(
+            "Wall South",
+            None,
+            "Cube",
+            wall,
+            [0.0, 0.3, 8.0],
+            [16.0, 0.6, 0.4],
+        ),
+        mesh_object(
+            "Wall West",
+            None,
+            "Cube",
+            wall,
+            [-8.0, 0.3, 0.0],
+            [0.4, 0.6, 16.0],
+        ),
+        mesh_object(
+            "Wall East",
+            None,
+            "Cube",
+            wall,
+            [8.0, 0.3, 0.0],
+            [0.4, 0.6, 16.0],
+        ),
+        mesh_object(
+            "Player",
+            None,
+            "Sphere",
+            [0.25, 0.55, 0.95],
+            [0.0, 0.4, 0.0],
+            [0.8; 3],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 15.0, 9.0], "rotation": [-1.03, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    let enemies = [[3.0, 0.4, 0.0], [-5.0, 0.4, 0.0], [0.0, 0.4, -7.0]];
+    for (n, position) in enemies.iter().enumerate() {
+        entities.push(mesh_object(
+            &format!("Enemy {}", n + 1),
+            Some("enemy"),
+            "Cube",
+            [0.9, 0.3, 0.25],
+            *position,
+            [0.7; 3],
+        ));
+    }
+    let counter = |name: &str, target: usize| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target: Some(target as i32),
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Kills",
+            "components": {
+                "rusting.counter": counter("kills", enemies.len()),
+                "rusting.hud": hud_component(&format!("Defeated {{kills}}/{}", enemies.len()), HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Hits",
+            "components": {
+                "rusting.counter": counter("hits", 3),
+                "rusting.hud": hud_component("Hits {hits}/3", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Won",
+            "components": {"rusting.hud": hud_component("You win! Attack to play again.", HudAnchor::Center, 48.0, Some("kills"))}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Lost",
+            "components": {"rusting.hud": hud_component("Game over. Attack to try again.", HudAnchor::Center, 48.0, Some("hits"))}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Help",
+            "components": {"rusting.hud": hud_component("Arrows or WASD move. Space attacks enemies in reach.", HudAnchor::BottomLeft, 20.0, None)}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Attack",
+            "components": {"rusting.input_action": component(&json!({"action": "attack", "inputs": ["Space", "KeyJ", "PadSouth"]}))}
+        }),
+    ]);
+    entities.extend(move_actions());
+    json_scene(name, entities)
 }
 
 /// Uses the process folder only for editor settings, never project creation.
@@ -1805,6 +1962,10 @@ pub fn built_executable(
 }
 
 // `rusting_game!` adds a `main` the tests never call.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/arena.rs"]
+mod arena_template;
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "templates/puzzle.rs"]
@@ -2374,6 +2535,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/solve.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_top_down_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-arena-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Arena", ProjectTemplate::TopDown)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/arena.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::arena_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/fight.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();
