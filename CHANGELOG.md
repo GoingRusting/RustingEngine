@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `perf.cpu_ms_mean` and the `mean_cpu_ms` scenario budget measure CPU time per tick, which other processes on the machine slow far less than wall time (surveyor F20).
 - Transform propagation recomputes only the entities that moved and their children, so static props cost nothing per tick (unclaimed F8).
 - `scene.on_screen(point)` and `scene.raycast_visible` answer "is this in view and not behind a wall" without mirroring the camera in game code or hitting hidden templates (surveyor F18).
 - Scenario `explore.goals` takes `[x, y, z]` points, so a list of points walks a scripted route (surveyor F17).

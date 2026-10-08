@@ -951,6 +951,9 @@ pub struct Budgets {
     pub max_tick_ms: Option<f64>,
     pub mean_tick_ms: Option<f64>,
     pub p95_tick_ms: Option<f64>,
+    /// Limit on [`PerfReport::cpu_ms_mean`]; not checked where it is null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mean_cpu_ms: Option<f64>,
     pub max_draws: Option<u32>,
     pub max_triangles: Option<u64>,
     /// Limit on `perf.render.lights`; renders every tick like `max_draws`.
@@ -976,6 +979,11 @@ pub struct PerfReport {
     /// checks, captures and logs between ticks that `tick_ms_*` leave out.
     #[serde(default)]
     pub wall_ms_mean: f64,
+    /// CPU milliseconds of every game thread over the whole run per tick,
+    /// counted like `wall_ms_mean`. Other processes slow it far less than
+    /// wall time. Linux only, in 10 ms steps over the run; null elsewhere.
+    #[serde(default)]
+    pub cpu_ms_mean: Option<f64>,
     /// The most live entities after any tick: scene objects, spawned
     /// copies, counters and other game entities, not engine resources.
     #[serde(default)]
@@ -2070,6 +2078,7 @@ pub fn run_scenario(
     let mut live = app.world_mut().query_filtered::<(), bevy_ecs::query::Without<bevy_ecs::resource::IsResource>>();
     let mut entities_max = 0;
     let run_started = std::time::Instant::now();
+    let cpu_started = process_cpu_ms();
     let scene_at_start =
         crate::runtime::scene_document_lenient(app.world_mut(), "").ok();
     // Repeated checks report once; this holds their last passing result.
@@ -2565,6 +2574,9 @@ pub fn run_scenario(
     report.perf = perf_report(&tick_ms, render);
     report.perf.wall_ms_mean = run_started.elapsed().as_secs_f64() * 1000.0
         / tick_ms.len().max(1) as f64;
+    report.perf.cpu_ms_mean = cpu_started
+        .zip(process_cpu_ms())
+        .map(|(start, end)| (end - start) / tick_ms.len().max(1) as f64);
     report.perf.entities_max = entities_max;
     collect_hashes(app.world(), &mut report);
     if let (Some(start), Ok(end)) = (
@@ -2751,9 +2763,21 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         tick_ms_p95: at(0.95),
         tick_ms_max: at(1.0),
         wall_ms_mean: 0.0,
+        cpu_ms_mean: None,
         entities_max: 0,
         render: counters,
     }
+}
+
+/// CPU time this process has used, all threads, on Linux.
+fn process_cpu_ms() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // Fields after the parenthesised name; utime and stime are the 12th
+    // and 13th, in USER_HZ (always 100 in /proc).
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace().skip(11);
+    let user: u64 = fields.next()?.parse().ok()?;
+    let system: u64 = fields.next()?.parse().ok()?;
+    Some((user + system) as f64 * 10.0)
 }
 
 /// The one-minute load average on Linux, `None` elsewhere.
@@ -2790,6 +2814,9 @@ fn over_budget(budgets: &Budgets, perf: &PerfReport) -> Vec<String> {
     ms("max_tick_ms", budgets.max_tick_ms, perf.tick_ms_max);
     ms("mean_tick_ms", budgets.mean_tick_ms, perf.tick_ms_mean);
     ms("p95_tick_ms", budgets.p95_tick_ms, perf.tick_ms_p95);
+    if let Some(cpu) = perf.cpu_ms_mean {
+        ms("mean_cpu_ms", budgets.mean_cpu_ms, cpu);
+    }
     if let (Some(limit), Some(draws)) =
         (budgets.max_draws, perf.render["draws"].as_u64())
     {
@@ -4389,6 +4416,18 @@ mod tests {
         assert!(message.ends_with("(load average 6.5 on 4 CPUs: rerun it alone before treating it as real)"), "{message}");
         busy.environment["load_average"] = json!(1.0);
         assert!(over_budget(&limit, &busy)[0].ends_with("ms limit"));
+        if cfg!(target_os = "linux") {
+            assert!(report.perf.cpu_ms_mean.is_some_and(|ms| ms >= 0.0));
+        }
+        let cpu = Budgets {
+            mean_cpu_ms: Some(1.0),
+            ..Budgets::default()
+        };
+        busy.cpu_ms_mean = None;
+        assert!(over_budget(&cpu, &busy).is_empty(), "not measured");
+        busy.cpu_ms_mean = Some(5.0);
+        assert!(over_budget(&cpu, &busy)[0]
+            .starts_with("mean_cpu_ms is 5.000 ms, over the 1 ms limit"));
         busy.render = json!({"lights": 33});
         let lights = Budgets {
             max_lights: Some(32),
