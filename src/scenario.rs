@@ -984,6 +984,12 @@ pub struct PerfReport {
     /// wall time. Linux only, in 10 ms steps over the run; null elsewhere.
     #[serde(default)]
     pub cpu_ms_mean: Option<f64>,
+    /// Mean CPU milliseconds per tick in each part of the frame: `fixed`
+    /// (physics and the game's fixed systems), `update` (the game's
+    /// systems), `post_update` (transform propagation and other engine
+    /// work) and `extract` (copying the scene for the renderer).
+    #[serde(default)]
+    pub stages_ms_mean: Value,
     /// The most live entities after any tick: scene objects, spawned
     /// copies, counters and other game entities, not engine resources.
     #[serde(default)]
@@ -2079,6 +2085,7 @@ pub fn run_scenario(
     let mut entities_max = 0;
     let run_started = std::time::Instant::now();
     let cpu_started = process_cpu_ms();
+    let mut stages = [0.0_f64; 4];
     let scene_at_start =
         crate::runtime::scene_document_lenient(app.world_mut(), "").ok();
     // Repeated checks report once; this holds their last passing result.
@@ -2216,6 +2223,19 @@ pub fn run_scenario(
         // Sound cues become requests here as in the windowed runner, so
         // `audio:` sees them.
         crate::runtime::route_sound_events(app.world_mut());
+        if let Some(timings) = app
+            .world()
+            .get_resource::<crate::runtime::CpuFrameTimings>()
+        {
+            for (sum, time) in stages.iter_mut().zip([
+                timings.physics,
+                timings.update,
+                timings.post_update,
+                timings.extraction,
+            ]) {
+                *sum += time.as_secs_f64() * 1000.0;
+            }
+        }
         if let Some(mixer) = &mut mixer {
             mix_tick(app, mixer, keep_mix.then_some(&mut mixed));
         }
@@ -2578,6 +2598,9 @@ pub fn run_scenario(
         .zip(process_cpu_ms())
         .map(|(start, end)| (end - start) / tick_ms.len().max(1) as f64);
     report.perf.entities_max = entities_max;
+    let mean = stages.map(|sum| sum / tick_ms.len().max(1) as f64);
+    report.perf.stages_ms_mean = json!({"fixed": mean[0], "update": mean[1],
+        "post_update": mean[2], "extract": mean[3]});
     collect_hashes(app.world(), &mut report);
     if let (Some(start), Ok(end)) = (
         &scene_at_start,
@@ -2764,6 +2787,7 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         tick_ms_max: at(1.0),
         wall_ms_mean: 0.0,
         cpu_ms_mean: None,
+        stages_ms_mean: Value::Null,
         entities_max: 0,
         render: counters,
     }
@@ -4403,6 +4427,10 @@ mod tests {
         assert_eq!(report.perf.environment["os"], std::env::consts::OS);
         assert!(report.perf.render.is_null());
         assert!(report.perf.entities_max > 0);
+        let stages = &report.perf.stages_ms_mean;
+        for stage in ["fixed", "update", "post_update", "extract"] {
+            assert!(stages[stage].as_f64() > Some(0.0), "{stages}");
+        }
         assert!(report.perf.environment["cpus"].as_u64() > Some(0));
         let mut busy = report.perf.clone();
         busy.tick_ms_max = 50.0;

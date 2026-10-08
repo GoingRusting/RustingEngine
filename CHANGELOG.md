@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `perf.stages_ms_mean` in scenario results and the `RUSTING_PERF` line split tick CPU time into `fixed`, `update`, `post_update` and `extract` (unclaimed F8).
 - `perf.cpu_ms_mean` and the `mean_cpu_ms` scenario budget measure CPU time per tick, which other processes on the machine slow far less than wall time (surveyor F20).
 - Transform propagation recomputes only the entities that moved and their children, so static props cost nothing per tick (unclaimed F8).
 - `scene.on_screen(point)` and `scene.raycast_visible` answer "is this in view and not behind a wall" without mirroring the camera in game code or hitting hidden templates (surveyor F18).
@@ -182,6 +183,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `rusting_core::schedule::CpuFrameTimings` has new `update` and `post_update` fields. Migration: a struct literal needs `..Default::default()`. The `RUSTING_PERF` line says `CPU fixed` where it said `CPU physics`.
 - A `CLI_OUTDATED` warning about newer engine source lists the engine commits made since the CLI was built (surveyor F3).
 - `rusting test` with one scenario leaves `scenario.state_hashes` and `scenario.gpu_state_hashes` out of its result. Migration: pass `--full`, or read build/scenario-report.json (unclaimed F10).
 - A scenario `capture` whose `camera` is the camera the game already shows alone keeps the HUD; before, any named camera dropped it (unclaimed F12).

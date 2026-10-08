@@ -21,11 +21,16 @@ pub struct FrameReport {
 
 /// CPU time spent in each part of the last frame, for the profiler.
 ///
-/// The application fills `physics` and `extraction`; the renderer fills
-/// `preparation` and `recording`, and a host with a UI fills `editor`.
+/// The application fills `physics` (every fixed step: physics and the
+/// game's fixed systems), `update`, `post_update` (transform propagation
+/// and other engine work after the game's systems) and `extraction`; the
+/// renderer fills `preparation` and `recording`, and a host with a UI fills
+/// `editor`.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuFrameTimings {
     pub physics: Duration,
+    pub update: Duration,
+    pub post_update: Duration,
     pub extraction: Duration,
     pub preparation: Duration,
     pub recording: Duration,

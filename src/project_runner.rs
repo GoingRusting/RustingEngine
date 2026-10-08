@@ -4124,11 +4124,13 @@ impl ProjectApplication {
         let gpu = renderer.gpu_pass_times();
         let counters = renderer.render_counters();
         let mut line = format!(
-            "[rusting] perf {fps:.0} fps ({:.2} ms/frame) | frame p50 {p50:.2} p95 {p95:.2} p99 {p99:.2} max {max:.2} ms | update {:.2} render {:.2} ms | CPU physics {:.2} extract {:.2} prepare {:.2} record {:.2} ms | GPU {:.2} ms",
+            "[rusting] perf {fps:.0} fps ({:.2} ms/frame) | frame p50 {p50:.2} p95 {p95:.2} p99 {p99:.2} max {max:.2} ms | update {:.2} render {:.2} ms | CPU fixed {:.2} update {:.2} post_update {:.2} extract {:.2} prepare {:.2} record {:.2} ms | GPU {:.2} ms",
             1000.0 / fps,
             ms(update),
             ms(render),
             ms(cpu.physics),
+            ms(cpu.update),
+            ms(cpu.post_update),
             ms(cpu.extraction),
             ms(cpu.preparation),
             ms(cpu.recording),

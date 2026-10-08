@@ -704,8 +704,12 @@ impl App {
                 },
             );
         }
+        let start = Instant::now();
         self.update.run(&mut self.world);
+        let update = start.elapsed();
+        let start = Instant::now();
         self.post_update.run(&mut self.world);
+        let post_update = start.elapsed();
         #[cfg(feature = "ui")]
         if let Some(mut ui) = self.world.get_resource_mut::<RuntimeUi>() {
             ui.end_pass();
@@ -717,6 +721,8 @@ impl App {
             self.world.get_resource_mut::<CpuFrameTimings>()
         {
             timings.physics = physics;
+            timings.update = update;
+            timings.post_update = post_update;
             timings.extraction = extraction;
         }
 
