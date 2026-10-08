@@ -718,6 +718,13 @@ fn render_human(result: &CliResult) -> String {
                 ms("p99_ms"),
                 ms("max_ms")
             ));
+            if let Some(bound) = bench["bound"].as_str() {
+                lines.push(format!(
+                    "{bound}-bound: CPU p50 {:.2} ms, GPU p50 {:.2} ms",
+                    ms("cpu_p50_ms"),
+                    ms("gpu_p50_ms")
+                ));
+            }
         }
         if let Some(root) = data.get("root").and_then(|v| v.as_str()) {
             lines.push(format!("Project: {root}"));

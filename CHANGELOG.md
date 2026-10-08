@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting run --bench` reports `cpu_p50_ms`, `gpu_p50_ms` and `bound` (`"cpu"` or `"gpu"`), and guide/look-and-feel says which cuts help which side; LOD only helps a GPU-bound frame (FOREVER BEAR F49).
 - `rusting test <project> <scenario> --exe <game>` runs a scenario against an already built game, such as an export, from the game's own folder without cooking or building (FOREVER BEAR F48).
 - `rusting scene inspect` lists every entity's id and name under `entities`, so `--fields` and `--limit` apply to it; `scene map` help says an empty `maps` list means no tile map.
 - Scene patch `set`, `remove`, `reparent` and `delete` accept `name` for the entity as well as `id`, and the project AGENTS.md shows an example (surveyor F1, unclaimed F1).

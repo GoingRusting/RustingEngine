@@ -3777,9 +3777,14 @@ struct ProjectApplication {
     /// Set by [`crate::project::QUIT_AFTER_MS_ENV`]: close at this time.
     quit_at: Option<Instant>,
     /// Set by [`crate::project::BENCH_FRAMES_ENV`]: frames still to skip,
-    /// frames to measure, and the lengths measured so far in milliseconds.
-    bench: Option<(u32, usize, Vec<f64>)>,
+    /// frames to measure, the lengths measured so far in milliseconds, and
+    /// each measured frame's CPU and GPU milliseconds.
+    bench: Option<BenchRun>,
 }
+
+/// A bench run's frames still to skip, frames to measure, frame lengths in
+/// milliseconds, and each measured frame's CPU and GPU milliseconds.
+type BenchRun = (u32, usize, Vec<f64>, Vec<[f64; 2]>);
 
 /// Environment variable that makes a running game print, once a second, its
 /// frame rate, frame-time percentiles and where the frame time goes.
@@ -3824,7 +3829,7 @@ impl ProjectApplication {
                 .and_then(|frames| frames.parse().ok())
                 .map(|frames: usize| {
                     let warmup = crate::project::BENCH_WARMUP_FRAMES;
-                    (warmup, frames.max(1), Vec::with_capacity(frames))
+                    (warmup, frames.max(1), Vec::new(), Vec::new())
                 }),
         }
     }
@@ -3884,6 +3889,26 @@ impl ProjectApplication {
         world
             .resource_mut::<crate::runtime::AudioQueue>()
             .retain_sounds(|id| audio.has_sound(id.0));
+    }
+
+    /// Adds this frame's CPU work (`update` plus extraction, preparation and
+    /// recording, not waits on the GPU) and the newest GPU pass time to a
+    /// bench run past its warm-up.
+    fn record_bench_work(&mut self, update: std::time::Duration) {
+        let Some((0, _, _, work)) = &mut self.bench else {
+            return;
+        };
+        let Some(renderer) = self.window.scene_renderer.as_mut() else {
+            return;
+        };
+        let mut cpu = *self
+            .runtime
+            .world()
+            .resource::<crate::runtime::CpuFrameTimings>();
+        renderer.write_cpu_timings(&mut cpu);
+        let cpu = update + cpu.extraction + cpu.preparation + cpu.recording;
+        let gpu = renderer.gpu_pass_times().total();
+        work.push([cpu, gpu].map(|time| time.as_secs_f64() * 1000.0));
     }
 
     /// Prints `[rusting] perf` once a second when `RUSTING_PERF` is set.
@@ -4063,13 +4088,16 @@ impl ApplicationHandler for ProjectApplication {
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
                 self.previous_frame = now;
-                if let Some((warmup, frames, lengths)) = &mut self.bench {
+                if let Some((warmup, frames, lengths, work)) = &mut self.bench {
                     match warmup.checked_sub(1) {
                         Some(left) => *warmup = left,
                         None => lengths.push(delta.as_secs_f64() * 1000.0),
                     }
                     if lengths.len() >= *frames {
-                        eprintln!("{}", crate::project::bench_line(lengths));
+                        eprintln!(
+                            "{}",
+                            crate::project::bench_line(lengths, work)
+                        );
                         event_loop.exit();
                         return;
                     }
@@ -4087,7 +4115,8 @@ impl ApplicationHandler for ProjectApplication {
                     delta,
                 );
                 let updated = self.runtime.update(delta);
-                self.perf_spent[0] += update_start.elapsed();
+                let update_time = update_start.elapsed();
+                self.perf_spent[0] += update_time;
                 if let Err(error) = updated {
                     eprintln!("runtime update failed: {error}");
                     event_loop.exit();
@@ -4117,6 +4146,7 @@ impl ApplicationHandler for ProjectApplication {
                 let render_start = Instant::now();
                 let rendered = self.window.render(window_id, &self.runtime);
                 self.perf_spent[1] += render_start.elapsed();
+                self.record_bench_work(update_time);
                 match rendered {
                     Ok(()) => {
                         announce_first_frame();

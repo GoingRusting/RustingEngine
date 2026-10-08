@@ -137,22 +137,36 @@ pub const BENCH_WARMUP_FRAMES: u32 = 60;
 pub const BENCH_MARKER: &str = "[rusting] bench";
 
 /// A bench line for frame lengths in milliseconds: frame count, mean, p50,
-/// p95, p99 and max (nearest rank). Sorts `lengths`.
+/// p95, p99 and max (nearest rank). `work` holds each measured frame's CPU
+/// and GPU milliseconds; their medians give `cpu_p50_ms`, `gpu_p50_ms` and
+/// `bound`, the side that limits the frame (`null` without GPU times).
+/// Sorts `lengths`.
 #[must_use]
-pub fn bench_line(lengths: &mut [f64]) -> String {
+pub fn bench_line(lengths: &mut [f64], work: &[[f64; 2]]) -> String {
+    fn rank(sorted: &[f64], p: f64) -> f64 {
+        let index = (p * sorted.len() as f64).ceil() as usize;
+        sorted.get(index.saturating_sub(1)).copied().unwrap_or(0.0)
+    }
     lengths.sort_by(f64::total_cmp);
-    let rank = |p: f64| {
-        let index = (p * lengths.len() as f64).ceil() as usize;
-        lengths.get(index.saturating_sub(1)).copied().unwrap_or(0.0)
-    };
     let mean = lengths.iter().sum::<f64>() / lengths.len().max(1) as f64;
+    let [cpu, gpu] = [0, 1].map(|side| {
+        let mut times: Vec<f64> =
+            work.iter().map(|frame| frame[side]).collect();
+        times.sort_by(f64::total_cmp);
+        rank(&times, 0.5)
+    });
+    // No timestamp queries means no GPU times, not an idle GPU.
+    let bound = (gpu > 0.0).then_some(if gpu > cpu { "gpu" } else { "cpu" });
     let summary = serde_json::json!({
         "frames": lengths.len(),
         "mean_ms": mean,
-        "p50_ms": rank(0.5),
-        "p95_ms": rank(0.95),
-        "p99_ms": rank(0.99),
-        "max_ms": rank(1.0),
+        "p50_ms": rank(lengths, 0.5),
+        "p95_ms": rank(lengths, 0.95),
+        "p99_ms": rank(lengths, 0.99),
+        "max_ms": rank(lengths, 1.0),
+        "cpu_p50_ms": cpu,
+        "gpu_p50_ms": gpu,
+        "bound": bound,
     });
     format!("{BENCH_MARKER} {summary}")
 }
@@ -1798,7 +1812,8 @@ mod tests {
     #[test]
     fn a_bench_line_round_trips_its_frame_times() {
         let mut lengths: Vec<f64> = (1..=100).rev().map(f64::from).collect();
-        let line = bench_line(&mut lengths);
+        let work: Vec<_> = (0..100).map(|i| [3.0, f64::from(i % 7)]).collect();
+        let line = bench_line(&mut lengths, &work);
         assert!(line.starts_with(BENCH_MARKER), "{line}");
         let summary = bench_result(&format!("noise\n{line}\nmore")).unwrap();
         assert_eq!(summary["frames"], 100);
@@ -1807,6 +1822,16 @@ mod tests {
         assert_eq!(summary["p95_ms"], 95.0);
         assert_eq!(summary["p99_ms"], 99.0);
         assert_eq!(summary["max_ms"], 100.0);
+        // The GPU median (3) is not above the CPU median (3).
+        assert_eq!(summary["gpu_p50_ms"], 3.0);
+        assert_eq!(summary["bound"], "cpu");
+        let gpu_heavy = [[2.0, 9.0], [2.5, 8.0], [3.0, 10.0]];
+        let line = bench_line(&mut [10.0, 11.0, 12.0], &gpu_heavy);
+        let summary = bench_result(&line).unwrap();
+        assert_eq!(summary["bound"], "gpu");
+        assert_eq!(summary["cpu_p50_ms"], 2.5);
+        let untimed = bench_line(&mut [10.0], &[[4.0, 0.0]]);
+        assert!(bench_result(&untimed).unwrap()["bound"].is_null());
         assert!(bench_result("no bench here").is_none());
     }
 

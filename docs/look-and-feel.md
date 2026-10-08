@@ -294,7 +294,15 @@ For one number to compare runs, use `rusting run --release --bench 1000
 --json`. The game opens its window, skips 60 warm-up frames (pipeline
 builds and uploads), measures the next 1000, closes itself, and reports
 `timings.bench` with `frames`, `mean_ms`, `p50_ms`, `p95_ms`, `p99_ms` and
-`max_ms`. Without `--json` it prints one `bench:` line.
+`max_ms`. It also gives `cpu_p50_ms` (update plus extraction, preparation
+and recording, without waits on the GPU), `gpu_p50_ms` (GPU pass time) and
+`bound`: `"cpu"` or `"gpu"`, whichever median is larger. Without `--json` it
+prints one `bench:` line. Check `bound` before cutting cost: fewer triangles,
+mesh LOD and smaller shadow maps only help a `"gpu"` frame. A `"cpu"` frame
+needs fewer objects, fewer distinct meshes and materials, or less game code
+per frame. Each LOD level is its own instanced batch, so a `.rlod` group adds
+CPU preparation and draws; on a CPU-bound crowd it can cost more than its
+triangles save.
 
 Without a window, `rusting test` gives GPU frame times. A scenario with
 `"gpu": true` and `"capture_size": [1920, 1080]` draws one offscreen frame
