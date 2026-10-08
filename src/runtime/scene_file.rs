@@ -3070,6 +3070,44 @@ mod tests {
     }
 
     #[test]
+    fn saving_is_stable_so_one_edit_changes_one_line() {
+        let mut app = scene_app();
+        for index in 0..6 {
+            app.spawn((
+                Name(format!("Box {index}")),
+                Transform::new([index as f32, 0.5, 0.0]),
+                GameplayTag { speed: 1.0 },
+            ));
+        }
+        let text = |app: &mut crate::runtime::App| {
+            let document = scene_document(app.world_mut(), "Test").unwrap();
+            String::from_utf8(serde_json::to_vec_pretty(&document).unwrap())
+                .unwrap()
+        };
+        let before = text(&mut app);
+        let document = parse_scene_document(before.as_bytes()).unwrap();
+        load_scene_document(app.world_mut(), &document, SceneLoadMode::Replace)
+            .unwrap();
+        app.update(Duration::ZERO).unwrap();
+        assert_eq!(text(&mut app), before, "load and save changed the file");
+
+        let mut query = app.world_mut().query::<&mut Name>();
+        for mut name in query.iter_mut(app.world_mut()) {
+            if name.0 == "Box 3" {
+                name.0 = "Crate".into();
+            }
+        }
+        let after = text(&mut app);
+        let changed: Vec<_> = before
+            .lines()
+            .zip(after.lines())
+            .filter(|(old, new)| old != new)
+            .collect();
+        assert_eq!(before.lines().count(), after.lines().count());
+        assert_eq!(changed.len(), 1, "{changed:?}");
+    }
+
+    #[test]
     fn scene_round_trip_preserves_hierarchy_assets_and_registered_components() {
         let mut app = scene_app();
         let (mesh, material) = {
