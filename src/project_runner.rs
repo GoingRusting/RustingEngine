@@ -2474,6 +2474,28 @@ impl GameScene<'_> {
             .copied()
     }
 
+    /// Edits the player controller on a named object, such as its
+    /// `walk_speed`, `sprint_multiplier` or `jump_speed`; the change applies
+    /// from the next step. Returns false when the object or its controller
+    /// does not exist.
+    pub fn set_player(
+        &mut self,
+        name: &str,
+        edit: impl FnOnce(&mut crate::runtime::PlayerController),
+    ) -> bool {
+        let Some(entity) = find_named_entity(self.world, name) else {
+            return false;
+        };
+        let Some(mut player) = self
+            .world
+            .get_mut::<crate::runtime::PlayerController>(entity)
+        else {
+            return false;
+        };
+        edit(&mut player);
+        true
+    }
+
     /// Tries to return a scene object by name.
     pub fn try_object(&mut self, name: &str) -> Option<GameObject<'_>> {
         let entity = find_named_entity(self.world, name)?;
@@ -5896,6 +5918,21 @@ mod tests {
         // A world without a seed or time still draws.
         let mut world = World::new();
         let _ = GameScene { world: &mut world }.random(0);
+    }
+
+    #[test]
+    fn set_player_edits_the_named_controller() {
+        let mut world = World::new();
+        world.spawn((
+            Name("Player".into()),
+            crate::runtime::PlayerController::default(),
+        ));
+        world.spawn(Name("Crate".into()));
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.set_player("Player", |pc| pc.walk_speed = 9.5));
+        assert_eq!(scene.player("Player").unwrap().walk_speed, 9.5);
+        assert!(!scene.set_player("Crate", |pc| pc.walk_speed = 1.0));
+        assert!(!scene.set_player("Nobody", |pc| pc.walk_speed = 1.0));
     }
 
     #[test]
