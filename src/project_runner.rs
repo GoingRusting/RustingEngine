@@ -1793,6 +1793,28 @@ impl GameScene<'_> {
         Some(copy)
     }
 
+    /// Like [`Self::spawn_copy`], but the copy has no parent and takes the
+    /// whole `transform` (position, rotation and scale) in world space, so a
+    /// template kept under a hidden, offset root does not pass that root's
+    /// visibility or offset on to its copies.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an object called `name`, or one of the copied children's
+    /// names, already exists.
+    pub fn spawn_copy_at_root(
+        &mut self,
+        template: &str,
+        name: impl Into<String>,
+        transform: Transform,
+    ) -> Option<Entity> {
+        let name = name.into();
+        let template = find_or_warn(self.world, template)?;
+        let copy = copy_tree(self.world, template, Some(&name));
+        self.world.entity_mut(copy).insert(transform);
+        Some(copy)
+    }
+
     /// The name of `entity`, such as [`crate::runtime::PlayerController`]'s
     /// `wall` or `floor`; `None` when it is unnamed or gone.
     #[must_use]
@@ -6459,6 +6481,19 @@ mod tests {
             world.get::<crate::runtime::SceneId>(template)
         );
         assert_eq!(world.get::<crate::runtime::Parent>(copy).unwrap().0, arena);
+        let turned = Transform {
+            rotation: [0.0, 1.5, 0.0],
+            ..Transform::new([8.0, 0.0, 2.0])
+        };
+        let mut scene = GameScene {
+            world: app.world_mut(),
+        };
+        let root_copy = scene
+            .spawn_copy_at_root("Ember", "Ember 3", turned)
+            .unwrap();
+        let world = app.world();
+        assert!(world.get::<crate::runtime::Parent>(root_copy).is_none());
+        assert_eq!(world.get::<Transform>(root_copy), Some(&turned));
         assert_eq!(
             world
                 .get::<crate::runtime::Children>(arena)
