@@ -1960,7 +1960,6 @@ fn collider_mismatch(entity: &SceneEntity) -> Option<([f32; 3], [f32; 3])> {
     off.then_some((mesh, body))
 }
 
-/// The `LINT_*` warnings of one scene document.
 /// HUD text smaller than this, in logical pixels, warns `LINT_TEXT_SMALL`.
 const MIN_HUD_FONT_SIZE: f32 = 14.0;
 /// The smallest view, in logical pixels, that HUD text must fit.
@@ -1984,6 +1983,32 @@ fn code_strings(root: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+/// Lays out HUD text the way the runtime HUD draws it (egui's proportional
+/// font, no wrapping) and returns its size in logical pixels.
+#[cfg(feature = "ui")]
+fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
+    let context = egui::Context::default();
+    // Fonts exist only after the first pass.
+    let _ = context.run(egui::RawInput::default(), |_| {});
+    move |text, size| {
+        let galley = context.fonts(|fonts| {
+            fonts.layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::proportional(size),
+                egui::Color32::WHITE,
+            )
+        });
+        Some([galley.size().x, galley.size().y])
+    }
+}
+
+/// Without egui there are no fonts to measure with.
+#[cfg(not(feature = "ui"))]
+fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
+    |_, _| None
+}
+
+/// The `LINT_*` warnings of one scene document.
 /// `named_in_code` are the names game code mentions; walls with those names
 /// may be doors, so the reachability check walks through them.
 fn lint_scene(
@@ -1997,6 +2022,14 @@ fn lint_scene(
     };
     let by_id: std::collections::HashMap<_, _> =
         document.entities.iter().map(|e| (e.id, e)).collect();
+    // HUD `{counter}` placeholders show each counter's starting value.
+    let counters: Vec<crate::runtime::Counter> = document
+        .entities
+        .iter()
+        .filter_map(|e| e.components.get(crate::runtime::COUNTER_COMPONENT))
+        .filter_map(|text| serde_json::from_str(text).ok())
+        .collect();
+    let mut measure = hud_text_size();
     // ponytail: scales multiply per axis and ignore rotation; enough for
     // sanity ranges, not for exact sizes under rotated parents.
     let world_scale = |entity: &SceneEntity| {
@@ -2249,6 +2282,37 @@ fn lint_scene(
                 [x + hud.offset[0] * inward[0], y + hud.offset[1] * inward[1]];
             let outside =
                 !(0.0..=w).contains(&at[0]) || !(0.0..=h).contains(&at[1]);
+            // The text's box, placed as the HUD places it: the anchored
+            // corner (or centre) at `at`.
+            let text = crate::runtime::hud_text(
+                &hud.text,
+                counters.iter().map(|counter| (counter, None)),
+            );
+            let overflow = measure(&text, hud.font_size).and_then(|size| {
+                let fraction = |anchor: f32, view: f32| anchor / view;
+                let min = [
+                    at[0] - size[0] * fraction(x, w),
+                    at[1] - size[1] * fraction(y, h),
+                ];
+                let past = [
+                    (-min[0]).max(min[0] + size[0] - w),
+                    (-min[1]).max(min[1] + size[1] - h),
+                ];
+                (past[0] > 0.5 || past[1] > 0.5).then_some((size, past))
+            });
+            if let (None, false, Some((size, past))) =
+                (&hud.camera, outside, overflow)
+            {
+                warn(
+                    "LINT_TEXT_OVERFLOW",
+                    index,
+                    &format!("/components/{HUD_ELEMENT_COMPONENT}/text"),
+                    format!(
+                        "has HUD text {:.0} x {:.0} px that runs {:.0} px past the edge of a {w} x {h} view",
+                        size[0], size[1], past[0].max(past[1])
+                    ),
+                );
+            }
             if hud.camera.is_none() && outside {
                 warn(
                     "LINT_TEXT_OFFSCREEN",
@@ -5868,6 +5932,49 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
             .collect();
         assert_eq!(found, [("LINT_LIGHT_BUDGET", "Spot".to_owned())]);
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn lint_measures_hud_text_that_runs_past_the_view() {
+        let hud = |name: &str, hud: serde_json::Value| json!({"name": name, "components": {"rusting.hud": hud.to_string()}});
+        let long =
+            "Collect every golden acorn before the storm reaches the valley";
+        let mut scene = json!({"format_version": 7, "name": "Hud", "entities": [
+            // 700 px in from the left, a long line runs off the right side.
+            hud("Long Left", json!({"text": long, "font_size": 24.0, "offset": [700.0, 16.0]})),
+            // The same line anchored top right grows left and fits.
+            hud("Long Right", json!({"text": long, "font_size": 24.0, "anchor": "TopRight"})),
+            // Centred 40 lines of 24 px text are taller than 720 px.
+            hud("Tall", json!({"text": "line\n".repeat(40), "font_size": 24.0, "anchor": "Center", "offset": [0.0, 0.0]})),
+            // A counter placeholder is measured at the counter's start value.
+            hud("Score", json!({"text": "Score {score}", "anchor": "TopRight"})),
+            {"name": "Score Counter", "components": {"rusting.counter":
+             json!({"name": "score", "value": 0}).to_string()}},
+        ]});
+        for (index, entity) in scene["entities"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            entity["id"] =
+                json!(format!("00000000-0000-0000-0000-{:012}", index + 1));
+        }
+        let document =
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap();
+        let found: Vec<_> = lint_scene(&document, &BTreeSet::new())
+            .into_iter()
+            .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("LINT_TEXT_OVERFLOW", "Long Left".to_owned()),
+                ("LINT_TEXT_OVERFLOW", "Tall".to_owned()),
+            ]
+        );
     }
 
     #[test]

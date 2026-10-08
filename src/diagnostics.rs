@@ -301,6 +301,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_TEXT_OVERFLOW",
+        "HUD text, measured in the HUD's font at its font_size with counters at their starting values, runs past the edge of a 1280 x 720 view, so part of it is cut off.",
+        "Shorten the text, split it with line breaks, lower font_size, or anchor it nearer the side it grows from (TopRight text grows left).",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_TEXT_SMALL",
         "HUD text has a font_size below 14 logical pixels, which is hard to read, more so on a TV or a high-DPI laptop.",
         "Raise font_size to 18 or more for body text (the default) and 14 at the least.",
