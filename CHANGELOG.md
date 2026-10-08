@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting test <project> <scenario> --exe <game>` runs a scenario against an already built game, such as an export, from the game's own folder without cooking or building (FOREVER BEAR F48).
 - `rusting scene inspect` lists every entity's id and name under `entities`, so `--fields` and `--limit` apply to it; `scene map` help says an empty `maps` list means no tile map.
 - Scene patch `set`, `remove`, `reparent` and `delete` accept `name` for the entity as well as `id`, and the project AGENTS.md shows an example (surveyor F1, unclaimed F1).
 - `scene.window_focused()` is false while the game window has lost focus (alt-tab), so a game can pause itself, and the scenario step `{"focus": false}` simulates it (FOREVER BEAR F46).

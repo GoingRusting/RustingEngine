@@ -504,6 +504,12 @@ run passes when the scenario fails or the game crashes, and fails with
 `SCENARIO_TOO_WEAK` when the scenario still passes. A `--without` run does
 not update `build/test-results.json`.
 
+To run a scenario against an exported build, pass the exported executable:
+`rusting test <project> tests/smoke.json --exe exports/my_game/my_game`.
+Nothing is cooked or built; the game runs from its own folder, so it reads
+the export's scene and assets, while the scenario, report and test data stay
+in the project. The export must be built for the machine that runs the test.
+
 To find input that breaks a game, give a scenario `invariants` and fuzz it:
 `rusting fuzz <project> tests/invariants.json --seeds 50`. Each seed runs the
 scenario with seeded random presses and releases of the scene's actions (or

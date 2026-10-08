@@ -2948,6 +2948,10 @@ pub struct RunOptions {
     pub without: Vec<String>,
     /// Seed for the game's random streams (`--seed`), 0 by default.
     pub seed: Option<u64>,
+    /// Run this already built game executable (`--exe`), such as an
+    /// export, from its own folder instead of cooking and building the
+    /// project.
+    pub exe: Option<PathBuf>,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -3160,31 +3164,62 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
             );
         }
     }
-    let cooked = cook_project(root);
-    if !cooked.ok {
-        return cooked;
-    }
-    let project = match open_project(root) {
-        Ok(project) => project,
-        Err(error) => return project_error(error, root),
-    };
-    let build = match cargo(&project, "build", options.release, None) {
-        Ok(build) => build,
-        Err(result) => return result,
-    };
-    let executable = match crate::project::built_executable(
-        &project.root,
-        &project.root.join("Cargo.toml"),
-        &project.manifest.binary_name,
-        None,
-        options.release,
-    ) {
-        Ok(executable) => executable,
-        Err(error) => return CliResult::failure("BUILD_FAILED", error, None),
+    let (root, executable, build_duration) = match &options.exe {
+        Some(exe) => {
+            let Some(executable) = std::path::absolute(exe)
+                .ok()
+                .filter(|executable| executable.is_file())
+            else {
+                return CliResult::failure(
+                    "FILE_NOT_FOUND",
+                    format!("no game executable at {}", exe.display()),
+                    Some(exe.clone()),
+                );
+            };
+            // Reports and test data go under the project's build folder,
+            // never into the export.
+            let _ = std::fs::create_dir_all(root.join("build"));
+            (root.to_path_buf(), executable, Duration::ZERO)
+        }
+        None => {
+            let cooked = cook_project(root);
+            if !cooked.ok {
+                return cooked;
+            }
+            let project = match open_project(root) {
+                Ok(project) => project,
+                Err(error) => return project_error(error, root),
+            };
+            let build = match cargo(&project, "build", options.release, None) {
+                Ok(build) => build,
+                Err(result) => return result,
+            };
+            match crate::project::built_executable(
+                &project.root,
+                &project.root.join("Cargo.toml"),
+                &project.manifest.binary_name,
+                None,
+                options.release,
+            ) {
+                Ok(executable) => (project.root, executable, build.duration),
+                Err(error) => {
+                    return CliResult::failure("BUILD_FAILED", error, None)
+                }
+            }
+        }
     };
     let mut game = Command::new(&executable);
-    game.current_dir(&project.root);
-    let final_scene = project.root.join("build/final.rscene");
+    match &options.exe {
+        // An export finds its scene and assets beside itself.
+        Some(_) => {
+            game.current_dir(executable.parent().unwrap_or(&root))
+                .env_remove("RUSTING_SCENE_PATH");
+        }
+        None => {
+            game.current_dir(&root);
+        }
+    }
+    let final_scene = root.join("build/final.rscene");
     if let Some(ticks) = options.headless_ticks {
         let _ = std::fs::remove_file(&final_scene);
         game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
@@ -3205,7 +3240,7 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
             game.env(variable, std::path::absolute(path).unwrap_or_default());
         }
     }
-    let report_path = project.root.join("build/scenario-report.json");
+    let report_path = root.join("build/scenario-report.json");
     if let Some(scenario) = &options.scenario {
         let scenario = match std::path::absolute(scenario) {
             Ok(scenario) if scenario.is_file() => scenario,
@@ -3220,8 +3255,7 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
         let _ = std::fs::remove_file(&report_path);
         // Each scenario starts with an empty data folder of its own, so
         // saves from one run never leak into the next.
-        let user_data = project
-            .root
+        let user_data = root
             .join("build/test-userdata")
             .join(scenario.file_stem().unwrap_or_default());
         let _ = std::fs::remove_dir_all(&user_data);
@@ -3262,13 +3296,13 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
     };
     let first_frame = crate::project::first_frame_ms(&run.stderr);
     let mut data = json!({
-        "root": project.root,
+        "root": root,
         "executable": executable,
         "headless_ticks": options.headless_ticks,
-        "build": {"duration_ms": build.duration.as_millis() as u64},
+        "build": {"duration_ms": build_duration.as_millis() as u64},
         "game": run.data(),
         "timings": {
-            "build_ms": build.duration.as_millis() as u64,
+            "build_ms": build_duration.as_millis() as u64,
             "game_first_frame_ms": first_frame,
             // Includes loading the scene; a debug build shows here first.
             "headless_ms_per_tick": crate::project::tick_time_ms(&run.stderr),
@@ -3279,7 +3313,7 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
         },
     });
     // Game output can only hold asset reload failures, not build errors.
-    let mut asset_warnings = reload_diagnostics(&project.root, &run.stderr);
+    let mut asset_warnings = reload_diagnostics(&root, &run.stderr);
     asset_warnings
         .retain(|diagnostic| diagnostic.code == "ASSET_RELOAD_FAILED");
     let mut result = 'result: {
@@ -3497,7 +3531,7 @@ pub fn check_game_determinism(root: &Path, ticks: u32) -> CliResult {
             one_cpu: true,
         });
     }
-    let out_dir = project.root.join("build/determinism");
+    let out_dir = root.join("build/determinism");
     if let Err(error) = std::fs::create_dir_all(&out_dir) {
         return CliResult::failure(
             "IO_ERROR",
@@ -3519,7 +3553,7 @@ pub fn check_game_determinism(root: &Path, ticks: u32) -> CliResult {
         }
     }
     let mut data = json!({
-        "root": project.root,
+        "root": root,
         "ticks": ticks,
         "configurations": configs
             .iter()
@@ -4219,6 +4253,56 @@ mod shape_tests {
         assert_eq!(run.stderr, "one\ntwo");
         assert_eq!(run.stdout, "out\n");
         assert!(run.success);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exe_runs_a_scenario_in_a_built_game_from_its_own_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir()
+            .join(format!("rusting-test-exe-{}", std::process::id()));
+        let export = root.join("export");
+        std::fs::create_dir_all(&export).unwrap();
+        let scenario = root.join("smoke.json");
+        std::fs::write(&scenario, "{}").unwrap();
+        // Stands in for an exported game: it writes a passing report and
+        // records the folder it ran in.
+        let game = export.join("game");
+        std::fs::write(
+            &game,
+            "#!/bin/sh\npwd > ran_in\nprintf '{\"name\":\"smoke\",\
+             \"seed\":0,\"passed\":true,\"ticks_run\":3,\
+             \"first_failure\":null,\"steps\":[],\"captures\":[]}' \
+             > \"$RUSTING_TEST_REPORT\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&game, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let options = RunOptions {
+            scenario: Some(scenario),
+            exe: Some(game),
+            ..RunOptions::default()
+        };
+        let result = run_game_project(&root, options);
+        assert!(result.ok, "{:?}", result.diagnostics);
+        assert_eq!(result.data["scenario"]["ticks_run"], 3);
+        let ran_in = std::fs::read_to_string(export.join("ran_in")).unwrap();
+        assert_eq!(
+            Path::new(ran_in.trim()).canonicalize().unwrap(),
+            export.canonicalize().unwrap()
+        );
+        // No project here: nothing was cooked or built.
+        assert!(!root.join("target").exists());
+        let missing = run_game_project(
+            &root,
+            RunOptions {
+                scenario: Some(root.join("smoke.json")),
+                exe: Some(root.join("missing")),
+                ..RunOptions::default()
+            },
+        );
+        assert_eq!(missing.diagnostics[0].code, "FILE_NOT_FOUND");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

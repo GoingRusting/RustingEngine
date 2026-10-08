@@ -335,6 +335,10 @@ fn execute(args: &[String]) -> CliResult {
                         Some(name) => options.without.push(name.to_string()),
                         _ => return usage("--without requires a component name"),
                     },
+                    "--exe" => match flags.next() {
+                        Some(path) => options.exe = Some(path.into()),
+                        _ => return usage("--exe requires a game executable"),
+                    },
                     _ => return usage(format!("unknown run flag `{flag}`")),
                 }
             }
