@@ -1931,6 +1931,23 @@ impl GameScene<'_> {
             .is_some_and(|classes| classes.contains(class))
     }
 
+    /// Puts the named object in `class`, so a copy spawned from a
+    /// classless template joins the objects game code loops over. Returns
+    /// whether it was added: `false` when it already was in the class or
+    /// does not exist.
+    pub fn add_class(&mut self, name: &str, class: &str) -> bool {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        if !entity.contains::<crate::runtime::ObjectClasses>() {
+            entity.insert(crate::runtime::ObjectClasses::default());
+        }
+        entity
+            .get_mut::<crate::runtime::ObjectClasses>()
+            .is_some_and(|mut classes| classes.add(class))
+    }
+
     /// Names of the objects in `class`, sorted, so game code can loop over
     /// spawned copies. Unnamed objects are left out.
     #[must_use]

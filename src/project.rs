@@ -454,11 +454,14 @@ pub enum ProjectTemplate {
     /// Circuit, a racing game with code: drive three laps through the
     /// checkpoints of a rectangular track.
     Racing,
+    /// Swarm, a twin-stick shooter with code: move with one stick, aim and
+    /// fire with the other, and defeat a wave of twelve enemies.
+    TwinStick,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -468,6 +471,7 @@ impl ProjectTemplate {
         Self::Puzzle,
         Self::TopDown,
         Self::Racing,
+        Self::TwinStick,
         Self::Empty,
     ];
 
@@ -485,6 +489,7 @@ impl ProjectTemplate {
             Self::Puzzle => "puzzle",
             Self::TopDown => "top-down",
             Self::Racing => "racing",
+            Self::TwinStick => "twin-stick",
         }
     }
 
@@ -502,6 +507,7 @@ impl ProjectTemplate {
             Self::Puzzle => "Box Push (grid puzzle)",
             Self::TopDown => "Arena (top-down action)",
             Self::Racing => "Circuit (racing)",
+            Self::TwinStick => "Swarm (twin-stick shooter)",
         }
     }
 
@@ -725,6 +731,9 @@ fn write_project_template(
             ProjectTemplate::Puzzle => include_str!("templates/puzzle.rs"),
             ProjectTemplate::TopDown => include_str!("templates/arena.rs"),
             ProjectTemplate::Racing => include_str!("templates/racing.rs"),
+            ProjectTemplate::TwinStick => {
+                include_str!("templates/twin_stick.rs")
+            }
             _ => default_game_source(),
         },
     )?;
@@ -737,6 +746,9 @@ fn write_project_template(
         }
         ProjectTemplate::Racing => {
             Some(("lap.json", include_str!("templates/racing_lap.json")))
+        }
+        ProjectTemplate::TwinStick => {
+            Some(("wave.json", include_str!("templates/twin_stick_wave.json")))
         }
         _ => None,
     };
@@ -772,6 +784,7 @@ fn write_project_template(
             ProjectTemplate::Puzzle => puzzle_scene(name),
             ProjectTemplate::TopDown => arena_scene(name),
             ProjectTemplate::Racing => racing_scene(name),
+            ProjectTemplate::TwinStick => twin_stick_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1558,16 +1571,13 @@ fn json_scene(name: &str, entities: Vec<serde_json::Value>) -> SceneDocument {
     }
 }
 
-/// Arena: a floor with low walls, a ball player, three enemies, a camera
-/// looking down, and the `kills` and `hits` counters. The game code is
-/// `src/templates/arena.rs`.
-fn arena_scene(name: &str) -> SceneDocument {
+/// The arena's floor, low walls, ball player, sun and a camera looking
+/// down, shared by the top-down and twin-stick templates.
+fn arena_room() -> Vec<serde_json::Value> {
     use serde_json::json;
 
-    use crate::runtime::{Counter, HudAnchor};
-
     let wall = [0.45, 0.47, 0.52];
-    let mut entities = vec![
+    vec![
         mesh_object(
             "Floor",
             None,
@@ -1629,7 +1639,18 @@ fn arena_scene(name: &str) -> SceneDocument {
                 "active": true, "priority": 10
             }
         }),
-    ];
+    ]
+}
+
+/// Arena: a floor with low walls, a ball player, three enemies, a camera
+/// looking down, and the `kills` and `hits` counters. The game code is
+/// `src/templates/arena.rs`.
+fn arena_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    let mut entities = arena_room();
     let enemies = [[3.0, 0.4, 0.0], [-5.0, 0.4, 0.0], [0.0, 0.4, -7.0]];
     for (n, position) in enemies.iter().enumerate() {
         entities.push(mesh_object(
@@ -1687,6 +1708,80 @@ fn arena_scene(name: &str) -> SceneDocument {
 /// Circuit: grass, four road pieces (class `road`) around a rectangle,
 /// four checkpoints with the finish line last, a car, a camera above the
 /// track, and the `laps`, `checkpoint` and `speed` counters. The game
+/// Swarm: the arena room, hidden enemy and shot templates under the
+/// floor, and the `kills` and `hits` counters. The game code is
+/// `src/templates/twin_stick.rs`.
+fn twin_stick_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    let mut entities = arena_room();
+    for (template, color, scale) in [
+        ("Enemy Template", [0.9, 0.3, 0.25], [0.7; 3]),
+        ("Bullet Template", [1.0, 0.85, 0.3], [0.3; 3]),
+    ] {
+        let mut object = mesh_object(
+            template,
+            None,
+            "Sphere",
+            color,
+            [0.0, -20.0, 0.0],
+            scale,
+        );
+        object["visible"] = json!(false);
+        entities.push(object);
+    }
+    let counter = |name: &str, target: i32| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target: Some(target),
+        })
+    };
+    let hud = |name: &str, text: &str, anchor, size, requires: Option<&str>| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "components": {"rusting.hud": hud_component(text, anchor, size, requires)}
+        })
+    };
+    let action = |action: &str, inputs: &[&str]| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": format!("Action {action}"),
+            "components": {"rusting.input_action": component(&json!({"action": action, "inputs": inputs}))}
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Kills",
+            "components": {
+                "rusting.counter": counter("kills", 12),
+                "rusting.hud": hud_component("Defeated {kills}/12", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Hits",
+            "components": {
+                "rusting.counter": counter("hits", 3),
+                "rusting.hud": hud_component("Hits {hits}/3", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        hud("Won", "You win! R plays again.", HudAnchor::Center, 48.0, Some("kills")),
+        hud("Lost", "Game over. R tries again.", HudAnchor::Center, 48.0, Some("hits")),
+        hud("Help", "WASD or left stick move. Arrows or right stick aim and fire.", HudAnchor::BottomLeft, 20.0, None),
+        action("up", &["KeyW", "PadLeftStickUp"]),
+        action("down", &["KeyS", "PadLeftStickDown"]),
+        action("left", &["KeyA", "PadLeftStickLeft"]),
+        action("right", &["KeyD", "PadLeftStickRight"]),
+        action("aim_up", &["ArrowUp", "PadRightStickUp"]),
+        action("aim_down", &["ArrowDown", "PadRightStickDown"]),
+        action("aim_left", &["ArrowLeft", "PadRightStickLeft"]),
+        action("aim_right", &["ArrowRight", "PadRightStickRight"]),
+        action("restart", &["KeyR", "PadStart"]),
+    ]);
+    json_scene(name, entities)
+}
+
 /// code is `src/templates/racing.rs`.
 fn racing_scene(name: &str) -> SceneDocument {
     use serde_json::json;
@@ -2122,6 +2217,10 @@ mod puzzle_template;
 #[allow(dead_code)]
 #[path = "templates/racing.rs"]
 mod racing_template;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/twin_stick.rs"]
+mod twin_stick_template;
 
 #[cfg(test)]
 mod tests {
@@ -2743,6 +2842,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/lap.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_twin_stick_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-twin-stick-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Swarm", ProjectTemplate::TwinStick)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/twin_stick.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::twin_stick_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/wave.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();

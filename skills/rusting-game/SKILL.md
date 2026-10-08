@@ -288,7 +288,7 @@ works too.
 | rounds, levels | `restart`, `once(key, setup)`, `load_scene("scenes/level_2.rscene")`, `initial(name)` (starting transform, color, body kind), `snapshot()` / `restore(&snapshot)`, `state_hash(class)` |
 | menus, saves | `ui()` (egui), `set_paused`, `paused`, `window_focused()` (false after alt-tab), `quit`, `save_data(key, text)`, `load_data`, `delete_data`, `counters()`, `keys_pressed()`, `clicked()` (HUD buttons), `rebind(action, &[key])`, `cursor()`, `viewport_size()`; see `guide/menus-and-ui` |
 | video settings | `set_render_scale(0.25..=2.0)`, `render_scale`, `set_pixelated(true)` (nearest upscale for a chunky low scale), `set_vsync`, `set_max_fps(Option<u32>)`, `set_fullscreen`, `fullscreen`, `set_window_size([w, h])` |
-| other | `tile`, `set_tile`, `trigger`, `in_class`, `name_of(entity)`, `has_class(entity, class)`, `binding(action)` (keys of a scene `rusting.input_action`), `random(stream)`, `seed()` (the run seed, for a layout made once), `ui()` (egui), `world()` (raw ECS) |
+| other | `tile`, `set_tile`, `trigger`, `in_class`, `name_of(entity)`, `has_class(entity, class)`, `add_class(name, class)` (a spawned copy joins a class), `binding(action)` (keys of a scene `rusting.input_action`), `random(stream)`, `seed()` (the run seed, for a layout made once), `ui()` (egui), `world()` (raw ECS) |
 | GPU bodies | `apply_gpu_physics_to_class`, `watch_gpu_class`, `watch_gpu_object` (GPU condition rules), `count_gpu_bodies_in_box`, `gpu_state`, `gpu_command`; see `guide/gpu-condition-shaders` |
 
 ### Rules that keep tests reliable

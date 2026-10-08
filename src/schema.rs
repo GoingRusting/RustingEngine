@@ -112,8 +112,8 @@ pub const OPERATIONS: &[Operation] = &[
     },
     Operation {
         name: "new",
-        usage: "new <parent-directory> <project-name> [--template 3d|first-person|third-person|sandbox|2d|starter|puzzle|top-down|racing|empty] [--json]",
-        summary: "Create a project from a template: 3d is the editor's lit cube; first-person and third-person a walkable room with a player controller; sandbox a pile of dynamic bodies that fall and settle; 2d a playable side-view level; starter the complete Coin Run game (collect five coins, then touch the flag); puzzle Box Push, a grid puzzle with game code and a passing tests/solve.json; top-down Arena, a top-down action game with code and a passing tests/fight.json; racing Circuit, three laps of a track with code and a passing tests/lap.json; empty only a camera, so game code can spawn any name. The parent must exist and the project folder must not.",
+        usage: "new <parent-directory> <project-name> [--template 3d|first-person|third-person|sandbox|2d|starter|puzzle|top-down|racing|twin-stick|empty] [--json]",
+        summary: "Create a project from a template: 3d is the editor's lit cube; first-person and third-person a walkable room with a player controller; sandbox a pile of dynamic bodies that fall and settle; 2d a playable side-view level; starter the complete Coin Run game (collect five coins, then touch the flag); puzzle Box Push, a grid puzzle with game code and a passing tests/solve.json; top-down Arena, a top-down action game with code and a passing tests/fight.json; racing Circuit, three laps of a track with code and a passing tests/lap.json; twin-stick Swarm, a twin-stick shooter with code and a passing tests/wave.json; empty only a camera, so game code can spawn any name. The parent must exist and the project folder must not.",
         gpu: NO_GPU,
         defaults: &[("--template", "3d")],
         example: "new . my_game --json",

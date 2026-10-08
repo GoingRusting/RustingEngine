@@ -199,7 +199,7 @@ placeholder sound from a preset and seed), fires sound cues and burst emitters (
 (`spawn_cube`, `spawn_sphere`), copies a hidden template object with its
 children (`spawn_copy`; a copied child is named `"<copy>/<child>"`), places a
 prefab scene file under `assets/` (`spawn_prefab(path, name, transform)`), lists the
-objects in a class (`in_class`), runs setup once per round (`once`; `restart`
+objects in a class (`in_class`; `add_class` puts a spawned copy in one), runs setup once per round (`once`; `restart`
 runs it again), draws random numbers that repeat for a scenario's seed
 (`random`), switches to another scene file such as a next level
 (`load_scene`, with a path relative to the project folder) and draws UI (`ui`,

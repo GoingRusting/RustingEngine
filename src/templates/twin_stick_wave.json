@@ -1,0 +1,25 @@
+{
+  "name": "wave: the player moves, aiming at each side in turn shoots the first four enemies, and the fifth gets through for a hit",
+  "ticks": 520,
+  "steps": [
+    {"tick": 0, "press": "right"},
+    {"tick": 10, "release": "right"},
+    {"tick": 10, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 0.9, "tolerance": 0.01}},
+    {"tick": 11, "press": "left"},
+    {"tick": 20, "release": "left"},
+    {"tick": 21, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.01}},
+    {"tick": 50, "press": "aim_right"},
+    {"tick": 110, "release": "aim_right"},
+    {"tick": 110, "press": "aim_left"},
+    {"tick": 170, "release": "aim_left"},
+    {"tick": 170, "press": "aim_up"},
+    {"tick": 230, "release": "aim_up"},
+    {"tick": 230, "press": "aim_down"},
+    {"tick": 290, "release": "aim_down"},
+    {"tick": 100, "expect": {"counter": "kills", "equals": 1}},
+    {"tick": 100, "expect": {"entity": "Enemy 1", "exists": false}},
+    {"tick": 295, "expect": {"counter": "kills", "equals": 4}},
+    {"tick": 295, "expect": {"counter": "hits", "equals": 0}},
+    {"tick": 450, "expect": {"counter": "hits", "equals": 1}, "within": 510}
+  ]
+}
