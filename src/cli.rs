@@ -441,16 +441,36 @@ fn sound_clip_diagnostics(
 /// `load_text("charts/easy.json")` or `play_sound("sfx/hit.wav", ..)`, that
 /// is not a file under `assets/`. Paths built at run time are not checked.
 fn code_asset_diagnostics(root: &Path) -> Vec<Diagnostic> {
-    const CALLS: [&str; 4] = [
+    code_asset_literals(root)
+        .into_iter()
+        .filter(|(_, _, path)| !root.join("assets").join(path).is_file())
+        .map(|(file, line, path)| Diagnostic {
+            code: "CODE_MISSING_ASSET",
+            severity: "warning",
+            message: format!(
+                "{}:{line}: `{path}` is not a file under assets/",
+                file.strip_prefix(root).unwrap_or(&file).display(),
+            ),
+            file: Some(file),
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+/// Every literal asset path in game code as (file, 1-based line, path), in
+/// file order.
+fn code_asset_literals(root: &Path) -> Vec<(PathBuf, usize, String)> {
+    const CALLS: [&str; 5] = [
         "load_text(\"",
         "play_sound(\"",
         "play_sound_looped(\"",
         "play_sound_with(\"",
+        "spawn_prefab(\"",
     ];
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
     files.sort();
-    let mut diagnostics = Vec::new();
+    let mut literals = Vec::new();
     for file in files {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
@@ -459,28 +479,188 @@ fn code_asset_diagnostics(root: &Path) -> Vec<Diagnostic> {
             for call in CALLS {
                 for (start, _) in content.match_indices(call) {
                     let rest = &content[start + call.len()..];
-                    let Some(path) = rest.split('"').next() else {
-                        continue;
-                    };
-                    if root.join("assets").join(path).is_file() {
-                        continue;
+                    if let Some(path) = rest.split('"').next() {
+                        literals.push((
+                            file.clone(),
+                            line + 1,
+                            path.to_owned(),
+                        ));
                     }
-                    diagnostics.push(Diagnostic {
-                        code: "CODE_MISSING_ASSET",
-                        severity: "warning",
-                        message: format!(
-                            "{}:{}: `{path}` is not a file under assets/",
-                            file.strip_prefix(root).unwrap_or(&file).display(),
-                            line + 1
-                        ),
-                        file: Some(file.clone()),
-                        ..Diagnostic::default()
-                    });
                 }
             }
         }
     }
-    diagnostics
+    literals
+}
+
+/// `rusting project summary`: every scene and prefab with the components
+/// and assets it uses, every game code file with its `GameScene` functions
+/// and the asset paths it names, and how many entities use each component.
+/// While the JSON is over `budget` tokens the longest list is halved; the
+/// cut item count is `data.omitted`.
+pub fn project_summary(root: &Path, budget: usize) -> CliResult {
+    let project = match open_project(root) {
+        Ok(project) => project,
+        Err(error) => return project_error(error, root),
+    };
+    let root = &project.root;
+    let relative =
+        |path: &Path| path.strip_prefix(root).unwrap_or(path).to_owned();
+    let mut scene_files = Vec::new();
+    for folder in ["scenes", "assets"] {
+        scene_files_in(&root.join(folder), &mut scene_files);
+    }
+    scene_files.sort();
+    let mut component_entities = BTreeMap::<String, usize>::new();
+    let mut diagnostics = Vec::new();
+    let mut scenes = Vec::new();
+    for path in &scene_files {
+        let document = match read_scene(path) {
+            Ok(document) => document,
+            Err(result) => {
+                diagnostics.extend(result.diagnostics);
+                continue;
+            }
+        };
+        let mut used = BTreeSet::new();
+        for entity in &document.entities {
+            let mut names = BTreeSet::new();
+            if let Ok(Value::Object(fields)) = serde_json::to_value(entity) {
+                names.extend(fields.into_iter().filter_map(|(key, value)| {
+                    let skip = matches!(
+                        key.as_str(),
+                        "id" | "parent" | "name" | "classes" | "components"
+                    );
+                    (!skip && !value.is_null()).then_some(key)
+                }));
+            }
+            names.extend(entity.components.keys().cloned());
+            for name in &names {
+                *component_entities.entry(name.clone()).or_default() += 1;
+            }
+            used.extend(names);
+        }
+        let assets: BTreeSet<_> = asset_references(&document)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        scenes.push(json!({
+            "path": relative(path),
+            "entities": document.entities.len(),
+            "components": used,
+            "assets": assets,
+        }));
+    }
+    let mut code_files = Vec::new();
+    rust_files(&root.join("src"), &mut code_files);
+    code_files.sort();
+    let literals = code_asset_literals(root);
+    let systems: Vec<_> = code_files
+        .iter()
+        .map(|file| {
+            let text = std::fs::read_to_string(file).unwrap_or_default();
+            let assets: BTreeSet<_> = literals
+                .iter()
+                .filter(|(owner, _, _)| owner == file)
+                .map(|(_, _, path)| path)
+                .collect();
+            json!({
+                "file": relative(file),
+                "functions": game_scene_functions(&text),
+                "assets": assets,
+            })
+        })
+        .collect();
+    let components: Vec<_> = component_entities
+        .into_iter()
+        .map(|(name, entities)| json!({"name": name, "entities": entities}))
+        .collect();
+    let mut data = json!({
+        "root": root,
+        "main_scene": relative(&project.scene_path),
+        "imported_assets": crate::asset_import::list_assets(root).assets.len(),
+        "scenes": scenes,
+        "systems": systems,
+        "components": components,
+    });
+    let mut omitted = 0;
+    while crate::docs::tokens(&data.to_string()) > budget {
+        let Some(list) = longest_list(&data, String::new())
+            .and_then(|(_, pointer)| data.pointer_mut(&pointer))
+            .and_then(Value::as_array_mut)
+        else {
+            break;
+        };
+        let keep = list.len() / 2;
+        omitted += list.len() - keep;
+        list.truncate(keep);
+    }
+    data["omitted"] = json!(omitted);
+    CliResult {
+        diagnostics,
+        ..CliResult::success(data)
+    }
+}
+
+fn scene_files_in(folder: &Path, files: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scene_files_in(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "rscene") {
+            files.push(path);
+        }
+    }
+}
+
+/// Names of the functions in Rust source whose signature names `GameScene`.
+fn game_scene_functions(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for (start, _) in text.match_indices("fn ") {
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let rest = &text[start + 3..];
+        let signature = &rest[..rest.find(['{', ';']).unwrap_or(rest.len())];
+        if signature.contains("GameScene") {
+            names.push(
+                signature
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect(),
+            );
+        }
+    }
+    names
+}
+
+/// JSON pointer of the longest array with more than one item in `value`.
+fn longest_list(value: &Value, pointer: String) -> Option<(usize, String)> {
+    let children: Vec<_> = match value {
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item, format!("{pointer}/{index}")))
+            .collect(),
+        Value::Object(fields) => fields
+            .iter()
+            .map(|(key, item)| (item, format!("{pointer}/{key}")))
+            .collect(),
+        _ => return None,
+    };
+    let own = value
+        .as_array()
+        .filter(|items| items.len() > 1)
+        .map(|items| (items.len(), pointer));
+    children
+        .into_iter()
+        .filter_map(|(item, pointer)| longest_list(item, pointer))
+        .chain(own)
+        .max_by_key(|(len, _)| *len)
 }
 
 fn rust_files(folder: &Path, files: &mut Vec<PathBuf>) {
@@ -4742,5 +4922,49 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_summary_lists_scenes_code_and_components_within_budget() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-summary-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        std::fs::write(
+            root.join("src/extra.rs"),
+            "pub fn spawn_crate(\n    scene: &mut GameScene<'_>,\n) {\n    scene.spawn_prefab(\"props/crate.rscene\", \"Crate\", t);\n}\nfn helper() {}\n",
+        )
+        .unwrap();
+
+        let full = project_summary(&root, usize::MAX);
+        assert!(full.ok, "{:?}", full.diagnostics);
+        let data = &full.data;
+        assert_eq!(data["omitted"], 0);
+        let main = &data["scenes"][0];
+        assert_eq!(main["path"], "scenes/main.rscene");
+        assert!(main["entities"].as_u64().unwrap() > 0);
+        assert!(main["components"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("transform")));
+        let extra = data["systems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|system| system["file"] == "src/extra.rs")
+            .unwrap();
+        assert_eq!(extra["functions"], json!(["spawn_crate"]));
+        assert_eq!(extra["assets"], json!(["props/crate.rscene"]));
+        assert!(data["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|component| component["name"] == "camera"));
+
+        let cut = project_summary(&root, 150);
+        assert!(cut.data["omitted"].as_u64().unwrap() > 0);
+        assert!(cut.data.to_string().len() < full.data.to_string().len());
+        std::fs::remove_dir_all(parent).unwrap();
     }
 }

@@ -3053,7 +3053,8 @@ Goal: agents stay effective on a project with hundreds of scenes and systems, an
 
 Depends on: Milestones L1, L3, and L4.
 
-- [ ] `rusting project summary [--budget N]`: a budgeted overview of scenes, systems, components, assets, and their dependencies.
+- [x] `rusting project summary [--budget N]`: a budgeted overview of scenes, systems, components, assets, and their dependencies.
+  Evidence: `cli::hint_tests::project_summary_lists_scenes_code_and_components_within_budget` (puzzle template plus a code file: scene path, entity count and components; the code file's `GameScene` function and its `spawn_prefab` path; component counts; a 150-token budget cuts items and reports `omitted`); on surveyor, budgets 300/600/5000 give 249/507/997 tokens of data. Scenes and prefabs are every `.rscene` under `scenes/` and `assets/`; a "system" is a game code function whose signature names `GameScene` (a text scan, no ECS system graph yet; that is the next item); code dependencies are literal asset paths in `load_text`, `play_sound*` and `spawn_prefab` calls (`spawn_prefab` paths are now also checked by `CODE_MISSING_ASSET`). Over budget, the longest list anywhere is halved until the JSON fits.
 - [ ] A system access graph from ECS system parameters: which systems read and write which components and resources, queryable as "who writes `Health`?".
 - [ ] Scene files that merge well: stable key and entity order, and an optional folder form with one file per entity or prefab.
 - [ ] `rusting merge`: a semantic three-way merge driver for scenes, registered through `.gitattributes`, that reports real conflicts by entity and field.

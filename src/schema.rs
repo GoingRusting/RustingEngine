@@ -127,6 +127,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "project inspect my_game --json",
     },
     Operation {
+        name: "project summary",
+        usage: "project summary [project-root] [--budget N] [--json]",
+        summary: "A budgeted overview of a project: every scene and prefab (.rscene under scenes/ and assets/) with its entity count, components and referenced assets; every game code file with its functions that take GameScene and the asset paths it names; and how many entities use each component. Over budget, the longest lists are halved and data.omitted counts the cut items.",
+        gpu: NO_GPU,
+        defaults: &[("project-root", "the current folder"), ("--budget", "2000 tokens")],
+        example: "project summary my_game --budget 1000 --json",
+    },
+    Operation {
         name: "scene inspect",
         usage: "scene inspect <scene-path> [--limit N] [--fields a,b] [--summary] [--json]",
         summary: "Inspect a migrated scene: every entity's id and name, cameras, classes, assets, and reference warnings. `--fields id` or `--limit N` trims the lists; `scene query` gives full entities.",

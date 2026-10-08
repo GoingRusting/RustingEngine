@@ -44,7 +44,8 @@ fn help_for(command: &[String]) -> String {
 /// Matches `rusting docs search` shows when `--limit` is left out.
 const DOCS_SEARCH_LIMIT: usize = 10;
 
-/// Token budget `rusting docs` uses when `--budget` is left out.
+/// Token budget `rusting docs` and `rusting project summary` use when
+/// `--budget` is left out.
 const DOCS_BUDGET: usize = 2000;
 
 fn docs_command(args: &[&str]) -> CliResult {
@@ -102,6 +103,7 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
         (&["run"], 0),
         (&["determinism"], 0),
         (&["project", "inspect"], 0),
+        (&["project", "summary"], 0),
         (&["asset", "list"], 0),
         (&["test"], 1),
         (&["fuzz"], 1),
@@ -159,6 +161,17 @@ fn execute(args: &[String]) -> CliResult {
             }
         }
         ["project", "inspect", root] => cli::inspect_project(Path::new(root)),
+        ["project", "summary", root] => {
+            cli::project_summary(Path::new(root), DOCS_BUDGET)
+        }
+        ["project", "summary", root, "--budget", tokens] => {
+            match tokens.parse() {
+                Ok(tokens) if tokens > 0 => {
+                    cli::project_summary(Path::new(root), tokens)
+                }
+                _ => usage("--budget takes a token count above 0"),
+            }
+        }
         ["scene", "inspect", scene] => cli::inspect_scene(Path::new(scene)),
         ["scene", "map", scene] => cli::map_scene(Path::new(scene)),
         ["scene", "query", scene] => {
@@ -748,6 +761,37 @@ fn render_human(result: &CliResult) -> String {
             if let Some(value) = data.get(key).and_then(|v| v.as_str()) {
                 lines.push(format!("{label}: {value}"));
             }
+        }
+        let join = |list: &serde_json::Value| {
+            let items: Vec<_> = list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            items.join(", ")
+        };
+        for scene in data["scenes"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "Scene {}: {} entities; components {}; assets {}",
+                scene["path"].as_str().unwrap_or("?"),
+                scene["entities"],
+                join(&scene["components"]),
+                join(&scene["assets"])
+            ));
+        }
+        for system in data["systems"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "Code {}: {}; assets {}",
+                system["file"].as_str().unwrap_or("?"),
+                join(&system["functions"]),
+                join(&system["assets"])
+            ));
+        }
+        if let Some(omitted) = data["omitted"].as_u64().filter(|n| *n > 0) {
+            lines.push(format!(
+                "{omitted} list items cut to fit --budget; --json shows what is left"
+            ));
         }
         if let Some(version) = data.get("scene_version") {
             lines.push(format!("Scene version: {version}"));

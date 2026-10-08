@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting project summary [--budget N]`: a token-budgeted overview of a project's scenes and prefabs (entities, components, assets), game code files (functions taking `GameScene`, literal asset paths) and component use counts. `CODE_MISSING_ASSET` now also checks `spawn_prefab("...")` paths.
 - `scene.spawn_prefab(path, name, transform)` places a prefab scene file from game code in one call (surveyor F4).
 - `perf.stages_ms_mean` in scenario results and the `RUSTING_PERF` line split tick CPU time into `fixed`, `update`, `post_update` and `extract` (unclaimed F8).
 - `perf.cpu_ms_mean` and the `mean_cpu_ms` scenario budget measure CPU time per tick, which other processes on the machine slow far less than wall time (surveyor F20).
