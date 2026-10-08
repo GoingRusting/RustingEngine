@@ -96,22 +96,49 @@ fn held_error(lease: &Lease) -> std::io::Error {
     )
 }
 
-static READ_ONLY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// What the running command may write: `rusting --read-only` and
+/// `--confine`.
+static SCOPE: std::sync::Mutex<(bool, Option<PathBuf>)> =
+    std::sync::Mutex::new((false, None));
 
-/// Refuses every later write through [`super::write_atomic`] in this
-/// process, behind `rusting --read-only`.
-pub fn set_read_only() {
-    READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+/// Sets what every later write through [`super::write_atomic`] in this
+/// process may touch: nothing when `read_only`, and only files under the
+/// canonical folder `confine`. The daemon sets it again for each command.
+pub fn set_scope(read_only: bool, confine: Option<PathBuf>) {
+    *SCOPE.lock().unwrap_or_else(|e| e.into_inner()) = (read_only, confine);
 }
 
-/// Refuses a write to `path` that another agent's lease covers, or any
-/// write in read-only mode.
+/// `path` made absolute with its longest existing ancestor canonicalized,
+/// so links and `..` resolve; `None` when a `..` follows a missing folder.
+pub fn resolve(path: &Path) -> Option<PathBuf> {
+    let path = std::path::absolute(path).ok()?;
+    let (base, rest) = path.ancestors().find_map(|base| {
+        let real = base.canonicalize().ok()?;
+        Some((real, path.strip_prefix(base).ok()?.to_owned()))
+    })?;
+    let normal = rest
+        .components()
+        .all(|part| matches!(part, std::path::Component::Normal(_)));
+    normal.then(|| base.join(rest))
+}
+
+/// Refuses a write to `path` that another agent's lease covers, any write
+/// in read-only mode, and a write outside the `--confine` folder.
 pub fn check_write(path: &Path) -> std::io::Result<()> {
-    if READ_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+    let (read_only, confine) =
+        SCOPE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let outside = confine.is_some_and(|dir| {
+        !resolve(path).is_some_and(|real| real.starts_with(dir))
+    });
+    if read_only || outside {
+        let mode = if read_only {
+            "read-only mode"
+        } else {
+            "--confine"
+        };
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("read-only mode refuses to write `{}`", path.display()),
+            format!("{mode} refuses to write `{}`", path.display()),
         ));
     }
     let Some((root, relative)) = locate(path) else {

@@ -1445,8 +1445,9 @@ pub fn catalog() -> Value {
         "catalog_version": SCHEMA_CATALOG_VERSION,
         "engine_version": env!("CARGO_PKG_VERSION"),
         "scene_format_version": SCENE_FORMAT_VERSION,
+        "confine": "Any command takes --confine DIR, and RUSTING_CONFINE=DIR sets it for a whole session: the working folder, or an argument that names a path, outside DIR (after links and `..` resolve) fails with OUTSIDE_CONFINE before the command starts, and so does a project file write outside it.",
         "read_only": {
-            "summary": "Any command takes --read-only, and RUSTING_READ_ONLY=1 sets it for a whole session. Only these commands run then, and any with --dry-run; others fail with READ_ONLY before they start, and a file write fails the same way.",
+            "summary": "Any command takes --read-only, and RUSTING_READ_ONLY=1 sets it for a whole session. Only these commands run then, and `scene patch` or `fix` with --dry-run; others fail with READ_ONLY before they start, and a file write fails the same way.",
             "commands": crate::cli::READ_ONLY_COMMANDS.iter()
                 .map(|words| words.join(" ")).collect::<Vec<_>>(),
         },

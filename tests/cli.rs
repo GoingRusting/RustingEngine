@@ -199,6 +199,68 @@ fn read_only_mode_runs_inspection_and_refuses_writes() {
     assert_eq!(output.status.code(), Some(1), "{refused}");
     assert_eq!(refused["diagnostics"][0]["code"], "READ_ONLY");
 
+    // `--dry-run` as a flag's value is no dry run.
+    let (output, refused) =
+        run(&["lease", "claim", path, "--as", "--dry-run", "--read-only"]);
+    assert_eq!(output.status.code(), Some(1), "{refused}");
+    assert_eq!(refused["diagnostics"][0]["code"], "READ_ONLY");
+
+    // Every command read-only mode allows leaves the project as it was.
+    let snapshot = |dir: &Path| {
+        let mut files = std::collections::BTreeMap::new();
+        let mut stack = vec![dir.to_owned()];
+        while let Some(folder) = stack.pop() {
+            for entry in std::fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.insert(path.clone(), std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        files
+    };
+    let before = snapshot(&root);
+    let dir = root.to_str().unwrap();
+    for command in [
+        &["version"][..],
+        &["doctor"],
+        &["project", "inspect", dir],
+        &["project", "summary", dir],
+        &["impact", dir, "Player"],
+        &["lease", "list", dir],
+        &["provenance", dir],
+        &["log", dir],
+        &["systems", dir],
+        &["docs"],
+        &["docs", "search", "scene"],
+        &["explain"],
+        &["schema"],
+        &["validate", dir],
+        &["lint", dir],
+        &["diff", path, path],
+        &["scene", "inspect", path],
+        &["scene", "map", path],
+        &["scene", "query", path],
+        &["asset", "list", dir],
+        &["preset", "list"],
+        &["effect", "list"],
+        &["recipe", "list"],
+        &["scene", "patch", path, patch_arg, "--dry-run"],
+        &["fix", dir, "--dry-run"],
+    ] {
+        let (_, result) = run(&[command, &["--read-only"]].concat());
+        assert_ne!(
+            result["diagnostics"][0]["code"], "READ_ONLY",
+            "{command:?}: {result}"
+        );
+    }
+    assert!(
+        snapshot(&root) == before,
+        "a read-only command wrote a file"
+    );
+
     // RUSTING_READ_ONLY sets the mode for a session; 0 leaves it off.
     let with_env = |value: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusting"))
@@ -212,6 +274,76 @@ fn read_only_mode_runs_inspection_and_refuses_writes() {
     assert_eq!(std::fs::read(root.join("src/main.rs")).unwrap(), code);
     assert!(with_env("0").status.success());
     assert_ne!(std::fs::read(&scene).unwrap(), original);
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
+fn confine_refuses_paths_outside_the_folder_after_resolving_links() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    let dir = root.to_str().unwrap();
+    let scene = root.join("scenes/main.rscene");
+    let outside = parent.join("patch.json");
+    // Runs inside the project, as a confined agent would.
+    let inside = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
+            .args(args)
+            .arg("--json")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        (output, value)
+    };
+    std::fs::write(&outside, r#"{"operations": []}"#).unwrap();
+
+    let (output, linted) = inside(&["lint", dir, "--confine", dir]);
+    assert!(output.status.success(), "{linted}");
+    // `..` that comes back inside is fine.
+    let around = format!("{dir}/../CLI Test/scenes/main.rscene");
+    let (output, inspected) =
+        inside(&["scene", "inspect", &around, "--confine", dir]);
+    assert!(output.status.success(), "{inspected}");
+
+    let (output, refused) = inside(&[
+        "scene",
+        "patch",
+        scene.to_str().unwrap(),
+        outside.to_str().unwrap(),
+        "--confine",
+        dir,
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{refused}");
+    assert_eq!(refused["diagnostics"][0]["code"], "OUTSIDE_CONFINE");
+    #[cfg(unix)]
+    {
+        // A link inside the folder that points out of it is outside.
+        std::os::unix::fs::symlink(&parent, root.join("out")).unwrap();
+        let (output, refused) = inside(&[
+            "scene",
+            "inspect",
+            &format!("{dir}/out/x.rscene"),
+            "--confine",
+            dir,
+        ]);
+        assert_eq!(output.status.code(), Some(1), "{refused}");
+        assert_eq!(refused["diagnostics"][0]["code"], "OUTSIDE_CONFINE");
+    }
+
+    // A working folder outside is refused, even with only relative words.
+    let (output, refused) = run(&["lint", "--confine", dir]);
+    assert_eq!(output.status.code(), Some(1), "{refused}");
+    assert_eq!(refused["diagnostics"][0]["code"], "OUTSIDE_CONFINE");
+
+    // RUSTING_CONFINE sets it for a session.
+    let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .args(["new", parent.to_str().unwrap(), "Other", "--json"])
+        .env("RUSTING_CONFINE", dir)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!parent.join("Other").exists());
     std::fs::remove_dir_all(parent).unwrap();
 }
 

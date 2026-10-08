@@ -325,6 +325,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting scene add-model scenes/main.rscene assets/models/barrel.glb --dry-run",
     ),
     code(
+        "OUTSIDE_CONFINE",
+        "--confine (or RUSTING_CONFINE) limits commands to one folder, and the working folder, an argument or a file write was outside it. Links and `..` are resolved first.",
+        "Use paths inside the confined folder, or run without --confine and with RUSTING_CONFINE unset.",
+        "rusting lint my_game --confine my_game --json",
+    ),
+    code(
         "PATCH_INVALID",
         "Every operation applied, but the patched scene fails validation, so nothing was written.",
         "Fix the operation that causes the problem in the message; use --dry-run to check before writing.",
@@ -398,7 +404,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     code(
         "READ_ONLY",
-        "Read-only mode (--read-only or RUSTING_READ_ONLY) refused a command or a file write. Only commands that write no file run: inspection, lint, validate, docs, schema, diff, log, provenance, list commands and any --dry-run.",
+        "Read-only mode (--read-only or RUSTING_READ_ONLY) refused a command or a file write. Only commands that write no file run: inspection, lint, validate, docs, schema, diff, log, provenance, list commands, and `scene patch` or `fix` with --dry-run.",
         "Run the command without --read-only and with RUSTING_READ_ONLY unset, or use its --dry-run form to see the change.",
         "rusting lint --read-only --json",
     ),

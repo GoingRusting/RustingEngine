@@ -145,12 +145,22 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
 fn execute(args: &[String]) -> CliResult {
     // Files written by the command are one operation in the journal.
     let _operation = rusting_engine::runtime::journal::begin(&args.join(" "));
-    let positional = default_root(
-        args.iter()
-            .filter(|arg| !matches!(arg.as_str(), "--json" | "--read-only"))
-            .map(String::as_str)
-            .collect(),
-    );
+    let mut confine = std::env::var(cli::CONFINE_ENV)
+        .ok()
+        .filter(|dir| !dir.is_empty());
+    let mut words = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--json" | "--read-only" => {}
+            "--confine" => match rest.next() {
+                Some(dir) => confine = Some(dir.clone()),
+                None => return usage("--confine takes a folder"),
+            },
+            word => words.push(word),
+        }
+    }
+    let positional = default_root(words);
     let read_only = args.iter().any(|arg| arg == "--read-only")
         || std::env::var(cli::READ_ONLY_ENV)
             .is_ok_and(|value| !value.is_empty() && value != "0");
@@ -158,8 +168,23 @@ fn execute(args: &[String]) -> CliResult {
         if let Some(refusal) = cli::read_only_refusal(&positional) {
             return refusal;
         }
-        rusting_engine::runtime::lease::set_read_only();
     }
+    let confine = match confine.map(|dir| Path::new(&dir).canonicalize()) {
+        None => None,
+        Some(Ok(dir)) => Some(dir),
+        Some(Err(error)) => {
+            return usage(format!(
+                "--confine needs an existing folder: {error}"
+            ))
+        }
+    };
+    if let Some(refusal) = confine
+        .as_deref()
+        .and_then(|dir| cli::confine_refusal(&positional, dir))
+    {
+        return refusal;
+    }
+    rusting_engine::runtime::lease::set_scope(read_only, confine);
     match positional.as_slice() {
         ["--version" | "-V" | "version"] => cli::CliResult::success(
             serde_json::json!({"engine_version": env!("CARGO_PKG_VERSION")}),
