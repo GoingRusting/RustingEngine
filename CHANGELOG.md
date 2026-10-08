@@ -6,7 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
-- `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it.
+- `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it. A `--confine` flag can narrow `RUSTING_CONFINE` but never widen it.
 - `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus `scene patch` and `fix` with `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
 - `rusting lint` warns `LINT_TEXT_OVERFLOW` when HUD text, measured in the HUD's font, runs past the edge of a 1280 x 720 view.
 - `rusting lint` warns `LINT_GOAL_UNREACHABLE` for a sensor (pickup, goal, trigger) at the player's height that no walk or jump from the player's start reaches past fixed walls. Walls named as strings in game code count as doors.

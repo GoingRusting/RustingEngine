@@ -344,6 +344,17 @@ fn confine_refuses_paths_outside_the_folder_after_resolving_links() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(!parent.join("Other").exists());
+
+    // A flag cannot widen RUSTING_CONFINE to a folder around it.
+    let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
+        .args(["new", parent.to_str().unwrap(), "Other", "--json"])
+        .args(["--confine", parent.to_str().unwrap()])
+        .env("RUSTING_CONFINE", dir)
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!parent.join("Other").exists());
     std::fs::remove_dir_all(parent).unwrap();
 }
 

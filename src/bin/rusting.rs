@@ -1,6 +1,6 @@
 //! Agent-friendly window-free engine command line.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusting_engine::cli::{self, CliResult, SceneFilter};
@@ -145,16 +145,20 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
 fn execute(args: &[String]) -> CliResult {
     // Files written by the command are one operation in the journal.
     let _operation = rusting_engine::runtime::journal::begin(&args.join(" "));
-    let mut confine = std::env::var(cli::CONFINE_ENV)
+    // The environment and every flag each limit commands; a flag can
+    // narrow RUSTING_CONFINE but never widen it.
+    let mut confines: Vec<String> = std::env::var(cli::CONFINE_ENV)
         .ok()
-        .filter(|dir| !dir.is_empty());
+        .filter(|dir| !dir.is_empty())
+        .into_iter()
+        .collect();
     let mut words = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--json" | "--read-only" => {}
             "--confine" => match rest.next() {
-                Some(dir) => confine = Some(dir.clone()),
+                Some(dir) => confines.push(dir.clone()),
                 None => return usage("--confine takes a folder"),
             },
             word => words.push(word),
@@ -169,15 +173,29 @@ fn execute(args: &[String]) -> CliResult {
             return refusal;
         }
     }
-    let confine = match confine.map(|dir| Path::new(&dir).canonicalize()) {
-        None => None,
-        Some(Ok(dir)) => Some(dir),
-        Some(Err(error)) => {
-            return usage(format!(
-                "--confine needs an existing folder: {error}"
-            ))
-        }
-    };
+    let mut confine: Option<PathBuf> = None;
+    for dir in confines {
+        let dir = match Path::new(&dir).canonicalize() {
+            Ok(dir) => dir,
+            Err(error) => {
+                return usage(format!(
+                    "--confine needs an existing folder: {error}"
+                ))
+            }
+        };
+        confine = match confine {
+            Some(outer) if dir.starts_with(&outer) => Some(dir),
+            Some(inner) if inner.starts_with(&dir) => Some(inner),
+            Some(other) => {
+                return usage(format!(
+                    "--confine {} is not inside {}, the folder already confining commands",
+                    dir.display(),
+                    other.display()
+                ))
+            }
+            None => Some(dir),
+        };
+    }
     if let Some(refusal) = confine
         .as_deref()
         .and_then(|dir| cli::confine_refusal(&positional, dir))
