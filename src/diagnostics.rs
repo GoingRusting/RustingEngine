@@ -295,6 +295,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_MISSING_FILE",
+        "Game code loads a scene or plays a clip by a literal path, as in `scene.load_scene(\"scenes/levl_2.rscene\")`, and no file is there, so the load fails or the sound never plays.",
+        "Fix the path (scenes are relative to the project, clips to `assets/`; the message lists close names in the same folder), or add the file.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_MISSING_OBJECT",
         "Game code names an object, as in `scene.object(\"Playr\")`, that no entity in any scene or prefab has, so the call panics or does nothing at run time.",
         "Fix the name (the message lists close scene names), or add the object to the scene.",

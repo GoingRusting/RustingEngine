@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lint` warns `LINT_MISSING_FILE` on a literal `load_scene` path or `play_sound` clip with no file there.
 - `rusting asset generate <root> mesh "barrel 4"` builds a seeded low-poly CC0 glTF prop: crate, barrel, rock, tree or gem.
 - `rusting revert` undoes `scene split` and `scene join`: both now journal the old form they delete.
 - `rusting asset generate <root> texture "bricks 3"` makes a tileable placeholder texture with no generator hook: six presets (grid, checker, bricks, planks, tiles, noise) in one shared palette, the seed picking the colour, imported as CC0 with the preset and seed in its `.rmeta` notes.

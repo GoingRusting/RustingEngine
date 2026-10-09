@@ -2137,7 +2137,10 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
 /// `scene.object("Playr")`, that no entity in any scene or prefab under
 /// scenes/ or assets/ has, and a `LINT_MISSING_ACTION` per literal action,
 /// such as `scene.pressed("jmup")`, that no `rusting.input_action` there,
-/// `rebind` call or built-in player action defines. Names built at run time
+/// `rebind` call or built-in player action defines, and a
+/// `LINT_MISSING_FILE` per literal scene path or sound clip, such as
+/// `scene.load_scene("scenes/levl_2.rscene")`, with no file there (a
+/// built-in `sfx:` clip needs none). Names built at run time
 /// are not checked, and a literal on a line that spawns something may be
 /// the spawned name.
 fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
@@ -2163,6 +2166,13 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
     ];
     const ACTION_CALLS: [&str; 4] =
         [".pressed(\"", ".held(\"", ".press_tick(\"", ".binding(\""];
+    // Scene paths are relative to the project, clips to `assets/`.
+    const FILE_CALLS: [(&str, &str); 4] = [
+        (".load_scene(\"", ""),
+        (".play_sound(\"", "assets"),
+        (".play_sound_looped(\"", "assets"),
+        (".play_sound_with(\"", "assets"),
+    ];
     let mut scene_files = Vec::new();
     for folder in ["scenes", "assets"] {
         scene_files_in(&root.join(folder), &mut scene_files);
@@ -2273,6 +2283,59 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
                             ..Diagnostic::default()
                         });
                     }
+                }
+            }
+            for (call, folder) in FILE_CALLS {
+                for (start, _) in content.match_indices(call) {
+                    let rest = &content[start + call.len()..];
+                    let Some((name, _)) = rest.split_once('"') else {
+                        continue;
+                    };
+                    let path = root.join(folder).join(name);
+                    if name.starts_with(crate::sfx::CLIP_PREFIX)
+                        || path.exists()
+                    {
+                        continue;
+                    }
+                    // Close names in the same folder, written the same way.
+                    let prefix =
+                        name.rsplit_once('/').map_or("", |(dir, _)| dir);
+                    let siblings: Vec<String> = path
+                        .parent()
+                        .and_then(|dir| std::fs::read_dir(dir).ok())
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(|entry| {
+                            let file = entry.file_name();
+                            let file = file.to_string_lossy();
+                            if prefix.is_empty() {
+                                file.into_owned()
+                            } else {
+                                format!("{prefix}/{file}")
+                            }
+                        })
+                        .collect();
+                    let hint = crate::project_runner::nearest_hint(
+                        siblings.iter().map(String::as_str),
+                        name,
+                    );
+                    let under = if folder.is_empty() {
+                        "the project"
+                    } else {
+                        "assets/"
+                    };
+                    diagnostics.push(Diagnostic {
+                        code: "LINT_MISSING_FILE",
+                        severity: "warning",
+                        message: format!(
+                            "{}:{}: no file `{name}` under {under}{hint}",
+                            file.strip_prefix(root).unwrap_or(file).display(),
+                            line + 1,
+                        ),
+                        file: Some(file.clone()),
+                        ..Diagnostic::default()
+                    });
                 }
             }
         }
@@ -6551,7 +6614,11 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              scene.held(\"jmup\");\n\
              scene.held(\"player.sprint\");\n\
              scene.rebind(\"dash\", &keys);\n\
-             scene.pressed(\"dash\");\n",
+             scene.pressed(\"dash\");\n\
+             scene.load_scene(\"scenes/main.rscene\");\n\
+             scene.load_scene(\"scenes/mian.rscene\");\n\
+             scene.play_sound(\"sfx:coin 7\", 1.0);\n\
+             scene.play_sound(\"hit.wav\", 1.0);\n",
         )
         .unwrap();
         let found = lint_missing_names(&root);
@@ -6561,8 +6628,10 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             [
                 "src/main.rs:3: no scene has an object named `Playr`; did you mean `Player`?",
                 "src/main.rs:11: no input action is named `jmup`; did you mean `jump`?",
+                "src/main.rs:16: no file `scenes/mian.rscene` under the project; did you mean `scenes/main.rscene`?",
+                "src/main.rs:18: no file `hit.wav` under assets/",
             ],
-            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action and a rebound action pass"
+            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene and a built-in clip pass"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
