@@ -1,337 +1,60 @@
 # Changelog
 
-## [Unreleased]
+## [2.1.0] - 2026-10-09
 
-Engine features for the horror game FOREVER BEAR.
+Engine features for the horror game FOREVER BEAR, and a large batch of tools for building games with an agent.
 
 ### Added
 
-- `assets/ui/theme.json` restyles HUD buttons and game menus: fills,
-  text colour, corner radius and button padding. `rusting lint` checks
-  button contrast against the theme's fill.
-- `project.json` `ui_base_size` lays the HUD out for a base screen size
-  and scales it uniformly to fit any window, keeping its aspect ratio.
-- `rusting.hud` `follow` and `follow_offset` pin a HUD element over a named
-  object on screen, for name tags and world-space prompts.
-- `rusting.slide_sound` loops a scrape or roll sound while a body slides or rolls.
-- `BusEffect::Compressor` compresses or limits a bus.
-- `BusEffect::Eq` sets a bus's low, mid and high band gains.
-- `SoundCue::on_gpu_event` plays a cue when the GPU solver emits the named physics event for its body.
-- `rusting.reverb_zone` puts a reverb on a bus while the listener is inside the entity's collider.
-- `Sound::falloff` picks a distance curve for positioned sounds: inverse (the default), inverse square, linear to silence, or off.
-- `Sound::doppler` raises a positioned sound's pitch as it closes on the listener and lowers it going away.
-- `GameScene::mute_bus` and `solo_bus` silence buses without losing their volume; `audio:/buses/<name>` reports `muted` and `solo`.
-- `SoundCue::full_volume_speed` scales collision sound volume by how fast the bodies close, so soft landings play quieter.
-- A tick function sees each timed key or mouse press on the fixed tick it happened in, when one frame runs several ticks, instead of all on the frame's first tick.
-- Editor gizmo and axis colours stay distinct for red-green color-blind users (X red leans pink, Y green is lighter), checked by a simulated-vision test.
-- HUD button text `{binding:action}` shows an input action's keys, and clicking it rebinds the action to the next key pressed (Escape cancels), so a controls menu needs no game code.
-- `GameScene::set_text_scale(scale)` and `text_scale()`: larger HUD text and captions for players who need them.
-- HUD text `{state:Name}` shows an object's `rusting.state`, translated when the locale has it as a key, so a quest's stage shows with no game code.
-- HUD text `{dialogue:Name}` shows a dialogue's line, and a HUD button whose text is `{dialogue:Name/n}` shows and picks choice n, so a dialogue box needs no game code. HUD elements whose text fills to nothing are no longer drawn.
-- Registered component `rusting.dialogue` (lines with speakers, texts as translation keys, and choices that add to counters) stepped by `GameScene::start_dialogue`, `dialogue_line` and `advance_dialogue`.
-- `tr_count` follows the locale's plural rule: `key.few` and `key.many` for Russian-family languages and Polish, `key.few` for Czech and Slovak, and French `one` for 0. A missing form falls back to `key.other`.
-- `rusting lint` warns `LINT_MISSING_TRANSLATION` for each literal `tr("key")`, `tr_count("key", ..)` or HUD `{tr:key}` key that a locale file in `assets/locales/` lacks.
-- Localization: `GameScene::set_locale(locale)` loads `assets/locales/<locale>.json`, `tr(key)` and `tr_count(key, count)` read it, and HUD text's `{tr:key}` placeholders follow the locale.
-- `GameScene::saved_keys(folder)` lists the save files in a user data folder, for a load menu's save slots.
-- The component `rusting.loot_table` holds a weighted loot table on a named object, editable in the inspector, and `GameScene::roll_loot_table(name, stream)` rolls it from the run's seed.
-- `rusting.state` takes `actions` (`state`, `exit`, `counter`, `add`), which add to a counter when a state is entered or left, by a transition or `set_state`.
-- The recipe `alarm` builds a state machine with no code: a plate that alarms when the player touches it, counts alarms and calms after 2 seconds, with a scenario that checks it.
-- `rusting.state` transitions take `held`, an input action that must be held for the edge to be taken, and `touching`, the name of an object the machine's object must touch.
-- `rusting.state` takes `transitions` (`from`, `to`, `after_seconds`, `counter`, `at_least`), which the engine runs each fixed tick, so a state machine needs no game code. A transition's `then_counter` and `then_add` add to a counter when it is taken.
-- `GameScene::roll_loot(table, stream)` picks a weighted loot entry from the run's seed, and `spend(name, amount)` takes from a counter only when it holds enough.
-- `GameScene::add_status(object, effect, seconds)`, `has_status`, `status_left` and `clear_status` give objects timed status effects such as poisoned or stunned. They count fixed ticks and live in counters, so snapshots and `save_counters` keep them.
-- `GameScene::damage` sends a `Damaged {entity, amount, health}` signal to the object, so connected `In<Signal<Damaged>>` handlers react to hits and heals.
-- `GameScene::save_objects(key, version, objects, components)` and `load_objects(key)` save and restore selected registered components, such as `rusting.health` and `rusting.state`, of named objects. Each value keeps its component version, so old saves run the component migrations.
-- The registered component `rusting.health` (`value`, `max`, `team`) with `GameScene::damage`, `health` and `same_team`.
-- `GameScene::save_counters(key, version, names)` and `load_counters(key)`: versioned save slots for counters; `load_counters` returns the save's version for migrating old saves.
-- Object states: `GameScene::set_state`, `state` and `state_seconds` keep a state machine's state in the new registered component `rusting.state`, which scenarios can expect on and which snapshots and state hashes include.
-- `GameScene::spawn_numbered(template, position, limit)`: a capped spawner that names copies `"<template> <n>"` and counts refused spawns in the counter `"<template> refused"` instead of dropping them silently.
-- `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` for tick-based cooldowns, and `GameScene::set_time_scale` and `time_scale` for slow motion. The dash, turret and health recipes use the cooldowns and no longer take `time`; projects that already applied them keep their own copies.
-- `scene.object(name).look_at(target)` turns an object's forward axis (-Z) toward a point, like Godot's `look_at`.
-- `GameScene::tween(name, property, to, seconds, easing)` starts a one-shot tween from the object's current value, like Godot's `tween_property`. `TweenProperty` and `Easing` are in the prelude.
-- `GameScene::remove_class(name, class)` takes an object out of a class, the counterpart of `add_class`.
-- Agent benchmark task `platformer-bricks`: a bug-fix task on the 2D template whose bug is a tile marked not solid in the scene.
-- Agent benchmark task `crypt-wait`: a feature task on the roguelike template, a wait action that spends a turn.
-- `RUSTING_BENCH_TASK=<folder>` limits the agent benchmark's slow validation test to one task.
-- Agent benchmark task `lock-new-game`: a new-game task from the empty template, a four-digit code lock.
-- Agent benchmark task `arena-knockback`: a bug-fix task on the top-down template, where a hit throws the enemy through the player.
-- Agent benchmark task `duel-redraw`: a feature task on the card-game template, a once-per-duel mulligan.
-- Agent benchmark task `swarm-diagonal-speed`: a bug-fix task on the twin-stick template, where diagonal moves are too fast.
-- Agent benchmark task `puzzle-undo`: a feature task on the puzzle template, a one-step undo.
-- Agent benchmark task `tower-reach`: a bug-fix task on the tower-defense template, where towers ignore the Z distance to their target.
-- Agent benchmark task `racing-lap-times`: a feature task on the racing template, with last and best lap times.
-- `rusting capture --game` builds the project and captures its game with game code run up to `--tick`.
-- A running game shows fps, frame time and p95 in its top-right corner while `RUSTING_PERF` is set; F3 toggles that report on and off.
-- Agent benchmark task `reaction-new-game`: a new-game task from the empty template, a reaction-time game with false starts.
-- Agent benchmark task `platformer-goal`: a feature task on the 2D platformer template, where touching the Goal clears the level once.
-- Agent benchmark task `crypt-diagonal`: a bug-fix task on the roguelike template, where diagonal enemies strike.
-- Agent benchmark task `swarm-bomb`: a fourth feature task, a once-a-round bomb in the twin-stick template.
-- Agent benchmark task `tapper-new-game`: a third new-game task, a ten-second tapping game with a countdown.
-- Agent benchmark task `rhythm-spark-leak`: a second performance task, where hit sparks are hidden instead of despawned.
-- `rusting lint` checks literal object names in every `GameScene` call that takes one, and warns `LINT_MISSING_EVENT` on a literal `gpu_events` name that no GPU physics rule in code or a scene names.
-- `rusting lint` warns `LINT_SILENT_GOAL` on a counter with a target that nothing reacts to: no HUD element requires or shows it, no pickup requires it, and game code never names it.
-- `rusting lint` warns `LINT_COLOR_ONLY_STATUS` when game code changes a HUD element's colour with `set_hud` but never its text, so the state it shows depends on telling colours apart. Brightness or alpha changes on one hue and counter readouts are not flagged.
-- `rusting capture` warns `CAPTURE_TEXT_CONTRAST` when plain HUD text is hard to read against the scene behind it (WCAG AA, judged on the rendered frame). Captures at tick 0 now include the HUD: plain HUD text is painted directly instead of in an egui area, which hid it for its first frame, and no longer blocks the pointer. The starter and racing templates use dark HUD text that passes the check.
-- `LINT_MISSING_FILE` also checks literal `spawn_prefab` paths.
-- `rusting lint` warns `LINT_MISSING_CLASS` on a literal `in_class` name nothing puts objects in, with close class names.
-- Agent benchmark task `arena-cooldown`: a feature request on the top-down template.
-- Agent benchmark task `puzzle-box-stack`: a bug fix on the puzzle template.
-- Agent benchmark task `walker-new-game`: a new game from the empty template.
-- Agent benchmark task `racing-wide-road`: a bug fix on the racing template.
-- Agent benchmark task `tower-sell`: a feature request on the tower-defense template.
-- `rusting lint` warns `LINT_MISSING_FILE` on a literal `load_scene` path or `play_sound` clip with no file there.
-- `rusting asset generate <root> mesh "barrel 4"` builds a seeded low-poly CC0 glTF prop: crate, barrel, rock, tree or gem.
-- `rusting revert` undoes `scene split` and `scene join`: both now journal the old form they delete.
-- `rusting asset generate <root> texture "bricks 3"` makes a tileable placeholder texture with no generator hook: six presets (grid, checker, bricks, planks, tiles, noise) in one shared palette, the seed picking the colour, imported as CC0 with the preset and seed in its `.rmeta` notes.
-- `rusting asset generate <root> sprite "star 2"` makes a placeholder sprite the same way: one of six outlined shapes (circle, square, triangle, diamond, star, heart) on a clear 128 px background, for a `Quad` with `alpha_mode` `Blend`.
-- `benchmarks/agent/run.py --agent '<command>'` runs the benchmark tasks against any agent CLI and writes a JSON report: hidden-scenario pass rate, wall time, output size, and the agent's commands and corrective builds. `RUSTING_COMMAND_LOG=<file>` makes every `rusting` command append a JSON line with its arguments, result, diagnostic codes and duration.
-- `benchmarks/agent/` holds the first agent benchmark tasks (a new game, two bug fixes, a feature and a performance fix): a one-paragraph request, a seeded starting project and hidden acceptance scenarios each. `cargo test --test agent_benchmark -- --ignored` proves every task's hidden scenarios fail on the seeded project and pass with a reference solution.
-- Any `rusting` command takes `--offline`, and `RUSTING_OFFLINE=1` sets it for a session: builds pass `--offline` to cargo, so they use only crates already downloaded and never reach the network.
-- `rusting scene split` turns a scene into folder form, a `.rscene` directory with `scene.json` and one `entities/<id>.json` per entity, so edits to different objects do not conflict in git; `rusting scene join` turns it back. The runtime, the editor and every scene command read and write both forms, and a patch rewrites only the entity files it changed.
-- `rusting lint` warns `LINT_MISSING_OBJECT` when game code names an object, as in `scene.flash("Stairz")`, that no scene or prefab has, and `LINT_MISSING_ACTION` when it reads an input action nothing defines, as in `scene.pressed("jmup")`; both list close names.
-- `rusting.sound_cue` takes a `caption`, such as `[glass breaks]`, shown for 2 s each time the cue fires.
-- `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it. A `--confine` flag can narrow `RUSTING_CONFINE` but never widen it.
-- `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus `scene patch` and `fix` with `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
-- `rusting lint` warns `LINT_TEXT_CONTRAST` when HUD button text falls below WCAG contrast (4.5:1, or 3:1 from 24 px) against the button fill.
-- `rusting lint` warns `LINT_TEXT_OVERFLOW` when HUD text, measured in the HUD's font, runs past the edge of a 1280 x 720 view.
-- `rusting lint` warns `LINT_GOAL_UNREACHABLE` for a sensor (pickup, goal, trigger) at the player's height that no walk or jump from the player's start reaches past fixed walls. Walls named as strings in game code count as doors.
-- `rusting systems [root]` also lists the game code functions of a project (stage `Game`, with file and line) and the components each reads and writes, from bevy system parameters and `GameScene` calls, so `rusting systems --writes Health` answers for game components too.
-- Operation journal: each CLI or daemon command that writes project files is recorded in `.rusting/journal.jsonl`; `rusting log` lists operations and `rusting revert <op>` undoes one unless a later operation changed the same file (`REVERT_CONFLICT`). `add scenario`, `add system`, recipes and the AGENTS.md refresh now write atomically and respect leases.
-- `rusting provenance [root]`: a portable record of engine crates, a game-code hash, asset hashes with their `.rmeta` provenance, generator hooks, scene hashes, and scenario seeds and hashes.
-- `rusting lease claim|release|list`: scoped leases for parallel agents. A scene or prefab write to a path another agent leases fails with `LEASE_HELD` naming the holder; agents name themselves with `RUSTING_AGENT` or `--as`.
-- A test pins stable scene saves: entities sorted by ID, fields and components in a fixed order, so save-load-save is byte-identical and one edit changes one line.
-- `rusting merge <base> <ours> <theirs> [--output PATH]`: a three-way scene merge by entity ID and field, for use as a git merge driver. Conflicts are `SCENE_MERGE_CONFLICT` errors naming the entity and field. `rusting new` writes `.gitattributes` with `*.rscene merge=rusting-scene`; enable it with `git config merge.rusting-scene.driver "rusting merge %O %A %B"`.
-- `rusting impact <file-or-component>` lists the scenes, entities, code lines and scenarios a change to an asset, prefab or component would touch.
-- `rusting systems [--reads TYPE | --writes TYPE]` lists the engine's ECS systems by stage with the components and resources each reads and writes, so an agent can ask who writes `Transform`. `App::into_system_access` returns the same data.
-- `rusting project summary [--budget N]`: a token-budgeted overview of a project's scenes and prefabs (entities, components, assets), game code files (functions taking `GameScene`, literal asset paths) and component use counts. `CODE_MISSING_ASSET` now also checks `spawn_prefab("...")` paths.
-- `scene.spawn_prefab(path, name, transform)` places a prefab scene file from game code in one call (surveyor F4).
-- `perf.stages_ms_mean` in scenario results and the `RUSTING_PERF` line split tick CPU time into `fixed`, `update`, `post_update` and `extract` (unclaimed F8).
-- `perf.cpu_ms_mean` and the `mean_cpu_ms` scenario budget measure CPU time per tick, which other processes on the machine slow far less than wall time (surveyor F20).
-- Transform propagation recomputes only the entities that moved and their children, so static props cost nothing per tick (unclaimed F8).
-- `scene.on_screen(point)` and `scene.raycast_visible` answer "is this in view and not behind a wall" without mirroring the camera in game code or hitting hidden templates (surveyor F18).
-- Scenario `explore.goals` takes `[x, y, z]` points, so a list of points walks a scripted route (surveyor F17).
-- `scene.set_text_in_font` and `text_texture_in_font` draw text in a TTF or OTF font from the game (unclaimed F11).
-- `scene.seed()` reads the run seed (unclaimed F5).
-- `perf.render.lights` counts the lights a frame uploaded and `budgets.max_lights` limits it (unclaimed F6).
-- `perf.environment` reports `cpus` and `load_average`, and a timing budget failure on a busy machine says to rerun it alone (surveyor F20).
-- `rusting docs search resolution` (or `render size`, `1080p`) finds `capture_size`, the headless render size (surveyor F12).
-- `scene.edit_texture(handle, |texture| ..)` draws into a created texture while the game runs; `TextureAsset`, `TextureColorSpace` and `TextureSampler` are in the prelude (surveyor F14).
-- `scene.spawn_copy_at_root(template, name, transform)` spawns a copy with no parent and a full transform (surveyor F4, F6).
-- `scene.set_player(name, |pc| ..)` edits a player controller's speeds and other settings from game code (surveyor F9, unclaimed F7).
-- `rusting test --json` reports `perf.entities_max`, the most live entities after any tick, and `budgets.max_entities` limits it (surveyor F8, F13).
-- `rusting run --bench` reports `cpu_p50_ms`, `gpu_p50_ms` and `bound` (`"cpu"` or `"gpu"`), and guide/look-and-feel says which cuts help which side; LOD only helps a GPU-bound frame (FOREVER BEAR F49).
-- `rusting test <project> <scenario> --exe <game>` runs a scenario against an already built game, such as an export, from the game's own folder without cooking or building (FOREVER BEAR F48).
-- `rusting scene inspect` lists every entity's id and name under `entities`, so `--fields` and `--limit` apply to it; `scene map` help says an empty `maps` list means no tile map.
-- Scene patch `set`, `remove`, `reparent` and `delete` accept `name` for the entity as well as `id`, and the project AGENTS.md shows an example (surveyor F1, unclaimed F1).
-- `scene.window_focused()` is false while the game window has lost focus (alt-tab), so a game can pause itself, and the scenario step `{"focus": false}` simulates it (FOREVER BEAR F46).
-- `rusting new --template twin-stick` creates Swarm, a twin-stick shooter with game code: move with WASD or the left stick, aim and fire with the arrows or the right stick, and defeat a wave of twelve enemies. Its `tests/wave.json` plays the first wave.
-- `rusting new --template tower-defense` creates Outpost, a tower defense game with code: build towers on four pads with keys 1 to 4, earn gold from defeated enemies, and hold the base against a wave of ten. Its `tests/defend.json` plays the wave.
-- `rusting new --template roguelike` creates Crypt, a turn-based roguelike with code: each of three floors is laid out from the run's seed, walking into an enemy defeats it, and enemies next to you strike. Its `tests/descend.json` plays a run on seed 1.
-- `rusting new --template card-game` creates Duel, a card battle with code: play Strike, Guard and Heal cards from a seeded deck with keys 1 to 3 or the card buttons, against a foe whose next attack shows in advance. Its `tests/duel.json` plays a duel on seed 1.
-- `rusting new --template rhythm` creates Beat, a rhythm game with code: hit notes in three lanes with D, F and J as they cross the line, scored PERFECT or GOOD by timing. Its `tests/song.json` plays the song.
-- `rusting lint` warns `LINT_NO_ENDING` when a scene keeps counters but nothing can end a round: no counter has a target and game code never calls `counter_complete`, `load_scene` or `quit`.
-- The agent skill lists the pitfall catalog's entries by symptom, generated from `docs/pitfalls.md`.
-- The agent skill lists every scene component with its one-line summary, generated from the schema and checked by the same test.
-- The API table in the agent skill (`SKILL.md`) and in a new project's `AGENTS.md` is generated from the API index and lists every `GameScene` call with its parameters; a test fails when it goes stale, and `RUSTING_UPDATE_GOLDEN=1` rewrites it.
-- New 2d, first-person, third-person and sandbox projects ship a passing scenario (`tests/run.json`, `tests/walk.json` or `tests/drop.json`), so `rusting test` works on every template.
-- `GameScene::add_class(name, class)` puts an object, such as a copy spawned from a classless template, in a class.
-- `rusting new --template racing` creates Circuit, a racing game with game code: drive three laps through the checkpoints in order; off the road the car is slow. Its `tests/lap.json` drives a lap.
-- `rusting new --template top-down` creates Arena, a top-down action game with game code: move, attack the enemies that chase you, and defeat all three before taking three hits. Its `tests/fight.json` plays a winning round.
-- `rusting new --template puzzle` creates Box Push, a grid puzzle with game code: push every box onto a goal. Its `tests/solve.json` solves the level.
-- `rusting docs show cookbook/<name>`: tested snippets for common tasks, starting with an enemy that follows the player and a level select.
-- The agent skill now lists every `GameScene` method, and a test fails when a guide misses one or names a method that does not exist.
-- `rusting docs show guide/pitfalls`: a catalog of mistakes games have made, each with the diagnostic code that catches it and the fix.
-- `rusting lint` warns `LINT_TEXT_SMALL` for HUD text under 14 px and `LINT_TEXT_OFFSCREEN` for HUD text anchored outside a 1280 x 720 view.
-- `rusting lint` warns `LINT_GOAL_INSIDE` when a pickup, goal or other sensor starts with its centre inside solid geometry, where the player can never reach it.
-- `rusting lint` warns `LINT_CAMERA_INSIDE` for a camera inside a capsule collider too, and no longer for a camera inside any player body.
-- `scene.dash(name, velocity, seconds)` dashes a player or platformer controller, and `rusting recipe apply dash` adds a dash on Q with a cooldown, completing the recipe list.
-- `scene.playing_sounds()` lists the sounds started and not yet ended with clip, bus and paused state, and `scene.pause_sounds(bus)` / `resume_sounds(bus)` pause and resume one bus or (with `None`) every sound. The `pause_menu` recipe pauses sounds with the game.
-- Sound pitch and speed: play a sound at any rate, change it with a fade, and see it in the playing list
-- Pause, resume and seek playing sounds; the playing list shows where each sound is
-- Moving 3D sounds: move a sound or attach it to an object, and pick which object listens
-- Bus effects without new libraries: low-pass, reverb and distortion on any volume group, with fades
-- Voice limits and priorities: a thousand sounds at once stay within the limit, the lowest-priority and then quietest sounds give way, and the dropped count is reported
-- Captions tied to sounds, with a settings toggle and text size
-- Walls muffle sounds: a physics ray between listener and sound lowers the volume and the high frequencies
-- Long music and ambience files stream from disk instead of loading whole
-- Sounds can play backwards
-- Game tests can compare the sound mix with a stored reference file
-- Camera screens can update every few frames, switch off, and skip themselves when out of view
-- CRT and VHS look for screens: scanlines, film grain, color bleed, a rolling noise band and wobble, plus film grain and color fringing for the whole picture; grain repeats exactly for the same tick
-- Text on 3D objects: draw any text into a texture for signs, labels and monitor overlays
-- Waypoint graphs: shortest path and nearest point for monsters that patrol
-- Steam achievement and stat calls that do nothing yet, so games can call them today (see below)
-- Render benchmark options for many instanced objects and camera screens
-- Sample game `forever_bear_booth`: a night-shift booth with six CRT monitors, a shelf of pitched bear voices and a mascot that walks the aisles
-- `BusEffect`, `Caption`, `WaypointGraph` and `AssetServer` are in the prelude
-- `rusting check` warns `SCENE_COLLIDER_WITHOUT_BODY` when a collider has no `physics_body`, because physics, raycasts and `aim` skip such a collider
-- A scenario fails when no tick finishes for 60 seconds, for example after a deadlock, and names the last finished tick, so `rusting test` no longer hangs (`RUSTING_TEST_STALL_SECS` changes the limit)
-- The game binary warns when its cooked scene is older than the scene file, so `cargo run` after a scene edit no longer plays the old level silently
-- `camera_screen` `exposure`: brighten or darken one monitor's feed without changing the scene's lights or the player's view
-- The `dark_interior` preset's moonlight is bright enough to see (30000 lux instead of 3000), and the docs explain how lux, point light intensity and ambient intensity compare
-- Game code can draw text onto an object (`scene.set_text`) and put any material on one (`set_material`, `create_texture`); `docs search` snippets show the line that best matches the query
-- `asset reimport` by path registers a file under `assets/` that has no `.rmeta` yet, such as a model added by `scene add-model`, instead of failing with ASSET_NOT_FOUND
-- The docs list every built-in primitive's size and axis (`docs/look-and-feel.md` "Mesh kit" and the `mesh` schema entry)
-- `rusting schema` and `rusting explain PATCH_JSON` show a full `create` patch with a parent, built-in sections and a component
-- Scenario `expect_screen` and pick checks are much faster on large scenes: a check on a 3,895-entity scene takes about 0.3 s instead of 15-20 s
-- Game code can zoom a camera: `scene.set_camera_fov(name, radians)` and `scene.camera_fov(name)`
-- `rusting.player_controller` has `pitch_limits` and `yaw_limits` for seated and turret views
-- `rusting check` reports a CLI built before the latest engine source edit once a day per project instead of on every run
-- The `restart` and `load_scene` docs say that playing sounds carry on and how to stop them first
-- Scenario `greater_than` and `less_than` compare an array's length, so `/playing` can be counted
-- `audio:/playing` shows each sound's `[left, right]` `gain`, and the audio docs give the pan law and warn that a named listener does not turn with the camera
-- The camera docs explain clicking with `aim` while mouse look holds the cursor
-- The camera docs say where a player controller's eye sits in first and third person
-- `rusting schema NAME` prints one component, operation or section of the catalog
-- `rusting docs show scenario` lists every scenario file field and step kind on one page
-- The scenario and camera docs show turning a player's view with `set` on the controller's `yaw` and `pitch`
-- The `audio:` scenario probe reports each bus's own `level` and `peak` under `/buses/<bus>`, measured after the bus's effects and volume
-- `RUSTING_PERF=1` adds the p50, p95, p99 and largest frame time of each second to its `[rusting] perf` line
-- `project.json` takes `"window": [width, height]`, the window size a game asks for when it runs from the project folder
-- `perf.render.cameras` in a test report also lists each camera screen drawn that frame, with its GPU time, draws and triangles
-- `rusting run --bench FRAMES` measures that many windowed frames after a 60-frame warm-up, closes the game, and reports mean, p50, p95, p99 and max frame time
-- `set_color` and `set_emissive` no longer scan every material or keep one material per eased value; easing 900 objects a tick drops from about 0.5 ms to 0.35 µs a call
-- A scenario check on a counter nobody created yet reads it as 0, as game code does, instead of failing with "no entity"
-- A CLI usage error names the flag the command does not take and prints that command's usage
-- `rusting test --keep-going` runs every step after a failed check, and the failure message lists every failed step
-- The audio guide says which sound loses when a bus is full: priority within that bus only, then the quietest after distance and occlusion, ties replacing the oldest
-- `rusting test` reports `perf.render.gpu_ms_p50`, `gpu_ms_p95`, `gpu_ms_max` and `gpu_frames` over every offscreen frame, for GPU timing without a window
-- `rusting_game!(update, tick: tick)` adds a function called once per fixed tick; `scene.pressed` inside it sees presses made on frames that ran no tick (`run_game_with_tick` for custom scene paths)
-- `GameScene::restart` docs say scene counters reset, `set_counter` counters are dropped and `fixed_tick` keeps counting, with an example that carries a value across; `set_paused` docs say `fixed_tick` and `elapsed` stop while `frame` counts on
-- Ray hits on ragdoll bodies report the bone's name, and `raycast_skipping` skips them by the bone's classes (new `RagdollPart` component links a body to its bone)
-- An active ragdoll holds each unkeyed bone field (position, rotation, scale) to its starting pose, so a clip that keys only the hips' position no longer leaves them turned
-- `GameScene::reset_ragdoll(name)` drops a ragdoll's bodies and restores its animated pose, for a teleport without trailing limbs; blending back from limp also restores unkeyed bone fields one by one
-- `rusting docs show api/AnimationEvent` lists the event's fields; `guide/animation` names them too
-- `guide/look-and-feel` no longer claims skinned models import as a still pose
-- `scene add-model` suffixes repeated or taken node names (`slice 2`) instead of failing, and a taken root name says to pass `--name`
-- `GameScene::set_exposure` and `GameScene::set_mouse_look` set exposure and free or recapture the cursor without `world()`
-- `scene add-model` help and `guide/look-and-feel` say a model's license and author live in the `.rmeta` from `asset import`
-- `GameScene::set_field(name, path, value)` sets any scene field by the scenario `set` JSON pointer, including registered components such as `rusting.fog`
-- `guide/menus-and-ui` explains why `Color32::from_white_alpha(8)` is grey 50 and how to draw a faint overlay
-- `rusting capture --at X,Y,Z` with `--look-at X,Y,Z` or `--look YAW,PITCH` shoots from any point without a camera in the scene.
-- A scenario with captures, and `rusting capture --tick N`, render only the few ticks before each image instead of the whole run, so long runs with a late capture are no longer slow throughout. Scenes with GPU bodies still render every tick.
-- `rusting docs show api/WaypointGraph` documents the waypoint graph's fields and methods.
-- `--stderr` on `rusting run` and `rusting test` streams game output while the game runs.
-- New `guide/lighting` docs page: shadow support per light type, the light cap per quality and which lights are dropped first. Scenario perf reports include `dropped_lights`.
-- `rusting.player_controller` gains `crouch_height` and `crouch_multiplier`, and a `player.crouch` action bound to C, left Ctrl and pad East. Crouching is off by default (`crouch_height` 0). `PLAYER_ACTIONS` now has seven entries.
-- Scenario `audio:` checks read a clip that never played as 0 plays at `/clips/<clip>`.
-- `asset import --to assets/sounds` now means `assets/sounds` instead of `assets/assets/sounds`.
-- New docs pages `api/GpuBodySettings`, `api/GpuConditionShader` and `api/MaterialAsset`, and a note on friction and jamming in dense GPU piles.
-- Scenario checks read one entity instead of capturing the whole scene each tick, which speeds up long runs of big scenes. `perf.wall_ms_mean` gives the whole run per tick.
-- `rusting_game!(update, components: [Night => "game.night"])` registers a game's own scene components, and the prelude re-exports `Component`, `Serialize` and `Deserialize`, so game state can leave counters without adding crates.
-- `spot_light` gains `shadows` (default false): a shadowed spot light stops at walls, so a flashlight no longer lights the far side of a door. One light per frame casts shadows, and a shadowed directional light wins.
-- New `rusting.post_volume` component: fog and color grading on its object apply only inside its box, blending over `blend` metres, so a foggy hall and a warm office can share a scene.
-- A game whose cooked scene was made by a `rusting` CLI from another engine build now warns and loads the source scene instead of failing with a bincode decode error (dev projects only).
-- The look-and-feel guide documents mesh level of detail (`.rlod` files beside a mesh).
-- Scenarios and `rusting capture` with GPU bodies no longer draw a frame every tick: ticks without an image step only advance GPU physics, with the same state hashes, so long GPU runs finish sooner.
-- The lighting guide explains light brightness units, the art presets' values and which way directional and spot lights point.
-- GPU contact-grid overflow counts appear in `rusting test --json` perf and in the `RenderCapacityDiagnostics` resource during a game run; the concepts manual explains why crowded cells slow every GPU body.
-- The concepts manual has a "Many bodies" section: triangles per sphere `subdivisions` value, the cost of `state_hash` and where to read CPU and GPU time.
-- A settled GPU pile stays asleep: sleeping bodies ignore contact pushes below half a millimetre, so a deep pile no longer creeps, spreads and wakes up again.
-- `rusting docs show api/BusEffect` lists the bus effects and their fields, and `api/GameScene::press_tick` names the scenario `at` field.
-- `expect_pixels` takes `differs_from` with `difference_min` or `difference_max` to compare a region with an earlier capture.
-- Cylinder and cone caps show a texture as a disc, a Plane shows the whole texture, and the mesh kit docs say how each primitive maps textures and that children inherit their parent's scale.
-- Invalid-object patch errors name the operation at fault, and a short color says it needs 3 or 4 numbers.
-- `scene.raycast` is about 20% faster without skip classes, and the concepts guide gives the cost per ray.
-- `rusting asset reimport` accepts a path relative to `assets/`, as `asset import --to` names it.
-- With `keep_going`, a failed scenario's game error says how many more checks failed, and docs/concepts.md documents `RUSTING_KEEP_GOING`.
-- The sides of `Cylinder`, `Cone` and `Capsule` show a texture's full height with its top row at the top, as `Sphere` does. A cylinder side showed only the middle fifth of the image before; a textured capsule was upside down and now appears flipped compared with earlier builds.
-- A scenario `click` with `index` counts copies of a text drawn within 4 px of each other, such as a drop shadow, as one place.
-- The `budgets` schema text no longer says draw and triangle limits need a capture step; it and docs/concepts.md say when `perf.render` is filled.
-- docs/determinism.md explains that an unrelated scene edit can move a chaotic physics result, because bodies solve in `Entity` order.
-- `GameScene::counter_or(name, default)` reads a counter that may not exist yet without the missing-counter warning.
-- The missing-counter warning lists close counter names ("did you mean `money`?") when the name looks like a typo.
-- `set_color`, `trigger`, `spawn_copy` and the other name-taking setters that return nothing warn once, with the nearest object names, when the name does not exist.
-- docs/concepts.md "Build times" states the 3 s edit-to-diagnostic budget and shows how to share one `CARGO_TARGET_DIR` across games so the engine builds once.
-- `rusting test <project>` saves its results to `build/test-results.json`, and the editor's Agent area shows them in a new Results tab.
-- The editor's Agent area can pause agent edits; an outside scene write that arrives while paused or while the scene has unsaved edits waits as a pending row with Accept (undoable) and Reject. Accept applies only the revision shown; a newer write replaces the pending row.
-- The Agent area's pending row lists each touched entity with its changed fields and its own Accept, which applies that entity alone behind one Undo snapshot.
-- The Agent area's pending diff compares the outside write with the scene file as last loaded or saved, so unsaved editor edits no longer show as agent changes.
-- The Agent area's pending row lists entities an outside write removes, each with an Accept that deletes it and its descendants behind one Undo snapshot.
-- `rusting test <project>` saves each scenario's tick time, draws and triangles in `build/test-results.json`, and the Agent area's Results tab shows them.
-- `rusting test --without COMPONENT` runs a scenario with that component left out of every scene and passes only when the scenario then fails, or fails with `SCENARIO_TOO_WEAK`.
-- Scenario reports carry `coverage`: the entities and scene sections a run changed, added or removed, the sections it never touched, the actions pressed and trace events by kind.
-- `rusting bisect <project> <other-root>` runs two copies of a game headless and names the first tick and entity whose state hashes differ; divergent entities now pair by scene ID, also in `rusting determinism`.
-- `rusting fuzz <project> <scenario>` runs a scenario over many seeds with random action presses and writes the first failing seed to `build/fuzz/seed-N.json` as a ready scenario; scenarios accept a `fuzz` section and reports list `fuzz_steps`.
-- `rusting run --record FILE.scenario.json` saves the windowed session as a scenario: press, release and tap steps for the named actions the player held, so a human can hand an agent a bug as a test.
-- Scenarios take an `explore` section: an explorer bot walks the `PlayerController` to each goal (every sensor by default), jumps when stuck, and fails naming the goals it could not reach; the report lists them as `explore`.
-- `rusting lint [project]` checks the main scene for a player body outside 0.5 to 3 m tall, zero scale axes, and lights that can never light anything, as `LINT_*` warnings.
-- `rusting lint` warns with `LINT_CAMERA_INSIDE` when a camera starts inside a solid box or sphere collider.
-- Spawning an object under a taken name still panics, but the message now says names are unique and points at the usual cause: the scene file or its template already has an object of that name (playplace friction 3).
-- `rusting new --template empty` creates a project whose scene holds only a camera, so game code can spawn objects under any name (playplace friction 3).
-- `rusting inspect --tick N` reports `feel` for player and platformer controllers: speeds, jump apex height and time, air time and jump distance, compared with genre ranges.
-- `rusting.camera_shake` and `scene.add_trauma(name, amount)` shake a camera's drawn view by trauma squared, fading by `decay` per second without moving its `Transform`.
-- `rusting.squash` and `scene.squash(name, amount)` squash or stretch an object on a damped spring that keeps its volume and returns to the rest scale.
-- `rusting lint` warns `LINT_LIGHT_BUDGET` for each visible light past the scene quality's light budget (Eco 16, Balanced 32, High and Auto 64), which the renderer drops.
-- `GameScene::count_gpu_bodies_in_box(class, min, max)` counts the GPU bodies of an object class inside a box, from their latest `request_gpu_class_snapshot` mirrors.
-- `rusting asset generate <root> sfx "coin 7"` synthesizes a seeded sfxr-style sound (jump, coin, hit, explosion, laser, powerup or blip) and imports it as a CC0 WAV, with no hook to set up.
-- `rusting.spawn_grid` copies an object and its children onto a grid when the game starts, so a scene can hold hundreds of balls without game code.
-- `GameScene::gpu_command(name, command)` moves, pushes or reads a GPU body from game code, and `restart` now puts every GPU body back at its scene-file pose.
-- Scenarios read `"entity": "class:ball in -5,0,-5 5,10,5"` for a class's member count, the bounds of its GPU bodies and how many lie inside the box.
-- `rusting.flash` and `scene.flash(name)` tint an object and its children for a moment on a hit, without touching the shared material.
-- `scene.hit_stop(seconds)` freezes a windowed game for up to a second of real time on a heavy hit; fixed ticks then carry on unchanged, so simulation results and headless runs are not affected.
-- Clip paths `sfx:<preset> [seed]` (for example `sfx:coin 7` in `play_sound` or `rusting.sound_cue`) play a built-in synthesized sound with no file, and validation no longer reports them as missing assets.
-- `rusting lint` reports `LINT_COLLIDER_MISMATCH` when a solid collider is more than twice or less than half the size of its entity's built-in mesh on any axis.
-- `rusting recipe list` and `rusting recipe apply <root> <recipe>` write a gameplay recipe into a project: its source as `src/<recipe>.rs`, its objects into the main scene as one patch, and a passing scenario as `tests/<recipe>.json`. The recipes are `checkpoints`, `health` (hazards cost a point, a short safe window follows, 0 restarts the round), `double_jump` and `inventory` (items in class `item` count into `inventory_<kind>` counters; a key opens an object in class `locked`), `day_timer` (a `day` counter that goes up every 30 seconds, with a HUD clock), `pause_menu` (Escape pauses and shows Resume and Quit HUD buttons), `wave_spawner` (each wave copies a hidden enemy template, more each time, once the last wave is gone) and `turret` (shoots the nearest visible enemy in range on a cooldown).
-- `GameScene::clicked()` names the HUD buttons clicked since the last frame, so game code reads them without the event queue.
-- `rusting run --seed N` starts the game's random streams from N instead of 0.
-- `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
-
-### Fixed
-- A caption stays up for its whole time when its clip is shorter; it used to vanish when the clip ended.
-- HUD buttons work from the keyboard and gamepad: Tab or the first d-pad press used to focus the HUD's own area (or a caption) instead of a button, so Enter or South clicked nothing. HUD buttons now take the focus in reading order, top to bottom and then left to right, instead of in scene-id order.
-- The runtime HUD always uses egui's dark theme. It used to follow the desktop theme, so a light desktop gave buttons a light fill under white text.
-- A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.
-- The lighting and look-and-feel guides state the light budget per quality level (64 High, 32 Balanced, 16 Eco) and which level `Auto` picks.
-- `rusting preset apply` puts ambient, sky, tone mapping, grading and background on a new `Environment` entity instead of the sun, and `--only environment` applies them without touching the sun.
- A scenario keeps its whole audio mix only when it has `audio_out` or `audio_reference`, so a long soak no longer grows by 384 KB per second of game time (FOREVER BEAR F47).
-- An exported game whose cooked scene was made by a different engine build loads its source scene from `scenes/` with a warning, as a dev project does; with no source, the error names the cooked file and says to recook it with a CLI built from the game's engine (FOREVER BEAR F45).
-- `rusting export` copies `project.json` into the export, so the game finds `assets/` (and its window size) from its own folder instead of looking next to `build/` (FOREVER BEAR F44).
-- A headless `rusting run --ticks` clears the input edges after each update, as the windowed loop does, so a key game code presses is "just pressed" for one update, not every update after (FOREVER BEAR F43).
-- `rusting run --replay` no longer reports a divergence at tick 9 on every windowed recording; the state hash no longer depends on entity ids that only the windowed runtime shifts.
-- Scenario screenshots and goldens now blend the runtime UI in gamma space, as the game window does; before, a translucent egui fill looked about half as dark in screenshots. Goldens with translucent UI may need regenerating.
-- A paused sound's caption no longer stays on screen; it hides until `resume_sound`.
-
-- The new screen and text goldens failed on the software renderer (lavapipe); they now pass there and on the RTX 3060
-- Each camera screen ran the GPU physics again; screens now reuse the frame's physics, so six screens cost about 3 ms instead of 113 ms
-- Parallel `rusting run`s of one project no longer fail at random with `SCENE_IO` "No such file or directory" while cooking the scene; atomic writes no longer share one temporary file name.
+- Gameplay without code: state machines with timed, held-input and touch transitions, health and damage, status effects, cooldowns, loot tables, dialogue, capped spawners and spawn grids
+- Gameplay recipes: `rusting recipe apply` adds checkpoints, health, double jump, dash, inventory, day timer, pause menu, wave spawner or turret, each with a passing test
+- Nine new game templates: twin-stick, tower defense, roguelike, card game, rhythm, racing, top-down, puzzle, empty, plus tests in every existing template
+- Saves: versioned save slots for counters and objects, a save-slot list, and crash-safe writes
+- Localization: locale files, plural rules, translated HUD text and a missing-translation lint
+- HUD: themes from `assets/ui/theme.json`, scaling to any window, elements pinned over objects, dialogue boxes and rebindable controls with no code, and larger text for players who need it
+- Audio: bus effects (low-pass, reverb, distortion, compressor, EQ), reverb zones, Doppler, falloff curves, walls that muffle sound, streaming music, pitch, seek, reverse, voice limits, mute and solo, sliding and rolling sounds, and captions
+- Look: CRT and VHS screens, film grain, fog and color grading inside boxes, shadowed spot lights, text on 3D objects, camera shake, squash and stretch, hit flash and hit stop
+- Gameplay helpers: tweens, `look_at`, slow motion, waypoint paths, crouching, air jumps, camera zoom and view limits
+- Placeholder content: `rusting asset generate` makes meshes, textures, sprites and sound effects from a seed
+- Testing: an explorer bot, fuzzing, recording a play session as a test, bisecting two builds, coverage reports and weak-test detection
+- Many new `rusting lint` checks: missing objects, actions, files and translations, unreachable goals, text contrast and size, light budget, rounds with no ending
+- Agent tooling: an operation journal with `rusting log` and `rusting revert`, leases for parallel agents, scene merge for git, folder-form scenes, `--offline`, `--confine` and `--read-only`, and an agent benchmark
+- Performance reporting: CPU and GPU frame times, `rusting run --bench`, and an on-screen fps report under `RUSTING_PERF` (F3 toggles it)
+- Editor: the Agent area shows test results and can hold outside scene edits for review, entity by entity, with undo
+- Steam achievement and stat calls that do nothing yet, so games can call them today
+- Sample game `forever_bear_booth`; new guides on lighting, pitfalls and the cookbook
 
 ### Changed
 
-- `runtime::spatialize` takes a fourth `Falloff` argument. Migration: pass `Falloff::default()` for the old `2 / distance` curve. `Sound` has new `doppler` and `falloff` fields; literals already need `..Sound::default()`.
-- `runtime::hud_text` takes a third argument, the `Translations` to fill `{tr:key}` from; pass `None` to keep the old behaviour.
-- `ObjectState` has a new `transitions` field and no longer implements `Eq`. Migration: struct literals add `..Default::default()`.
-- `GameScene::save_data` writes through a temporary file and a rename, so a crash mid-save keeps the previous file.
-- `rusting_core::schedule::CpuFrameTimings` has new `update` and `post_update` fields. Migration: a struct literal needs `..Default::default()`. The `RUSTING_PERF` line says `CPU fixed` where it said `CPU physics`.
-- A `CLI_OUTDATED` warning about newer engine source lists the engine commits made since the CLI was built (surveyor F3).
-- `rusting test` with one scenario leaves `scenario.state_hashes` and `scenario.gpu_state_hashes` out of its result. Migration: pass `--full`, or read build/scenario-report.json (unclaimed F10).
-- A scenario `capture` whose `camera` is the camera the game already shows alone keeps the HUD; before, any named camera dropped it (unclaimed F12).
-- `Explore::goals` is `Vec<ExploreGoal>`. Migration: `"Coin".into()` still builds a name goal; match `ExploreGoal::Entity(name)` where the code read the string.
-- A scenario `set` of `/transform/rotation` on an entity with a player controller sets its `yaw` and `pitch`; before, the controller overwrote it on the next tick (unclaimed F9).
-- `resource_state_hash` takes `&mut World` instead of `&World`; pass the world mutably.
-- Commands that write project files now create `.rusting/` (operation journal, content blobs, leases) in the project. It holds its own `.gitignore`, so git ignores it with no project change.
+- `runtime::spatialize` takes a fourth `Falloff` argument; pass `Falloff::default()` for the old curve
+- `runtime::hud_text` takes a third `Translations` argument; pass `None` for the old behaviour
+- `ObjectState` has a `transitions` field and no longer implements `Eq`; `CpuFrameTimings` has `update` and `post_update` fields. Add `..Default::default()` to struct literals
+- `Explore::goals` is `Vec<ExploreGoal>`; `"Coin".into()` still works
+- `resource_state_hash` takes `&mut World`
+- `rusting test` with one scenario leaves out state hashes; pass `--full` to keep them
+- Commands that write project files create a `.rusting/` folder, which git ignores on its own
+- Textured cylinders, cones and capsules map the full image height; a textured capsule appears flipped compared with earlier builds
+
+### Fixed
+
+- HUD buttons work from the keyboard and gamepad, and the HUD keeps its dark theme on a light desktop
+- Exported games find their assets and load scenes cooked by another engine build
+- Replays no longer diverge at tick 9 on every windowed recording
+- Screenshots blend UI the same way as the game window; goldens with translucent UI may need regenerating
+- Captions stay up for their whole time and hide while their sound is paused
+- Long soak tests no longer grow without limit, and a stalled test fails instead of hanging
+- Parallel runs of one project no longer fail at random while cooking the scene
 
 ### Performance
 
-Measured with `render_bench` on an RTX 3060, 1920x1080, balanced quality, 600 frames. Times are mean and 95th percentile frame time.
+- Camera screens reuse the frame's physics: six screens cost about 3 ms instead of 113 ms
+- Large GPU bodies no longer stall the physics pass: 20.8 ms down to under 2 ms of GPU time in the benchmark, with identical results
+- Faster scenario checks, captures and color changes on large scenes
 
-- Six 320x180 camera screens, with the base scene's 1,000 GPU bodies: 134.91 / 151.07 ms before, 24.86 / 26.48 ms after (the base scene alone is 22.18 / 24.54 ms, most of it GPU physics).
-- Six 320x180 camera screens without bodies: 5.24 / 6.11 ms (scene alone 3.06 / 3.60 ms).
-- Instanced bears, without bodies: 5,000 at 7.40 / 8.20 ms; 5,000 with 500 moved per frame at 8.81 / 9.36 ms; 10,000 with 500 moved at 12.37 / 13.38 ms.
-- 5,000 bears, 500 moved per frame and six screens: 16.47 / 18.96 ms; with screens updating every other frame, 12.37 / 13.47 ms.
-- The same bear counts with 1,000 GPU bodies: 25.55 / 27.59 ms (5,000), 30.77 / 33.16 ms (10,000 with 500 moved).
-- GPU physics: a body too big for one contact-grid cell (the benchmark's ground) tested every other body on a single GPU thread, four times a step, and stalled the whole physics pass. Each such body now gets a workgroup of 256 threads. The benchmark's physics pass fell from 20.83 ms to 1.4-1.8 ms of GPU time, and the base scene with 1,000 bodies from 22.18 ms to 5.63-6.27 ms mean frame time. Body positions and velocities match the old code bit for bit on the RTX 3060 and on lavapipe.
+### Known limits
 
-### Needs owner approval
-
-- `steamworks` crate, for the real Steam backend behind the new `steam` feature.
-- `cpal` as a direct dependency, for microphone level input (today it is only pulled in by kira).
-- A video decoder crate, for video on textures.
-
-### Not done
-
-- Microphone input and video on textures wait on the approvals above.
-- The Windows build was checked under Wine only: it builds, opens a window, renders on the GPU and opens the sound device. Gamepads, the save folder and real Windows hardware are not checked yet.
+- Windows was checked under Wine only; gamepads, the save folder and real Windows hardware are not checked yet
+- Microphone input, video on textures and the real Steam backend are not done yet
 
 ---
 
