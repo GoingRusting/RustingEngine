@@ -500,6 +500,10 @@ pub struct SoundCue {
     /// slower hits play quieter in proportion. 0 plays every hit at full
     /// `volume`.
     pub full_volume_speed: f32,
+    /// Fire when a GPU physics event with this registered name arrives for
+    /// this body; empty for none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub on_gpu_event: String,
     /// Set by [`SoundCue::trigger`]; the next fixed step fires and clears it.
     #[serde(skip)]
     pub triggered: bool,
@@ -519,6 +523,7 @@ impl Default for SoundCue {
             on_collision: true,
             caption: String::new(),
             full_volume_speed: 0.0,
+            on_gpu_event: String::new(),
             triggered: false,
             touching: false,
             hit_speed: None,
@@ -1622,6 +1627,28 @@ pub(super) fn trigger_on_contact(
         let now = emitter.on_collision && touching.contains_key(&entity);
         emitter.triggered |= now && !emitter.touching;
         emitter.touching = now;
+    }
+}
+
+/// Per frame: triggers sound cues named by this frame's GPU physics events.
+/// The cue fires on the next fixed step.
+pub(super) fn trigger_on_gpu_events(
+    events: Option<Res<EventQueue<super::GpuPhysicsEvent>>>,
+    registry: Option<Res<super::GpuEventRegistry>>,
+    mut cues: Query<&mut SoundCue>,
+) {
+    let (Some(events), Some(registry)) = (events, registry) else {
+        return;
+    };
+    for event in events.iter() {
+        let Ok(mut cue) = cues.get_mut(event.entity) else {
+            continue;
+        };
+        if !cue.on_gpu_event.is_empty()
+            && registry.id(&cue.on_gpu_event) == Some(event.event_id)
+        {
+            cue.trigger();
+        }
     }
 }
 

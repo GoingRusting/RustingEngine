@@ -216,6 +216,12 @@ cue's `volume`, a slower one plays quieter in proportion. A crate dropped
 from 1 m thuds softly; from 6 m it plays loud. `trigger()` from game code
 always plays at full `volume`.
 
+Set `on_gpu_event` to a registered GPU physics event name, such as
+`"shatter"`, to play the cue each time the GPU solver emits that event for
+the cue's body. The cue plays on the fixed step after the frame the event
+arrives in. Gameplay events need no extra field: call `trigger()` on the
+cue, or `play_sound`, from the system that handles the event.
+
 ## Long files
 
 In a window, files over 1 MiB stream from disk while they play instead of

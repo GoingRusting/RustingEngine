@@ -2564,7 +2564,8 @@ First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`
   - [x] Doppler: `Sound::doppler` scales pitch by the change in listener distance. Verified by `scenario::tests::doppler_raises_pitch_on_approach_and_lowers_it_going_away` (30 m/s pass: rate 1.096 then 0.92; a sound without doppler stays 1).
   - [x] Authored attenuation curves: `Sound::falloff` (`Inverse`, `InverseSquare`, `Linear`, `Off`). Verified by `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres` (curve values) and `scenario::tests::a_sound_follows_its_own_falloff_curve` (mixer volume at 6 m: 1/3 inverse, 0.5 linear).
 - [x] Reverb zones tied to physics volumes: `rusting.reverb_zone` on a sensor collider. Verified by `scenario::tests::a_reverb_zone_adds_reverb_while_the_listener_is_inside` (reverb on `world` while the camera is inside, off after it leaves).
-- [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
+- [x] Event-driven playback triggered by gameplay events and by GPU physics events.
+  Gameplay code calls `SoundCue::trigger` or `play_sound`; `SoundCue::on_gpu_event` plays on a named GPU physics event for its body. Evidence: `runtime::tests::a_gpu_physics_event_plays_the_cue_that_names_it` (mutation-checked: matching every event plays both bodies' cues).
 - [x] Impact sounds scaled by contact closing speed: `SoundCue::full_volume_speed`. Verified by `runtime::tests::harder_landings_play_louder` (a 6 m drop plays louder than a 1 m drop; 0 ignores speed).
 - [ ] Scrape and roll sounds while bodies slide or roll, and sound choice by physics material.
 - [x] Voice limiting and priority so large destruction events do not exhaust the mixer. Evidence (audit 2026-10-09): `GameScene::set_bus_voice_limit` and per-sound `priority`; `scenario::tests::a_thousand_sounds_in_one_tick_stay_within_the_voice_limit` and `runtime::audio::tests::bus_voice_limits_clamp_and_inactive_effects_report_off`.

@@ -301,6 +301,7 @@ impl Default for App {
                 .chain(),
         );
         app.add_system(ScheduleStage::Update, player::player_look);
+        app.add_system(ScheduleStage::Update, game_feel::trigger_on_gpu_events);
         app.add_system(ScheduleStage::Update, actions::bind_input_actions);
         app.add_event::<SoundEvent>();
         app.insert_resource(AudioQueue::default());

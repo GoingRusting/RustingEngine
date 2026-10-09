@@ -2548,6 +2548,47 @@ fn harder_landings_play_louder() {
 }
 
 #[test]
+fn a_gpu_physics_event_plays_the_cue_that_names_it() {
+    let mut app = App::new();
+    app.add_plugin(HybridPhysicsPlugin).unwrap();
+    let cue = |event: &str| SoundCue {
+        clip: format!("sounds/{event}.ogg"),
+        on_collision: false,
+        on_gpu_event: event.into(),
+        ..SoundCue::default()
+    };
+    let bodies = [cue("shatter"), cue("splash")].map(|cue| {
+        let entity = app.spawn((PhysicsBody::default(), cue));
+        app.world_mut()
+            .resource_mut::<PhysicsIdRegistry>()
+            .assign(entity)
+    });
+    let mut registry = app.world_mut().resource_mut::<GpuEventRegistry>();
+    let [shatter, _splash] =
+        ["shatter", "splash"].map(|name| registry.register(name));
+    // Only the first body gets the event its cue names.
+    let raw = |body: PhysicsId| RawGpuPhysicsEvent {
+        body_slot: body.slot,
+        body_generation: body.generation,
+        event_id: shatter.0,
+        tick_low: 1,
+        ..Default::default()
+    };
+    route_gpu_physics_events(
+        app.world_mut(),
+        &[raw(bodies[0]), raw(bodies[1])],
+    );
+
+    let mut played = Vec::new();
+    for _ in 0..4 {
+        run_fixed_steps(&mut app, 1);
+        let sounds = app.world().resource::<EventQueue<SoundEvent>>();
+        played.extend(sounds.iter().map(|sound| sound.clip.clone()));
+    }
+    assert_eq!(played, ["sounds/shatter.ogg"]);
+}
+
+#[test]
 fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
     let run = || {
         let mut app = App::new();

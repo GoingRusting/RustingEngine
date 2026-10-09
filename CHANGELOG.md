@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `SoundCue::on_gpu_event` plays a cue when the GPU solver emits the named physics event for its body.
 - `rusting.reverb_zone` puts a reverb on a bus while the listener is inside the entity's collider.
 - `Sound::falloff` picks a distance curve for positioned sounds: inverse (the default), inverse square, linear to silence, or off.
 - `Sound::doppler` raises a positioned sound's pitch as it closes on the listener and lowers it going away.
