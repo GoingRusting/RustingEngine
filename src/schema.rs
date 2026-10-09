@@ -981,6 +981,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"name": "coins", "value": 0, "target": 5}),
     },
     ComponentSection {
+        key: "rusting.health",
+        summary: "Hit points. Game code's scene.damage(name, amount) lowers value (a negative amount heals up to max) and returns what is left; objects with the same non-empty team are allies (scene.same_team).",
+        gpu: NO_GPU,
+        example: || json!({"value": 3, "max": 3, "team": "enemies"}),
+    },
+    ComponentSection {
         key: "rusting.state",
         summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here.",
         gpu: NO_GPU,

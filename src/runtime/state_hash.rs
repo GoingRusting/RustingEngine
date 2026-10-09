@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::{
     App, AppError, BurstEmitter, Collider, ColliderShape, CollisionLayers,
-    Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Joint, Name,
+    Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Health, Joint, Name,
     ObjectState, PhysicsBody, PhysicsIdRegistry, PhysicsSettings, PhysicsWorld,
     Pickup, PlatformerController, PlayerController, RandomSeed, RigidBody,
     SceneId, Sleeping, Tween,
@@ -166,6 +166,7 @@ fn entity_places(world: &mut World) -> HashMap<Entity, u64> {
             With<Pickup>,
             With<Counter>,
             With<BurstEmitter>,
+            With<Health>,
             With<ObjectState>,
         )>>()
         .iter(world)
@@ -239,6 +240,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         Option<&Pickup>,
         Option<&Counter>,
         Option<&BurstEmitter>,
+        Option<&Health>,
         Option<&ObjectState>,
     ), Or<(
         With<PlayerController>,
@@ -247,10 +249,20 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         With<Pickup>,
         With<Counter>,
         With<BurstEmitter>,
+        With<Health>,
         With<ObjectState>,
     )>>();
-    for (entity, player, platformer, tween, pickup, counter, emitter, state) in
-        gameplay.iter(world)
+    for (
+        entity,
+        player,
+        platformer,
+        tween,
+        pickup,
+        counter,
+        emitter,
+        state,
+        health,
+    ) in gameplay.iter(world)
     {
         let hasher = hashers.entry(entity).or_default();
         let floors = [
@@ -276,7 +288,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         });
         let _ = write!(
             hasher,
-            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}{state:?}"
+            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}{state:?}{health:?}"
         );
     }
     hashers

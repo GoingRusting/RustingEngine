@@ -449,6 +449,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<CollisionLayers>();
     types.register::<Counter>();
     types.register::<super::ObjectState>();
+    types.register::<super::Health>();
     types.register::<DirectionalLight>();
     types.register::<GlobalTransform>();
     types.register::<GpuProxyOf>();

@@ -642,6 +642,28 @@ impl Default for HudElement {
     }
 }
 
+/// Hit points of a player, enemy or crate, changed by game code's
+/// `GameScene::damage`. Objects with the same non-empty `team` are allies.
+/// Scenarios can expect `/components/rusting.health/value`.
+#[derive(Component, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Health {
+    pub value: i32,
+    /// Healing stops here.
+    pub max: i32,
+    pub team: String,
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        Self {
+            value: 3,
+            max: 3,
+            team: String::new(),
+        }
+    }
+}
+
 /// The current state of an object's state machine, such as an enemy's
 /// `"patrol"` or `"chase"`, set by game code's `GameScene::set_state`.
 /// Scenarios can expect `/components/rusting.state/state`.

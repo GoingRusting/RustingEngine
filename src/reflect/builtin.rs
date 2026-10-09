@@ -11,13 +11,14 @@ use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
     Connection, Connections, Counter, CullingMode, DeterminismMode, Easing,
-    EnvironmentMap, Flash, FluidBlock, Fog, HudAnchor, HudElement, InputAction,
-    Joint, JointAxis, JointKind, JointMotor, JointSpring, ObjectState,
-    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
-    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
-    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
-    ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash, TileKind, TileMap,
-    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, WaterBody,
+    EnvironmentMap, Flash, FluidBlock, Fog, Health, HudAnchor, HudElement,
+    InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
+    ObjectState, PhysicsSettings, PhysicsSyncMode, Pickup,
+    PlatformerController, PlayerController, PostVolume, QualityProfile,
+    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
+    SceneInstance, ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash,
+    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
+    TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -694,6 +695,14 @@ crate::reflect! {
         target: Option<i32> {
             doc: "null, or the value that completes the counter",
         },
+    }
+}
+
+crate::reflect! {
+    struct Health {
+        value: i32 { doc: "hit points left" },
+        max: i32 { doc: "healing stops here" },
+        team: String { doc: "objects on the same non-empty team are allies" },
     }
 }
 

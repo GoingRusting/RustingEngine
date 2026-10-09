@@ -108,7 +108,7 @@ machine, and it must never feed back into simulation state.
   `PlayerController`, `PlatformerController` (including `vertical_speed`,
   `grounded`, `jump_buffer`, `air_time`), `Tween` (including its played
   time), `Pickup`, `Counter`, `BurstEmitter` trigger flags, and
-  `ObjectState`, which game code sets.
+  `ObjectState` and `Health`, which game code sets.
 - Resources: `PhysicsWorld` (warm-start impulses and sleep counters),
   `PhysicsSettings`, `FrameTime::fixed_tick` and `fixed_delta`,
   `RandomSeed`, `DeterminismMode`, `PhysicsIdRegistry`, and

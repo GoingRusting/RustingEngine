@@ -1312,6 +1312,44 @@ impl GameScene<'_> {
             .unwrap_or_default()
     }
 
+    /// Takes `amount` hit points from the named object's `rusting.health`
+    /// (a negative amount heals, up to `max`) and returns what is left,
+    /// never below 0. Check for 0 to defeat it. `None`, changing nothing,
+    /// when no object has that name or it has no health.
+    pub fn damage(&mut self, name: &str, amount: i32) -> Option<i32> {
+        let entity = find_named_entity(self.world, name)?;
+        let mut health =
+            self.world.get_mut::<crate::runtime::Health>(entity)?;
+        let max = health.max.max(health.value);
+        health.value = health.value.saturating_sub(amount).clamp(0, max);
+        Some(health.value)
+    }
+
+    /// The named object's hit points, or `None` when it has no
+    /// `rusting.health`.
+    #[must_use]
+    pub fn health(&mut self, name: &str) -> Option<i32> {
+        let entity = find_named_entity(self.world, name)?;
+        self.world
+            .get::<crate::runtime::Health>(entity)
+            .map(|health| health.value)
+    }
+
+    /// Whether both named objects have `rusting.health` on the same
+    /// non-empty team, so friendly fire can be skipped.
+    #[must_use]
+    pub fn same_team(&mut self, a: &str, b: &str) -> bool {
+        let mut team = |name: &str| {
+            let entity = find_named_entity(self.world, name)?;
+            self.world
+                .get::<crate::runtime::Health>(entity)
+                .map(|health| health.team.clone())
+                .filter(|team| !team.is_empty())
+        };
+        let a = team(a);
+        a.is_some() && a == team(b)
+    }
+
     /// Puts the named object's state machine in `state`, as a
     /// `rusting.state` component scenarios can expect on. Returns `true`
     /// when the state changed, so enter actions go in an `if`; setting the
@@ -7108,6 +7146,32 @@ mod tests {
         assert_eq!(scene.apply_counter_save(bad), None);
         assert_eq!(scene.counter_or("a", -1), -1);
         assert_eq!(scene.apply_counter_save("night=3"), None);
+    }
+
+    #[test]
+    fn damage_clamps_heals_to_max_and_teams_mark_allies() {
+        use crate::runtime::Health;
+        let mut world = World::new();
+        let team = |team: &str| Health {
+            value: 3,
+            max: 3,
+            team: team.into(),
+        };
+        world.spawn((Name("Orc".into()), team("enemies")));
+        world.spawn((Name("Goblin".into()), team("enemies")));
+        world.spawn((Name("Hero".into()), team("")));
+        world.spawn(Name("Rock".into()));
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.damage("Orc", 2), Some(1));
+        assert_eq!(scene.damage("Orc", -5), Some(3));
+        assert_eq!(scene.damage("Orc", 10), Some(0));
+        assert_eq!(scene.health("Orc"), Some(0));
+        assert_eq!(scene.damage("Rock", 1), None);
+        assert_eq!(scene.damage("Missing", 1), None);
+        assert!(scene.same_team("Orc", "Goblin"));
+        assert!(!scene.same_team("Orc", "Hero"));
+        assert!(!scene.same_team("Hero", "Hero"));
+        assert!(!scene.same_team("Rock", "Rock"));
     }
 
     #[test]

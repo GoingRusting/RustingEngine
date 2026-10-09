@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- The registered component `rusting.health` (`value`, `max`, `team`) with `GameScene::damage`, `health` and `same_team`.
 - `GameScene::save_counters(key, version, names)` and `load_counters(key)`: versioned save slots for counters; `load_counters` returns the save's version for migrating old saves.
 - Object states: `GameScene::set_state`, `state` and `state_seconds` keep a state machine's state in the new registered component `rusting.state`, which scenarios can expect on and which snapshots and state hashes include.
 - `GameScene::spawn_numbered(template, position, limit)`: a capped spawner that names copies `"<template> <n>"` and counts refused spawns in the counter `"<template> refused"` instead of dropping them silently.

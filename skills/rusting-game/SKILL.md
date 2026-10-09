@@ -250,6 +250,7 @@ each one's fields, defaults and an example:
 - `rusting.hud`: Text label or button drawn over the game view.
 - `rusting.input_action`: Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps.
 - `rusting.counter`: Named integer.
+- `rusting.health`: Hit points.
 - `rusting.state`: The current state of an object's state machine, such as an enemy's patrol or chase.
 - `rusting.pickup`: Collected once when a platformer or player body touches its collider (make it a sensor): adds value to the counter, hides the entity, and triggers its sound cue and burst emitter.
 - `rusting.tile_map`: Grid of square tiles written as text rows, top row first; the Transform position is the top-left corner.
@@ -324,6 +325,7 @@ works too.
 | counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
 | cooldowns | `cooldown_ready(name)`, `start_cooldown(name, seconds)`, `cooldown_left(name)` |
 | state machines | `set_state(name, state)`, `state(name)`, `state_seconds(name)` |
+| health | `damage(name, amount)`, `health(name)`, `same_team(a, b)` |
 | input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
 | rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
 | cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |

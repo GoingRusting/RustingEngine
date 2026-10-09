@@ -3577,6 +3577,9 @@ Depends on: Milestones 8 and 9.
   - [ ] Transitions, guards and enter and exit actions as data in the scene, run by the engine, with an editor view.
 - [ ] Behaviour trees and utility AI as data assets, with a deterministic tick order and a debugger view of the active branch.
 - [ ] Health, damage, teams, and status effects as optional registered components, built on the typed event bridge.
+  - [x] Health and teams: the registered component `rusting.health` (`value`, `max`, `team`); `GameScene::damage(name, amount)` returns what is left, clamped to 0 and healing (negative amounts) to `max`; `health` reads it and `same_team` tells allies apart. It is in snapshots, the state hash and the editor's component help.
+    - Verified (2026-10-09): `damage_clamps_heals_to_max_and_teams_mark_allies` (2 damage leaves 1, heal stops at 3, overkill stops at 0, `None` for no health or a missing object, teams only match when non-empty).
+  - [ ] Damage events on the typed signal bridge and status effects with durations.
 - [ ] Inventory, items, and loot tables as data resources with seeded rolls.
 - [ ] Dialogue and quest graphs as data assets, with localization keys and a runtime UI hookup.
 - [x] Timers, cooldowns, and a game clock with pause and time scale that never affect the fixed simulation step's determinism.
