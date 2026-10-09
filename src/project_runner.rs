@@ -1489,6 +1489,26 @@ impl GameScene<'_> {
         weighted_pick(table, self.random(stream)).map(str::to_owned)
     }
 
+    /// Rolls the `rusting.loot_table` on the object called `name`, as
+    /// [`Self::roll_loot`] does. Warns once and gives `None` when no
+    /// object has that name; `None` too when it has no table or every
+    /// weight is 0.
+    #[must_use]
+    pub fn roll_loot_table(
+        &mut self,
+        name: &str,
+        stream: u64,
+    ) -> Option<String> {
+        let entity = find_or_warn(self.world, name)?;
+        let table = self.world.get::<crate::runtime::LootTable>(entity)?;
+        let entries: Vec<(&str, u32)> = table
+            .entries
+            .iter()
+            .map(|entry| (entry.item.as_str(), entry.weight))
+            .collect();
+        weighted_pick(&entries, self.random(stream)).map(str::to_owned)
+    }
+
     /// Takes `amount` from the counter `name` (such as an item count or
     /// money) when it holds at least that much, and returns whether it
     /// did; otherwise the counter is unchanged.
@@ -7424,7 +7444,7 @@ mod tests {
         assert_eq!(weighted_pick(&[("never", 0)], 0.5), None);
         assert_eq!(weighted_pick(&[], 0.5), None);
         let mut world = World::new();
-        let mut scene = GameScene { world: &mut world };
+        let scene = GameScene { world: &mut world };
         let rolls: Vec<_> =
             (0..64).map(|i| scene.roll_loot(&table, i)).collect();
         assert!(
@@ -7433,6 +7453,28 @@ mod tests {
         );
         assert!(!rolls.contains(&Some("never".into())));
         assert_eq!(scene.roll_loot(&table, 7), rolls[7]);
+        let entry = |item: &str, weight| crate::runtime::LootEntry {
+            item: item.into(),
+            weight,
+        };
+        scene.world.spawn((
+            Name("Chest".into()),
+            crate::runtime::LootTable {
+                entries: vec![
+                    entry("coin", 3),
+                    entry("never", 0),
+                    entry("gem", 1),
+                ],
+            },
+        ));
+        scene.world.spawn(Name("Rock".into()));
+        let mut scene = GameScene { world: &mut world };
+        for i in 0..64 {
+            assert_eq!(scene.roll_loot_table("Chest", i), rolls[i as usize]);
+        }
+        assert_eq!(scene.roll_loot_table("Rock", 0), None);
+        assert_eq!(scene.roll_loot_table("Missing", 0), None);
+        let mut scene = GameScene { world: &mut world };
         scene.set_counter("arrows", 2);
         assert!(!scene.spend("arrows", 3));
         assert!(scene.spend("arrows", 2));

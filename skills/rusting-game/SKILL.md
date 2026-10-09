@@ -251,6 +251,7 @@ each one's fields, defaults and an example:
 - `rusting.input_action`: Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps.
 - `rusting.counter`: Named integer.
 - `rusting.health`: Hit points.
+- `rusting.loot_table`: A weighted loot table on a named object, such as a chest or an enemy's drops.
 - `rusting.state`: The current state of an object's state machine, such as an enemy's patrol or chase.
 - `rusting.pickup`: Collected once when a platformer or player body touches its collider (make it a sensor): adds value to the counter, hides the entity, and triggers its sound cue and burst emitter.
 - `rusting.tile_map`: Grid of square tiles written as text rows, top row first; the Transform position is the top-left corner.
@@ -337,7 +338,7 @@ works too.
 | look | `set_hud(name, edit)`, `set_visible(name, visible)`, `color(name)`, `set_color(name, color)`, `set_emissive(name, emissive)`, `create_material(material)`, `set_material(name, material)`, `set_text(name, text, style)`, `set_text_in_font(name, text, style, font)`, `set_light(name, color, intensity, range)`, `set_background_color(color)`, `set_reflections(enabled)`, `set_exposure(exposure)`, `create_texture(texture)`, `edit_texture(handle, edit)` |
 | game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)`, `tween(name, property, to, seconds, easing)` |
 | animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
-| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)`, `roll_loot(table, stream)` |
+| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)`, `roll_loot(table, stream)`, `roll_loot_table(name, stream)` |
 | menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `set_time_scale(scale)`, `time_scale()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `save_counters(key, version, names)`, `save_objects(key, version, objects, components)`, `load_objects(key)`, `load_counters(key)`, `load_text(path)` |
 | video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |

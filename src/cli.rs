@@ -408,6 +408,7 @@ const GAME_SCENE_ACCESS: &[(&str, bool, &str)] = &[
     ("damage", true, "Health"),
     ("health", false, "Health"),
     ("same_team", false, "Health"),
+    ("roll_loot_table", false, "LootTable"),
     ("set_state", true, "ObjectState"),
     ("state", false, "ObjectState"),
     ("state_seconds", false, "ObjectState"),

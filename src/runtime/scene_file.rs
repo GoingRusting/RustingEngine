@@ -1137,6 +1137,8 @@ pub const BACKGROUND_COMPONENT: &str = "rusting.background";
 pub const COUNTER_COMPONENT: &str = "rusting.counter";
 /// Registry name of the built-in hit points.
 pub const HEALTH_COMPONENT: &str = "rusting.health";
+/// Registry name of the built-in weighted loot table.
+pub const LOOT_TABLE_COMPONENT: &str = "rusting.loot_table";
 /// Registry name of the built-in state machine state.
 pub const OBJECT_STATE_COMPONENT: &str = "rusting.state";
 /// Registry name of the built-in collectable.
@@ -1270,6 +1272,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Health>(HEALTH_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::LootTable>(LOOT_TABLE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::TileMap>(TILE_MAP_COMPONENT)

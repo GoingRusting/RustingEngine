@@ -450,6 +450,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<Counter>();
     types.register::<super::ObjectState>();
     types.register::<super::Health>();
+    types.register::<super::LootTable>();
     types.register::<DirectionalLight>();
     types.register::<GlobalTransform>();
     types.register::<GpuProxyOf>();

@@ -879,6 +879,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "seed",
             "random",
             "roll_loot",
+            "roll_loot_table",
         ],
     ),
     (

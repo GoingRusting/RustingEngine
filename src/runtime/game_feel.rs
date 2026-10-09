@@ -642,6 +642,25 @@ impl Default for HudElement {
     }
 }
 
+/// A weighted loot table on a named object, edited in the scene and rolled
+/// by game code's `GameScene::roll_loot_table`.
+#[derive(
+    Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(default)]
+pub struct LootTable {
+    pub entries: Vec<LootEntry>,
+}
+
+/// One [`LootTable`] entry: `item` is picked with a chance of `weight`
+/// over the table's total.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LootEntry {
+    pub item: String,
+    pub weight: u32,
+}
+
 /// Hit points of a player, enemy or crate, changed by game code's
 /// `GameScene::damage`. Objects with the same non-empty `team` are allies.
 /// Scenarios can expect `/components/rusting.health/value`.

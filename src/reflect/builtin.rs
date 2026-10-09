@@ -13,8 +13,8 @@ use crate::runtime::{
     Connection, Connections, Counter, CullingMode, DeterminismMode, Easing,
     EnvironmentMap, Flash, FluidBlock, Fog, Health, HudAnchor, HudElement,
     InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    ObjectState, PhysicsSettings, PhysicsSyncMode, Pickup,
-    PlatformerController, PlayerController, PostVolume, QualityProfile,
+    LootEntry, LootTable, ObjectState, PhysicsSettings, PhysicsSyncMode,
+    Pickup, PlatformerController, PlayerController, PostVolume, QualityProfile,
     RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
     SceneInstance, ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash,
     StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
@@ -703,6 +703,19 @@ crate::reflect! {
         value: i32 { doc: "hit points left" },
         max: i32 { doc: "healing stops here" },
         team: String { doc: "objects on the same non-empty team are allies" },
+    }
+}
+
+crate::reflect! {
+    struct LootTable {
+        entries: Vec<LootEntry> { doc: "one is picked per roll" },
+    }
+}
+
+crate::reflect! {
+    struct LootEntry {
+        item: String { doc: "what the roll gives" },
+        weight: u32 { doc: "chance over the table's total; 0 never drops" },
     }
 }
 
