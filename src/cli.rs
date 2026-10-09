@@ -2020,7 +2020,7 @@ pub fn lint_project(root: &Path) -> CliResult {
         .filter_map(|file| std::fs::read_to_string(file).ok())
         .collect();
     diagnostics.extend(lint_no_ending(&document, &code));
-    diagnostics.extend(lint_missing_objects(&project.root));
+    diagnostics.extend(lint_missing_names(&project.root));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
@@ -2069,10 +2069,13 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
 
 /// A `LINT_MISSING_OBJECT` per literal object name in game code, such as
 /// `scene.object("Playr")`, that no entity in any scene or prefab under
-/// scenes/ or assets/ has. Names built at run time are not checked, and a
-/// literal on a line that spawns something may be the spawned name.
-fn lint_missing_objects(root: &Path) -> Vec<Diagnostic> {
-    const CALLS: [&str; 18] = [
+/// scenes/ or assets/ has, and a `LINT_MISSING_ACTION` per literal action,
+/// such as `scene.pressed("jmup")`, that no `rusting.input_action` there,
+/// `rebind` call or built-in player action defines. Names built at run time
+/// are not checked, and a literal on a line that spawns something may be
+/// the spawned name.
+fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
+    const OBJECT_CALLS: [&str; 18] = [
         ".object(\"",
         ".despawn(\"",
         ".set_visible(\"",
@@ -2092,16 +2095,28 @@ fn lint_missing_objects(root: &Path) -> Vec<Diagnostic> {
         ".spawn_copy(\"",
         ".set_look(\"",
     ];
+    const ACTION_CALLS: [&str; 4] =
+        [".pressed(\"", ".held(\"", ".press_tick(\"", ".binding(\""];
     let mut scene_files = Vec::new();
     for folder in ["scenes", "assets"] {
         scene_files_in(&root.join(folder), &mut scene_files);
     }
-    let mut names: BTreeSet<String> = scene_files
+    let entities: Vec<SceneEntity> = scene_files
         .iter()
         .filter_map(|path| read_scene(path).ok())
-        .flat_map(|document| {
-            document.entities.into_iter().filter_map(|e| e.name)
+        .flat_map(|document| document.entities)
+        .collect();
+    let mut names: BTreeSet<String> =
+        entities.iter().filter_map(|e| e.name.clone()).collect();
+    let mut actions: BTreeSet<String> = entities
+        .iter()
+        .filter_map(|e| {
+            let text =
+                e.components.get(crate::runtime::INPUT_ACTION_COMPONENT)?;
+            serde_json::from_str::<crate::runtime::InputAction>(text).ok()
         })
+        .map(|input| input.action)
+        .chain(crate::runtime::PLAYER_ACTIONS.map(str::to_owned))
         .collect();
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
@@ -2124,44 +2139,74 @@ fn lint_missing_objects(root: &Path) -> Vec<Diagnostic> {
             Some((ident, rest.split('"').next()?))
         })
         .collect();
-    for (_, text) in &texts {
-        for line in text.lines().filter(|line| line.contains("spawn")) {
-            names.extend(line.split('"').skip(1).step_by(2).map(str::to_owned));
-            names.extend(
-                consts
-                    .iter()
-                    .filter(|(ident, _)| line.contains(ident))
-                    .map(|(_, name)| (*name).to_owned()),
-            );
+    let literals = |line: &str| -> Vec<String> {
+        let mut found: Vec<String> = line
+            .split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        found.extend(
+            consts
+                .iter()
+                .filter(|(ident, _)| line.contains(ident))
+                .map(|(_, name)| (*name).to_owned()),
+        );
+        found
+    };
+    for line in texts.iter().flat_map(|(_, text)| text.lines()) {
+        if line.contains("spawn") {
+            names.extend(literals(line));
+        }
+        if line.contains("rebind(") {
+            actions.extend(literals(line));
         }
     }
     let mut diagnostics = Vec::new();
     for (file, text) in &texts {
         for (line, content) in text.lines().enumerate() {
-            for call in CALLS {
-                for (start, _) in content.match_indices(call) {
-                    let rest = &content[start + call.len()..];
-                    let Some(name) = rest.split('"').next() else {
-                        continue;
-                    };
-                    if names.contains(name) || rest.find('"').is_none() {
-                        continue;
+            let checks = [
+                (
+                    &OBJECT_CALLS[..],
+                    &names,
+                    "LINT_MISSING_OBJECT",
+                    "no scene has an object named",
+                ),
+                (
+                    &ACTION_CALLS[..],
+                    &actions,
+                    "LINT_MISSING_ACTION",
+                    "no input action is named",
+                ),
+            ];
+            for (calls, known, code, what) in checks {
+                for call in calls {
+                    for (start, _) in content.match_indices(call) {
+                        let rest = &content[start + call.len()..];
+                        let Some((name, _)) = rest.split_once('"') else {
+                            continue;
+                        };
+                        if known.contains(name) {
+                            continue;
+                        }
+                        let hint = crate::project_runner::nearest_hint(
+                            known.iter().map(String::as_str),
+                            name,
+                        );
+                        diagnostics.push(Diagnostic {
+                            code,
+                            severity: "warning",
+                            message: format!(
+                                "{}:{}: {what} `{name}`{hint}",
+                                file.strip_prefix(root)
+                                    .unwrap_or(file)
+                                    .display(),
+                                line + 1,
+                            ),
+                            file: Some(file.clone()),
+                            ..Diagnostic::default()
+                        });
                     }
-                    let hint = crate::project_runner::nearest_hint(
-                        names.iter().map(String::as_str),
-                        name,
-                    );
-                    diagnostics.push(Diagnostic {
-                        code: "LINT_MISSING_OBJECT",
-                        severity: "warning",
-                        message: format!(
-                            "{}:{}: no scene has an object named `{name}`{hint}",
-                            file.strip_prefix(root).unwrap_or(file).display(),
-                            line + 1,
-                        ),
-                        file: Some(file.clone()),
-                        ..Diagnostic::default()
-                    });
                 }
             }
         }
@@ -6411,13 +6456,15 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
     }
 
     #[test]
-    fn lint_flags_object_names_no_scene_has() {
+    fn lint_flags_object_and_action_names_nothing_defines() {
         let root = std::env::temp_dir()
             .join(format!("rusting-code-names-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("scenes")).unwrap();
         let scene = json!({"format_version": 7, "name": "Main", "entities": [
-            {"id": uuid::Uuid::new_v4(), "name": "Player"}]});
+            {"id": uuid::Uuid::new_v4(), "name": "Player"},
+            {"id": uuid::Uuid::new_v4(), "components": {"rusting.input_action":
+                "{\"action\":\"jump\",\"inputs\":[\"Space\"]}"}}]});
         std::fs::write(root.join("scenes/main.rscene"), scene.to_string())
             .unwrap();
         std::fs::write(
@@ -6430,15 +6477,23 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              scene.set_visible(\"Ghost\", true);\n\
              scene.set_visible(CARD, true);\n\
              scene.despawn(\"Card\");\n\
-             scene.despawn(&name);\n",
+             scene.despawn(&name);\n\
+             scene.pressed(\"jump\");\n\
+             scene.held(\"jmup\");\n\
+             scene.held(\"player.sprint\");\n\
+             scene.rebind(\"dash\", &keys);\n\
+             scene.pressed(\"dash\");\n",
         )
         .unwrap();
-        let found = lint_missing_objects(&root);
+        let found = lint_missing_names(&root);
         let messages: Vec<_> = found.iter().map(|d| &d.message).collect();
         assert_eq!(
             messages,
-            ["src/main.rs:3: no scene has an object named `Playr`; did you mean `Player`?"],
-            "a scene name, a spawned literal, a spawned constant and a run-time name pass"
+            [
+                "src/main.rs:3: no scene has an object named `Playr`; did you mean `Player`?",
+                "src/main.rs:11: no input action is named `jmup`; did you mean `jump`?",
+            ],
+            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action and a rebound action pass"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

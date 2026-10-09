@@ -289,6 +289,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_MISSING_ACTION",
+        "Game code reads an input action, as in `scene.pressed(\"jmup\")`, that no `rusting.input_action` in any scene or prefab, `rebind` call or built-in `player.*` action defines, so it is never pressed.",
+        "Fix the name (the message lists close action names), or add a `rusting.input_action` for it.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_MISSING_OBJECT",
         "Game code names an object, as in `scene.object(\"Playr\")`, that no entity in any scene or prefab has, so the call panics or does nothing at run time.",
         "Fix the name (the message lists close scene names), or add the object to the scene.",
