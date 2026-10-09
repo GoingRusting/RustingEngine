@@ -5242,6 +5242,54 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn doppler_raises_pitch_on_approach_and_lowers_it_going_away() {
+        use crate::runtime::Sound;
+        let directory = tone_project(4.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 1 {
+                let siren = Sound {
+                    doppler: 1.0,
+                    looped: true,
+                    ..Sound::default()
+                };
+                scene.play_sound_on("Car", "tone.wav", siren);
+                let plain = Sound {
+                    looped: true,
+                    ..Sound::default()
+                };
+                scene.play_sound_on("Car", "tone.wav", plain);
+            }
+            // 30 m/s along -Z past the camera at the origin.
+            let z = -40.0 + 0.5 * tick as f32;
+            scene.object("Car").set_position([1.0, 2.0, z]);
+        });
+        app.world_mut()
+            .spawn((Name("Car".into()), Transform::new([1.0, 2.0, -40.0])));
+        let rate = |tick: u32, sound: u32, value: f64| {
+            json!({"tick": tick, "expect": {"entity": "audio:",
+                "path": format!("/playing/{sound}/rate"), "equals": value,
+                "tolerance": 0.01}})
+        };
+        // 343 / (343 - 30) closing, 343 / (343 + 30) going away.
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                130,
+                json!([
+                    rate(30, 0, 1.096),
+                    rate(30, 1, 1.0),
+                    rate(130, 0, 0.92),
+                    rate(130, 1, 1.0),
+                ]),
+            ),
+            &directory,
+        );
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn bus_effects_show_change_the_mix_and_leave_state_hashes_alone() {
         use crate::runtime::{BusEffect, Sound};
         let directory = tone_project(2.0);

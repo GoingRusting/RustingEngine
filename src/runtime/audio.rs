@@ -97,6 +97,9 @@ impl BeatClock {
 /// Commands kept when nothing drains the queue (headless runs).
 pub const QUEUE_LIMIT: usize = 1024;
 
+/// Metres per second, for doppler.
+const SPEED_OF_SOUND: f32 = 343.0;
+
 /// Voices a bus plays at once until [`AudioQueue::set_bus_voice_limit`].
 pub const DEFAULT_VOICE_LIMIT: usize = 64;
 
@@ -144,6 +147,11 @@ pub struct Sound {
     /// Subtitle lines shown while the sound plays, timed in seconds of the
     /// clip (they follow `rate`, pauses and seeks).
     pub captions: Vec<Caption>,
+    /// Doppler strength for a positioned sound: 1 raises its pitch as it
+    /// closes on the listener and lowers it as it moves away, like a real
+    /// passing siren; 0.5 half as much; 0 never. Comes from how fast the
+    /// distance changes, so either side moving counts.
+    pub doppler: f32,
 }
 
 impl Default for Sound {
@@ -161,6 +169,7 @@ impl Default for Sound {
             occlude: false,
             priority: 128,
             captions: Vec::new(),
+            doppler: 0.0,
         }
     }
 }
@@ -319,6 +328,11 @@ pub enum AudioCommand {
         bus: String,
         solo: bool,
     },
+    /// Multiplies a sound's rate by a doppler pitch factor.
+    SetDoppler {
+        id: SoundId,
+        pitch: f32,
+    },
     /// Most sounds the bus plays at once, 1 to [`MAX_VOICE_LIMIT`].
     SetBusVoiceLimit {
         bus: String,
@@ -344,6 +358,11 @@ struct Tracked {
     clock: f64,
     rate: f32,
     paused: bool,
+    doppler: f32,
+    /// Distance from the listener last tick, for doppler.
+    distance: Option<f32>,
+    /// Doppler pitch factor last sent.
+    pitch: f32,
 }
 
 /// Requests waiting for the audio device, plus the presentation state that
@@ -387,7 +406,8 @@ impl AudioQueue {
             },
         );
         if sound.follow.is_some()
-            || (sound.occlude && sound.position.is_some())
+            || ((sound.occlude || sound.doppler > 0.0)
+                && sound.position.is_some())
             || !sound.captions.is_empty()
         {
             self.tracked.insert(
@@ -402,6 +422,9 @@ impl AudioQueue {
                     clock: 0.0,
                     rate: sound.rate,
                     paused: false,
+                    doppler: sound.doppler,
+                    distance: None,
+                    pitch: 1.0,
                 },
             );
         }
@@ -744,7 +767,36 @@ pub fn route_sound_events(world: &mut World) {
             queue.push(AudioCommand::SetListener { position, right });
         }
     }
+    let elapsed = tick.saturating_sub(queue.caption_tick) as f64 * step;
     for (id, position, amount) in placed {
+        let Some(tracked) = queue.tracked.get_mut(&id) else {
+            continue;
+        };
+        let mut pitch = None;
+        if let (true, Some(at), Some((ear, _))) =
+            (tracked.doppler > 0.0, position, ear)
+        {
+            let distance = (0..3)
+                .map(|axis| (at[axis] - ear[axis]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            if elapsed > 0.0 {
+                if let Some(before) = tracked.distance {
+                    let closing = (before - distance) / elapsed as f32;
+                    let factor = (SPEED_OF_SOUND
+                        / (SPEED_OF_SOUND - closing * tracked.doppler))
+                        .clamp(0.5, 2.0);
+                    if (factor - tracked.pitch).abs() > 1e-3 {
+                        tracked.pitch = factor;
+                        pitch = Some(factor);
+                    }
+                }
+                tracked.distance = Some(distance);
+            }
+        }
+        if let Some(pitch) = pitch {
+            queue.push(AudioCommand::SetDoppler { id, pitch });
+        }
         let Some(tracked) = queue.tracked.get_mut(&id) else {
             continue;
         };
@@ -771,6 +823,7 @@ pub fn route_sound_events(world: &mut World) {
         // Captioned sounds that only showed text are done after the last
         // line.
         tracked.follow.is_some()
+            || tracked.doppler > 0.0
             || tracked.occlude
             || tracked
                 .captions

@@ -170,6 +170,9 @@ struct Voice {
     info: PlayingSound,
     /// Volume asked for, before distance and occlusion.
     volume: f32,
+    /// Rate asked for; `info.rate` adds doppler.
+    rate: f32,
+    doppler: f32,
     /// Clip length in seconds.
     duration: f64,
     reverse: bool,
@@ -392,9 +395,14 @@ where
             }
             AudioCommand::SetRate { id, rate, fade } => {
                 if let Some(voice) = self.voices.get_mut(&id.0) {
-                    let rate = rate.max(1e-3);
-                    each_handle!(&mut voice.handle, h => h.set_playback_rate(f64::from(rate), tween(fade)));
-                    voice.info.rate = rate;
+                    voice.rate = rate.max(1e-3);
+                    voice.set_rate(tween(fade));
+                }
+            }
+            AudioCommand::SetDoppler { id, pitch } => {
+                if let Some(voice) = self.voices.get_mut(&id.0) {
+                    voice.doppler = pitch;
+                    voice.set_rate(tween(0.05));
                 }
             }
             AudioCommand::SetPosition { id, position } => {
@@ -615,6 +623,8 @@ where
                         handle,
                         info,
                         volume: sound.volume,
+                        rate,
+                        doppler: 1.0,
                         duration,
                         reverse: sound.reverse,
                         muffle,
@@ -821,6 +831,12 @@ where
 
 #[cfg(feature = "audio")]
 impl Voice {
+    fn set_rate(&mut self, tween: kira::Tween) {
+        let rate = self.rate * self.doppler;
+        each_handle!(&mut self.handle, h => h.set_playback_rate(f64::from(rate), tween));
+        self.info.rate = rate;
+    }
+
     fn stopped(&self) -> bool {
         each_handle!(&self.handle, h => h.state())
             == kira::sound::PlaybackState::Stopped

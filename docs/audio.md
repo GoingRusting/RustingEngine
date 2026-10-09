@@ -94,6 +94,13 @@ scene.set_sound_position(id, [3.0, 1.0, -8.0]);
 `Sound { follow: Some(entity), .. }` does the same as `play_sound_on` from
 system code.
 
+`Sound { doppler: 1.0, .. }` bends a positioned sound's pitch like a
+passing siren: higher while the distance to the listener shrinks, lower
+while it grows (a car passing at 30 m/s plays about 1.1 then 0.92 times
+its rate). 0.5 is half the effect; 0, the default, turns it off. The
+factor stays between 0.5 and 2, and `/playing/<n>/rate` reports the rate
+with doppler included.
+
 A named listener stays fixed: it does not turn when another camera becomes
 active. If the player switches to a camera that looks somewhere else, a
 sound in front of that camera can come out hard left or right. Name a
