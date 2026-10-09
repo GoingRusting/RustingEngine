@@ -1,0 +1,26 @@
+{
+  "kind": "performance",
+  "template": "twin-stick",
+  "request": "Players say this twin-stick shooter gets heavier the longer they keep firing, and after a few minutes of holding an aim key it slows down. Find the cause and fix it without changing how the game plays.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "            scene.despawn(&shot);\n            continue;\n        }\n        let hit",
+      "replace": "            continue;\n        }\n        let hit"
+    }
+  ],
+  "remove": [
+    "tests/wave.json"
+  ],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "            continue;\n        }\n        let hit",
+      "replace": "            scene.despawn(&shot);\n            continue;\n        }\n        let hit"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/twin_stick_wave.json",
+    "hidden/fire.json"
+  ]
+}

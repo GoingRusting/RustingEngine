@@ -1,0 +1,20 @@
+{
+  "name": "fire: holding aim for ten seconds fires steadily and keeps the number of live entities flat",
+  "ticks": 600,
+  "budgets": {
+    "max_entities": 50
+  },
+  "steps": [
+    {
+      "tick": 0,
+      "press": "aim_right"
+    },
+    {
+      "tick": 599,
+      "expect": {
+        "counter": "shots",
+        "greater_than": 30
+      }
+    }
+  ]
+}
