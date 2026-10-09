@@ -1,0 +1,80 @@
+{
+  "name": "combo: the song's run builds a combo, drops it to 0 at each miss, and ends on the hits after the last miss",
+  "ticks": 582,
+  "steps": [
+    {
+      "tick": 118,
+      "tap": "lane_1"
+    },
+    {
+      "tick": 147,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 176,
+      "tap": "lane_3"
+    },
+    {
+      "tick": 206,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 235,
+      "tap": "lane_1"
+    },
+    {
+      "tick": 265,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 280,
+      "expect": {
+        "counter": "combo",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 294,
+      "tap": "lane_3"
+    },
+    {
+      "tick": 324,
+      "tap": "lane_3"
+    },
+    {
+      "tick": 353,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 382,
+      "tap": "lane_1"
+    },
+    {
+      "tick": 441,
+      "tap": "lane_3"
+    },
+    {
+      "tick": 477,
+      "tap": "lane_1"
+    },
+    {
+      "tick": 500,
+      "tap": "lane_3"
+    },
+    {
+      "tick": 529,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 559,
+      "tap": "lane_2"
+    },
+    {
+      "tick": 580,
+      "expect": {
+        "counter": "combo",
+        "equals": 5
+      }
+    }
+  ]
+}

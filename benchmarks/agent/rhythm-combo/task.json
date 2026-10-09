@@ -1,0 +1,23 @@
+{
+  "kind": "feature",
+  "template": "rhythm",
+  "request": "Add a combo to this rhythm game: a counter named `combo` goes up by one for every note hit (PERFECT or GOOD) and drops to 0 when a note is missed. Keep the existing scoring and the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        scene.add_to_counter(\"played\", 1);\n        judge(scene, text, color);",
+      "replace": "        scene.add_to_counter(\"played\", 1);\n        scene.add_to_counter(\"combo\", 1);\n        judge(scene, text, color);"
+    },
+    {
+      "file": "src/main.rs",
+      "find": "            scene.add_trauma(\"Game Camera\", 0.3);",
+      "replace": "            scene.add_trauma(\"Game Camera\", 0.3);\n            scene.set_counter(\"combo\", 0);"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/rhythm_song.json",
+    "hidden/combo.json"
+  ]
+}

@@ -3078,7 +3078,8 @@ Goal: prove the "best engine for LLM coding" claim with a repeatable benchmark, 
 
 Depends on: Milestones L1-L5 for the tools it measures; can start earlier with the tools that exist.
 
-- [ ] `benchmarks/agent/`: a task suite of one-paragraph game requests with hidden acceptance scenarios, covering new games, feature additions to existing projects, bug fixes in seeded broken projects, and performance fixes.
+- [x] `benchmarks/agent/` first slice: the task format (request, template, seed and reference edits, hidden scenarios) and three tasks, two bug fixes in seeded broken projects (`rhythm-late-miss`, `duel-guard`) and one feature addition (`rhythm-combo`). Evidence: `tests/agent_benchmark.rs` `every_task_is_well_formed_and_applies_to_its_template` passes in the normal suite; the ignored `hidden_scenarios_fail_when_seeded_and_pass_with_the_reference` passed for all three tasks (each hidden set fails on the seeded project and passes with the reference).
+- [ ] `benchmarks/agent/` coverage: new-game and performance-fix tasks, and enough tasks per kind for a pass rate to mean something.
 - [ ] A model-agnostic runner that drives any agent CLI through a command hook and records wall time, turns, output size, commands, failed edits, corrective builds, human interventions, and hidden-scenario pass rate.
 - [ ] Baselines for the same tasks in Godot and at least one other engine, run with the same agent and budget.
 - [ ] A scheduled job that runs the suite for every release and publishes a report; a regression opens an item in this file.

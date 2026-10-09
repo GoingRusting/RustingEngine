@@ -1,0 +1,13 @@
+{
+  "kind": "bug-fix",
+  "template": "rhythm",
+  "request": "Players of this rhythm game say that hitting a note a little late counts as a miss, even when they press within the GOOD window. A note pressed up to GOOD_MS after its beat should score GOOD, and only a note let past that should be a miss. Fix it without changing the timing windows.",
+  "seed": [
+    {"file": "src/main.rs", "find": "if early < -GOOD_MS {", "replace": "if early < -PERFECT_MS {"}
+  ],
+  "remove": ["tests/song.json"],
+  "reference": [
+    {"file": "src/main.rs", "find": "if early < -PERFECT_MS {", "replace": "if early < -GOOD_MS {"}
+  ],
+  "hidden": ["../../../src/templates/rhythm_song.json"]
+}
