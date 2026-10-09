@@ -2559,10 +2559,10 @@ First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`
   - [x] Mute and solo (`GameScene::mute_bus`, `solo_bus`); a bus keeps its volume through both. Verified by `scenario::tests::mute_and_solo_silence_buses_and_keep_their_volume` (offline mix levels per side; fails when silencing is skipped).
   - [ ] Sends, and delay, EQ, compressor and limiter effects.
 - [x] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets. Evidence (audit 2026-10-09): kira decodes WAV, Ogg, MP3 and FLAC; files over the streaming size stream from disk in windows and in the offline mix (`audio_output::tests::large_files_stream_and_still_mix`; `streamed` in `audio:` reports).
-- [ ] 3D spatial audio with attenuation curves, doppler, and an occlusion approximation using physics raycasts.
+- [x] 3D spatial audio with attenuation curves, doppler, and an occlusion approximation using physics raycasts.
   - [x] Pan and distance falloff from a listener (`set_listener`), sounds attached to moving entities, and occlusion by a physics raycast. Evidence (audit 2026-10-09): `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres`, `scenario::tests::an_attached_sound_pans_as_its_entity_moves_and_the_listener_can_move`, `a_wall_between_listener_and_sound_lowers_its_volume`.
   - [x] Doppler: `Sound::doppler` scales pitch by the change in listener distance. Verified by `scenario::tests::doppler_raises_pitch_on_approach_and_lowers_it_going_away` (30 m/s pass: rate 1.096 then 0.92; a sound without doppler stays 1).
-  - [ ] Authored attenuation curves.
+  - [x] Authored attenuation curves: `Sound::falloff` (`Inverse`, `InverseSquare`, `Linear`, `Off`). Verified by `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres` (curve values) and `scenario::tests::a_sound_follows_its_own_falloff_curve` (mixer volume at 6 m: 1/3 inverse, 0.5 linear).
 - [ ] Reverb zones tied to physics volumes.
 - [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
 - [x] Impact sounds scaled by contact closing speed: `SoundCue::full_volume_speed`. Verified by `runtime::tests::harder_landings_play_louder` (a 6 m drop plays louder than a 1 m drop; 0 ignores speed).

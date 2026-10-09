@@ -5242,6 +5242,40 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn a_sound_follows_its_own_falloff_curve() {
+        use crate::runtime::{Falloff, Sound};
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 1 {
+                for falloff in [
+                    Falloff::default(),
+                    Falloff::Linear {
+                        near: 2.0,
+                        far: 10.0,
+                    },
+                ] {
+                    let sound = Sound {
+                        position: Some([0.0, 2.0, -6.0]),
+                        falloff,
+                        ..Sound::default()
+                    };
+                    scene.play_sound_with("tone.wav", sound);
+                }
+            }
+        });
+        let volume = |sound: u32, value: f64| {
+            json!({"tick": 5, "expect": {"entity": "audio:",
+                "path": format!("/playing/{sound}/volume"), "equals": value,
+                "tolerance": 0.001}})
+        };
+        let steps = json!([volume(0, 1.0 / 3.0), volume(1, 0.5)]);
+        let report = run_scenario(&mut app, &scenario(5, steps), &directory);
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn doppler_raises_pitch_on_approach_and_lowers_it_going_away() {
         use crate::runtime::Sound;
         let directory = tone_project(4.0);

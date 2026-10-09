@@ -172,6 +172,7 @@ struct Voice {
     volume: f32,
     /// Rate asked for; `info.rate` adds doppler.
     rate: f32,
+    falloff: crate::runtime::Falloff,
     doppler: f32,
     /// Clip length in seconds.
     duration: f64,
@@ -535,7 +536,8 @@ where
             occlusion: 0.0,
             streamed,
         };
-        (info.pan, info.volume) = self.heard(&info, sound.volume);
+        (info.pan, info.volume) =
+            self.heard(&info, sound.volume, sound.falloff);
         if !self.make_room(&info) {
             return;
         }
@@ -624,6 +626,7 @@ where
                         info,
                         volume: sound.volume,
                         rate,
+                        falloff: sound.falloff,
                         doppler: 1.0,
                         duration,
                         reverse: sound.reverse,
@@ -639,12 +642,18 @@ where
 
     /// Pan and volume a sound plays at: its own pan, or its side and
     /// distance from the listener, lowered by occlusion.
-    fn heard(&self, info: &PlayingSound, volume: f32) -> (f32, f32) {
+    fn heard(
+        &self,
+        info: &PlayingSound,
+        volume: f32,
+        falloff: crate::runtime::Falloff,
+    ) -> (f32, f32) {
         let (pan, gain) = match info.world_position {
             Some(position) => crate::runtime::spatialize(
                 self.listener.0,
                 self.listener.1,
                 position,
+                falloff,
             ),
             None => (info.pan, 1.0),
         };
@@ -656,7 +665,8 @@ where
         let Some(voice) = self.voices.get(&id) else {
             return;
         };
-        let (pan, volume) = self.heard(&voice.info, voice.volume);
+        let (pan, volume) =
+            self.heard(&voice.info, voice.volume, voice.falloff);
         let voice = self.voices.get_mut(&id).unwrap();
         voice.info.pan = pan;
         voice.info.volume = volume;

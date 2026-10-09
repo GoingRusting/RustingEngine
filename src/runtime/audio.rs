@@ -152,6 +152,45 @@ pub struct Sound {
     /// passing siren; 0.5 half as much; 0 never. Comes from how fast the
     /// distance changes, so either side moving counts.
     pub doppler: f32,
+    /// How a positioned sound's volume falls with distance.
+    pub falloff: Falloff,
+}
+
+/// How a positioned sound's volume falls with distance from the listener.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Falloff {
+    /// Full volume within `near` metres, then `near / distance`, like a
+    /// real point source. The default, with `near` 2.
+    Inverse { near: f32 },
+    /// Full within `near`, then `(near / distance)²`: dies out faster,
+    /// for small sounds like a ticking clock.
+    InverseSquare { near: f32 },
+    /// Full within `near`, silent past `far`, a straight line between.
+    Linear { near: f32, far: f32 },
+    /// Same volume at any distance; the sound still pans.
+    Off,
+}
+
+impl Default for Falloff {
+    fn default() -> Self {
+        Self::Inverse { near: 2.0 }
+    }
+}
+
+impl Falloff {
+    /// Volume factor at `distance` metres, 0 to 1.
+    #[must_use]
+    pub fn gain(self, distance: f32) -> f32 {
+        match self {
+            Self::Inverse { near } => (near / distance).min(1.0),
+            Self::InverseSquare { near } => (near / distance).min(1.0).powi(2),
+            Self::Linear { near, far: _ } if distance <= near => 1.0,
+            Self::Linear { near, far } => {
+                (1.0 - (distance - near) / (far - near).max(1e-6)).max(0.0)
+            }
+            Self::Off => 1.0,
+        }
+    }
 }
 
 impl Default for Sound {
@@ -170,6 +209,7 @@ impl Default for Sound {
             priority: 128,
             captions: Vec::new(),
             doppler: 0.0,
+            falloff: Falloff::default(),
         }
     }
 }
@@ -639,13 +679,13 @@ impl Tracked {
 }
 
 /// Pan and distance gain of a sound at `position` heard from `ear`, whose
-/// right is the unit vector `right`: the volume falls as `2 / distance`
-/// past 2 m.
+/// right is the unit vector `right`, with the volume following `falloff`.
 #[must_use]
 pub fn spatialize(
     ear: [f32; 3],
     right: [f32; 3],
     position: [f32; 3],
+    falloff: Falloff,
 ) -> (f32, f32) {
     let offset = [0, 1, 2].map(|axis| position[axis] - ear[axis]);
     let distance = offset.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -655,7 +695,7 @@ pub fn spatialize(
     } else {
         0.0
     };
-    (pan, (2.0 / distance).min(1.0))
+    (pan, falloff.gain(distance))
 }
 
 /// Fixed tick a clip of `seconds` started on `start` ends at `rate`.
@@ -953,11 +993,27 @@ mod tests {
     #[test]
     fn spatialize_pans_to_the_side_and_falls_off_past_two_metres() {
         let right = [1.0, 0.0, 0.0];
-        let (pan, gain) = spatialize([0.0; 3], right, [-5.0, 0.0, 0.0]);
+        let (pan, gain) =
+            spatialize([0.0; 3], right, [-5.0, 0.0, 0.0], Falloff::default());
         assert_eq!((pan, gain), (-1.0, 0.4));
-        let (pan, gain) = spatialize([0.0; 3], right, [0.0, 0.0, -1.0]);
+        let (pan, gain) =
+            spatialize([0.0; 3], right, [0.0, 0.0, -1.0], Falloff::default());
         assert_eq!((pan, gain), (0.0, 1.0));
-        assert_eq!(spatialize([0.0; 3], right, [0.0; 3]).0, 0.0);
+        assert_eq!(spatialize([0.0; 3], right, [0.0; 3], Falloff::Off).0, 0.0);
+        let near =
+            |falloff: Falloff| [1.0, 4.0, 8.0, 16.0].map(|d| falloff.gain(d));
+        assert_eq!(
+            near(Falloff::InverseSquare { near: 2.0 }),
+            [1.0, 0.25, 0.0625, 0.015625]
+        );
+        assert_eq!(
+            near(Falloff::Linear {
+                near: 2.0,
+                far: 10.0
+            }),
+            [1.0, 0.75, 0.25, 0.0]
+        );
+        assert_eq!(near(Falloff::Off), [1.0; 4]);
     }
 
     #[test]

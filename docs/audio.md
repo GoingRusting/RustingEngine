@@ -77,7 +77,10 @@ rate, `null` when looped).
 ## Moving sounds and the listener
 
 A sound with `position` is heard from the listener: it pans to the
-listener's side and falls off as `2 / distance` past 2 m. The listener is
+listener's side and falls off as `2 / distance` past 2 m. `Sound::falloff`
+picks another curve: `Falloff::InverseSquare { near }` dies out faster,
+`Falloff::Linear { near, far }` goes silent at `far`, and `Falloff::Off`
+keeps the same volume at any distance. The listener is
 the active camera unless you name one:
 
 ```rust

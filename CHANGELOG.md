@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `Sound::falloff` picks a distance curve for positioned sounds: inverse (the default), inverse square, linear to silence, or off.
 - `Sound::doppler` raises a positioned sound's pitch as it closes on the listener and lowers it going away.
 - `GameScene::mute_bus` and `solo_bus` silence buses without losing their volume; `audio:/buses/<name>` reports `muted` and `solo`.
 - `SoundCue::full_volume_speed` scales collision sound volume by how fast the bodies close, so soft landings play quieter.
@@ -285,6 +286,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `runtime::spatialize` takes a fourth `Falloff` argument. Migration: pass `Falloff::default()` for the old `2 / distance` curve. `Sound` has new `doppler` and `falloff` fields; literals already need `..Sound::default()`.
 - `runtime::hud_text` takes a third argument, the `Translations` to fill `{tr:key}` from; pass `None` to keep the old behaviour.
 - `ObjectState` has a new `transitions` field and no longer implements `Eq`. Migration: struct literals add `..Default::default()`.
 - `GameScene::save_data` writes through a temporary file and a rename, so a crash mid-save keeps the previous file.
