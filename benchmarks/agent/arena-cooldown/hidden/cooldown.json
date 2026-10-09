@@ -1,0 +1,89 @@
+{
+  "name": "cooldown: a second attack within 0.5 s defeats nothing, and one after it does",
+  "ticks": 80,
+  "steps": [
+    {
+      "tick": 10,
+      "set": {
+        "entity": "Enemy 1",
+        "path": "/transform/position",
+        "value": [
+          1.5,
+          0.4,
+          0.0
+        ]
+      }
+    },
+    {
+      "tick": 12,
+      "tap": "attack"
+    },
+    {
+      "tick": 14,
+      "expect": {
+        "counter": "kills",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 20,
+      "set": {
+        "entity": "Enemy 2",
+        "path": "/transform/position",
+        "value": [
+          1.5,
+          0.4,
+          0.0
+        ]
+      }
+    },
+    {
+      "tick": 22,
+      "tap": "attack"
+    },
+    {
+      "tick": 24,
+      "expect": {
+        "counter": "kills",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 24,
+      "expect": {
+        "entity": "Enemy 2",
+        "exists": true
+      }
+    },
+    {
+      "tick": 50,
+      "set": {
+        "entity": "Enemy 2",
+        "path": "/transform/position",
+        "value": [
+          1.5,
+          0.4,
+          0.0
+        ]
+      }
+    },
+    {
+      "tick": 52,
+      "tap": "attack"
+    },
+    {
+      "tick": 54,
+      "expect": {
+        "counter": "kills",
+        "equals": 2
+      }
+    },
+    {
+      "tick": 54,
+      "expect": {
+        "entity": "Enemy 2",
+        "exists": false
+      }
+    }
+  ]
+}

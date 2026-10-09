@@ -1,0 +1,25 @@
+{
+  "kind": "feature",
+  "template": "top-down",
+  "request": "In this arena game the player can attack as fast as they can press the key. Add a cooldown: after an attack, the next 0.5 s of attack presses do nothing (no flash, no enemy defeated); the first press after that attacks as before. Keep the rest of the game the same.",
+  "seed": [],
+  "remove": [
+    "tests/fight.json"
+  ],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "const ARENA: f32 = 7.0;\n",
+      "replace": "const ARENA: f32 = 7.0;\n/// How long after an attack the next one is ignored.\nconst ATTACK_COOLDOWN_MS: i32 = 500;\n"
+    },
+    {
+      "file": "src/main.rs",
+      "find": "    if scene.pressed(\"attack\") {\n        scene.flash(\"Player\");",
+      "replace": "    let ms = (dt * 1000.0).round() as i32;\n    let cooldown = (scene.counter_or(\"cooldown_ms\", 0) - ms).max(0);\n    scene.set_counter(\"cooldown_ms\", cooldown);\n    if scene.pressed(\"attack\") && cooldown == 0 {\n        scene.set_counter(\"cooldown_ms\", ATTACK_COOLDOWN_MS);\n        scene.flash(\"Player\");"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/arena_fight.json",
+    "hidden/cooldown.json"
+  ]
+}
