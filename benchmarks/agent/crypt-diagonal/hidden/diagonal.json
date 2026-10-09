@@ -1,0 +1,89 @@
+{
+ "name": "diagonal: an enemy diagonal to the player after its turn steps instead of striking, and one straight beside it strikes",
+ "seed": 1,
+ "ticks": 12,
+ "steps": [
+  {
+   "tick": 1,
+   "set": {
+    "entity": "Enemy 1",
+    "path": "/transform/position",
+    "value": [
+     3,
+     0.4,
+     2
+    ]
+   }
+  },
+  {
+   "tick": 1,
+   "set": {
+    "entity": "Enemy 2",
+    "path": "/transform/position",
+    "value": [
+     9,
+     0.4,
+     7
+    ]
+   }
+  },
+  {
+   "tick": 2,
+   "tap": "right"
+  },
+  {
+   "tick": 4,
+   "expect": {
+    "counter": "wounds",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 6,
+   "set": {
+    "entity": "Player",
+    "path": "/transform/position",
+    "value": [
+     5,
+     0.4,
+     5
+    ]
+   }
+  },
+  {
+   "tick": 6,
+   "set": {
+    "entity": "Enemy 1",
+    "path": "/transform/position",
+    "value": [
+     7,
+     0.4,
+     5
+    ]
+   }
+  },
+  {
+   "tick": 6,
+   "set": {
+    "entity": "Enemy 2",
+    "path": "/transform/position",
+    "value": [
+     9,
+     0.4,
+     7
+    ]
+   }
+  },
+  {
+   "tick": 8,
+   "tap": "right"
+  },
+  {
+   "tick": 10,
+   "expect": {
+    "counter": "wounds",
+    "equals": 1
+   }
+  }
+ ]
+}

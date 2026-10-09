@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `crypt-diagonal`: a bug-fix task on the roguelike template, where diagonal enemies strike.
 - Agent benchmark task `swarm-bomb`: a fourth feature task, a once-a-round bomb in the twin-stick template.
 - Agent benchmark task `tapper-new-game`: a third new-game task, a ten-second tapping game with a countdown.
 - Agent benchmark task `rhythm-spark-leak`: a second performance task, where hit sparks are hidden instead of despawned.

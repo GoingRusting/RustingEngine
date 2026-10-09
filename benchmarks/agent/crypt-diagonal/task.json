@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "roguelike",
+  "request": "In this roguelike, an enemy standing diagonally next to the player strikes, although enemies and the player only ever move along X or Z. An enemy should strike only from the four cells straight beside the player; a diagonal enemy takes a step instead. Fix it.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "        if gx.abs() + gz.abs() == 1 {",
+      "replace": "        if gx.abs() <= 1 && gz.abs() <= 1 {"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        if gx.abs() <= 1 && gz.abs() <= 1 {",
+      "replace": "        if gx.abs() + gz.abs() == 1 {"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/roguelike_descend.json",
+    "hidden/diagonal.json"
+  ]
+}
