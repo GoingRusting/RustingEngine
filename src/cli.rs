@@ -2087,12 +2087,137 @@ pub fn lint_project(root: &Path) -> CliResult {
         .collect();
     diagnostics.extend(lint_no_ending(&document, &code));
     diagnostics.extend(lint_missing_names(&project.root));
+    diagnostics.extend(lint_color_only_status(&project.root));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
         data: json!({"root": project.root, "main_scene": project.scene_path, "warnings": diagnostics.len()}),
         diagnostics,
     }
+}
+
+/// `LINT_COLOR_ONLY_STATUS` on the first `set_hud("Name", ...)` call that
+/// changes the element's `color` when no call ever changes its `text` and
+/// its scene text has no `{counter}` readout: the state it shows is lost
+/// on a colour-blind player.
+// ponytail: a text search; a literal name only, and a `)` inside a string
+// in the closure ends the call early.
+fn lint_color_only_status(root: &Path) -> Vec<Diagnostic> {
+    const CALL: &str = ".set_hud(\"";
+    let mut scene_files = Vec::new();
+    for folder in ["scenes", "assets"] {
+        scene_files_in(&root.join(folder), &mut scene_files);
+    }
+    // Scene HUD colours, and names whose text changes by itself through a
+    // counter readout.
+    let mut readouts = BTreeSet::new();
+    let mut scene_rgb = std::collections::BTreeMap::new();
+    for entity in scene_files
+        .iter()
+        .filter_map(|path| read_scene(path).ok())
+        .flat_map(|document| document.entities)
+    {
+        let (Some(name), Some(hud)) = (
+            entity.name,
+            entity
+                .components
+                .get(crate::runtime::HUD_ELEMENT_COMPONENT)
+                .and_then(|hud| {
+                    serde_json::from_str::<crate::runtime::HudElement>(hud).ok()
+                }),
+        ) else {
+            continue;
+        };
+        if hud.text.contains('{') {
+            readouts.insert(name.clone());
+        }
+        scene_rgb.insert(name, hud.color[..3].to_vec());
+    }
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    files.sort();
+    // Per name: whether any call sets the text, the first colour call, and
+    // the RGB of each colour set (`None` when not a literal array).
+    #[derive(Default)]
+    struct Calls {
+        text: bool,
+        first: Option<String>,
+        rgb: Vec<Option<Vec<f32>>>,
+    }
+    let mut calls = std::collections::BTreeMap::<String, Calls>::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        for (start, _) in text.match_indices(CALL) {
+            let rest = &text[start + CALL.len()..];
+            let Some((name, _)) = rest.split_once('"') else {
+                continue;
+            };
+            let mut depth = 1;
+            let end = rest
+                .char_indices()
+                .find(|&(_, c)| {
+                    depth += match c {
+                        '(' => 1,
+                        ')' => -1,
+                        _ => 0,
+                    };
+                    depth == 0
+                })
+                .map_or(rest.len(), |(at, _)| at);
+            let body: String =
+                rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+            let entry = calls.entry(name.to_owned()).or_default();
+            entry.text |= body.contains(".text");
+            for (at, _) in body.match_indices(".color=") {
+                let value = &body[at + ".color=".len()..];
+                entry.rgb.push(value.strip_prefix('[').and_then(|value| {
+                    value
+                        .split([',', ']'])
+                        .take(3)
+                        .map(|c| c.trim_end_matches("f32").parse().ok())
+                        .collect()
+                }));
+                if entry.first.is_none() {
+                    let line = text[..start].lines().count().max(1);
+                    entry.first = Some(format!(
+                        "{}:{line}",
+                        file.strip_prefix(root).unwrap_or(&file).display()
+                    ));
+                }
+            }
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (name, calls) in calls {
+        let Some(at) = calls.first else {
+            continue;
+        };
+        // Only brightness or alpha changes when every colour is a literal
+        // with the scene's RGB: visible without telling hues apart.
+        let mut rgb = calls
+            .rgb
+            .into_iter()
+            .chain(scene_rgb.get(&name).cloned().map(Some));
+        let first = rgb.next().flatten();
+        let one_hue = first.is_some()
+            && rgb.all(|other| other.is_some() && other == first);
+        if calls.text || readouts.contains(&name) || one_hue {
+            continue;
+        }
+        let file = root.join(at.split(':').next().unwrap_or_default());
+        diagnostics.push(Diagnostic {
+            code: "LINT_COLOR_ONLY_STATUS",
+            severity: "warning",
+            message: format!(
+                "{at}: HUD `{name}` changes colour but never its text, so a colour-blind player misses what it shows; change the text too (a word or a symbol)"
+            ),
+            file: Some(file),
+            ..Diagnostic::default()
+        });
+    }
+    diagnostics
 }
 
 /// `LINT_NO_ENDING` on the first counter when a scene keeps counters but
@@ -6738,6 +6863,42 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         assert_eq!(
             found[0].message,
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lint_flags_hud_status_shown_by_colour_alone() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-colour-only-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        let hud = |name: &str, text: &str| {
+            json!({"id": uuid::Uuid::new_v4(), "name": name,
+            "components": {"rusting.hud": json!({"text": text}).to_string()}})
+        };
+        let scene = json!({"format_version": 7, "name": "Main", "entities": [
+            hud("Dot", "+"), hud("Judge", "-"), hud("Health", "HP {hp}"), hud("Label", "Go"), hud("Aim", "+")]});
+        std::fs::write(root.join("scenes/main.rscene"), scene.to_string())
+            .unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "scene.set_hud(\"Label\", |h| h.font_size = 20.0);\n\
+             scene.set_hud(\"Dot\", |h| h.color = [1.0, 0.0, 0.0, f(1)]);\n\
+             scene.set_hud(\"Judge\", |hud| {\n\
+                 hud.color = color;\n\
+             });\n\
+             scene.set_hud(\"Judge\", |hud| hud.text = word.into());\n\
+             scene.set_hud(\"Health\", |hud| hud.color = red);\n\
+             scene.set_hud(\"Aim\", |h| h.color = [1.0, 1.0, 1.0, if on { 0.9 } else { 0.3 }]);\n",
+        )
+        .unwrap();
+        let found = lint_color_only_status(&root);
+        let messages: Vec<_> = found.iter().map(|d| &d.message).collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(
+            messages[0].starts_with("src/main.rs:2: HUD `Dot` changes colour"),
+            "a size change, a colour set with the text in another call, a counter readout and an alpha-only change on the scene's white pass: {messages:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

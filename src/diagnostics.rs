@@ -271,6 +271,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_COLOR_ONLY_STATUS",
+        "Game code changes a HUD element's `color` through `set_hud` but never its `text`, and its scene text has no `{counter}` readout, so the state it shows reaches only players who tell those colours apart.",
+        "Change the text along with the colour (a word such as `READY`, or a symbol), or show the state somewhere else as well.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_GOAL_INSIDE",
         "A sensor collider (a pickup, goal or trigger) has its centre inside another entity's solid box, sphere or capsule collider, so a player walking up to it is stopped before it is reached.",
         "Move the sensor out of the solid, or make that collider a sensor too if it is not meant to block.",
