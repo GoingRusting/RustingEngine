@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `racing-wide-road`: a bug fix on the racing template.
 - Agent benchmark task `tower-sell`: a feature request on the tower-defense template.
 - `rusting lint` warns `LINT_MISSING_FILE` on a literal `load_scene` path or `play_sound` clip with no file there.
 - `rusting asset generate <root> mesh "barrel 4"` builds a seeded low-poly CC0 glTF prop: crate, barrel, rock, tree or gem.

@@ -1,0 +1,29 @@
+{
+  "name": "off road: a car set beside the track tops out at 5 m/s",
+  "ticks": 240,
+  "steps": [
+    {
+      "tick": 0,
+      "set": {
+        "entity": "Car",
+        "path": "/transform/position",
+        "value": [
+          0.0,
+          0.3,
+          4.0
+        ]
+      }
+    },
+    {
+      "tick": 0,
+      "press": "up"
+    },
+    {
+      "tick": 100,
+      "expect": {
+        "counter": "speed",
+        "equals": 500
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "kind": "bug-fix",
+  "template": "racing",
+  "request": "In this racing game the car keeps full speed on the grass next to the track, well past the edge of the tarmac. A car should only count as on the road while it is over a road piece; anywhere else it should top out at OFF_ROAD_SPEED. Fix it without changing the speeds or the track.",
+  "seed": [
+    {"file": "src/main.rs", "find": "<= size[0] / 2.0", "replace": "<= size[0]"},
+    {"file": "src/main.rs", "find": "<= size[2] / 2.0", "replace": "<= size[2]"}
+  ],
+  "remove": ["tests/lap.json"],
+  "reference": [
+    {"file": "src/main.rs", "find": "<= size[0]\n", "replace": "<= size[0] / 2.0\n"},
+    {"file": "src/main.rs", "find": "<= size[2]\n", "replace": "<= size[2] / 2.0\n"}
+  ],
+  "hidden": ["../../../src/templates/racing_lap.json", "hidden/off.json"]
+}
