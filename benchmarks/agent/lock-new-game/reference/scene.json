@@ -1,0 +1,90 @@
+{
+ "operations": [
+  {
+   "op": "create",
+   "entity": {
+    "name": "Action a",
+    "components": {
+     "rusting.input_action": {
+      "action": "a",
+      "inputs": [
+       "KeyA"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Action b",
+    "components": {
+     "rusting.input_action": {
+      "action": "b",
+      "inputs": [
+       "KeyB"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Action c",
+    "components": {
+     "rusting.input_action": {
+      "action": "c",
+      "inputs": [
+       "KeyC"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Progress",
+    "components": {
+     "rusting.counter": {
+      "name": "progress"
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Mistakes",
+    "components": {
+     "rusting.counter": {
+      "name": "mistakes"
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Unlocked",
+    "components": {
+     "rusting.counter": {
+      "name": "unlocked"
+     }
+    }
+   }
+  },
+  {
+   "op": "create",
+   "entity": {
+    "name": "Message",
+    "components": {
+     "rusting.hud": {
+      "text": ""
+     }
+    }
+   }
+  }
+ ]
+}

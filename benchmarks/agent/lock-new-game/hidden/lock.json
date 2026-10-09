@@ -1,0 +1,127 @@
+{
+  "name": "lock: a wrong digit resets progress without starting over, and the full code a c b c unlocks once",
+  "ticks": 55,
+  "steps": [
+    {
+      "tick": 3,
+      "expect": {
+        "counter": "progress",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 3,
+      "expect": {
+        "counter": "mistakes",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 3,
+      "expect": {
+        "counter": "unlocked",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 5,
+      "tap": "a"
+    },
+    {
+      "tick": 10,
+      "tap": "c"
+    },
+    {
+      "tick": 12,
+      "expect": {
+        "counter": "progress",
+        "equals": 2
+      }
+    },
+    {
+      "tick": 15,
+      "tap": "a"
+    },
+    {
+      "tick": 17,
+      "expect": {
+        "counter": "progress",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 17,
+      "expect": {
+        "counter": "mistakes",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 20,
+      "tap": "a"
+    },
+    {
+      "tick": 25,
+      "tap": "c"
+    },
+    {
+      "tick": 30,
+      "tap": "b"
+    },
+    {
+      "tick": 32,
+      "expect": {
+        "counter": "progress",
+        "equals": 3
+      }
+    },
+    {
+      "tick": 32,
+      "expect": {
+        "counter": "unlocked",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 35,
+      "tap": "c"
+    },
+    {
+      "tick": 37,
+      "expect": {
+        "counter": "unlocked",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 37,
+      "expect": {
+        "entity": "Message",
+        "path": "/components/rusting.hud/text",
+        "equals": "Unlocked"
+      }
+    },
+    {
+      "tick": 40,
+      "tap": "b"
+    },
+    {
+      "tick": 45,
+      "tap": "a"
+    },
+    {
+      "tick": 50,
+      "expect": {
+        "counter": "mistakes",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 50,
+      "expect": {
+        "counter": "unlocked",
+        "equals": 1
+      }
+    }
+  ]
+}

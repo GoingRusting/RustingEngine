@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a small code-lock game in this empty project. Three input actions, `a`, `b` and `c` (keys A, B and C), enter digits of the four-digit code a, c, b, c. A counter named `progress` counts the digits entered correctly so far. A wrong digit sets `progress` back to 0, adds 1 to a counter named `mistakes`, and does not start a new attempt. Once the whole code is in, a counter named `unlocked` becomes 1 and a text named `Message` says `Unlocked`; presses after that change nothing. `progress`, `mistakes` and `unlocked` start at 0.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "/// The code, one action per digit.\nconst CODE: [&str; 4] = [\"a\", \"c\", \"b\", \"c\"];\n\nfn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.counter_or(\"unlocked\", 0) == 1 {\n        return;\n    }\n    let Some(key) = [\"a\", \"b\", \"c\"].into_iter().find(|key| scene.pressed(key))\n    else {\n        return;\n    };\n    let progress = scene.counter_or(\"progress\", 0);\n    if key != CODE[progress as usize] {\n        scene.set_counter(\"progress\", 0);\n        scene.add_to_counter(\"mistakes\", 1);\n        return;\n    }\n    scene.set_counter(\"progress\", progress + 1);\n    if progress + 1 == CODE.len() as i32 {\n        scene.set_counter(\"unlocked\", 1);\n        scene.set_hud(\"Message\", |hud| hud.text = \"Unlocked\".into());\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/lock.json"
+  ]
+}
