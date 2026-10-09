@@ -2552,15 +2552,21 @@ Depends on: Milestone 1. Physics-driven audio depends on Milestones 5 and 10.
 First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`AudioQueue`, `AudioCommand`, `SoundId`; presentation only, not in snapshots) and `src/audio_output.rs` (kira playback, feature `audio`, on with `window`). `GameScene::play_sound`, `play_sound_looped`, `stop_sound`, `stop_all_sounds`, `set_master_volume`, `sounds_requested`; `SoundEvent`s from `rusting.sound_cue` become play requests. WAV, Ogg, MP3 and FLAC decode through kira. No device means silent, with one stderr line. Real speaker output is not verified here. Sound events are routed by the runner after each update (`route_sound_events`), not by a schedule system: adding a system changed replay hashes (`replays_reproduce_recorded_hashes_and_find_changed_input` diverged at tick 1). Headless runs keep the newest 1,024 commands and count only game-code requests. Tests: `requests_get_distinct_ids_and_drain_once`, `sound_requests_are_queued_counted_and_drained`, and the cue check in `landing_fires_one_sound_and_a_seeded_burst_that_expires`. Full check passed under lavapipe: fmt, clippy in three configurations, `cargo test --workspace` and with `--features gpu-tests` (exit 0, 16 result lines each). Not done: buses, effects, spatial, streaming, hot-plug, voice limits, offline render.
 
 - [ ] Audio device management with hot-plug, output selection, and a no-device fallback.
+  - [x] No-device fallback: `AudioOutput::new` returns `None` with one stderr line and the game runs silent (`src/audio_output.rs`). Real devices are not verifiable here.
+  - [ ] Hot-plug and output selection.
 - [ ] Mixer with buses, sends, volume/mute/solo, and bus effects (reverb, delay, EQ, compressor, limiter, filters).
-- [ ] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets.
+  - [x] Named buses with faded volume (`GameScene::set_bus_volume`), pause by bus, and `BusEffect` low-pass, reverb and distortion (`set_bus_effect`). Evidence (audit 2026-10-09): `scenario::tests::the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`, `bus_effects_show_change_the_mix_and_leave_state_hashes_alone`, `runtime::audio::tests::playing_lists_live_sounds_and_pauses_them_by_bus`.
+  - [ ] Sends, mute/solo, and delay, EQ, compressor and limiter effects.
+- [x] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets. Evidence (audit 2026-10-09): kira decodes WAV, Ogg, MP3 and FLAC; files over the streaming size stream from disk in windows and in the offline mix (`audio_output::tests::large_files_stream_and_still_mix`; `streamed` in `audio:` reports).
 - [ ] 3D spatial audio with attenuation curves, doppler, and an occlusion approximation using physics raycasts.
+  - [x] Pan and distance falloff from a listener (`set_listener`), sounds attached to moving entities, and occlusion by a physics raycast. Evidence (audit 2026-10-09): `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres`, `scenario::tests::an_attached_sound_pans_as_its_entity_moves_and_the_listener_can_move`, `a_wall_between_listener_and_sound_lowers_its_volume`.
+  - [ ] Doppler and authored attenuation curves.
 - [ ] Reverb zones tied to physics volumes.
 - [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
 - [ ] Physics-driven impact, scrape, and roll sounds parameterized by contact impulse, relative velocity, and physics material.
-- [ ] Voice limiting and priority so large destruction events do not exhaust the mixer.
-- [ ] Offline render path for deterministic audio tests.
-- [ ] Audio state is presentation only and never affects simulation or replay hashes.
+- [x] Voice limiting and priority so large destruction events do not exhaust the mixer. Evidence (audit 2026-10-09): `GameScene::set_bus_voice_limit` and per-sound `priority`; `scenario::tests::a_thousand_sounds_in_one_tick_stay_within_the_voice_limit` and `runtime::audio::tests::bus_voice_limits_clamp_and_inactive_effects_report_off`.
+- [x] Offline render path for deterministic audio tests. Evidence (audit 2026-10-09): `OfflineMixer` renders each scenario tick with kira and no device, and scenario `audio:` checks read its level, peak, pan and playing list (`scenario::tests::the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`).
+- [x] Audio state is presentation only and never affects simulation or replay hashes. Evidence (audit 2026-10-09): `AudioQueue` is not in snapshots or state hashes and sound events are routed by the runner, not a schedule system; `scenario::tests::bus_effects_show_change_the_mix_and_leave_state_hashes_alone` compares state hashes with and without audio effects.
 
 ### Exit gate
 
