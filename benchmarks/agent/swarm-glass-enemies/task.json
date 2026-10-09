@@ -1,0 +1,24 @@
+{
+  "kind": "performance",
+  "template": "twin-stick",
+  "request": "Players on weaker machines say this shooter slows down as each wave builds up: every enemy on screen seems to cost its own draw call, so a full wave draws three times as much as the start of the round. Find the cause and fix it so the enemies draw together, without changing how the game plays.",
+  "seed": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\"name\": \"Enemy Template\",\n      \"classes\": [],\n      \"transform\": {\n        \"position\": [\n          0.0,\n          -20.0,\n          0.0\n        ],\n        \"rotation\": [\n          0.0,\n          0.0,\n          0.0\n        ],\n        \"scale\": [\n          0.7,\n          0.7,\n          0.7\n        ]\n      },\n      \"mesh_renderer\": {\n        \"mesh\": {\n          \"BuiltinPrimitive\": \"Sphere\"\n        },\n        \"material\": {\n          \"Inline\": {\n            \"name\": \"\",\n            \"model\": \"Pbr\",\n            \"alpha_mode\": \"Opaque\"",
+      "replace": "\"name\": \"Enemy Template\",\n      \"classes\": [],\n      \"transform\": {\n        \"position\": [\n          0.0,\n          -20.0,\n          0.0\n        ],\n        \"rotation\": [\n          0.0,\n          0.0,\n          0.0\n        ],\n        \"scale\": [\n          0.7,\n          0.7,\n          0.7\n        ]\n      },\n      \"mesh_renderer\": {\n        \"mesh\": {\n          \"BuiltinPrimitive\": \"Sphere\"\n        },\n        \"material\": {\n          \"Inline\": {\n            \"name\": \"\",\n            \"model\": \"Pbr\",\n            \"alpha_mode\": \"Blend\""
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\"name\": \"Enemy Template\",\n      \"classes\": [],\n      \"transform\": {\n        \"position\": [\n          0.0,\n          -20.0,\n          0.0\n        ],\n        \"rotation\": [\n          0.0,\n          0.0,\n          0.0\n        ],\n        \"scale\": [\n          0.7,\n          0.7,\n          0.7\n        ]\n      },\n      \"mesh_renderer\": {\n        \"mesh\": {\n          \"BuiltinPrimitive\": \"Sphere\"\n        },\n        \"material\": {\n          \"Inline\": {\n            \"name\": \"\",\n            \"model\": \"Pbr\",\n            \"alpha_mode\": \"Blend\"",
+      "replace": "\"name\": \"Enemy Template\",\n      \"classes\": [],\n      \"transform\": {\n        \"position\": [\n          0.0,\n          -20.0,\n          0.0\n        ],\n        \"rotation\": [\n          0.0,\n          0.0,\n          0.0\n        ],\n        \"scale\": [\n          0.7,\n          0.7,\n          0.7\n        ]\n      },\n      \"mesh_renderer\": {\n        \"mesh\": {\n          \"BuiltinPrimitive\": \"Sphere\"\n        },\n        \"material\": {\n          \"Inline\": {\n            \"name\": \"\",\n            \"model\": \"Pbr\",\n            \"alpha_mode\": \"Opaque\""
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/twin_stick_wave.json",
+    "hidden/draws.json"
+  ]
+}

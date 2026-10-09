@@ -1,0 +1,12 @@
+{
+  "name": "draws: a full wave of enemies on screen draws together, not one draw per enemy",
+  "ticks": 800,
+  "budgets": {
+    "max_draws": 8
+  },
+  "steps": [
+    {"tick": 1, "set": {"entity": "Hits", "path": "/components/rusting.counter/target", "value": 1000}},
+    {"tick": 790, "expect": {"counter": "spawned", "equals": 12}},
+    {"tick": 790, "expect": {"entity": "Enemy 12", "exists": true}}
+  ]
+}
