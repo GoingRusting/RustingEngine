@@ -221,6 +221,13 @@ cue's `volume`, a slower one plays quieter in proportion. A crate dropped
 from 1 m thuds softly; from 6 m it plays loud. `trigger()` from game code
 always plays at full `volume`.
 
+A `rusting.slide_sound` loops its clip while the body slides or rolls
+against another collider: a crate scraping across a floor, a barrel
+rolling down a ramp. Its volume follows the speed across the contact,
+reaching `volume` at `full_volume_speed` m/s, and the loop stops once the
+body moves slower than `min_speed`. The loop follows the body like an
+attached sound. Only CPU bodies have the velocities it reads.
+
 Set `on_gpu_event` to a registered GPU physics event name, such as
 `"shatter"`, to play the cue each time the GPU solver emits that event for
 the cue's body. The cue plays on the fixed step after the frame the event

@@ -2589,6 +2589,61 @@ fn a_gpu_physics_event_plays_the_cue_that_names_it() {
 }
 
 #[test]
+fn a_sliding_crate_loops_its_scrape_until_friction_stops_it() {
+    let mut app = App::new();
+    cpu_ground(app.world_mut());
+    let crate_body = cpu_body(
+        app.world_mut(),
+        [0.0, 0.5, 0.0],
+        UNIT_BOX,
+        RigidBodyKind::Dynamic,
+    );
+    app.world_mut().entity_mut(crate_body).insert(SlideSound {
+        clip: "sounds/scrape.ogg".into(),
+        ..SlideSound::default()
+    });
+    // Settle, then shove it sideways.
+    run_fixed_steps(&mut app, 30);
+    route_sound_events(app.world_mut());
+    assert!(app.world().resource::<AudioQueue>().playing().is_empty());
+    app.world_mut()
+        .get_mut::<RigidBody>(crate_body)
+        .unwrap()
+        .linear_velocity = [6.0, 0.0, 0.0];
+    let mut volumes = Vec::new();
+    let mut stopped = false;
+    for _ in 0..300 {
+        run_fixed_steps(&mut app, 1);
+        route_sound_events(app.world_mut());
+        let mut queue = app.world_mut().resource_mut::<AudioQueue>();
+        for command in queue.drain() {
+            match command {
+                AudioCommand::Play { sound, .. } => {
+                    assert!(sound.looped);
+                    assert_eq!(sound.follow, Some(crate_body));
+                    volumes.push(sound.volume);
+                }
+                AudioCommand::SetVolume { volume, .. } => volumes.push(volume),
+                AudioCommand::Stop(_) => stopped = true,
+                _ => {}
+            }
+        }
+        if stopped {
+            break;
+        }
+    }
+    assert!(stopped, "the scrape never stopped: {volumes:?}");
+    assert_eq!(volumes.first(), Some(&1.0), "{volumes:?}");
+    // Friction slows it, so the scrape fades.
+    assert!(
+        volumes.windows(2).all(|pair| pair[1] <= pair[0]),
+        "{volumes:?}"
+    );
+    assert!(volumes.len() > 2, "{volumes:?}");
+    assert!(app.world().resource::<AudioQueue>().playing().is_empty());
+}
+
+#[test]
 fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
     let run = || {
         let mut app = App::new();

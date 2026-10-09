@@ -139,7 +139,7 @@ machine, and it must never feed back into simulation state.
 - Rendering: cameras, lights, `RenderSettings`, quality profile, culling,
   materials, `MeshRenderer`, `Visibility`, the render world, and every
   rendering shader (which may keep `mediump` and fusion).
-- `BurstParticle` entities, `SoundEvent`s, `ReverbZone`, `HudElement`, UI, the
+- `BurstParticle` entities, `SoundEvent`s, `ReverbZone`, `SlideSound`, `HudElement`, UI, the
   profiler, and editor state.
 
 A presentation system may read simulation state but never write it; a

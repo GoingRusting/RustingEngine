@@ -17,9 +17,9 @@ use crate::runtime::{
     PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
     PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
     RenderBounds, RenderSettings, ReverbZone, SceneBackground, SceneInstance,
-    ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash, StateAction,
-    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
-    TweenProperty, TweenRepeat, WaterBody,
+    ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash,
+    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
+    Tween, TweenProperty, TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -269,6 +269,18 @@ crate::reflect! {
         easing: Easing,
         repeat: TweenRepeat,
         #[skip] elapsed: f32,
+    }
+}
+
+crate::reflect! {
+    struct SlideSound {
+        clip: String { unit: "asset path", doc: "looped while the body slides or rolls" },
+        volume: f32 { unit: "linear gain", min: 0.0 },
+        full_volume_speed: f32 { unit: "m/s", min: 0.0, doc: "sliding this fast plays at full volume" },
+        min_speed: f32 { unit: "m/s", min: 0.0, doc: "slower is silent" },
+        bus: String { doc: "empty for the main output" },
+        #[skip] playing: Option<SoundId>,
+        #[skip] level: f32,
     }
 }
 

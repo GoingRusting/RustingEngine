@@ -55,8 +55,8 @@ pub use animation::*;
 pub use audio::{
     active_camera, end_tick, route_sound_events, spatialize, ActiveSound,
     AudioCommand, AudioQueue, BeatClock, BusEffect, Caption, CaptionSettings,
-    Falloff, ReverbZone, Sound, SoundId, DEFAULT_VOICE_LIMIT, MAX_VOICE_LIMIT,
-    QUEUE_LIMIT,
+    Falloff, ReverbZone, SlideSound, Sound, SoundId, DEFAULT_VOICE_LIMIT,
+    MAX_VOICE_LIMIT, QUEUE_LIMIT,
 };
 pub use classes::ClassIndex;
 pub use components::*;

@@ -28,7 +28,8 @@ use crate::runtime::{
     PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
     PLAYER_CONTROLLER_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
     RENDER_BOUNDS_COMPONENT, REVERB_ZONE_COMPONENT, SCENE_INSTANCE_COMPONENT,
-    SKIN_COMPONENT, SOUND_CUE_COMPONENT, TWEEN_COMPONENT, WATER_COMPONENT,
+    SKIN_COMPONENT, SLIDE_SOUND_COMPONENT, SOUND_CUE_COMPONENT,
+    TWEEN_COMPONENT, WATER_COMPONENT,
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
@@ -195,6 +196,10 @@ pub(in crate::editor) fn component_help(
         REVERB_ZONE_COMPONENT => (
             "Adds a room's reverb while the listener is inside its collider.",
             "Caves, halls, bathrooms, tunnels.",
+        ),
+        SLIDE_SOUND_COMPONENT => (
+            "Loops a sound while the body slides or rolls against something.",
+            "Scraping crates, rolling barrels, sliding doors.",
         ),
         SOUND_CUE_COMPONENT => (
             "Plays a sound when its trigger happens.",

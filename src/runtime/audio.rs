@@ -475,6 +475,124 @@ impl ReverbZone {
     }
 }
 
+/// Loops a clip on this body while it slides or rolls against another
+/// collider: a scraping crate, a rolling barrel. Volume follows the speed
+/// across the contact. CPU bodies only.
+#[derive(
+    bevy_ecs::component::Component,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct SlideSound {
+    pub clip: String,
+    /// Linear gain at `full_volume_speed` and above.
+    pub volume: f32,
+    /// Sliding speed in m/s that plays at full `volume`.
+    pub full_volume_speed: f32,
+    /// Slower than this (m/s) is silent.
+    pub min_speed: f32,
+    /// Empty is the main output.
+    pub bus: String,
+    /// The loop while it plays.
+    #[serde(skip)]
+    pub playing: Option<SoundId>,
+    /// Volume last sent.
+    #[serde(skip)]
+    pub level: f32,
+}
+
+impl Default for SlideSound {
+    fn default() -> Self {
+        Self {
+            clip: String::new(),
+            volume: 1.0,
+            full_volume_speed: 4.0,
+            min_speed: 0.2,
+            bus: String::new(),
+            playing: None,
+            level: 0.0,
+        }
+    }
+}
+
+/// Starts, turns and stops each [`SlideSound`] loop from the last fixed
+/// step's contacts.
+fn route_slide_sounds(world: &mut World, tick: u64) {
+    let slides: Vec<(Entity, SlideSound)> = world
+        .query::<(Entity, &SlideSound)>()
+        .iter(world)
+        .map(|(entity, slide)| (entity, slide.clone()))
+        .collect();
+    if slides.is_empty() {
+        return;
+    }
+    let velocity = |entity| {
+        world
+            .get::<super::RigidBody>(entity)
+            .map_or(nalgebra::Vector3::zeros(), |body| {
+                body.linear_velocity.into()
+            })
+    };
+    // Fastest speed across a touching contact, per body.
+    let mut speeds = std::collections::BTreeMap::<Entity, f32>::new();
+    if let Some(physics) = world.get_resource::<super::PhysicsWorld>() {
+        for contact in physics.contacts().iter().filter(|c| !c.sensor) {
+            let normal = nalgebra::Vector3::from(contact.normal);
+            let relative = velocity(contact.a) - velocity(contact.b);
+            let slide = (relative - normal * relative.dot(&normal)).norm();
+            for body in [contact.a, contact.b] {
+                let speed = speeds.entry(body).or_default();
+                *speed = speed.max(slide);
+            }
+        }
+    }
+    let mut changed = Vec::new();
+    let Some(mut queue) = world.get_resource_mut::<AudioQueue>() else {
+        return;
+    };
+    for (entity, slide) in slides {
+        let speed = speeds.get(&entity).copied().unwrap_or(0.0);
+        let level = if speed < slide.min_speed {
+            0.0
+        } else {
+            slide.volume * (speed / slide.full_volume_speed.max(1e-3)).min(1.0)
+        };
+        let mut next = slide.clone();
+        match slide.playing {
+            None if level > 0.0 => {
+                let sound = Sound {
+                    volume: level,
+                    bus: slide.bus.clone(),
+                    looped: true,
+                    follow: Some(entity),
+                    ..Sound::default()
+                };
+                next.playing = Some(queue.play(&slide.clip, &sound, tick));
+            }
+            Some(id) if level == 0.0 => {
+                queue.stop(id);
+                next.playing = None;
+            }
+            Some(id) if (level - slide.level).abs() > 0.01 => {
+                queue.set_volume(id, level, SLIDE_FADE_SECONDS);
+            }
+            _ => continue,
+        }
+        next.level = level;
+        changed.push((entity, next));
+    }
+    for (entity, slide) in changed {
+        world.entity_mut(entity).insert(slide);
+    }
+}
+
+/// How fast a slide loop follows a change in speed.
+const SLIDE_FADE_SECONDS: f32 = 0.05;
+
 /// Requests waiting for the audio device, plus the presentation state that
 /// follows sounds after they start (listener, attached sounds, captions).
 /// Nothing here feeds the simulation.
@@ -808,6 +926,7 @@ pub fn route_sound_events(world: &mut World) {
     let tick = world
         .get_resource::<crate::runtime::FrameTime>()
         .map_or(0, |time| time.fixed_tick);
+    route_slide_sounds(world, tick);
     let step = world
         .get_resource::<crate::runtime::FrameTime>()
         .map_or(1.0 / 60.0, |time| time.fixed_delta.as_secs_f64());

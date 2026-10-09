@@ -88,7 +88,7 @@ command takes `--json` for output a program can read.
   `Kinematic`) and `collider`. A `sensor` collider only reports touches.
 - Gameplay components need no code: `rusting.counter`, `rusting.pickup`,
   `rusting.hud` (text with `{counter}` placeholders), `rusting.tween`,
-  `rusting.sound_cue`, `rusting.reverb_zone`, `rusting.burst_emitter`,
+  `rusting.sound_cue`, `rusting.slide_sound`, `rusting.reverb_zone`, `rusting.burst_emitter`,
   `rusting.player_controller`, `rusting.joint`, `rusting.camera_shake`
   (shake a camera with `scene.add_trauma("Camera", 0.5)`), `rusting.squash` (wobble a visible
   child with `scene.squash("Body", 0.4)`), `rusting.flash` (tint an object

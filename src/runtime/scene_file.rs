@@ -1100,6 +1100,8 @@ pub const CAMERA_SHAKE_COMPONENT: &str = "rusting.camera_shake";
 pub const SOUND_CUE_COMPONENT: &str = "rusting.sound_cue";
 /// Registry name of the built-in listener reverb zone.
 pub const REVERB_ZONE_COMPONENT: &str = "rusting.reverb_zone";
+/// Registry name of the built-in slide and roll sound loop.
+pub const SLIDE_SOUND_COMPONENT: &str = "rusting.slide_sound";
 /// Registry name of the built-in particle burst emitter.
 pub const BURST_EMITTER_COMPONENT: &str = "rusting.burst_emitter";
 /// Registry name of the built-in particle emitter.
@@ -1195,6 +1197,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::ReverbZone>(REVERB_ZONE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::SlideSound>(SLIDE_SOUND_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::CameraShake>(CAMERA_SHAKE_COMPONENT)

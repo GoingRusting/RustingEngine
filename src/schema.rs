@@ -909,6 +909,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true, "caption": "[thud]", "full_volume_speed": 6.0, "on_gpu_event": "hit"}),
     },
     ComponentSection {
+        key: "rusting.slide_sound",
+        summary: "Loops clip on this body while it slides or rolls against another collider, louder the faster it moves across the contact (full volume at full_volume_speed m/s, silent under min_speed). CPU bodies only. The loop follows the body like an attached sound.",
+        gpu: NO_GPU,
+        example: || json!({"clip": "sounds/scrape.ogg", "volume": 0.8, "full_volume_speed": 4.0, "min_speed": 0.2, "bus": "world"}),
+    },
+    ComponentSection {
         key: "rusting.reverb_zone",
         summary: "Room reverb on a bus while the listener (the active camera, or set_listener) is inside this entity's collider; give it a sensor collider. Leaving fades the reverb back out over fade seconds. Overlapping zones: the first in entity order wins. A zone owns the reverb on its bus, so do not also set_bus_effect a reverb there.",
         gpu: NO_GPU,

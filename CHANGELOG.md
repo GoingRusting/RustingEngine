@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.slide_sound` loops a scrape or roll sound while a body slides or rolls.
 - `BusEffect::Compressor` compresses or limits a bus.
 - `BusEffect::Eq` sets a bus's low, mid and high band gains.
 - `SoundCue::on_gpu_event` plays a cue when the GPU solver emits the named physics event for its body.
