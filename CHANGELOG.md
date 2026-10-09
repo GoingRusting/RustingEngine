@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lint` warns `LINT_MISSING_CLASS` on a literal `in_class` name nothing puts objects in, with close class names.
 - Agent benchmark task `arena-cooldown`: a feature request on the top-down template.
 - Agent benchmark task `puzzle-box-stack`: a bug fix on the puzzle template.
 - Agent benchmark task `walker-new-game`: a new game from the empty template.

@@ -2137,7 +2137,9 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
 /// `scene.object("Playr")`, that no entity in any scene or prefab under
 /// scenes/ or assets/ has, and a `LINT_MISSING_ACTION` per literal action,
 /// such as `scene.pressed("jmup")`, that no `rusting.input_action` there,
-/// `rebind` call or built-in player action defines, and a
+/// `rebind` call or built-in player action defines, a `LINT_MISSING_CLASS`
+/// per literal class in `in_class`, such as `scene.in_class("enemys")`,
+/// that no entity has and no other literal in game code names, and a
 /// `LINT_MISSING_FILE` per literal scene path or sound clip, such as
 /// `scene.load_scene("scenes/levl_2.rscene")`, with no file there (a
 /// built-in `sfx:` clip needs none). Names built at run time
@@ -2164,6 +2166,7 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
         ".spawn_copy(\"",
         ".set_look(\"",
     ];
+    const CLASS_CALL: &str = ".in_class(\"";
     const ACTION_CALLS: [&str; 4] =
         [".pressed(\"", ".held(\"", ".press_tick(\"", ".binding(\""];
     // Scene paths are relative to the project, clips to `assets/`.
@@ -2230,6 +2233,28 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
         );
         found
     };
+    // A class is known when a scene entity has it or a literal outside an
+    // `in_class` call names it (an `add_class` argument, a helper's class
+    // parameter), so only a name that appears in `in_class` alone warns.
+    let mut classes: BTreeSet<String> =
+        entities.iter().flat_map(|e| e.classes.clone()).collect();
+    let mut uses = std::collections::BTreeMap::<&str, i32>::new();
+    for line in texts.iter().flat_map(|(_, text)| text.lines()) {
+        for literal in line.split('"').skip(1).step_by(2) {
+            *uses.entry(literal).or_default() += 1;
+        }
+        for (start, _) in line.match_indices(CLASS_CALL) {
+            let rest = &line[start + CLASS_CALL.len()..];
+            if let Some((name, _)) = rest.split_once('"') {
+                *uses.entry(name).or_default() -= 1;
+            }
+        }
+    }
+    classes.extend(
+        uses.into_iter()
+            .filter(|&(_, count)| count > 0)
+            .map(|(name, _)| name.to_owned()),
+    );
     for line in texts.iter().flat_map(|(_, text)| text.lines()) {
         if line.contains("spawn") {
             names.extend(literals(line));
@@ -2253,6 +2278,12 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
                     &actions,
                     "LINT_MISSING_ACTION",
                     "no input action is named",
+                ),
+                (
+                    &[CLASS_CALL][..],
+                    &classes,
+                    "LINT_MISSING_CLASS",
+                    "no object or code puts anything in class",
                 ),
             ];
             for (calls, known, code, what) in checks {
@@ -6588,13 +6619,13 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
     }
 
     #[test]
-    fn lint_flags_object_and_action_names_nothing_defines() {
+    fn lint_flags_names_nothing_defines() {
         let root = std::env::temp_dir()
             .join(format!("rusting-code-names-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("scenes")).unwrap();
         let scene = json!({"format_version": 7, "name": "Main", "entities": [
-            {"id": uuid::Uuid::new_v4(), "name": "Player"},
+            {"id": uuid::Uuid::new_v4(), "name": "Player", "classes": ["hero"]},
             {"id": uuid::Uuid::new_v4(), "components": {"rusting.input_action":
                 "{\"action\":\"jump\",\"inputs\":[\"Space\"]}"}}]});
         std::fs::write(root.join("scenes/main.rscene"), scene.to_string())
@@ -6618,7 +6649,12 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              scene.load_scene(\"scenes/main.rscene\");\n\
              scene.load_scene(\"scenes/mian.rscene\");\n\
              scene.play_sound(\"sfx:coin 7\", 1.0);\n\
-             scene.play_sound(\"hit.wav\", 1.0);\n",
+             scene.play_sound(\"hit.wav\", 1.0);\n\
+             scene.in_class(\"hero\");\n\
+             scene.add_class(&shot, \"shot\");\n\
+             for shot in scene.in_class(\"shot\") {}\n\
+             spawn(scene, \"Enemy Template\", &name, \"enemy\", at);\n\
+             for enemy in scene.in_class(\"enemys\") {}\n",
         )
         .unwrap();
         let found = lint_missing_names(&root);
@@ -6630,8 +6666,9 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 "src/main.rs:11: no input action is named `jmup`; did you mean `jump`?",
                 "src/main.rs:16: no file `scenes/mian.rscene` under the project; did you mean `scenes/main.rscene`?",
                 "src/main.rs:18: no file `hit.wav` under assets/",
+                "src/main.rs:23: no object or code puts anything in class `enemys`; did you mean `enemy`?",
             ],
-            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene and a built-in clip pass"
+            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene, a built-in clip, a scene class, an added class and a helper's class pass"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
