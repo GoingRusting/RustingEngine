@@ -1,0 +1,26 @@
+{
+  "name": "song: thirteen notes on the beat, one late, and two let past (one under a press in the wrong lane) clear the song with 1350 points",
+  "ticks": 582,
+  "steps": [
+    {"tick": 118, "tap": "lane_1"},
+    {"tick": 147, "tap": "lane_2"},
+    {"tick": 176, "tap": "lane_3"},
+    {"tick": 206, "tap": "lane_2"},
+    {"tick": 235, "tap": "lane_1"},
+    {"tick": 265, "tap": "lane_2"},
+    {"tick": 280, "expect": {"counter": "misses", "equals": 1}},
+    {"tick": 280, "expect": {"counter": "score", "equals": 500}},
+    {"tick": 294, "tap": "lane_3"},
+    {"tick": 324, "tap": "lane_3"},
+    {"tick": 353, "tap": "lane_2"},
+    {"tick": 382, "tap": "lane_1"},
+    {"tick": 441, "tap": "lane_3"},
+    {"tick": 477, "tap": "lane_1"},
+    {"tick": 500, "tap": "lane_3"},
+    {"tick": 529, "tap": "lane_2"},
+    {"tick": 559, "tap": "lane_2"},
+    {"tick": 580, "expect": {"counter": "score", "equals": 1350}},
+    {"tick": 580, "expect": {"counter": "misses", "equals": 2}},
+    {"tick": 580, "expect": {"counter": "played", "equals": 16}}
+  ]
+}

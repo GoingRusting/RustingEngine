@@ -466,11 +466,14 @@ pub enum ProjectTemplate {
     /// Duel, a card battle with code: play Strike, Guard and Heal cards from
     /// a seeded deck against a foe whose next attack shows in advance.
     CardGame,
+    /// Beat, a rhythm game with code: hit notes in three lanes as they
+    /// cross the line, scored by timing.
+    Rhythm,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -484,6 +487,7 @@ impl ProjectTemplate {
         Self::TowerDefense,
         Self::Roguelike,
         Self::CardGame,
+        Self::Rhythm,
         Self::Empty,
     ];
 
@@ -505,6 +509,7 @@ impl ProjectTemplate {
             Self::TowerDefense => "tower-defense",
             Self::Roguelike => "roguelike",
             Self::CardGame => "card-game",
+            Self::Rhythm => "rhythm",
         }
     }
 
@@ -526,6 +531,7 @@ impl ProjectTemplate {
             Self::TowerDefense => "Outpost (tower defense)",
             Self::Roguelike => "Crypt (roguelike)",
             Self::CardGame => "Duel (card game)",
+            Self::Rhythm => "Beat (rhythm)",
         }
     }
 
@@ -759,6 +765,7 @@ fn write_project_template(
                 include_str!("templates/roguelike.rs")
             }
             ProjectTemplate::CardGame => include_str!("templates/card_game.rs"),
+            ProjectTemplate::Rhythm => include_str!("templates/rhythm.rs"),
             _ => default_game_source(),
         },
     )?;
@@ -785,6 +792,9 @@ fn write_project_template(
         )),
         ProjectTemplate::CardGame => {
             Some(("duel.json", include_str!("templates/card_game_duel.json")))
+        }
+        ProjectTemplate::Rhythm => {
+            Some(("song.json", include_str!("templates/rhythm_song.json")))
         }
         _ => None,
     };
@@ -824,6 +834,7 @@ fn write_project_template(
             ProjectTemplate::TowerDefense => tower_defense_scene(name),
             ProjectTemplate::Roguelike => roguelike_scene(name),
             ProjectTemplate::CardGame => card_game_scene(name),
+            ProjectTemplate::Rhythm => rhythm_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1821,6 +1832,127 @@ fn twin_stick_scene(name: &str) -> SceneDocument {
     json_scene(name, entities)
 }
 
+/// Beat: three lanes, a hit line with a pad per lane, a hidden note
+/// template, and the `score`, `misses` and `played` counters. The game
+/// code, `src/templates/rhythm.rs`, holds the chart.
+fn rhythm_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    let mut entities = vec![
+        mesh_object(
+            "Ground",
+            None,
+            "Cube",
+            [0.1, 0.1, 0.14],
+            [0.0, -0.2, -8.0],
+            [12.0, 0.2, 28.0],
+        ),
+        mesh_object(
+            "Hit Line",
+            None,
+            "Cube",
+            [0.9, 0.9, 0.95],
+            [0.0, 0.02, 2.0],
+            [5.0, 0.04, 0.15],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.3, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 5.0, 7.0], "rotation": [-0.45, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    let colors = [[0.95, 0.35, 0.4], [0.4, 0.85, 0.45], [0.35, 0.55, 0.95]];
+    for (lane, color) in colors.into_iter().enumerate() {
+        let x = (lane as f32 - 1.0) * 1.5;
+        let n = lane + 1;
+        entities.push(mesh_object(
+            &format!("Lane {n}"),
+            None,
+            "Cube",
+            [0.2, 0.2, 0.26],
+            [x, -0.05, -9.0],
+            [1.2, 0.1, 24.0],
+        ));
+        entities.push(mesh_object(
+            &format!("Pad {n}"),
+            None,
+            "Cube",
+            color,
+            [x, 0.0, 2.0],
+            [1.2, 0.08, 0.6],
+        ));
+    }
+    let mut note = mesh_object(
+        "Note Template",
+        None,
+        "Cube",
+        [1.0, 0.95, 0.8],
+        [0.0, -20.0, 0.0],
+        [1.0, 0.3, 0.4],
+    );
+    note["visible"] = json!(false);
+    entities.push(note);
+    let counter = |name: &str, target| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target,
+        })
+    };
+    let hud = |name: &str, text: &str, anchor, size, requires: Option<&str>| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "components": {"rusting.hud": hud_component(text, anchor, size, requires)}
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Score",
+            "components": {
+                "rusting.counter": counter("score", None),
+                "rusting.hud": hud_component("Score {score}", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Misses",
+            "components": {
+                "rusting.counter": counter("misses", Some(8)),
+                "rusting.hud": hud_component("Misses {misses}/8", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Played",
+            "components": {"rusting.counter": counter("played", Some(16))}
+        }),
+        hud("Judgement", "", HudAnchor::Top, 40.0, None),
+        hud("Won", "Song clear! R plays again.", HudAnchor::Center, 48.0, Some("played")),
+        hud("Lost", "Game over. R tries again.", HudAnchor::Center, 48.0, Some("misses")),
+        hud("Help", "D, F and J (or the arrows) hit a lane as its note crosses the line.", HudAnchor::BottomLeft, 20.0, None),
+    ]);
+    for (action, inputs) in [
+        ("lane_1", &["KeyD", "ArrowLeft", "PadWest"][..]),
+        ("lane_2", &["KeyF", "ArrowDown", "PadSouth"]),
+        ("lane_3", &["KeyJ", "ArrowRight", "PadEast"]),
+        ("restart", &["KeyR", "PadStart"]),
+    ] {
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": null, "name": format!("Action {action}"),
+            "components": {"rusting.input_action": component(&json!({"action": action, "inputs": inputs}))}
+        }));
+    }
+    json_scene(name, entities)
+}
+
 /// Duel: a table, the foe, three card slots with a HUD button each, and
 /// the `foe_damage`, `damage` and `intent` counters. The game code,
 /// `src/templates/card_game.rs`, deals the cards.
@@ -2648,6 +2780,10 @@ mod puzzle_template;
 mod racing_template;
 #[cfg(test)]
 #[allow(dead_code)]
+#[path = "templates/rhythm.rs"]
+mod rhythm_template;
+#[cfg(test)]
+#[allow(dead_code)]
 #[path = "templates/roguelike.rs"]
 mod roguelike_template;
 #[cfg(test)]
@@ -3394,6 +3530,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/duel.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_rhythm_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-rhythm-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Beat", ProjectTemplate::Rhythm)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/rhythm.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::rhythm_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/song.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();

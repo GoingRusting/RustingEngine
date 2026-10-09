@@ -43,6 +43,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting new --template tower-defense` creates Outpost, a tower defense game with code: build towers on four pads with keys 1 to 4, earn gold from defeated enemies, and hold the base against a wave of ten. Its `tests/defend.json` plays the wave.
 - `rusting new --template roguelike` creates Crypt, a turn-based roguelike with code: each of three floors is laid out from the run's seed, walking into an enemy defeats it, and enemies next to you strike. Its `tests/descend.json` plays a run on seed 1.
 - `rusting new --template card-game` creates Duel, a card battle with code: play Strike, Guard and Heal cards from a seeded deck with keys 1 to 3 or the card buttons, against a foe whose next attack shows in advance. Its `tests/duel.json` plays a duel on seed 1.
+- `rusting new --template rhythm` creates Beat, a rhythm game with code: hit notes in three lanes with D, F and J as they cross the line, scored PERFECT or GOOD by timing. Its `tests/song.json` plays the song.
 - `GameScene::add_class(name, class)` puts an object, such as a copy spawned from a classless template, in a class.
 - `rusting new --template racing` creates Circuit, a racing game with game code: drive three laps through the checkpoints in order; off the road the car is slow. Its `tests/lap.json` drives a lap.
 - `rusting new --template top-down` creates Arena, a top-down action game with game code: move, attack the enemies that chase you, and defeat all three before taking three hits. Its `tests/fight.json` plays a winning round.
