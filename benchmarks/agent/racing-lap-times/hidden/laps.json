@@ -1,0 +1,233 @@
+{
+ "name": "laps: a 1.3 s lap, a 0.7 s lap and a 4 s lap give the right last and best lap times",
+ "ticks": 370,
+ "steps": [
+  {
+   "tick": 5,
+   "expect": {
+    "counter": "lap_ms",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 5,
+   "expect": {
+    "counter": "best_ms",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 20,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 40,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     -10.0
+    ]
+   }
+  },
+  {
+   "tick": 60,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     -16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 80,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     10.0
+    ]
+   }
+  },
+  {
+   "tick": 85,
+   "expect": {
+    "counter": "laps",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 85,
+   "expect": {
+    "counter": "lap_ms",
+    "equals": 1333,
+    "tolerance": 50
+   }
+  },
+  {
+   "tick": 85,
+   "expect": {
+    "counter": "best_ms",
+    "equals": 1333,
+    "tolerance": 50
+   }
+  },
+  {
+   "tick": 90,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 100,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     -10.0
+    ]
+   }
+  },
+  {
+   "tick": 110,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     -16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 120,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     10.0
+    ]
+   }
+  },
+  {
+   "tick": 125,
+   "expect": {
+    "counter": "laps",
+    "equals": 2
+   }
+  },
+  {
+   "tick": 125,
+   "expect": {
+    "counter": "lap_ms",
+    "equals": 667,
+    "tolerance": 50
+   }
+  },
+  {
+   "tick": 125,
+   "expect": {
+    "counter": "best_ms",
+    "equals": 667,
+    "tolerance": 50
+   }
+  },
+  {
+   "tick": 180,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 240,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     -10.0
+    ]
+   }
+  },
+  {
+   "tick": 300,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     -16.0,
+     0.3,
+     0.0
+    ]
+   }
+  },
+  {
+   "tick": 360,
+   "set": {
+    "entity": "Car",
+    "path": "/transform/position",
+    "value": [
+     0.0,
+     0.3,
+     10.0
+    ]
+   }
+  },
+  {
+   "tick": 365,
+   "expect": {
+    "counter": "laps",
+    "equals": 3
+   }
+  },
+  {
+   "tick": 365,
+   "expect": {
+    "counter": "lap_ms",
+    "equals": 4000,
+    "tolerance": 50
+   }
+  },
+  {
+   "tick": 365,
+   "expect": {
+    "counter": "best_ms",
+    "equals": 667,
+    "tolerance": 50
+   }
+  }
+ ]
+}

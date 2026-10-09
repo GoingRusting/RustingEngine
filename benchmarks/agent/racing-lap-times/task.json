@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "racing",
+  "request": "Add lap times to this racing game. A counter named `lap_ms` holds the time of the last finished lap and a counter named `best_ms` the fastest finished lap so far, both in milliseconds of game time and both 0 until the first lap is done. The first lap is timed from the start of the race, and each later lap from the moment the previous one finished. Show both times on screen. Keep everything else and the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        if next + 1 == checkpoints {\n            scene.set_counter(\"checkpoint\", 0);\n            scene.add_to_counter(\"laps\", 1);\n",
+      "replace": "        if next + 1 == checkpoints {\n            scene.set_counter(\"checkpoint\", 0);\n            scene.add_to_counter(\"laps\", 1);\n            // Lap times in ms of fixed ticks since the last lap ended.\n            let now = time.fixed_tick as i32 * 1000 / 60;\n            let lap = now - scene.counter_or(\"lap_start_ms\", 0);\n            scene.set_counter(\"lap_start_ms\", now);\n            scene.set_counter(\"lap_ms\", lap);\n            let best = scene.counter_or(\"best_ms\", 0);\n            if best == 0 || lap < best {\n                scene.set_counter(\"best_ms\", lap);\n            }\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/racing_lap.json",
+    "hidden/laps.json"
+  ]
+}

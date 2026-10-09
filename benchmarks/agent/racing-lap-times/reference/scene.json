@@ -1,0 +1,8 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Lap Time",
+    "components": {"rusting.counter": {"name": "lap_ms"},
+      "rusting.hud": {"text": "Last lap {lap_ms} ms", "anchor": "TopRight"}}}},
+  {"op": "create", "entity": {"name": "Best Lap",
+    "components": {"rusting.counter": {"name": "best_ms"},
+      "rusting.hud": {"text": "Best lap {best_ms} ms", "anchor": "TopRight", "offset": [16.0, 52.0]}}}}
+]}
