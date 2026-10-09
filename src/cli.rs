@@ -2101,7 +2101,11 @@ pub fn lint_project(root: &Path) -> CliResult {
         Ok(document) => document,
         Err(result) => return result,
     };
-    let mut diagnostics = lint_scene(&document, &code_strings(&project.root));
+    let mut diagnostics = lint_scene_with_fill(
+        &document,
+        &code_strings(&project.root),
+        button_fill(&project.root),
+    );
     let mut files = Vec::new();
     rust_files(&project.root.join("src"), &mut files);
     let code: String = files
@@ -2803,23 +2807,49 @@ fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
     }
 }
 
-/// The WCAG 2 contrast ratio of HUD button text against the runtime's dark
-/// button fill, with the minimum for its size (4.5, or 3 from 24 px), when
-/// it falls short. Text with no button has the scene behind it, which only
-/// a rendered frame shows, so it is not judged.
+/// The runtime's button fill: egui's dark one, restyled by the project's
+/// `assets/ui/theme.json` when it has a readable one.
 #[cfg(feature = "ui")]
-fn button_contrast(
-    button: bool,
-    color: [f32; 4],
-    font_size: f32,
-) -> Option<(f32, f32)> {
-    let fill = egui::Visuals::dark()
+fn button_fill(root: &Path) -> [f32; 3] {
+    let mut style = egui::Style {
+        visuals: egui::Visuals::dark(),
+        ..egui::Style::default()
+    };
+    if let Some(theme) = std::fs::read(root.join("assets/ui/theme.json"))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<crate::runtime::UiTheme>(&bytes).ok()
+        })
+    {
+        theme.apply(&mut style);
+    }
+    let [r, g, b, _] = style
+        .visuals
         .widgets
         .inactive
         .weak_bg_fill
         .to_array()
         .map(|c| f32::from(c) / 255.0);
-    let ratio = contrast(color, [fill[0], fill[1], fill[2]]);
+    [r, g, b]
+}
+
+#[cfg(not(feature = "ui"))]
+fn button_fill(_: &Path) -> [f32; 3] {
+    [0.0; 3]
+}
+
+/// The WCAG 2 contrast ratio of HUD button text against the button `fill`,
+/// with the minimum for its size (4.5, or 3 from 24 px), when it falls
+/// short. Text with no button has the scene behind it, which only a
+/// rendered frame shows, so it is not judged.
+#[cfg(feature = "ui")]
+fn button_contrast(
+    button: bool,
+    color: [f32; 4],
+    font_size: f32,
+    fill: [f32; 3],
+) -> Option<(f32, f32)> {
+    let ratio = contrast(color, fill);
     let minimum = minimum_contrast(font_size);
     (button && ratio < minimum).then_some((ratio, minimum))
 }
@@ -2906,7 +2936,12 @@ fn text_contrast_warnings(
 }
 
 #[cfg(not(feature = "ui"))]
-fn button_contrast(_: bool, _: [f32; 4], _: f32) -> Option<(f32, f32)> {
+fn button_contrast(
+    _: bool,
+    _: [f32; 4],
+    _: f32,
+    _: [f32; 3],
+) -> Option<(f32, f32)> {
     None
 }
 
@@ -2919,9 +2954,21 @@ fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
 /// The `LINT_*` warnings of one scene document.
 /// `named_in_code` are the names game code mentions; walls with those names
 /// may be doors, so the reachability check walks through them.
+#[cfg(test)]
 fn lint_scene(
     document: &SceneDocument,
     named_in_code: &BTreeSet<String>,
+) -> Vec<Diagnostic> {
+    let unthemed = button_fill(Path::new("no-project"));
+    lint_scene_with_fill(document, named_in_code, unthemed)
+}
+
+/// The `LINT_*` warnings of one scene document, judging button text
+/// against `button_fill`, the fill the project's UI theme gives buttons.
+fn lint_scene_with_fill(
+    document: &SceneDocument,
+    named_in_code: &BTreeSet<String>,
+    button_fill: [f32; 3],
 ) -> Vec<Diagnostic> {
     use crate::runtime::{
         ColliderShape, HudAnchor, HudElement, DEFAULT_PLAYER_SHAPE,
@@ -3174,9 +3221,12 @@ fn lint_scene(
                     ),
                 );
             }
-            if let Some((ratio, minimum)) =
-                button_contrast(hud.button, hud.color, hud.font_size)
-            {
+            if let Some((ratio, minimum)) = button_contrast(
+                hud.button,
+                hud.color,
+                hud.font_size,
+                button_fill,
+            ) {
                 warn(
                     "LINT_TEXT_CONTRAST",
                     index,
@@ -7098,6 +7148,28 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 ("LINT_TEXT_CONTRAST", "Mid Button".to_owned()),
             ]
         );
+        // A theme with light buttons makes the default white text the
+        // unreadable one.
+        let root = std::env::temp_dir()
+            .join(format!("rusting-theme-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("assets/ui")).unwrap();
+        std::fs::write(
+            root.join("assets/ui/theme.json"),
+            r#"{"button_fill": [0.9, 0.9, 0.9, 1.0]}"#,
+        )
+        .unwrap();
+        let themed: Vec<_> = lint_scene_with_fill(
+            &document,
+            &BTreeSet::new(),
+            button_fill(&root),
+        )
+        .into_iter()
+        .filter(|d| d.code == "LINT_TEXT_CONTRAST")
+        .map(|d| d.entity.unwrap().name.unwrap_or_default())
+        .collect();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(themed.contains(&"White Button".to_owned()), "{themed:?}");
+        assert!(!themed.contains(&"Grey Button".to_owned()), "{themed:?}");
     }
 
     #[test]

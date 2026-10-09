@@ -128,6 +128,32 @@ scene.set_exposure(1.8); // brighter, e.g. a CCTV feed; 1 is neutral
 - None of these are saved. Store them with `save_data` and set them again
   at startup.
 
+## Theme
+
+`assets/ui/theme.json` restyles HUD buttons and the menus game code draws
+with `scene.ui()`, the way a Godot theme resource does. Every field is
+optional; one left out keeps the default dark look. Colours are RGBA from
+0 to 1.
+
+```json
+{
+  "button_fill": [0.85, 0.75, 0.45, 1.0],
+  "button_hover_fill": [0.95, 0.85, 0.55, 1.0],
+  "button_pressed_fill": [0.7, 0.6, 0.3, 1.0],
+  "panel_fill": [0.08, 0.06, 0.05, 0.95],
+  "text_color": [0.1, 0.08, 0.05, 1.0],
+  "corner_radius": 6,
+  "button_padding": [12, 6]
+}
+```
+
+- The game reads the file when it starts. A misspelt field or a bad value
+  stops the start with the file and the field named.
+- A HUD element's `color` still sets its own text colour; `text_color`
+  colours menu widgets.
+- `rusting lint` judges HUD button text contrast against the theme's
+  `button_fill`, so light buttons need dark text.
+
 ## Scaling the HUD to the window
 
 By default the HUD is drawn at the desktop's DPI scale, so a bigger window

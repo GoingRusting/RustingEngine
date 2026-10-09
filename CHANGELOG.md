@@ -6,6 +6,9 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `assets/ui/theme.json` restyles HUD buttons and game menus: fills,
+  text colour, corner radius and button padding. `rusting lint` checks
+  button contrast against the theme's fill.
 - `project.json` `ui_base_size` lays the HUD out for a base screen size
   and scales it uniformly to fit any window, keeping its aspect ratio.
 - `rusting.hud` `follow` and `follow_offset` pin a HUD element over a named

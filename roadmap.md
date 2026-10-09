@@ -2592,7 +2592,16 @@ Depends on: Milestones 1, 3, and 9.
 - [ ] Layout containers: box, grid, margin, scroll, split, tab, and anchors/offsets for free placement.
 - [ ] Widgets: label, button, toggle, slider, text input, dropdown, list, tree, progress bar, image, and panel.
 - [ ] Text shaping with Unicode, bidirectional text, font fallback, SDF font rendering, and rich text markup.
-- [ ] Themes and styles editable as data assets.
+- [x] Themes and styles editable as data assets. `assets/ui/theme.json`
+  (`UiTheme`: button, hover, pressed and panel fills, text colour, corner
+  radius, button padding; unknown fields rejected) restyles the runtime UI
+  at start, and `rusting lint` judges button contrast against its fill.
+  Evidence: `runtime::ui::tests::a_theme_restyles_buttons_and_panels`,
+  `project_runner::tests::a_ui_theme_file_styles_the_runtime_ui` (a typo
+  fails the start naming the field) and
+  `cli::hint_tests::lint_measures_hud_text_that_runs_past_the_view` (light
+  theme flags white button text; mutation-checked against ignoring the
+  fill). Hot reload of the theme while the game runs is not done.
 - [ ] Focus navigation for keyboard and gamepad, and input routing between UI and gameplay.
 - [x] Data-bound HUD elements and world-space indicators. Data binding is
   the `{counter}`, `{state:}`, `{dialogue:}` and `{tr:}` placeholders

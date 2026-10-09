@@ -4278,6 +4278,7 @@ fn load_project_runtime<P: Plugin>(
         eprintln!("{warning}");
     }
     request_project_window(runtime.world_mut(), folder);
+    apply_ui_theme(runtime.world_mut(), folder)?;
     runtime.insert_resource(ProjectFolder(folder.to_path_buf()));
     apply_seed(
         runtime.world_mut(),
@@ -4329,6 +4330,28 @@ fn request_project_window(world: &mut World, folder: &Path) {
     if let Ok(size) = serde_json::from_value(project["window"].clone()) {
         GameScene { world }.set_window_size(size);
     }
+}
+
+/// Styles HUD buttons and menus from `assets/ui/theme.json`, if the
+/// project has one. A build without the `ui` feature draws no UI to style.
+#[cfg(feature = "ui")]
+fn apply_ui_theme(world: &mut World, folder: &Path) -> Result<(), String> {
+    let path = folder.join("assets/ui/theme.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(());
+    };
+    let theme: crate::runtime::UiTheme = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if let Some(mut ui) = world.get_resource_mut::<crate::runtime::RuntimeUi>()
+    {
+        ui.set_theme(&theme);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "ui"))]
+fn apply_ui_theme(_: &mut World, _: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// A warning when `scene_path` is the project's cooked main scene and the
@@ -5732,6 +5755,34 @@ macro_rules! rusting_game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn a_ui_theme_file_styles_the_runtime_ui() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-theme-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(folder.join("assets/ui")).unwrap();
+        let mut world = World::new();
+        world.insert_resource(crate::runtime::RuntimeUi::default());
+        apply_ui_theme(&mut world, &folder).unwrap();
+        let path = folder.join("assets/ui/theme.json");
+        std::fs::write(&path, r#"{"button_padding": [20, 10]}"#).unwrap();
+        apply_ui_theme(&mut world, &folder).unwrap();
+        let padding = world
+            .resource::<crate::runtime::RuntimeUi>()
+            .context()
+            .style()
+            .spacing
+            .button_padding;
+        assert_eq!(padding, egui::vec2(20.0, 10.0));
+        // A typo fails the start with the file and field named.
+        std::fs::write(&path, r#"{"buton_padding": [20, 10]}"#).unwrap();
+        let error = apply_ui_theme(&mut world, &folder).unwrap_err();
+        assert!(
+            error.contains("theme.json") && error.contains("buton_padding")
+        );
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn project_json_window_size_is_asked_for() {

@@ -113,7 +113,7 @@ pub use state_hash::*;
 pub use time::{FrameTime, RandomSeed, TimeControl};
 pub use two_d::*;
 #[cfg(feature = "ui")]
-pub use ui::RuntimeUi;
+pub use ui::{RuntimeUi, UiTheme};
 pub use water::{WaterBody, WaterMesh};
 pub use waypoints::WaypointGraph;
 

@@ -22,6 +22,7 @@
 
 use bevy_ecs::prelude::Resource;
 use rusting_core::input::{KeyCode, MouseButton, PadButton, RuntimeInput};
+use serde::Deserialize;
 
 #[derive(Resource)]
 pub struct RuntimeUi {
@@ -87,6 +88,14 @@ impl RuntimeUi {
     /// then converts with the new scale.
     pub fn fit_window(&mut self, physical: [f32; 2], native: f32) {
         self.context.set_zoom_factor(self.zoom(physical, native));
+    }
+
+    /// Restyles buttons and menus from egui's dark look.
+    pub fn set_theme(&mut self, theme: &UiTheme) {
+        let mut style = (*self.context.style()).clone();
+        style.visuals = egui::Visuals::dark();
+        theme.apply(&mut style);
+        self.context.set_style(style);
     }
 
     /// Sets the input the next pass reads.
@@ -216,6 +225,67 @@ impl RuntimeUi {
             output.textures_delta = textures;
         }
         self.output = Some(output);
+    }
+}
+
+/// The look of HUD buttons and game menus, read from
+/// `assets/ui/theme.json` when the game starts. Colours are RGBA from 0 to
+/// 1; a field left out keeps egui's dark look.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiTheme {
+    pub button_fill: Option<[f32; 4]>,
+    pub button_hover_fill: Option<[f32; 4]>,
+    pub button_pressed_fill: Option<[f32; 4]>,
+    /// Behind panels and windows that game menus open.
+    pub panel_fill: Option<[f32; 4]>,
+    /// Text of menu widgets; a HUD element's `color` still wins.
+    pub text_color: Option<[f32; 4]>,
+    /// Corner rounding of buttons and panels, in points.
+    pub corner_radius: Option<f32>,
+    /// Space between a button's text and its edge, `[x, y]` in points.
+    pub button_padding: Option<[f32; 2]>,
+}
+
+impl UiTheme {
+    pub fn apply(&self, style: &mut egui::Style) {
+        let color = |c: [f32; 4]| {
+            let [r, g, b, a] = c.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+        };
+        let visuals = &mut style.visuals;
+        for (fill, widget) in [
+            (self.button_fill, &mut visuals.widgets.inactive),
+            (self.button_hover_fill, &mut visuals.widgets.hovered),
+            (self.button_pressed_fill, &mut visuals.widgets.active),
+        ] {
+            if let Some(fill) = fill {
+                widget.bg_fill = color(fill);
+                widget.weak_bg_fill = color(fill);
+            }
+        }
+        if let Some(fill) = self.panel_fill {
+            visuals.panel_fill = color(fill);
+            visuals.window_fill = color(fill);
+        }
+        visuals.override_text_color = self.text_color.map(color);
+        if let Some(radius) = self.corner_radius {
+            let radius =
+                egui::CornerRadius::same(radius.clamp(0.0, 255.0) as u8);
+            visuals.window_corner_radius = radius;
+            for widget in [
+                &mut visuals.widgets.noninteractive,
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.corner_radius = radius;
+            }
+        }
+        if let Some([x, y]) = self.button_padding {
+            style.spacing.button_padding = egui::vec2(x, y);
+        }
     }
 }
 
@@ -406,6 +476,34 @@ mod tests {
         assert!((wide[0] - large[0]).abs() < 1.0, "{wide:?} {large:?}");
         // No base size: points are pixels at any size.
         assert_eq!(label_at(None, [1280.0, 720.0]), small);
+    }
+
+    #[test]
+    fn a_theme_restyles_buttons_and_panels() {
+        let theme: UiTheme = serde_json::from_str(
+            r#"{"button_fill": [1, 0, 0, 1], "panel_fill": [0, 0, 1, 1],
+                "text_color": [0, 1, 0, 1], "corner_radius": 8,
+                "button_padding": [12, 6]}"#,
+        )
+        .unwrap();
+        let mut ui = RuntimeUi::default();
+        ui.set_theme(&theme);
+        let style = ui.context().style();
+        let visuals = &style.visuals;
+        assert_eq!(visuals.widgets.inactive.weak_bg_fill, egui::Color32::RED);
+        assert_eq!(visuals.panel_fill, egui::Color32::BLUE);
+        assert_eq!(visuals.override_text_color, Some(egui::Color32::GREEN));
+        assert_eq!(visuals.widgets.hovered.corner_radius.nw, 8);
+        assert_eq!(style.spacing.button_padding, egui::vec2(12.0, 6.0));
+        // Unset fields keep the dark look.
+        assert_eq!(
+            visuals.widgets.hovered.weak_bg_fill,
+            egui::Visuals::dark().widgets.hovered.weak_bg_fill
+        );
+        assert!(serde_json::from_str::<UiTheme>(
+            r#"{"buton_fill": [1, 1, 1, 1]}"#
+        )
+        .is_err());
     }
 
     #[test]
