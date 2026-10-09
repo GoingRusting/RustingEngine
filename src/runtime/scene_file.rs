@@ -2053,7 +2053,14 @@ fn write_scene_folder(folder: &Path, bytes: &[u8]) -> std::io::Result<()> {
         }
         write_atomic(path, bytes)
     };
-    std::fs::create_dir_all(folder.join("entities"))?;
+    let entities_folder = folder.join("entities");
+    // A linked `entities` would let the cleanup below delete files elsewhere.
+    if std::fs::symlink_metadata(&entities_folder)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err(invalid("a scene's `entities` folder may not be a link"));
+    }
+    std::fs::create_dir_all(&entities_folder)?;
     let mut ids = Vec::new();
     for entity in &entities {
         let id = entity
@@ -2072,10 +2079,16 @@ fn write_scene_folder(folder: &Path, bytes: &[u8]) -> std::io::Result<()> {
         &folder.join("scene.json"),
         &serde_json::to_vec_pretty(&document)?,
     )?;
-    for entry in std::fs::read_dir(folder.join("entities"))? {
+    for entry in std::fs::read_dir(&entities_folder)? {
         let file = entry?.path();
-        let gone = file.extension().is_some_and(|ext| ext == "json")
-            && !ids.iter().any(|id| entity_file(folder, *id) == file);
+        // Only entity files this form writes: `<uuid>.json`.
+        let entity = file.extension().is_some_and(|ext| ext == "json")
+            && file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| Uuid::parse_str(stem).is_ok());
+        let gone =
+            entity && !ids.iter().any(|id| entity_file(folder, *id) == file);
         if gone {
             super::lease::check_write(&file)?;
             let before = super::journal::active()

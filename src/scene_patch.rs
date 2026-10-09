@@ -1605,5 +1605,20 @@ mod tests {
         let document = crate::runtime::read_scene_document(&path).unwrap();
         assert_eq!(document.entities.len(), 1);
         assert_eq!(document.entities[0].name.as_deref(), Some("Box"));
+
+        // A linked `entities` folder is refused, so a write never deletes
+        // files outside the scene.
+        #[cfg(unix)]
+        {
+            let elsewhere = path.with_file_name("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            let bystander = elsewhere.join(format!("{LAMP}.json"));
+            std::fs::write(&bystander, "{}").unwrap();
+            std::fs::remove_dir_all(path.join("entities")).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, path.join("entities"))
+                .unwrap();
+            assert!(write_atomic(&path, &current).is_err());
+            assert!(bystander.exists());
+        }
     }
 }
