@@ -2334,6 +2334,42 @@ fn state_machines_follow_timed_and_counter_guarded_transitions() {
 }
 
 #[test]
+fn state_transitions_can_wait_for_a_contact() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let plate = cpu_body(world, [0.0; 3], UNIT_BOX, RigidBodyKind::Fixed);
+    world.get_mut::<Collider>(plate).unwrap().sensor = true;
+    world.entity_mut(plate).insert(ObjectState {
+        state: "up".into(),
+        transitions: vec![StateTransition {
+            to: "down".into(),
+            touching: "Crate".into(),
+            ..StateTransition::default()
+        }],
+        ..ObjectState::default()
+    });
+    let wall =
+        cpu_body(world, [0.5, 0.0, 0.0], UNIT_BOX, RigidBodyKind::Kinematic);
+    world.entity_mut(wall).insert(Name("Wall".into()));
+    let state = |app: &App| {
+        app.world().get::<ObjectState>(plate).unwrap().state.clone()
+    };
+    run_fixed_steps(&mut app, 3);
+    assert_eq!(state(&app), "up");
+    let crate_ = cpu_body(
+        app.world_mut(),
+        [-0.5, 0.0, 0.0],
+        UNIT_BOX,
+        RigidBodyKind::Kinematic,
+    );
+    app.world_mut()
+        .entity_mut(crate_)
+        .insert(Name("Crate".into()));
+    run_fixed_steps(&mut app, 2);
+    assert_eq!(state(&app), "down");
+}
+
+#[test]
 fn state_transitions_can_wait_for_a_held_input_action() {
     let mut app = App::new();
     let door = app.spawn(ObjectState {

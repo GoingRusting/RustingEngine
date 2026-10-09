@@ -724,6 +724,7 @@ crate::reflect! {
         counter: String { unit: "counter name", doc: "empty means no counter guard" },
         at_least: i32 { doc: "the counter's value must reach this" },
         held: String { unit: "input action", doc: "must be held; empty for none" },
+        touching: String { unit: "object name", doc: "must be touched; empty for none" },
         then_counter: String { unit: "counter name", doc: "taking the transition adds to it; empty for none" },
         then_add: i32 { doc: "added to then_counter" },
     }

@@ -696,7 +696,8 @@ pub struct ObjectState {
 /// One edge of an [`ObjectState`] machine. It applies when the object is
 /// in `from` (or `from` is empty), has been there `after_seconds`, and the
 /// counter called `counter` (when not empty) is at least `at_least`.
-/// When `held` is not empty, its input action must be held too.
+/// When `held` is not empty, its input action must be held too, and when
+/// `touching` is not empty, the object must touch an object of that name.
 /// Taking it adds `then_add` to the counter `then_counter` (when not
 /// empty), creating the counter if needed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -708,6 +709,7 @@ pub struct StateTransition {
     pub counter: String,
     pub at_least: i32,
     pub held: String,
+    pub touching: String,
     pub then_counter: String,
     pub then_add: i32,
 }
@@ -719,11 +721,30 @@ pub struct StateTransition {
 pub fn run_state_machines(
     mut commands: Commands,
     time: Res<FrameTime>,
-    mut machines: Query<&mut ObjectState>,
+    mut machines: Query<(Entity, &mut ObjectState)>,
     mut counters: Query<(&mut Counter, Option<&SceneId>)>,
-    actions: Option<Res<super::ActionMap>>,
-    input: Option<Res<super::RuntimeInput>>,
+    (actions, input): (
+        Option<Res<super::ActionMap>>,
+        Option<Res<super::RuntimeInput>>,
+    ),
+    physics: Option<Res<PhysicsWorld>>,
+    names: Query<&super::Name>,
 ) {
+    let touching = |entity: Entity, name: &str| {
+        name.is_empty()
+            || physics.as_ref().is_some_and(|physics| {
+                physics.contacts().iter().any(|contact| {
+                    let other = if contact.a == entity {
+                        contact.b
+                    } else if contact.b == entity {
+                        contact.a
+                    } else {
+                        return false;
+                    };
+                    names.get(other).is_ok_and(|other| other.0 == name)
+                })
+            })
+    };
     let held = |action: &str| {
         action.is_empty()
             || actions
@@ -733,7 +754,7 @@ pub fn run_state_machines(
     };
     let mut adds = std::collections::BTreeMap::<String, i32>::new();
     let delta = time.fixed_delta.as_secs_f64();
-    for mut machine in &mut machines {
+    for (entity, mut machine) in &mut machines {
         let elapsed =
             time.fixed_tick.saturating_sub(machine.since_tick) as f64 * delta;
         let next = machine.transitions.iter().find(|edge| {
@@ -741,6 +762,7 @@ pub fn run_state_machines(
                 && edge.to != machine.state
                 && elapsed + 1e-9 >= f64::from(edge.after_seconds)
                 && held(&edge.held)
+                && touching(entity, &edge.touching)
                 && (edge.counter.is_empty()
                     || find_counter(counters.iter(), &edge.counter)
                         .is_some_and(|counter| counter.value >= edge.at_least))
