@@ -2020,6 +2020,7 @@ pub fn lint_project(root: &Path) -> CliResult {
         .filter_map(|file| std::fs::read_to_string(file).ok())
         .collect();
     diagnostics.extend(lint_no_ending(&document, &code));
+    diagnostics.extend(lint_missing_objects(&project.root));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
@@ -2064,6 +2065,108 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
         entity: Some(EntityRef::of(entity)),
         ..Diagnostic::default()
     })
+}
+
+/// A `LINT_MISSING_OBJECT` per literal object name in game code, such as
+/// `scene.object("Playr")`, that no entity in any scene or prefab under
+/// scenes/ or assets/ has. Names built at run time are not checked, and a
+/// literal on a line that spawns something may be the spawned name.
+fn lint_missing_objects(root: &Path) -> Vec<Diagnostic> {
+    const CALLS: [&str; 18] = [
+        ".object(\"",
+        ".despawn(\"",
+        ".set_visible(\"",
+        ".set_color(\"",
+        ".set_emissive(\"",
+        ".flash(\"",
+        ".squash(\"",
+        ".add_trauma(\"",
+        ".set_hud(\"",
+        ".set_active_camera(\"",
+        ".set_linear_velocity(\"",
+        ".reset_body(\"",
+        ".add_class(\"",
+        ".play_animation(\"",
+        ".crossfade(\"",
+        ".trigger(\"",
+        ".spawn_copy(\"",
+        ".set_look(\"",
+    ];
+    let mut scene_files = Vec::new();
+    for folder in ["scenes", "assets"] {
+        scene_files_in(&root.join(folder), &mut scene_files);
+    }
+    let mut names: BTreeSet<String> = scene_files
+        .iter()
+        .filter_map(|path| read_scene(path).ok())
+        .flat_map(|document| {
+            document.entities.into_iter().filter_map(|e| e.name)
+        })
+        .collect();
+    let mut files = Vec::new();
+    rust_files(&root.join("src"), &mut files);
+    files.sort();
+    let texts: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .filter_map(|file| {
+            Some((file.clone(), std::fs::read_to_string(&file).ok()?))
+        })
+        .collect();
+    // `const CARD: &str = "Read Tag";` names whose constant a spawn uses.
+    let consts: Vec<(&str, &str)> = texts
+        .iter()
+        .flat_map(|(_, text)| text.lines())
+        .filter_map(|line| {
+            let (ident, rest) = line
+                .trim()
+                .strip_prefix("const ")?
+                .split_once(": &str = \"")?;
+            Some((ident, rest.split('"').next()?))
+        })
+        .collect();
+    for (_, text) in &texts {
+        for line in text.lines().filter(|line| line.contains("spawn")) {
+            names.extend(line.split('"').skip(1).step_by(2).map(str::to_owned));
+            names.extend(
+                consts
+                    .iter()
+                    .filter(|(ident, _)| line.contains(ident))
+                    .map(|(_, name)| (*name).to_owned()),
+            );
+        }
+    }
+    let mut diagnostics = Vec::new();
+    for (file, text) in &texts {
+        for (line, content) in text.lines().enumerate() {
+            for call in CALLS {
+                for (start, _) in content.match_indices(call) {
+                    let rest = &content[start + call.len()..];
+                    let Some(name) = rest.split('"').next() else {
+                        continue;
+                    };
+                    if names.contains(name) || rest.find('"').is_none() {
+                        continue;
+                    }
+                    let hint = crate::project_runner::nearest_hint(
+                        names.iter().map(String::as_str),
+                        name,
+                    );
+                    diagnostics.push(Diagnostic {
+                        code: "LINT_MISSING_OBJECT",
+                        severity: "warning",
+                        message: format!(
+                            "{}:{}: no scene has an object named `{name}`{hint}",
+                            file.strip_prefix(root).unwrap_or(file).display(),
+                            line + 1,
+                        ),
+                        file: Some(file.clone()),
+                        ..Diagnostic::default()
+                    });
+                }
+            }
+        }
+    }
+    diagnostics
 }
 
 /// Local half sizes of a solid collider and its entity's built-in mesh when
@@ -6303,6 +6406,39 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         assert_eq!(
             found[0].message,
             "src/main.rs:2: `charts/hard.json` is not a file under assets/"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lint_flags_object_names_no_scene_has() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-code-names-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        let scene = json!({"format_version": 7, "name": "Main", "entities": [
+            {"id": uuid::Uuid::new_v4(), "name": "Player"}]});
+        std::fs::write(root.join("scenes/main.rscene"), scene.to_string())
+            .unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "const CARD: &str = \"Card\";\n\
+             scene.object(\"Player\").position();\n\
+             scene.flash(\"Playr\");\n\
+             scene.spawn_copy(\"Player\", \"Ghost\", at);\n\
+             scene.spawn_cube(CARD, at);\n\
+             scene.set_visible(\"Ghost\", true);\n\
+             scene.set_visible(CARD, true);\n\
+             scene.despawn(\"Card\");\n\
+             scene.despawn(&name);\n",
+        )
+        .unwrap();
+        let found = lint_missing_objects(&root);
+        let messages: Vec<_> = found.iter().map(|d| &d.message).collect();
+        assert_eq!(
+            messages,
+            ["src/main.rs:3: no scene has an object named `Playr`; did you mean `Player`?"],
+            "a scene name, a spawned literal, a spawned constant and a run-time name pass"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

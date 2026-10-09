@@ -289,6 +289,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_MISSING_OBJECT",
+        "Game code names an object, as in `scene.object(\"Playr\")`, that no entity in any scene or prefab has, so the call panics or does nothing at run time.",
+        "Fix the name (the message lists close scene names), or add the object to the scene.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_NO_ENDING",
         "The scene keeps counters, but no counter has a target and the game code never calls counter_complete, load_scene or quit, so a round can never be won or lost.",
         "Give the counter that decides the round a target and show a win or lose `rusting.hud` with `requires` set to it, or end the round from game code.",

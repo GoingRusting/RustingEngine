@@ -3093,7 +3093,7 @@ fn nearest_names_hint(world: &mut World, name: &str) -> String {
 
 /// `; did you mean ...?` with the up to three `names` within a
 /// case-insensitive edit distance of half `name`'s length (at least two).
-fn nearest_hint<'a>(
+pub(crate) fn nearest_hint<'a>(
     names: impl Iterator<Item = &'a str>,
     name: &str,
 ) -> String {

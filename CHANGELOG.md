@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lint` warns `LINT_MISSING_OBJECT` when game code names an object, as in `scene.flash("Stairz")`, that no scene or prefab has, and lists close names.
 - `rusting.sound_cue` takes a `caption`, such as `[glass breaks]`, shown for 2 s each time the cue fires.
 - `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it. A `--confine` flag can narrow `RUSTING_CONFINE` but never widen it.
 - `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus `scene patch` and `fix` with `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
