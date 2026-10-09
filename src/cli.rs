@@ -2141,7 +2141,8 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
 /// per literal class in `in_class`, such as `scene.in_class("enemys")`,
 /// that no entity has and no other literal in game code names, and a
 /// `LINT_MISSING_FILE` per literal scene path or sound clip, such as
-/// `scene.load_scene("scenes/levl_2.rscene")`, with no file there (a
+/// `scene.load_scene("scenes/levl_2.rscene")` or a `spawn_prefab` path,
+/// with no file there (a
 /// built-in `sfx:` clip needs none). Names built at run time
 /// are not checked, and a literal on a line that spawns something may be
 /// the spawned name.
@@ -2170,8 +2171,9 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
     const ACTION_CALLS: [&str; 4] =
         [".pressed(\"", ".held(\"", ".press_tick(\"", ".binding(\""];
     // Scene paths are relative to the project, clips to `assets/`.
-    const FILE_CALLS: [(&str, &str); 4] = [
+    const FILE_CALLS: [(&str, &str); 5] = [
         (".load_scene(\"", ""),
+        (".spawn_prefab(\"", "assets"),
         (".play_sound(\"", "assets"),
         (".play_sound_looped(\"", "assets"),
         (".play_sound_with(\"", "assets"),
@@ -6654,7 +6656,8 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              scene.add_class(&shot, \"shot\");\n\
              for shot in scene.in_class(\"shot\") {}\n\
              spawn(scene, \"Enemy Template\", &name, \"enemy\", at);\n\
-             for enemy in scene.in_class(\"enemys\") {}\n",
+             for enemy in scene.in_class(\"enemys\") {}\n\
+             scene.spawn_prefab(\"prefabs/tlie.rscene\", \"Tile\", at);\n",
         )
         .unwrap();
         let found = lint_missing_names(&root);
@@ -6667,6 +6670,7 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 "src/main.rs:16: no file `scenes/mian.rscene` under the project; did you mean `scenes/main.rscene`?",
                 "src/main.rs:18: no file `hit.wav` under assets/",
                 "src/main.rs:23: no object or code puts anything in class `enemys`; did you mean `enemy`?",
+                "src/main.rs:24: no file `prefabs/tlie.rscene` under assets/",
             ],
             "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene, a built-in clip, a scene class, an added class and a helper's class pass"
         );
