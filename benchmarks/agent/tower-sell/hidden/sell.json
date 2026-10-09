@@ -1,0 +1,18 @@
+{
+  "name": "sell: a sold tower refunds 25 gold, an empty pad sells nothing, and the pad builds again",
+  "ticks": 40,
+  "steps": [
+    {"tick": 5, "tap": "build_1"},
+    {"tick": 8, "expect": {"counter": "gold", "equals": 50}},
+    {"tick": 10, "tap": "sell_2"},
+    {"tick": 11, "expect": {"counter": "gold", "equals": 50}},
+    {"tick": 12, "tap": "sell_1"},
+    {"tick": 13, "expect": {"entity": "Tower 1", "exists": false}},
+    {"tick": 13, "expect": {"counter": "gold", "equals": 75}},
+    {"tick": 14, "tap": "build_1"},
+    {"tick": 15, "expect": {"entity": "Tower 1", "exists": true}},
+    {"tick": 15, "expect": {"counter": "gold", "equals": 25}},
+    {"tick": 20, "tap": "sell_1"},
+    {"tick": 21, "expect": {"counter": "gold", "equals": 50}}
+  ]
+}

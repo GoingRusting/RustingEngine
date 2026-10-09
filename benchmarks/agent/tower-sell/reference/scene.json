@@ -1,0 +1,10 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Action sell_1",
+    "components": {"rusting.input_action": {"action": "sell_1", "inputs": ["KeyQ"]}}}},
+  {"op": "create", "entity": {"name": "Action sell_2",
+    "components": {"rusting.input_action": {"action": "sell_2", "inputs": ["KeyW"]}}}},
+  {"op": "create", "entity": {"name": "Action sell_3",
+    "components": {"rusting.input_action": {"action": "sell_3", "inputs": ["KeyE"]}}}},
+  {"op": "create", "entity": {"name": "Action sell_4",
+    "components": {"rusting.input_action": {"action": "sell_4", "inputs": ["KeyT"]}}}}
+]}

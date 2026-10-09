@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "tower-defense",
+  "request": "Let the player sell towers in this tower defense game. Add input actions `sell_1` to `sell_4`, on keys of your choice; `sell_n` removes `Tower n` and gives back half its cost, 25 gold. Selling where no tower stands does nothing, and a sold pad can be built on again. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "            scene.add_to_counter(\"gold\", -TOWER_COST);\n        }\n",
+      "replace": "            scene.add_to_counter(\"gold\", -TOWER_COST);\n        }\n        if scene.pressed(&format!(\"sell_{n}\")) && scene.try_object(&tower).is_some() {\n            scene.despawn(&tower);\n            scene.add_to_counter(\"gold\", TOWER_COST / 2);\n        }\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/tower_defense_defend.json",
+    "hidden/sell.json"
+  ]
+}
