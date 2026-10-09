@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `tower-reach`: a bug-fix task on the tower-defense template, where towers ignore the Z distance to their target.
 - Agent benchmark task `racing-lap-times`: a feature task on the racing template, with last and best lap times.
 - `rusting capture --game` builds the project and captures its game with game code run up to `--tick`.
 - A running game shows fps, frame time and p95 in its top-right corner while `RUSTING_PERF` is set; F3 toggles that report on and off.

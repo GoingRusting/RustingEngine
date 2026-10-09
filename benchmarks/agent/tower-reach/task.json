@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "tower-defense",
+  "request": "In this tower defense game, towers defeat enemies far outside their reach: a tower moved to the far side of the map still hits enemies on the path. A tower should only defeat an enemy within TOWER_REACH meters of it on the ground plane. Fix it.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "            (at[0] - from[0]).hypot(at[2] - from[2]) <= TOWER_REACH",
+      "replace": "            (at[0] - from[0]).abs() <= TOWER_REACH"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "            (at[0] - from[0]).abs() <= TOWER_REACH",
+      "replace": "            (at[0] - from[0]).hypot(at[2] - from[2]) <= TOWER_REACH"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/tower_defense_defend.json",
+    "hidden/reach.json"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "reach: a tower 14 m from the path, level with the first leg along X, hits nothing",
+  "ticks": 200,
+  "steps": [
+    {"tick": 5, "tap": "build_1"},
+    {
+      "tick": 6,
+      "set": {
+        "entity": "Tower 1",
+        "path": "/transform/position",
+        "value": [-10.0, 0.6, 10.0]
+      }
+    },
+    {"tick": 120, "expect": {"entity": "Enemy 1", "exists": true}},
+    {"tick": 199, "expect": {"counter": "cleared", "equals": 0}},
+    {"tick": 199, "expect": {"counter": "gold", "equals": 50}}
+  ]
+}
