@@ -3339,7 +3339,7 @@ Goal: fix the engine friction the six-game update pass (RustingGames, 2026-10-03
 - [x] `rusting test` and plain output print `log:` lines and step warnings for every scenario.
 - [x] `AGENTS_OUTDATED` warns when a project's engine-written AGENTS.md differs from this engine's; `rusting fix` refreshes it and keeps `AGENTS.md.old` (metronome F24, split F28). Verification: `an_old_engine_agents_md_is_flagged_and_refreshed`.
 - [x] split F23 (w6_perf slower): does not reproduce. A/B raycast bench, 3600 rays, best of runs: current 4.874/4.904/4.922 ms, HEAD 4.888/4.861/4.882 ms. Slowdown was machine load.
-- [ ] Deferred: `expect_pixels` `differs_from`, counters design (night F15), skeletal animation, bulk GPU spawn, GPU body control and waking piles, render to texture, per-camera post effects, build caching, audio limiter, kill plane, `click` `right_of`, per-kind rebinding.
+- [ ] Deferred: `expect_pixels` `differs_from`, counters design (night F15), skeletal animation, bulk GPU spawn, GPU body control and waking piles, render to texture, per-camera post effects, build caching, kill plane, `click` `right_of`, per-kind rebinding.
   Full check, 2026-10-03, RTX 3060: fmt clean; clippy plain, `--no-default-features`, `--features gpu-tests` clean; `cargo test --workspace` 528 lib tests passed, 0 failed; `--features gpu-tests` 610 lib tests passed, 0 failed (one earlier GPU run failed in the lib tests while the machine was loaded; a rerun and the full run passed).
 
 ## Sundering track
