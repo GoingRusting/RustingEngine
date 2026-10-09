@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a small clicker game in this empty project. Pressing Space, through an input action named `click`, adds one to a counter named `clicks`, and the count shows on screen. When `clicks` reaches 10, a counter named `won` becomes 1 and the screen says `You win!`; clicks after that change nothing. Both counters start at 0.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "const TARGET: i32 = 10;\n\nfn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.counter_or(\"won\", 0) == 1 || !scene.pressed(\"click\") {\n        return;\n    }\n    if scene.add_to_counter(\"clicks\", 1) >= TARGET {\n        scene.set_counter(\"won\", 1);\n        scene.set_hud(\"Message\", |hud| hud.text = \"You win!\".into());\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/clicks.json"
+  ]
+}

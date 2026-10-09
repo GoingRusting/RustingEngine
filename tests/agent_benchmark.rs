@@ -15,6 +15,10 @@ struct Task {
     seed: Vec<Edit>,
     remove: Vec<String>,
     reference: Vec<Edit>,
+    /// Scene patch files, relative to the task folder, that the reference
+    /// applies to `scenes/main.rscene` after its edits.
+    #[serde(default)]
+    reference_patches: Vec<String>,
     hidden: Vec<String>,
 }
 
@@ -72,6 +76,21 @@ fn apply(root: &Path, edits: &[Edit], task: &Path) {
     }
 }
 
+/// Applies the task's reference solution to its seeded project.
+fn solve(root: &Path, folder: &Path, task: &Task) {
+    apply(root, &task.reference, folder);
+    for patch in &task.reference_patches {
+        let scene = root.join("scenes/main.rscene");
+        let patched = rusting(&[
+            "scene",
+            "patch",
+            scene.to_str().unwrap(),
+            folder.join(patch).to_str().unwrap(),
+        ]);
+        assert_eq!(patched["ok"], true, "{}: {patched}", folder.display());
+    }
+}
+
 /// The task's starting project: its template with the seed applied.
 fn seeded(folder: &Path, task: &Task) -> (PathBuf, PathBuf) {
     let parent = std::env::temp_dir()
@@ -117,7 +136,7 @@ fn every_task_is_well_formed_and_applies_to_its_template() {
                 .unwrap_or_else(|error| panic!("{name}: {hidden}: {error}"));
         }
         let (parent, root) = seeded(folder, task);
-        apply(&root, &task.reference, folder);
+        solve(&root, folder, task);
         std::fs::remove_dir_all(parent).unwrap();
     }
 }
@@ -151,7 +170,7 @@ fn hidden_scenarios_fail_when_seeded_and_pass_with_the_reference() {
             "{}: the seeded project already passes",
             folder.display()
         );
-        apply(&root, &task.reference, &folder);
+        solve(&root, &folder, &task);
         for scenario in &hidden {
             let result = test(&root, scenario);
             assert_eq!(result["ok"], true, "{}: {result}", folder.display());

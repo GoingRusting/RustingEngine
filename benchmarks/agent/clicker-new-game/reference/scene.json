@@ -1,0 +1,11 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Click Action",
+    "components": {"rusting.input_action": {"action": "click", "inputs": ["Space"]}}}},
+  {"op": "create", "entity": {"name": "Clicks",
+    "components": {"rusting.counter": {"name": "clicks"},
+      "rusting.hud": {"text": "Clicks {clicks}/10"}}}},
+  {"op": "create", "entity": {"name": "Won",
+    "components": {"rusting.counter": {"name": "won"}}}},
+  {"op": "create", "entity": {"name": "Message",
+    "components": {"rusting.hud": {"text": ""}}}}
+]}

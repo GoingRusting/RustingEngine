@@ -18,6 +18,9 @@ top of this suite.
 - `remove`: project files deleted from the starting project, such as the
   template's own test when it is the hidden scenario.
 - `reference`: edits, applied after `seed`, that make one correct solution.
+- `reference_patches` (optional): scene patch files, relative to the task
+  folder, that the reference applies to `scenes/main.rscene` with
+  `rusting scene patch` after its edits. A `new-game` task needs them.
 - `hidden`: scenario files, relative to the task folder, run with
   `rusting test` after the agent finishes. The task passes when all pass.
 

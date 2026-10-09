@@ -1,0 +1,26 @@
+{
+  "name": "clicks: ten presses of click win, and presses after the win change nothing",
+  "ticks": 140,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "clicks", "equals": 0}},
+    {"tick": 5, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 10, "tap": "click"},
+    {"tick": 20, "tap": "click"},
+    {"tick": 30, "tap": "click"},
+    {"tick": 40, "tap": "click"},
+    {"tick": 50, "tap": "click"},
+    {"tick": 60, "tap": "click"},
+    {"tick": 70, "tap": "click"},
+    {"tick": 80, "tap": "click"},
+    {"tick": 90, "tap": "click"},
+    {"tick": 95, "expect": {"counter": "clicks", "equals": 9}},
+    {"tick": 95, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 100, "tap": "click"},
+    {"tick": 105, "expect": {"counter": "clicks", "equals": 10}},
+    {"tick": 105, "expect": {"counter": "won", "equals": 1}},
+    {"tick": 110, "tap": "click"},
+    {"tick": 120, "tap": "click"},
+    {"tick": 135, "expect": {"counter": "clicks", "equals": 10}},
+    {"tick": 135, "expect": {"counter": "won", "equals": 1}}
+  ]
+}
