@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `RUSTING_BENCH_TASK=<folder>` limits the agent benchmark's slow validation test to one task.
 - Agent benchmark task `lock-new-game`: a new-game task from the empty template, a four-digit code lock.
 - Agent benchmark task `arena-knockback`: a bug-fix task on the top-down template, where a hit throws the enemy through the player.
 - Agent benchmark task `duel-redraw`: a feature task on the card-game template, a once-per-duel mulligan.

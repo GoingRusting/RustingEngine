@@ -141,7 +141,8 @@ fn every_task_is_well_formed_and_applies_to_its_template() {
     }
 }
 
-/// Builds every task's game twice, so it takes minutes.
+/// Builds every task's game twice, so it takes minutes. Set
+/// `RUSTING_BENCH_TASK` to a folder name to check only that task.
 #[test]
 #[ignore = "builds each task's game twice; run with --ignored"]
 fn hidden_scenarios_fail_when_seeded_and_pass_with_the_reference() {
@@ -156,7 +157,11 @@ fn hidden_scenarios_fail_when_seeded_and_pass_with_the_reference() {
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         value
     };
+    let only = std::env::var("RUSTING_BENCH_TASK").ok();
     for (folder, task) in tasks() {
+        if only.as_ref().is_some_and(|name| !folder.ends_with(name)) {
+            continue;
+        }
         let (parent, root) = seeded(&folder, &task);
         let hidden: Vec<_> = task
             .hidden

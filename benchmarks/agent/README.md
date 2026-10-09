@@ -52,4 +52,5 @@ hidden scenarios parse, and its seed and reference edits apply to the
 current template. `cargo test --test agent_benchmark -- --ignored` builds
 each task twice: a hidden scenario must fail on the seeded project and every
 hidden scenario must pass with the reference applied. Run it after changing
-a template.
+a template. Set `RUSTING_BENCH_TASK=<folder>` to check one task while
+writing it.
