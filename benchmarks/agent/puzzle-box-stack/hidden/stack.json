@@ -1,0 +1,54 @@
+{
+  "name": "stack: a box cannot be pushed into another box",
+  "ticks": 30,
+  "steps": [
+    {
+      "tick": 1,
+      "set": {
+        "entity": "Box 2",
+        "path": "/transform/position",
+        "value": [
+          1.0,
+          0.4,
+          -1.0
+        ]
+      }
+    },
+    {
+      "tick": 5,
+      "tap": "right"
+    },
+    {
+      "tick": 10,
+      "tap": "right"
+    },
+    {
+      "tick": 15,
+      "tap": "right"
+    },
+    {
+      "tick": 20,
+      "expect": {
+        "entity": "Box 1",
+        "path": "/transform/position/0",
+        "equals": 0.0
+      }
+    },
+    {
+      "tick": 20,
+      "expect": {
+        "entity": "Box 2",
+        "path": "/transform/position/0",
+        "equals": 1.0
+      }
+    },
+    {
+      "tick": 20,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": -1.0
+      }
+    }
+  ]
+}

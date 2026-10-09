@@ -1,0 +1,26 @@
+{
+  "kind": "bug-fix",
+  "template": "puzzle",
+  "request": "In this box-pushing puzzle, pushing a box into another box moves it onto the same cell, so two boxes end up stacked inside each other. A box should only move when the cell behind it is free of walls and boxes; otherwise neither the box nor the player moves. Fix it.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "        if on_cell(scene, \"wall\", beyond).is_some()\n            || on_cell(scene, \"box\", beyond).is_some()\n        {",
+      "replace": "        if on_cell(scene, \"wall\", beyond).is_some() {"
+    }
+  ],
+  "remove": [
+    "tests/solve.json"
+  ],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        if on_cell(scene, \"wall\", beyond).is_some() {",
+      "replace": "        if on_cell(scene, \"wall\", beyond).is_some()\n            || on_cell(scene, \"box\", beyond).is_some()\n        {"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/puzzle_solve.json",
+    "hidden/stack.json"
+  ]
+}
