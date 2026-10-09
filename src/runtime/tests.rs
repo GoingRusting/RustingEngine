@@ -3337,6 +3337,34 @@ fn dialogue_placeholders_show_the_line_and_its_choices() {
 }
 
 #[test]
+fn state_placeholders_show_the_translated_state() {
+    let quest = ObjectState {
+        state: "quest.hammer".into(),
+        ..ObjectState::default()
+    };
+    let name = Name("Quest".into());
+    let english = Translations {
+        locale: "en".into(),
+        strings: [("quest.hammer", "Find the hammer")]
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .into(),
+    };
+    let fill = |state: &ObjectState, placeholder: &str, t| {
+        state_placeholder(placeholder, [(&name, state)].into_iter(), t)
+    };
+    assert_eq!(
+        fill(&quest, "state:Quest", Some(&english)).as_deref(),
+        Some("Find the hammer")
+    );
+    assert_eq!(
+        fill(&quest, "state:Quest", None).as_deref(),
+        Some("quest.hammer")
+    );
+    assert_eq!(fill(&quest, "state:Door", Some(&english)), None);
+    assert_eq!(fill(&quest, "Quest", Some(&english)), None);
+}
+
+#[test]
 fn shader_pragmas_declare_determinism() {
     let source =
         "#version 450\n  // rusting: determinism = Local\nvoid main() {}";

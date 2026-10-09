@@ -964,7 +964,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.hud",
-        summary: "Text label or button drawn over the game view. offset points inward from the anchor, in logical pixels, and {tr:key} shows the current locale's text for key (scene.set_locale reads assets/locales/<locale>.json) and may itself hold {counter} placeholders; the text is measured after {counter} values are filled in, so right and bottom anchors keep their margin. A clicked button sends HudButtonPressed.",
+        summary: "Text label or button drawn over the game view. offset points inward from the anchor, in logical pixels, and {tr:key} shows the current locale's text for key (scene.set_locale reads assets/locales/<locale>.json) and may itself hold {counter} placeholders; the text is measured after {counter} values are filled in, so right and bottom anchors keep their margin. {state:Name} shows that object's rusting.state, translated when the locale has it as a key, and {dialogue:Name} and {dialogue:Name/n} show a rusting.dialogue's line and choices. An element whose text fills to nothing is not drawn. A clicked button sends HudButtonPressed.",
         gpu: "a few egui triangles",
         example: || json!({"text": "Score: 0", "anchor": "TopRight", "offset": [24.0, 24.0], "font_size": 24.0, "color": [1.0, 0.9, 0.4, 1.0], "button": false, "requires": null, "camera": null}),
     },
@@ -1004,7 +1004,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.state",
-        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least, whose held input action (empty for none) is held, and whose touching object (empty for none) touches it, moves it to `to` and adds then_add to the counter then_counter (empty for none). actions add to a counter when their state is entered, or left when exit is true, by a transition or set_state.",
+        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least, whose held input action (empty for none) is held, and whose touching object (empty for none) touches it, moves it to `to` and adds then_add to the counter then_counter (empty for none). actions add to a counter when their state is entered, or left when exit is true, by a transition or set_state. A quest is an object named Quest whose states are its stages (keys such as quest.find_hammer), whose transitions wait on counters that pickups or rusting.dialogue choices add to, and whose stage a HUD shows with {state:Quest}.",
         gpu: NO_GPU,
         example: || {
             json!({

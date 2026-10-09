@@ -1078,6 +1078,25 @@ pub fn dialogue_placeholder<'a>(
     })
 }
 
+/// The text of a `{state:Object}` HUD placeholder: the named object's
+/// `rusting.state`, translated when the locale has it as a key, so a
+/// quest stage such as `quest.find_hammer` reads as a sentence. `None`
+/// when no object with a state has that name.
+#[must_use]
+pub fn state_placeholder<'a>(
+    placeholder: &str,
+    mut states: impl Iterator<Item = (&'a super::Name, &'a ObjectState)>,
+    translations: Option<&Translations>,
+) -> Option<String> {
+    let object = placeholder.strip_prefix("state:")?;
+    let (_, state) = states.find(|(name, _)| name.0 == object)?;
+    Some(
+        translations
+            .map_or(&*state.state, |t| t.get(&state.state))
+            .to_owned(),
+    )
+}
+
 /// Replaces every `{name}` that `value` knows; leaves the rest as written.
 fn fill_placeholders(
     text: &str,
@@ -1805,7 +1824,7 @@ fn draw_captions(
 
 /// Per frame: draws HUD elements in reading order and reports clicks.
 #[cfg(feature = "ui")]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn draw_hud(
     ui: Res<super::RuntimeUi>,
     mut pressed: ResMut<EventQueue<HudButtonPressed>>,
@@ -1817,9 +1836,10 @@ pub(super) fn draw_hud(
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
-    (translations, dialogues): (
+    (translations, dialogues, states): (
         Option<Res<Translations>>,
         Query<(&super::Name, &Dialogue)>,
+        Query<(&super::Name, &ObjectState)>,
     ),
 ) {
     draw_perf_overlay(ui.context(), perf.as_deref());
@@ -1906,6 +1926,13 @@ pub(super) fn draw_hud(
                 dialogues.iter(),
                 translations.as_deref(),
             )
+            .or_else(|| {
+                state_placeholder(
+                    placeholder,
+                    states.iter(),
+                    translations.as_deref(),
+                )
+            })
         });
         let filled =
             hud_text(&filled, counters.iter(), translations.as_deref());
