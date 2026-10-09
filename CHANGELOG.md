@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::save_counters(key, version, names)` and `load_counters(key)`: versioned save slots for counters; `load_counters` returns the save's version for migrating old saves.
 - Object states: `GameScene::set_state`, `state` and `state_seconds` keep a state machine's state in the new registered component `rusting.state`, which scenarios can expect on and which snapshots and state hashes include.
 - `GameScene::spawn_numbered(template, position, limit)`: a capped spawner that names copies `"<template> <n>"` and counts refused spawns in the counter `"<template> refused"` instead of dropping them silently.
 - `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` for tick-based cooldowns, and `GameScene::set_time_scale` and `time_scale` for slow motion. The dash, turret and health recipes use the cooldowns and no longer take `time`; projects that already applied them keep their own copies.
@@ -260,6 +261,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `GameScene::save_data` writes through a temporary file and a rename, so a crash mid-save keeps the previous file.
 - `rusting_core::schedule::CpuFrameTimings` has new `update` and `post_update` fields. Migration: a struct literal needs `..Default::default()`. The `RUSTING_PERF` line says `CPU fixed` where it said `CPU physics`.
 - A `CLI_OUTDATED` warning about newer engine source lists the engine commits made since the CLI was built (surveyor F3).
 - `rusting test` with one scenario leaves `scenario.state_hashes` and `scenario.gpu_state_hashes` out of its result. Migration: pass `--full`, or read build/scenario-report.json (unclaimed F10).

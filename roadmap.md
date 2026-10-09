@@ -3568,6 +3568,9 @@ Goal: the systems almost every game rebuilds are built in, inspectable, and dete
 Depends on: Milestones 8 and 9.
 
 - [ ] Save games: versioned save files for selected components and resources, save slots, autosave, and migration of old saves across game versions, with a round-trip test per registered component.
+  - [x] Counter saves: `GameScene::save_counters(key, version, names)` writes the named counters and a save version as JSON to a slot key, and `load_counters(key)` sets them and returns the version, so a newer game migrates by reading old counters. `save_data` now writes atomically, so a crash keeps the old save. Night Market hand-writes this today.
+    - Verified (2026-10-09): `counters_round_trip_through_a_versioned_save` round-trips two counters and an unborn one at version 2, leaves unsaved counters out, and rejects a file with a non-integer value or a non-JSON file without setting anything.
+  - [ ] Saves of selected registered components and object states, with a round-trip test per registered component.
 - [ ] State machines as data: states, transitions, guards on counters and events, and enter and exit actions, editable in the editor and checked by scenarios.
   - [x] Object states: the registered component `rusting.state` (`state`, `since_tick`), set by `GameScene::set_state(name, state)`, which returns whether it changed so enter actions sit in an `if`, and read with `state` and `state_seconds`. It is in snapshots, the state hash and the editor's component help.
     - Verified (2026-10-09): `set_state_records_the_entry_tick_and_reports_changes` (entry tick, repeated set keeps it, missing object, 0.5 s after 30 ticks); `scenarios_expect_an_object_state` passes an expect on `/components/rusting.state/state`.

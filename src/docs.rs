@@ -879,6 +879,8 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "save_data",
             "load_data",
             "delete_data",
+            "save_counters",
+            "load_counters",
             "load_text",
         ],
     ),

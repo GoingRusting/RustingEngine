@@ -1570,7 +1570,65 @@ impl GameScene<'_> {
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder)?;
         }
-        std::fs::write(path, text)
+        // A crash mid-write keeps the old file instead of a cut-off one.
+        crate::runtime::write_atomic_unchecked(path, text.as_bytes())
+    }
+
+    /// Saves the counters called `names` under `key` (a save slot such as
+    /// `saves/1.json`) with the game's save `version`, as JSON through
+    /// [`Self::save_data`]. A counter that does not exist saves as 0.
+    ///
+    /// # Errors
+    /// Returns the error from [`Self::save_data`].
+    pub fn save_counters(
+        &self,
+        key: &str,
+        version: u32,
+        names: &[&str],
+    ) -> std::io::Result<()> {
+        self.save_data(key, &self.counter_save(version, names))
+    }
+
+    /// The text [`Self::save_counters`] writes.
+    fn counter_save(&self, version: u32, names: &[&str]) -> String {
+        let counters: serde_json::Map<String, serde_json::Value> = names
+            .iter()
+            .map(|&name| (name.to_owned(), self.counter_or(name, 0).into()))
+            .collect();
+        let save =
+            serde_json::json!({"version": version, "counters": counters});
+        format!("{save:#}\n")
+    }
+
+    /// Sets every counter saved under `key` by [`Self::save_counters`] and
+    /// returns the save's version, so a newer game can migrate an old
+    /// save: read the old counters, set the new ones. `None` when there is
+    /// no such save; a file that is not a counter save also warns.
+    pub fn load_counters(&mut self, key: &str) -> Option<u32> {
+        let text = self.load_data(key)?;
+        let version = self.apply_counter_save(&text);
+        if version.is_none() {
+            eprintln!("warning: `{key}` is not a save from save_counters");
+        }
+        version
+    }
+
+    /// Sets the counters in `text` from [`Self::counter_save`] and returns
+    /// its version; `None`, setting nothing, when it is not such a save.
+    fn apply_counter_save(&mut self, text: &str) -> Option<u32> {
+        let save: serde_json::Value = serde_json::from_str(text).ok()?;
+        let version = u32::try_from(save["version"].as_u64()?).ok()?;
+        let counters = save["counters"]
+            .as_object()?
+            .iter()
+            .map(|(name, value)| {
+                Some((name.clone(), i32::try_from(value.as_i64()?).ok()?))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        for (name, value) in counters {
+            self.set_counter(&name, value);
+        }
+        Some(version)
     }
 
     /// The text [`Self::save_data`] stored under `key`, or `None` when
@@ -7029,6 +7087,27 @@ mod tests {
         assert!(crate::runtime::SceneComponentRegistry::default()
             .names()
             .any(|name| name == crate::runtime::OBJECT_STATE_COMPONENT));
+    }
+
+    #[test]
+    fn counters_round_trip_through_a_versioned_save() {
+        let mut world = World::new();
+        let mut scene = GameScene { world: &mut world };
+        scene.set_counter("money", 1250);
+        scene.set_counter("night", 3);
+        scene.set_counter("not_saved", 9);
+        let save = scene.counter_save(2, &["money", "night", "unborn"]);
+        let mut world = World::new();
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.apply_counter_save(&save), Some(2));
+        assert_eq!(scene.counter_value("money"), 1250);
+        assert_eq!(scene.counter_value("night"), 3);
+        assert_eq!(scene.counter_value("unborn"), 0);
+        assert_eq!(scene.counter_or("not_saved", -1), -1);
+        let bad = r#"{"version": 1, "counters": {"a": 1, "b": "x"}}"#;
+        assert_eq!(scene.apply_counter_save(bad), None);
+        assert_eq!(scene.counter_or("a", -1), -1);
+        assert_eq!(scene.apply_counter_save("night=3"), None);
     }
 
     #[test]

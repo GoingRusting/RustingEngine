@@ -401,6 +401,8 @@ const GAME_SCENE_ACCESS: &[(&str, bool, &str)] = &[
     ("counter_complete", false, "Counter"),
     ("counters", false, "Counter"),
     ("start_cooldown", true, "Counter"),
+    ("load_counters", true, "Counter"),
+    ("save_counters", false, "Counter"),
     ("cooldown_ready", false, "Counter"),
     ("cooldown_left", false, "Counter"),
     ("set_state", true, "ObjectState"),
