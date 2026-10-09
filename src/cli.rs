@@ -1688,7 +1688,12 @@ pub fn convert_scene(path: &Path, split: bool) -> CliResult {
         let mut old = Vec::new();
         let mut pending = vec![path.to_path_buf()];
         while let Some(next) = pending.pop() {
-            if next.is_dir() {
+            // Links are removed, not followed: never read outside the scene.
+            let kind = std::fs::symlink_metadata(&next)?.file_type();
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 for entry in std::fs::read_dir(&next)? {
                     pending.push(entry?.path());
                 }
@@ -6656,11 +6661,20 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             assert!(convert_scene(&scene, true).ok);
         }
         let folder = read_scene_bytes(&scene).unwrap();
+        // A link in the folder is removed, never read into the journal.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            root.join("project.json"),
+            scene.join("outside.json"),
+        )
+        .unwrap();
         {
             let _op = crate::runtime::journal::begin("scene join");
             assert!(convert_scene(&scene, false).ok);
         }
         assert!(scene.is_file());
+        let log = journal_log(&root).data;
+        assert!(!log.to_string().contains("outside.json"), "{log}");
         assert!(revert(&root, &last_op()).ok);
         assert!(scene.is_dir());
         assert_eq!(read_scene_bytes(&scene).unwrap(), folder);
