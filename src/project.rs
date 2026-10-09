@@ -457,11 +457,14 @@ pub enum ProjectTemplate {
     /// Swarm, a twin-stick shooter with code: move with one stick, aim and
     /// fire with the other, and defeat a wave of twelve enemies.
     TwinStick,
+    /// Outpost, a tower defense game with code: build towers on pads
+    /// beside a path and stop a wave of enemies reaching the base.
+    TowerDefense,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -472,6 +475,7 @@ impl ProjectTemplate {
         Self::TopDown,
         Self::Racing,
         Self::TwinStick,
+        Self::TowerDefense,
         Self::Empty,
     ];
 
@@ -490,6 +494,7 @@ impl ProjectTemplate {
             Self::TopDown => "top-down",
             Self::Racing => "racing",
             Self::TwinStick => "twin-stick",
+            Self::TowerDefense => "tower-defense",
         }
     }
 
@@ -508,6 +513,7 @@ impl ProjectTemplate {
             Self::TopDown => "Arena (top-down action)",
             Self::Racing => "Circuit (racing)",
             Self::TwinStick => "Swarm (twin-stick shooter)",
+            Self::TowerDefense => "Outpost (tower defense)",
         }
     }
 
@@ -734,6 +740,9 @@ fn write_project_template(
             ProjectTemplate::TwinStick => {
                 include_str!("templates/twin_stick.rs")
             }
+            ProjectTemplate::TowerDefense => {
+                include_str!("templates/tower_defense.rs")
+            }
             _ => default_game_source(),
         },
     )?;
@@ -750,6 +759,10 @@ fn write_project_template(
         ProjectTemplate::TwinStick => {
             Some(("wave.json", include_str!("templates/twin_stick_wave.json")))
         }
+        ProjectTemplate::TowerDefense => Some((
+            "defend.json",
+            include_str!("templates/tower_defense_defend.json"),
+        )),
         _ => None,
     };
     if let Some((file, text)) = scenario {
@@ -785,6 +798,7 @@ fn write_project_template(
             ProjectTemplate::TopDown => arena_scene(name),
             ProjectTemplate::Racing => racing_scene(name),
             ProjectTemplate::TwinStick => twin_stick_scene(name),
+            ProjectTemplate::TowerDefense => tower_defense_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1782,6 +1796,148 @@ fn twin_stick_scene(name: &str) -> SceneDocument {
     json_scene(name, entities)
 }
 
+/// Outpost: grass, a path of road pieces through six waypoints to a base,
+/// four build pads, hidden enemy and tower templates, and the `gold`,
+/// `leaks` and `cleared` counters. The game code is
+/// `src/templates/tower_defense.rs`.
+fn tower_defense_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    let path = [
+        [-10.0, -4.0],
+        [-2.0, -4.0],
+        [-2.0, 4.0],
+        [6.0, 4.0],
+        [6.0, -1.0],
+        [10.0, -1.0],
+    ];
+    let pads = [[-4.5, -1.5], [0.5, 1.5], [3.5, 1.5], [8.5, 1.5]];
+    let mut entities = vec![
+        mesh_object(
+            "Grass",
+            None,
+            "Cube",
+            [0.25, 0.5, 0.25],
+            [0.0, -0.2, 0.0],
+            [24.0, 0.2, 14.0],
+        ),
+        mesh_object(
+            "Base",
+            None,
+            "Cube",
+            [0.3, 0.5, 0.9],
+            [path[5][0], 0.5, path[5][1]],
+            [1.6, 1.0, 1.6],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 20.0, 9.0], "rotation": [-1.15, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    for (n, [x, z]) in path.iter().enumerate() {
+        let mut waypoint = mesh_object(
+            &format!("Waypoint {}", n + 1),
+            None,
+            "Cube",
+            [0.0; 3],
+            [*x, 0.0, *z],
+            [0.2; 3],
+        );
+        waypoint["visible"] = json!(false);
+        entities.push(waypoint);
+    }
+    for (n, leg) in path.windows(2).enumerate() {
+        let ([x0, z0], [x1, z1]) = (leg[0], leg[1]);
+        entities.push(mesh_object(
+            &format!("Road {}", n + 1),
+            None,
+            "Cube",
+            [0.55, 0.45, 0.3],
+            [(x0 + x1) / 2.0, -0.05, (z0 + z1) / 2.0],
+            [(x1 - x0).abs() + 1.2, 0.1, (z1 - z0).abs() + 1.2],
+        ));
+    }
+    for (n, [x, z]) in pads.iter().enumerate() {
+        entities.push(mesh_object(
+            &format!("Pad {}", n + 1),
+            None,
+            "Cube",
+            [0.6, 0.6, 0.65],
+            [*x, 0.05, *z],
+            [1.4, 0.1, 1.4],
+        ));
+    }
+    for (template, shape, color, scale) in [
+        ("Enemy Template", "Sphere", [0.9, 0.3, 0.25], [0.6; 3]),
+        ("Tower Template", "Cube", [0.85, 0.85, 0.9], [0.8, 1.2, 0.8]),
+    ] {
+        let mut object =
+            mesh_object(template, None, shape, color, [0.0, -20.0, 0.0], scale);
+        object["visible"] = json!(false);
+        entities.push(object);
+    }
+    let counter = |name: &str, value: i32, target: Option<i32>| {
+        component(&Counter {
+            name: name.into(),
+            value,
+            target,
+        })
+    };
+    let hud = |name: &str, text: &str, anchor, size, requires: Option<&str>| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "components": {"rusting.hud": hud_component(text, anchor, size, requires)}
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Gold",
+            "components": {
+                "rusting.counter": counter("gold", 100, None),
+                "rusting.hud": hud_component("Gold {gold}", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Leaks",
+            "components": {
+                "rusting.counter": counter("leaks", 0, Some(5)),
+                "rusting.hud": hud_component("Leaks {leaks}/5", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Cleared",
+            "components": {"rusting.counter": counter("cleared", 0, Some(10))}
+        }),
+        hud("Won", "You win! R plays again.", HudAnchor::Center, 48.0, Some("cleared")),
+        hud("Lost", "Game over. R tries again.", HudAnchor::Center, 48.0, Some("leaks")),
+        hud("Help", "Keys 1 to 4 build a tower on a pad for 50 gold.", HudAnchor::BottomLeft, 20.0, None),
+    ]);
+    for (action, inputs) in [
+        ("build_1", ["Digit1", "PadSouth"]),
+        ("build_2", ["Digit2", "PadEast"]),
+        ("build_3", ["Digit3", "PadWest"]),
+        ("build_4", ["Digit4", "PadNorth"]),
+        ("restart", ["KeyR", "PadStart"]),
+    ] {
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": null, "name": format!("Action {action}"),
+            "components": {"rusting.input_action": component(&json!({"action": action, "inputs": inputs}))}
+        }));
+    }
+    json_scene(name, entities)
+}
+
 /// code is `src/templates/racing.rs`.
 fn racing_scene(name: &str) -> SceneDocument {
     use serde_json::json;
@@ -2217,6 +2373,10 @@ mod puzzle_template;
 #[allow(dead_code)]
 #[path = "templates/racing.rs"]
 mod racing_template;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/tower_defense.rs"]
+mod tower_defense_template;
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "templates/twin_stick.rs"]
@@ -2870,6 +3030,37 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/wave.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_tower_defense_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-tower-defense-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project = create_project_from(
+            &parent,
+            "Outpost",
+            ProjectTemplate::TowerDefense,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/tower_defense.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::tower_defense_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/defend.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();

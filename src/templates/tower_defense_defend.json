@@ -1,0 +1,15 @@
+{
+  "name": "defend: two towers cost all the gold, a third waits for bounties, and three towers hold the wave",
+  "ticks": 2000,
+  "steps": [
+    {"tick": 5, "tap": "build_1"},
+    {"tick": 6, "tap": "build_2"},
+    {"tick": 7, "tap": "build_3"},
+    {"tick": 8, "expect": {"counter": "gold", "equals": 0}},
+    {"tick": 8, "expect": {"entity": "Tower 3", "exists": false}},
+    {"tick": 600, "tap": "build_3"},
+    {"tick": 601, "expect": {"entity": "Tower 3", "exists": true}},
+    {"tick": 1999, "expect": {"counter": "leaks", "equals": 0}},
+    {"tick": 1999, "expect": {"counter": "cleared", "equals": 10}}
+  ]
+}

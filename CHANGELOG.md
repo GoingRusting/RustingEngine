@@ -40,6 +40,7 @@ Engine features for the horror game FOREVER BEAR.
 - Scene patch `set`, `remove`, `reparent` and `delete` accept `name` for the entity as well as `id`, and the project AGENTS.md shows an example (surveyor F1, unclaimed F1).
 - `scene.window_focused()` is false while the game window has lost focus (alt-tab), so a game can pause itself, and the scenario step `{"focus": false}` simulates it (FOREVER BEAR F46).
 - `rusting new --template twin-stick` creates Swarm, a twin-stick shooter with game code: move with WASD or the left stick, aim and fire with the arrows or the right stick, and defeat a wave of twelve enemies. Its `tests/wave.json` plays the first wave.
+- `rusting new --template tower-defense` creates Outpost, a tower defense game with code: build towers on four pads with keys 1 to 4, earn gold from defeated enemies, and hold the base against a wave of ten. Its `tests/defend.json` plays the wave.
 - `GameScene::add_class(name, class)` puts an object, such as a copy spawned from a classless template, in a class.
 - `rusting new --template racing` creates Circuit, a racing game with game code: drive three laps through the checkpoints in order; off the road the car is slow. Its `tests/lap.json` drives a lap.
 - `rusting new --template top-down` creates Arena, a top-down action game with game code: move, attack the enemies that chase you, and defeat all three before taking three hits. Its `tests/fight.json` plays a winning round.
