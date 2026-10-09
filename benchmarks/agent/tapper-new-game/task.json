@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a tapping game in this empty project. A counter named `time_left` starts at 10 and drops by 1 every second of game time (60 fixed ticks, so it is 9 from tick 60). While it is above 0, every tap of an input action named `tap` (the space bar) adds 1 to a counter named `score`, which starts at 0. When `time_left` reaches 0 it stays at 0, the screen says `Time up!`, and taps no longer score. Show the score and the time left on screen.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, time: &FrameTime) {\n    let left = 10 - (time.fixed_tick / 60).min(10) as i32;\n    scene.set_counter(\"time_left\", left);\n    if left == 0 {\n        scene.set_hud(\"Message\", |hud| hud.text = \"Time up!\".into());\n        return;\n    }\n    if scene.pressed(\"tap\") {\n        scene.add_to_counter(\"score\", 1);\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/taps.json"
+  ]
+}

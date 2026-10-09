@@ -1,0 +1,14 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Tap Action",
+    "components": {"rusting.input_action": {"action": "tap", "inputs": ["Space"]}}}},
+  {"op": "create", "entity": {"name": "Score",
+    "components": {"rusting.counter": {"name": "score"}}}},
+  {"op": "create", "entity": {"name": "Time Left",
+    "components": {"rusting.counter": {"name": "time_left", "value": 10}}}},
+  {"op": "create", "entity": {"name": "Score Text",
+    "components": {"rusting.hud": {"text": "Score: {score}"}}}},
+  {"op": "create", "entity": {"name": "Time Text",
+    "components": {"rusting.hud": {"text": "Time: {time_left}", "anchor": "TopRight"}}}},
+  {"op": "create", "entity": {"name": "Message",
+    "components": {"rusting.hud": {"text": ""}}}}
+]}

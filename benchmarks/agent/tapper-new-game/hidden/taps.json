@@ -1,0 +1,100 @@
+{
+ "name": "taps: each tap scores for ten seconds, the clock counts down once a second, and taps after time is up do not score",
+ "ticks": 710,
+ "steps": [
+  {
+   "tick": 5,
+   "expect": {
+    "counter": "time_left",
+    "equals": 10
+   }
+  },
+  {
+   "tick": 5,
+   "expect": {
+    "counter": "score",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 10,
+   "tap": "tap"
+  },
+  {
+   "tick": 20,
+   "tap": "tap"
+  },
+  {
+   "tick": 30,
+   "tap": "tap"
+  },
+  {
+   "tick": 40,
+   "expect": {
+    "counter": "score",
+    "equals": 3
+   }
+  },
+  {
+   "tick": 90,
+   "expect": {
+    "counter": "time_left",
+    "equals": 9
+   }
+  },
+  {
+   "tick": 330,
+   "expect": {
+    "counter": "time_left",
+    "equals": 5
+   }
+  },
+  {
+   "tick": 590,
+   "tap": "tap"
+  },
+  {
+   "tick": 595,
+   "expect": {
+    "counter": "score",
+    "equals": 4
+   }
+  },
+  {
+   "tick": 595,
+   "expect": {
+    "counter": "time_left",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 610,
+   "tap": "tap"
+  },
+  {
+   "tick": 630,
+   "tap": "tap"
+  },
+  {
+   "tick": 650,
+   "expect": {
+    "counter": "score",
+    "equals": 4
+   }
+  },
+  {
+   "tick": 650,
+   "expect": {
+    "counter": "time_left",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 700,
+   "expect": {
+    "counter": "time_left",
+    "equals": 0
+   }
+  }
+ ]
+}
