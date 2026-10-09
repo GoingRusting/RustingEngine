@@ -2582,9 +2582,10 @@ Depends on: Milestones 1, 3, and 9.
 - [ ] Focus navigation for keyboard and gamepad, and input routing between UI and gameplay.
 - [ ] Data-bound HUD elements and world-space indicators.
 - [ ] Scaling across resolutions, aspect ratios, and DPI settings.
-- [ ] Localization: translation tables, pluralization, locale switching at runtime, and extraction of translatable strings.
+- [x] Localization: translation tables, pluralization, locale switching at runtime, and extraction of translatable strings.
   - [x] Translation tables, one/other plurals and runtime locale switching. `GameScene::set_locale(locale)` reads `assets/locales/<locale>.json` (key to text) into the `Translations` resource, keeping the old locale on a bad file; `tr(key)` and `tr_count(key, count)` read it, with the key as the fallback; HUD text's `{tr:key}` placeholders follow the locale each frame and may hold counter placeholders. Verified by `set_locale_switches_translations_and_keeps_them_on_a_bad_file` and `hud_text_fills_counter_placeholders` (translated HUD text with a counter, a missing key, plurals).
-  - [ ] Per-locale plural rules beyond one/other.
+  - [x] Per-locale plural rules beyond one/other.
+    Evidence: `Translations::plural` picks the CLDR integer category for the locale's language (French 0 and 1, Russian-family and Polish one/few/many, Czech/Slovak few, CJK other) and falls back to `key.other`; `runtime::tests::hud_text_fills_counter_placeholders` checks French 0/1/2 and Russian 1, 21, 11, 3, 22, 12, 5, 0.
   - [x] Extraction of translatable strings: a CLI command that lists `{tr:key}` and `tr("key")` uses missing from each locale file.
     Evidence: `rusting lint` warns `LINT_MISSING_TRANSLATION` per key; `cli::tests::lint_flags_translation_keys_a_locale_lacks` covers `tr`, both `tr_count` forms, a HUD `{tr:key}` and a `to_str("` look-alike.
 - [ ] Accessibility: screen-reader metadata, scalable text, and color-blind-safe defaults.

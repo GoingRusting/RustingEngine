@@ -303,8 +303,11 @@ impl GameScene<'_> {
         self.translations().get(key).to_owned()
     }
 
-    /// The current locale's `key.one` when `count` is 1, else
-    /// `key.other`, with `{count}` replaced; `key` when it has none.
+    /// The current locale's `key.<form>` for `count`, with `{count}`
+    /// replaced. The form follows the locale's plural rule: `one` or
+    /// `other` in English, `one`, `few` or `many` in Russian or Polish
+    /// (`ru`, `pl`), `one` for 0 and 1 in French. Falls back to
+    /// `key.other`, then `key`.
     #[must_use]
     pub fn tr_count(&self, key: &str, count: i64) -> String {
         self.translations().plural(key, count)

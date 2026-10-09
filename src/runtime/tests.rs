@@ -3231,8 +3231,41 @@ fn hud_text_fills_counter_placeholders() {
         "Pièces 4/5 gone"
     );
     assert_eq!(french.plural("coins", 1), "1 pièce");
-    assert_eq!(french.plural("coins", 0), "0 pièces");
+    assert_eq!(french.plural("coins", 0), "0 pièce");
+    assert_eq!(french.plural("coins", 2), "2 pièces");
     assert_eq!(french.plural("lives", 2), "lives");
+    let russian = Translations {
+        locale: "ru-RU".into(),
+        strings: [
+            ("coins.one", "{count} монета"),
+            ("coins.few", "{count} монеты"),
+            ("coins.many", "{count} монет"),
+            ("lives.other", "жизни: {count}"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .into(),
+    };
+    let coins: Vec<_> = [1, 21, 11, 3, 22, 12, 5, 0]
+        .map(|n| russian.plural("coins", n))
+        .into();
+    assert_eq!(
+        coins,
+        [
+            "1 монета",
+            "21 монета",
+            "11 монет",
+            "3 монеты",
+            "22 монеты",
+            "12 монет",
+            "5 монет",
+            "0 монет"
+        ]
+    );
+    assert_eq!(
+        russian.plural("lives", 1),
+        "жизни: 1",
+        "falls back to other"
+    );
 }
 
 #[test]

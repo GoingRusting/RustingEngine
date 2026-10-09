@@ -933,17 +933,51 @@ impl Translations {
         self.strings.get(key).map_or(key, String::as_str)
     }
 
-    /// The text for `key.one` when `count` is 1, else `key.other`, with
-    /// `{count}` replaced by `count`; `key` when the table lacks it.
-    // ponytail: one/other plural forms only; add per-locale rules when a
-    // game ships a language with more forms.
+    /// The text for `key.<form>`, with `{count}` replaced by `count`,
+    /// where the form is the locale's CLDR plural category for `count`
+    /// (`one`, `few`, `many` or `other`); `key.other` when the table lacks
+    /// that form, and `key` when it lacks both.
     #[must_use]
     pub fn plural(&self, key: &str, count: i64) -> String {
-        let form = if count == 1 { "one" } else { "other" };
+        let form = plural_form(&self.locale, count);
         self.strings
             .get(&format!("{key}.{form}"))
+            .or_else(|| self.strings.get(&format!("{key}.other")))
             .map_or(key, String::as_str)
             .replace("{count}", &count.to_string())
+    }
+}
+
+/// The CLDR plural category of a whole `count` in `locale` (its language
+/// before any `-` or `_`).
+// ponytail: integer rules for the common game languages; every other
+// language uses English's one/other. Add Arabic's zero/two and Welsh when
+// a game ships them.
+fn plural_form(locale: &str, count: i64) -> &'static str {
+    let language = locale.split(['-', '_']).next().unwrap_or_default();
+    let n = count.unsigned_abs();
+    let (ten, hundred) = (n % 10, n % 100);
+    let few = (2..=4).contains(&ten) && !(12..=14).contains(&hundred);
+    match language {
+        "ja" | "zh" | "ko" | "th" | "vi" | "id" | "ms" | "tr" => "other",
+        "fr" | "pt" if n <= 1 => "one",
+        "ru" | "uk" | "be" | "sr" | "hr" | "bs" => match () {
+            () if ten == 1 && hundred != 11 => "one",
+            () if few => "few",
+            () => "many",
+        },
+        "pl" => match () {
+            () if n == 1 => "one",
+            () if few => "few",
+            () => "many",
+        },
+        "cs" | "sk" => match n {
+            1 => "one",
+            2..=4 => "few",
+            _ => "other",
+        },
+        _ if n == 1 => "one",
+        _ => "other",
     }
 }
 
