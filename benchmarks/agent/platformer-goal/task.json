@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "2d",
+  "request": "In this 2D platformer, touching the gold Goal block does nothing yet. Make it finish the level: add a counter named `cleared` that starts at 0 and becomes 1 the first time the Player touches the Goal (it never goes above 1, however long the Player stays there), and change the Help text to `Level complete!` at that moment. Keep everything else and the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Touching the goal clears the level once.\n    if scene.counter_value(\"cleared\") == 0\n        && scene.touching(\"Goal\").iter().any(|name| name == \"Player\")\n    {\n        scene.set_counter(\"cleared\", 1);\n        scene.set_hud(\"Help\", |hud| hud.text = \"Level complete!\".into());\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/platformer_run.json",
+    "hidden/goal.json"
+  ]
+}

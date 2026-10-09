@@ -1,0 +1,11 @@
+{
+ "name": "goal: touching the gold block clears the level once and says so",
+ "ticks": 90,
+ "steps": [
+  {"tick": 5, "expect": {"counter": "cleared", "equals": 0}},
+  {"tick": 10, "set": {"entity": "Player", "path": "/transform/position", "value": [8.5, 0.5, 0.0]}},
+  {"tick": 11, "within": 20, "expect": {"counter": "cleared", "equals": 1}},
+  {"tick": 85, "expect": {"counter": "cleared", "equals": 1}},
+  {"tick": 85, "expect": {"entity": "Help", "path": "/components/rusting.hud/text", "equals": "Level complete!"}}
+ ]
+}

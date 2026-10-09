@@ -1,0 +1,4 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Cleared",
+    "components": {"rusting.counter": {"name": "cleared", "value": 0}}}}
+]}
