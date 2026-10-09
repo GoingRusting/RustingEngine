@@ -194,6 +194,7 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
+- HUD buttons work from the keyboard and gamepad: Tab or the first d-pad press used to focus the HUD's own area (or a caption) instead of a button, so Enter or South clicked nothing. HUD buttons now take the focus in reading order, top to bottom and then left to right, instead of in scene-id order.
 - The runtime HUD always uses egui's dark theme. It used to follow the desktop theme, so a light desktop gave buttons a light fill under white text.
 - A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.
 - The lighting and look-and-feel guides state the light budget per quality level (64 High, 32 Balanced, 16 Eco) and which level `Auto` picks.

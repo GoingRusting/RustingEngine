@@ -2442,6 +2442,62 @@ fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
 
 #[cfg(feature = "ui")]
 #[test]
+fn hud_buttons_take_focus_in_reading_order() {
+    let mut app = App::new();
+    // Scene ids run opposite to the layout: Quit sorts first, Play last.
+    let mut button = |id: u128, text: &str, y: f32| {
+        let entity = app.spawn(HudElement {
+            text: text.into(),
+            anchor: HudAnchor::Center,
+            offset: [0.0, y],
+            button: true,
+            ..HudElement::default()
+        });
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(SceneId(uuid::Uuid::from_u128(id)));
+        entity
+    };
+    button(1, "Quit", 60.0);
+    button(2, "Options", 0.0);
+    let play = button(3, "Play", -60.0);
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    };
+    for events in [
+        vec![],
+        vec![],
+        vec![key(egui::Key::Tab)],
+        vec![],
+        vec![key(egui::Key::Enter)],
+        vec![],
+    ] {
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            });
+        app.update(Duration::from_millis(16)).unwrap();
+    }
+    let pressed: Vec<_> = app
+        .world()
+        .resource::<EventQueue<HudButtonPressed>>()
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(pressed, vec![HudButtonPressed { entity: play }]);
+}
+
+#[cfg(feature = "ui")]
+#[test]
 fn hud_draws_scene_text_and_reports_button_clicks() {
     let mut app = App::new();
     app.spawn(HudElement {

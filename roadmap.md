@@ -2973,7 +2973,9 @@ Depends on: Milestones 15 and 16 for audio and UI breadth; the existing game-fee
   - [x] Text size: `LINT_TEXT_SMALL` (see the lint item above).
   - [x] Button text contrast. `LINT_TEXT_CONTRAST` warns when `rusting.hud` button text, blended by its alpha, has a WCAG 2 contrast ratio below 4.5:1 (3:1 from 24 px) against egui's dark button fill. The runtime HUD now always uses the dark theme; it used to follow the desktop theme, so a light desktop put white text on a light fill. Needs the `ui` feature.
     - Verified: `lint_measures_hud_text_that_runs_past_the_view` flags grey, 20 % alpha white and mid-grey 18 px button text and passes white, mid-grey 28 px and dark text with no button; `the_hud_stays_dark_on_a_light_desktop` fails without the theme pin. A card-game template copy with `Card 1` text at 0.35 grey failed `rusting lint` at 1.6:1 through the real binary. All 15 templates, every sample and every RustingGames project lint with no contrast warning.
-  - [ ] Plain HUD text contrast against the scene behind it (needs a rendered frame), focus order, colour-only status, and missing captions.
+  - [x] Focus order. Checking it turned up two runtime bugs, fixed instead of linted: egui gives a fixed `Area` `Sense::click()`, so Tab and the first gamepad d-pad press focused the HUD's area (or the captions box) instead of a button, and Enter or South clicked nothing; and HUD elements drew, and so took the focus, in scene-id (UUID) order. HUD and caption areas now sense hover only, their labels are not selectable, and HUD elements draw in reading order of their anchored point (top to bottom, then left to right). No lint is needed: the order always matches the layout.
+    - Verified: `hud_buttons_take_focus_in_reading_order` (three centred buttons whose scene ids run opposite to the layout; Tab then Enter presses the top one) fails with either the area sense or the sort removed.
+  - [ ] Plain HUD text contrast against the scene behind it (needs a rendered frame), colour-only status, and missing captions.
 
 ### Exit gate
 

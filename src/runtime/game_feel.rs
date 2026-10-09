@@ -1363,7 +1363,9 @@ fn draw_captions(
         return;
     }
     let screen = context.screen_rect();
+    // Hover only, like the HUD, so captions never take focus.
     egui::Area::new(egui::Id::new("rusting.captions"))
+        .sense(egui::Sense::hover())
         .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -48.0))
         .fade_in(false)
         .order(egui::Order::Foreground)
@@ -1375,17 +1377,20 @@ fn draw_captions(
                 .corner_radius(4.0)
                 .show(ui, |ui| {
                     for line in lines {
-                        ui.label(
-                            egui::RichText::new(line)
-                                .size(settings.size)
-                                .color(egui::Color32::WHITE),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(line)
+                                    .size(settings.size)
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .selectable(false),
                         );
                     }
                 });
         });
 }
 
-/// Per frame: draws HUD elements in `SceneId` order and reports clicks.
+/// Per frame: draws HUD elements in reading order and reports clicks.
 #[cfg(feature = "ui")]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_hud(
@@ -1414,6 +1419,8 @@ pub(super) fn draw_hud(
     };
     let mut elements: Vec<_> = elements.iter().collect();
     elements.sort_by_key(|(entity, _, id)| (id.map(|id| id.0), *entity));
+    // Each shown element with its area, alignment and anchored point.
+    let mut placed = Vec::new();
     for (entity, element, _) in elements {
         if !visible(entity) {
             continue;
@@ -1459,6 +1466,19 @@ pub(super) fn draw_hud(
             element.offset[0] * inward[0],
             element.offset[1] * inward[1],
         );
+        placed.push((
+            entity,
+            element,
+            align,
+            align.pos_in_rect(&area) + offset,
+        ));
+    }
+    // Drawn in reading order, top to bottom then left to right, because
+    // egui moves keyboard and gamepad focus in drawing order.
+    placed.sort_by(|a, b| {
+        (a.3.y.total_cmp(&b.3.y)).then(a.3.x.total_cmp(&b.3.x))
+    });
+    for (entity, element, align, point) in placed {
         let [r, g, b, a] =
             element.color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
         let text =
@@ -1480,10 +1500,12 @@ pub(super) fn draw_hud(
         } else {
             egui::Vec2::ZERO
         };
-        let point = align.pos_in_rect(&area) + offset;
         let position = align.anchor_size(point, galley.size() + padding).min;
-        // No fade-in: an element shown for a few ticks would stay faint.
+        // Hover only: an area that senses clicks takes keyboard and gamepad
+        // focus ahead of its button. No fade-in: an element shown for a few
+        // ticks would stay faint.
         egui::Area::new(egui::Id::new(("rusting.hud", entity)))
+            .sense(egui::Sense::hover())
             .fixed_pos(position)
             .fade_in(false)
             .show(context, |ui| {
@@ -1494,7 +1516,7 @@ pub(super) fn draw_hud(
                 } else {
                     // Lines break only where the text says: an anchored
                     // area would otherwise wrap text that grew this frame.
-                    ui.add(egui::Label::new(text).extend());
+                    ui.add(egui::Label::new(text).extend().selectable(false));
                 }
             });
     }

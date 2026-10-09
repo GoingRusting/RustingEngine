@@ -67,7 +67,8 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 - In a window, egui keeps the clicks and keys it uses, so they do not reach
   `pressed`. A headless run passes every input to both egui and the game.
 - `rusting.hud` entities with `button: true` are egui buttons too, and work
-  the same way. `scene.clicked()` names the HUD buttons clicked since the
+  the same way. They take the focus in reading order, top to bottom and
+  then left to right, by their anchored point. `scene.clicked()` names the HUD buttons clicked since the
   last frame; `rusting recipe apply <root> pause_menu` writes a pause menu
   built from them.
 - egui paints its layers in order: `Order::Background`, `Middle`,
