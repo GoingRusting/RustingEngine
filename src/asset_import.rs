@@ -720,8 +720,8 @@ pub fn generate_asset(
     target: GenerateTarget<'_>,
     dry_run: bool,
 ) -> Result<ImportReport, AssetImportError> {
-    if hook == "sfx" && !hooks.contains_key(hook) {
-        return generate_sfx(project_root, prompt, target, dry_run);
+    if BUILTIN_GENERATORS.contains(&hook) && !hooks.contains_key(hook) {
+        return generate_builtin(project_root, hook, prompt, target, dry_run);
     }
     let config = hooks
         .get(hook)
@@ -799,16 +799,22 @@ pub fn generate_asset(
     }
 }
 
-/// The built-in `sfx` generator: `prompt` is a preset and an optional seed
-/// (`coin` or `coin 7`), synthesized by [`crate::sfx::synth`] into a WAV.
-fn generate_sfx(
+/// Generator hook names built into the engine; a project hook with the same
+/// name wins.
+pub const BUILTIN_GENERATORS: [&str; 2] = ["sfx", "texture"];
+
+/// A built-in generator: `prompt` is a preset and an optional seed (`coin`
+/// or `coin 7`). `sfx` synthesizes a WAV with [`crate::sfx::synth`];
+/// `texture` draws a tileable PNG with [`crate::texgen::synth`].
+fn generate_builtin(
     project_root: &Path,
+    hook: &str,
     prompt: &str,
     target: GenerateTarget<'_>,
     dry_run: bool,
 ) -> Result<ImportReport, AssetImportError> {
     let failed = |message: String| AssetImportError::GeneratorFailed {
-        hook: "sfx".to_owned(),
+        hook: hook.to_owned(),
         message,
     };
     let mut words = prompt.split_whitespace();
@@ -822,19 +828,32 @@ fn generate_sfx(
             )))
         }
     };
-    let samples = crate::sfx::synth(preset, seed).ok_or_else(|| {
+    let unknown = |presets: &[&str]| {
         failed(format!(
             "unknown preset `{preset}`; use one of {}",
-            crate::sfx::PRESETS.join(", ")
+            presets.join(", ")
         ))
-    })?;
+    };
     let output_dir = Staging::new("generated")?;
-    let file = output_dir.0.join(format!("{preset}_{seed}.wav"));
-    crate::audio_output::write_wav(&file, &samples).map_err(io(&file))?;
+    let file = if hook == "sfx" {
+        let samples = crate::sfx::synth(preset, seed)
+            .ok_or_else(|| unknown(&crate::sfx::PRESETS))?;
+        let file = output_dir.0.join(format!("{preset}_{seed}.wav"));
+        crate::audio_output::write_wav(&file, &samples).map_err(io(&file))?;
+        file
+    } else {
+        let image = crate::texgen::synth(preset, seed)
+            .ok_or_else(|| unknown(&crate::texgen::PRESETS))?;
+        let file = output_dir.0.join(format!("{preset}_{seed}.png"));
+        image
+            .save(&file)
+            .map_err(|error| failed(format!("could not write PNG: {error}")))?;
+        file
+    };
     let provenance = AssetProvenance {
-        original: "generator:sfx".to_owned(),
+        original: format!("generator:{hook}"),
         license: Some("CC0-1.0".to_owned()),
-        generator: Some("rusting sfx".to_owned()),
+        generator: Some(format!("rusting {hook}")),
         notes: Some(format!("preset {preset}, seed {seed}")),
         ..AssetProvenance::default()
     };
@@ -1508,6 +1527,33 @@ mod tests {
         generate("coin 7").unwrap();
         assert_eq!(std::fs::read(root.join(&made.path)).unwrap(), first);
         for bad in ["moo", "coin seven"] {
+            assert_eq!(generate(bad).unwrap_err().code(), "GENERATOR_FAILED");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_builtin_texture_generator_imports_a_seeded_cc0_png() {
+        let root = project();
+        let generate = |prompt| {
+            generate_asset(
+                &root,
+                &BTreeMap::new(),
+                "texture",
+                prompt,
+                GenerateTarget::Import {
+                    folder: Path::new("textures"),
+                },
+                false,
+            )
+        };
+        let made = generate("bricks 3").unwrap();
+        assert_eq!(made.path, "assets/textures/bricks_3.png");
+        assert_eq!(made.kind, ImportedKind::Image);
+        assert_eq!(made.size, [crate::texgen::SIZE, crate::texgen::SIZE]);
+        assert_eq!(made.source.license.as_deref(), Some("CC0-1.0"));
+        assert_eq!(made.source.notes.as_deref(), Some("preset bricks, seed 3"));
+        for bad in ["marble", "bricks three"] {
             assert_eq!(generate(bad).unwrap_err().code(), "GENERATOR_FAILED");
         }
         std::fs::remove_dir_all(root).unwrap();

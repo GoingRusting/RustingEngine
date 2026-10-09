@@ -196,7 +196,10 @@ Every `GameScene` call by need, generated from the API index
 A copied child is named `"<copy>/<child>"`. `restart` reloads the starting
 scene, and physics after it repeats the first run exactly. Sound clips are
 WAV, Ogg, MP3 or FLAC paths under `assets/`; `rusting asset generate . sfx
-"coin 7" --to sounds` makes a placeholder sound from a preset and seed.
+"coin 7" --to sounds` makes a placeholder sound from a preset and seed,
+and `rusting asset generate . texture "bricks 3" --to textures` a
+tileable 256 px texture (grid, checker, bricks, planks, tiles, noise; the
+seed picks the colour) for a material's `base_color_texture`.
 `load_scene` takes a path relative to the project folder.
 `set_field(name, path, value)` sets any scene field by the JSON pointer
 scenario `set` steps use, for example `scene.set_field("Hall",

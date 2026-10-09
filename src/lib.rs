@@ -36,6 +36,7 @@ pub mod sfx;
 pub mod steam;
 #[cfg(test)]
 pub mod tests;
+pub mod texgen;
 #[cfg(feature = "ui")]
 pub mod text_texture;
 

@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting asset generate <root> texture "bricks 3"` makes a tileable placeholder texture with no generator hook: six presets (grid, checker, bricks, planks, tiles, noise) in one shared palette, the seed picking the colour, imported as CC0 with the preset and seed in its `.rmeta` notes.
 - `benchmarks/agent/run.py --agent '<command>'` runs the benchmark tasks against any agent CLI and writes a JSON report: hidden-scenario pass rate, wall time, output size, and the agent's commands and corrective builds. `RUSTING_COMMAND_LOG=<file>` makes every `rusting` command append a JSON line with its arguments, result, diagnostic codes and duration.
 - `benchmarks/agent/` holds the first agent benchmark tasks (a new game, two bug fixes, a feature and a performance fix): a one-paragraph request, a seeded starting project and hidden acceptance scenarios each. `cargo test --test agent_benchmark -- --ignored` proves every task's hidden scenarios fail on the seeded project and pass with a reference solution.
 - Any `rusting` command takes `--offline`, and `RUSTING_OFFLINE=1` sets it for a session: builds pass `--offline` to cargo, so they use only crates already downloaded and never reach the network.
