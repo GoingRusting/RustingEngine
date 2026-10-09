@@ -1,0 +1,98 @@
+{
+  "name": "wait: on seed 1, two waits let Enemy 1 step next to the still player and then strike",
+  "ticks": 10,
+  "seed": 1,
+  "steps": [
+    {
+      "tick": 2,
+      "set": {
+        "entity": "Enemy 1",
+        "path": "/transform/position",
+        "value": [
+          1.0,
+          0.4,
+          3.0
+        ]
+      }
+    },
+    {
+      "tick": 2,
+      "set": {
+        "entity": "Enemy 2",
+        "path": "/transform/position",
+        "value": [
+          9.0,
+          0.4,
+          7.0
+        ]
+      }
+    },
+    {
+      "tick": 4,
+      "tap": "wait"
+    },
+    {
+      "tick": 5,
+      "expect": {
+        "entity": "Enemy 1",
+        "path": "/transform/position/2",
+        "equals": 2.0,
+        "tolerance": 0.01
+      }
+    },
+    {
+      "tick": 5,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": 1.0,
+        "tolerance": 0.01
+      }
+    },
+    {
+      "tick": 5,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": 1.0,
+        "tolerance": 0.01
+      }
+    },
+    {
+      "tick": 5,
+      "expect": {
+        "counter": "wounds",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 6,
+      "tap": "wait"
+    },
+    {
+      "tick": 7,
+      "expect": {
+        "counter": "wounds",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 7,
+      "expect": {
+        "entity": "Enemy 1",
+        "path": "/transform/position/2",
+        "equals": 2.0,
+        "tolerance": 0.01
+      }
+    },
+    {
+      "tick": 7,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": 1.0,
+        "tolerance": 0.01
+      }
+    }
+  ]
+}

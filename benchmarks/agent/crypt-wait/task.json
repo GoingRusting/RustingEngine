@@ -1,0 +1,26 @@
+{
+  "kind": "feature",
+  "template": "roguelike",
+  "request": "Let the player wait a turn in this roguelike. A new input action `wait`, on a key of your choice, spends a turn without moving: the player stays on their cell, and the enemies take their turn as after a step, striking if next to the player and stepping toward them otherwise. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        .map(|(_, step)| *step)\n    else {\n        return;\n    };\n",
+      "replace": "        .map(|(_, step)| *step)\n        .or(scene.pressed(\"wait\").then_some((0, 0)))\n    else {\n        return;\n    };\n"
+    },
+    {
+      "file": "src/main.rs",
+      "find": "    let (x, z) = cell(scene.object(\"Player\").position());\n    let target = (x + dx, z + dz);\n    if !open(scene, target) {\n        return;\n    }\n    if let Some(enemy) = on_cell(scene, \"enemy\", target) {\n        scene.despawn(&enemy);\n    } else {\n        place(scene, \"Player\", target);\n        if cell(scene.object(\"Stairs\").position()) == target {\n            scene.add_to_counter(\"depth\", 1);\n            return;\n        }\n    }\n\n",
+      "replace": "    if (dx, dz) != (0, 0) {\n        let (x, z) = cell(scene.object(\"Player\").position());\n        let target = (x + dx, z + dz);\n        if !open(scene, target) {\n            return;\n        }\n        if let Some(enemy) = on_cell(scene, \"enemy\", target) {\n            scene.despawn(&enemy);\n        } else {\n            place(scene, \"Player\", target);\n            if cell(scene.object(\"Stairs\").position()) == target {\n                scene.add_to_counter(\"depth\", 1);\n                return;\n            }\n        }\n    }\n\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/roguelike_descend.json",
+    "hidden/wait.json"
+  ]
+}
