@@ -183,7 +183,7 @@ Every `GameScene` call by need, generated from the API index
 | physics | `set_body_kind(name, kind)`, `set_linear_velocity(name, velocity)`, `linear_velocity(name)`, `set_angular_velocity(name, velocity)`, `angular_velocity(name)`, `reset_body(name)` |
 | player | `set_look(name, yaw, pitch)`, `set_player(name, edit)`, `player(name)`, `dash(name, velocity, seconds)` |
 | create, remove | `spawn_cube(name, transform, template)`, `spawn_sphere(name, transform, template)`, `spawn_cube_with_material(name, transform, template, material)`, `spawn_sphere_with_material(name, transform, template, material)`, `spawn_copy(template, name, position)`, `spawn_copy_at_root(template, name, transform)`, `spawn_prefab(path, name, transform)`, `despawn(name)` |
-| classes | `in_class(class)`, `has_class(entity, class)`, `add_class(name, class)` |
+| classes | `in_class(class)`, `has_class(entity, class)`, `add_class(name, class)`, `remove_class(name, class)` |
 | sound | `play_sound(clip, volume)`, `play_sound_looped(clip, volume)`, `play_sound_with(clip, sound)`, `play_sound_on(name, clip, sound)`, `set_sound_rate(id, rate, fade)`, `set_sound_position(id, position)`, `set_sound_volume(id, volume, fade)`, `pause_sound(id)`, `resume_sound(id)`, `pause_sounds(bus)`, `resume_sounds(bus)`, `seek_sound(id, seconds)`, `stop_sound(id)`, `stop_all_sounds()`, `playing_sounds()`, `sounds_requested()`, `set_master_volume(volume)`, `set_bus_volume(bus, volume, fade)`, `set_bus_effect(bus, effect, fade)`, `set_bus_voice_limit(bus, limit)`, `set_listener(name)`, `set_captions(enabled, size)` |
 | look | `set_hud(name, edit)`, `set_visible(name, visible)`, `color(name)`, `set_color(name, color)`, `set_emissive(name, emissive)`, `create_material(material)`, `set_material(name, material)`, `set_text(name, text, style)`, `set_text_in_font(name, text, style, font)`, `set_light(name, color, intensity, range)`, `set_background_color(color)`, `set_reflections(enabled)`, `set_exposure(exposure)`, `create_texture(texture)`, `edit_texture(handle, edit)` |
 | game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)` |
@@ -193,7 +193,6 @@ Every `GameScene` call by need, generated from the API index
 | video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
 | GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |
-| other | `remove_class(name, class)` |
 | on `object(name)` | `entity()`, `position()`, `set_position(position)`, `move_by(offset)`, `move_x(distance)`, `move_y(distance)`, `move_z(distance)`, `rotation()`, `scale()`, `set_rotation(rotation)`, `rotate_by(rotation)`, `rotate_x(rotation)`, `rotate_y(rotation)`, `rotate_z(rotation)`, `set_scale(scale)` |
 <!-- api-table:end -->
 
