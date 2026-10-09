@@ -571,7 +571,11 @@ impl AudioQueue {
     /// Forgets the sounds the device says have ended.
     pub fn retain_sounds(&mut self, mut playing: impl FnMut(SoundId) -> bool) {
         self.active.retain(|id, _| playing(*id));
-        self.tracked.retain(|id, _| self.active.contains_key(id));
+        // Captions stay up for their whole time even when the clip is
+        // shorter, so a short cue's caption can be read.
+        self.tracked.retain(|id, tracked| {
+            self.active.contains_key(id) || !tracked.captions.is_empty()
+        });
     }
 
     /// Takes the waiting commands; the runner calls this once per frame.
@@ -647,11 +651,9 @@ pub fn route_sound_events(world: &mut World) {
     let step = world
         .get_resource::<crate::runtime::FrameTime>()
         .map_or(1.0 / 60.0, |time| time.fixed_delta.as_secs_f64());
-    let clips: Vec<(String, f32)> = world
+    let clips: Vec<SoundEvent> = world
         .get_resource::<EventQueue<SoundEvent>>()
-        .map(|events| {
-            events.iter().map(|e| (e.clip.clone(), e.volume)).collect()
-        })
+        .map(|events| events.iter().cloned().collect())
         .unwrap_or_default();
     let Some(listener) = world
         .get_resource::<AudioQueue>()
@@ -698,12 +700,18 @@ pub fn route_sound_events(world: &mut World) {
     let Some(mut queue) = world.get_resource_mut::<AudioQueue>() else {
         return;
     };
-    for (clip, volume) in clips {
+    for event in clips {
         let sound = Sound {
-            volume,
+            volume: event.volume,
+            captions: (!event.caption.is_empty())
+                .then(|| {
+                    Caption::new(0.0, super::CUE_CAPTION_SECONDS, event.caption)
+                })
+                .into_iter()
+                .collect(),
             ..Sound::default()
         };
-        queue.play(&clip, &sound, tick);
+        queue.play(&event.clip, &sound, tick);
     }
     if let Some((position, right)) = ear {
         if queue.heard_from != Some((position, right)) {

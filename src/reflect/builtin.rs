@@ -310,6 +310,7 @@ crate::reflect! {
         clip: String { unit: "asset path", doc: "relative to assets/, or sfx:coin 7 for a built-in sound" },
         volume: f32 { unit: "linear gain", min: 0.0 },
         on_collision: bool { doc: "CPU collider contacts only" },
+        caption: String { doc: "shown for 2 s each time it fires, like [glass breaks]; empty for none" },
         #[skip] triggered: bool,
         #[skip] touching: bool,
     }

@@ -4880,6 +4880,35 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn a_sound_cue_caption_shows_for_two_seconds() {
+        let mut app = game();
+        let mut cue = crate::runtime::SoundCue {
+            clip: "sfx/glass.wav".into(),
+            caption: "[glass breaks]".into(),
+            ..Default::default()
+        };
+        cue.trigger();
+        app.world_mut().spawn(cue);
+        let report = run_scenario(
+            &mut app,
+            &scenario(
+                130,
+                json!([
+                    {"tick": 0, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": []}},
+                    {"tick": 60, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": ["[glass breaks]"]}},
+                    {"tick": 130, "expect": {"entity": "audio:",
+                        "path": "/captions", "equals": []}},
+                ]),
+            ),
+            Path::new("."),
+        );
+        assert!(report.passed, "{report:#?}");
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn the_offline_mix_reports_levels_pan_buses_and_scheduled_starts() {
         use crate::runtime::{AudioQueue, Sound};
         let directory = std::env::temp_dir()

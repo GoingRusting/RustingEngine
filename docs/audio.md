@@ -176,6 +176,10 @@ seek. A paused sound's caption hides until `resume_sound`. The HUD shows the cur
 `CaptionSettings { enabled, size }` is the resource behind the settings
 toggle. `/captions` lists the lines showing now.
 
+A `rusting.sound_cue` with a `caption` such as `[glass breaks]` shows it for
+2 s each time it fires. Captions stay up for their whole time even when the
+clip is shorter.
+
 ## Long files
 
 In a window, files over 1 MiB stream from disk while they play instead of

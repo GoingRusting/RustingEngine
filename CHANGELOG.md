@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.sound_cue` takes a `caption`, such as `[glass breaks]`, shown for 2 s each time the cue fires.
 - `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it. A `--confine` flag can narrow `RUSTING_CONFINE` but never widen it.
 - `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus `scene patch` and `fix` with `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
 - `rusting lint` warns `LINT_TEXT_CONTRAST` when HUD button text falls below WCAG contrast (4.5:1, or 3:1 from 24 px) against the button fill.
@@ -194,6 +195,7 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
+- A caption stays up for its whole time when its clip is shorter; it used to vanish when the clip ended.
 - HUD buttons work from the keyboard and gamepad: Tab or the first d-pad press used to focus the HUD's own area (or a caption) instead of a button, so Enter or South clicked nothing. HUD buttons now take the focus in reading order, top to bottom and then left to right, instead of in scene-id order.
 - The runtime HUD always uses egui's dark theme. It used to follow the desktop theme, so a light desktop gave buttons a light fill under white text.
 - A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.

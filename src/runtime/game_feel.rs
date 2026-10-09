@@ -203,6 +203,9 @@ impl Tween {
     }
 }
 
+/// How long a [`SoundCue`]'s caption shows.
+pub const CUE_CAPTION_SECONDS: f32 = 2.0;
+
 /// Sent by a [`SoundCue`] when it fires. Visible to readers on the next
 /// frame, like other events.
 #[derive(Clone, Debug, PartialEq)]
@@ -211,6 +214,8 @@ pub struct SoundEvent {
     /// Asset path of the clip, relative to the project's `assets` folder.
     pub clip: String,
     pub volume: f32,
+    /// The cue's caption, empty for none.
+    pub caption: String,
 }
 
 /// Camera trauma shake: game code adds trauma on a hit or explosion, the
@@ -487,6 +492,10 @@ pub struct SoundCue {
     pub volume: f32,
     /// Fire when this body's collider starts touching another one.
     pub on_collision: bool,
+    /// Caption shown for [`CUE_CAPTION_SECONDS`] each time it fires, such
+    /// as `[glass breaks]`; empty shows none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub caption: String,
     /// Set by [`SoundCue::trigger`]; the next fixed step fires and clears it.
     #[serde(skip)]
     pub triggered: bool,
@@ -500,6 +509,7 @@ impl Default for SoundCue {
             clip: String::new(),
             volume: 1.0,
             on_collision: true,
+            caption: String::new(),
             triggered: false,
             touching: false,
         }
@@ -1245,6 +1255,7 @@ pub(super) fn fire_sound_cues(
                 entity,
                 clip: cue.clip.clone(),
                 volume: cue.volume,
+                caption: cue.caption.clone(),
             });
         }
     }
