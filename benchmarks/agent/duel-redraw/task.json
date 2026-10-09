@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "card-game",
+  "request": "Add a mulligan to this card game. A new input action `redraw`, on a key of your choice, replaces all three cards in hand with the next three cards from the deck. It works once per duel and only before the first card is played, it does not count as a turn, and the foe does not attack for it. Count the redraws used in a counter `redraws`. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "    let clicked = scene.clicked();\n",
+      "replace": "    if scene.pressed(\"redraw\")\n        && scene.counter_or(\"turn\", 0) == 0\n        && scene.counter_or(\"redraws\", 0) == 0\n    {\n        scene.set_counter(\"redraws\", 1);\n        for slot in 1..=3 {\n            let card = draw(scene);\n            scene.set_counter(&format!(\"hand_{slot}\"), card);\n            show(scene, slot);\n        }\n        return;\n    }\n    let clicked = scene.clicked();\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/card_game_duel.json",
+    "hidden/redraw.json"
+  ]
+}

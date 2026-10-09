@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `duel-redraw`: a feature task on the card-game template, a once-per-duel mulligan.
 - Agent benchmark task `swarm-diagonal-speed`: a bug-fix task on the twin-stick template, where diagonal moves are too fast.
 - Agent benchmark task `puzzle-undo`: a feature task on the puzzle template, a one-step undo.
 - Agent benchmark task `tower-reach`: a bug-fix task on the tower-defense template, where towers ignore the Z distance to their target.

@@ -1,0 +1,4 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Action redraw",
+    "components": {"rusting.input_action": {"action": "redraw", "inputs": ["KeyM"]}}}}
+]}

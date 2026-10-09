@@ -1,0 +1,82 @@
+{
+  "name": "redraw: one mulligan before the first card swaps the hand without a turn, and a second does nothing",
+  "ticks": 12,
+  "seed": 1,
+  "steps": [
+    {
+      "tick": 2,
+      "expect": {
+        "counter": "drawn",
+        "equals": 3
+      }
+    },
+    {
+      "tick": 3,
+      "tap": "redraw"
+    },
+    {
+      "tick": 4,
+      "expect": {
+        "counter": "drawn",
+        "equals": 6
+      }
+    },
+    {
+      "tick": 4,
+      "expect": {
+        "counter": "redraws",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 4,
+      "expect": {
+        "counter": "turn",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 4,
+      "expect": {
+        "counter": "damage",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 5,
+      "tap": "redraw"
+    },
+    {
+      "tick": 6,
+      "expect": {
+        "counter": "drawn",
+        "equals": 6
+      }
+    },
+    {
+      "tick": 6,
+      "expect": {
+        "counter": "redraws",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 7,
+      "tap": "play_1"
+    },
+    {
+      "tick": 8,
+      "expect": {
+        "counter": "turn",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 8,
+      "expect": {
+        "counter": "drawn",
+        "equals": 7
+      }
+    }
+  ]
+}
