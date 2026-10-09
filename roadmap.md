@@ -305,6 +305,14 @@ share one undoable command layer.
   its children (children are named `"<copy>/<child>"` so names stay unique),
   and `GameScene::in_class` lists the objects in a class. Evidence:
   `project_runner::tests::spawn_copy_clones_the_template_tree_and_in_class_lists_it`.
+- [x] Gap (Godot `remove_from_group`): game code could put an object in a
+  class with `GameScene::add_class` but not take it out, so a hidden or
+  pooled object stayed in every loop over its class. Acceptance: removing
+  a copy from its class drops it from `in_class`, a second removal or a
+  classless object reports `false`, and the object can rejoin.
+  `GameScene::remove_class` does this. Evidence:
+  `project_runner::tests::spawn_copy_clones_the_template_tree_and_in_class_lists_it`
+  (2026-10-09).
 - [x] Gap: a patch that created a registered component with some fields
   missing failed with "missing field". Registered components now take
   defaults like built-in sections. Evidence:

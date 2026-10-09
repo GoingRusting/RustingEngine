@@ -1948,6 +1948,18 @@ impl GameScene<'_> {
             .is_some_and(|mut classes| classes.add(class))
     }
 
+    /// Takes the named object out of `class`, so loops over the class skip
+    /// it while it stays in the scene. Returns whether it was removed:
+    /// `false` when it was not in the class or does not exist.
+    pub fn remove_class(&mut self, name: &str, class: &str) -> bool {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        self.world
+            .get_mut::<crate::runtime::ObjectClasses>(entity)
+            .is_some_and(|mut classes| classes.remove(class))
+    }
+
     /// Names of the objects in `class`, sorted, so game code can loop over
     /// spawned copies. Unnamed objects are left out.
     #[must_use]
@@ -6775,6 +6787,11 @@ mod tests {
         assert_eq!(scene.name_of(copy).as_deref(), Some("Ember 1"));
         assert!(scene.has_class(copy, "ember"));
         assert!(!scene.has_class(glow, "ember"));
+        assert!(scene.remove_class("Ember 1", "ember"));
+        assert!(!scene.remove_class("Ember 1", "ember"));
+        assert!(!scene.remove_class("Glow", "ember"));
+        assert_eq!(scene.in_class("ember"), ["Ember"]);
+        assert!(scene.add_class("Ember 1", "ember"));
         assert!(scene.binding("jump").is_empty());
         scene.rebind("jump", &["Space", "PadSouth"]).unwrap();
         assert_eq!(scene.binding("jump"), ["Space", "PadSouth"]);

@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::remove_class(name, class)` takes an object out of a class, the counterpart of `add_class`.
 - Agent benchmark task `platformer-bricks`: a bug-fix task on the 2D template whose bug is a tile marked not solid in the scene.
 - Agent benchmark task `crypt-wait`: a feature task on the roguelike template, a wait action that spends a turn.
 - `RUSTING_BENCH_TASK=<folder>` limits the agent benchmark's slow validation test to one task.
