@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "twin-stick",
+  "request": "In this twin-stick shooter, the player moves faster diagonally than along one axis: holding right and down covers more ground than holding right alone. The player should move at PLAYER_SPEED in every direction. Fix it.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "        let step = PLAYER_SPEED * dt / length;",
+      "replace": "        let step = PLAYER_SPEED * dt;"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "        let step = PLAYER_SPEED * dt;",
+      "replace": "        let step = PLAYER_SPEED * dt / length;"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/twin_stick_wave.json",
+    "hidden/diagonal.json"
+  ]
+}

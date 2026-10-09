@@ -1,0 +1,66 @@
+{
+  "name": "diagonal: right and down together cover the same distance as left alone, about 0.1 m a tick",
+  "ticks": 80,
+  "steps": [
+    {
+      "tick": 0,
+      "press": "right"
+    },
+    {
+      "tick": 0,
+      "press": "down"
+    },
+    {
+      "tick": 30,
+      "release": "right"
+    },
+    {
+      "tick": 30,
+      "release": "down"
+    },
+    {
+      "tick": 35,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": 2.05,
+        "tolerance": 0.05
+      }
+    },
+    {
+      "tick": 35,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": 2.05,
+        "tolerance": 0.05
+      }
+    },
+    {
+      "tick": 40,
+      "press": "left"
+    },
+    {
+      "tick": 70,
+      "release": "left"
+    },
+    {
+      "tick": 75,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": -0.95,
+        "tolerance": 0.05
+      }
+    },
+    {
+      "tick": 75,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": 2.05,
+        "tolerance": 0.05
+      }
+    }
+  ]
+}
