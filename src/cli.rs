@@ -1684,11 +1684,26 @@ pub fn convert_scene(path: &Path, split: bool) -> CliResult {
             return Ok(());
         }
         crate::runtime::lease::check_write(path)?;
+        // Journal what the old form held, so `rusting revert` restores it.
+        let mut old = Vec::new();
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            if next.is_dir() {
+                for entry in std::fs::read_dir(&next)? {
+                    pending.push(entry?.path());
+                }
+            } else {
+                old.push((std::fs::read(&next)?, next));
+            }
+        }
         if split {
             std::fs::remove_file(path)?;
             std::fs::create_dir(path)?;
         } else {
             std::fs::remove_dir_all(path)?;
+        }
+        for (bytes, file) in &old {
+            crate::runtime::journal::record(file, Some(bytes), None)?;
         }
         crate::runtime::write_atomic(path, &bytes)
     })();
@@ -6610,6 +6625,45 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             journal_log(&root).data["journal"][0]["command"],
             format!("revert {op}")
         );
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn revert_undoes_scene_split_and_join() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-split-revert-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        create_project_from(&parent, "boxy", ProjectTemplate::Puzzle).unwrap();
+        let root = parent.join("boxy");
+        let scene = root.join("scenes/main.rscene");
+        let original = std::fs::read(&scene).unwrap();
+        let last_op = || {
+            journal_log(&root).data["journal"][0]["op"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        {
+            let _op = crate::runtime::journal::begin("scene split");
+            assert!(convert_scene(&scene, true).ok);
+        }
+        assert!(scene.is_dir());
+        assert!(revert(&root, &last_op()).ok);
+        assert_eq!(std::fs::read(&scene).unwrap(), original);
+
+        {
+            let _op = crate::runtime::journal::begin("scene split");
+            assert!(convert_scene(&scene, true).ok);
+        }
+        let folder = read_scene_bytes(&scene).unwrap();
+        {
+            let _op = crate::runtime::journal::begin("scene join");
+            assert!(convert_scene(&scene, false).ok);
+        }
+        assert!(scene.is_file());
+        assert!(revert(&root, &last_op()).ok);
+        assert!(scene.is_dir());
+        assert_eq!(read_scene_bytes(&scene).unwrap(), folder);
         std::fs::remove_dir_all(parent).unwrap();
     }
 

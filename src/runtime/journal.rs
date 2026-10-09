@@ -198,10 +198,16 @@ pub fn revert(root: &Path, op: &str) -> Result<Vec<String>, RevertError> {
         }
     }
     let _operation = begin(&format!("revert {op}"));
+    // Deletions first, so a scene turned from a file into a folder (or back)
+    // frees its path before the old form is written again.
+    files.sort_by_key(|(_, before, _)| before.is_some());
     for (file, before, _) in &files {
         let path = root.join(file);
         match before {
             Some(hash) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 super::write_atomic(&path, &std::fs::read(blob(root, hash))?)?;
             }
             None => {
@@ -209,6 +215,12 @@ pub fn revert(root: &Path, op: &str) -> Result<Vec<String>, RevertError> {
                 let old = std::fs::read(&path)?;
                 std::fs::remove_file(&path)?;
                 record(&path, Some(&old), None)?;
+                // Drop folders the operation left empty, up to the root.
+                for parent in path.ancestors().skip(1) {
+                    if parent == root || std::fs::remove_dir(parent).is_err() {
+                        break;
+                    }
+                }
             }
         }
     }

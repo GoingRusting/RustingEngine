@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting revert` undoes `scene split` and `scene join`: both now journal the old form they delete.
 - `rusting asset generate <root> texture "bricks 3"` makes a tileable placeholder texture with no generator hook: six presets (grid, checker, bricks, planks, tiles, noise) in one shared palette, the seed picking the colour, imported as CC0 with the preset and seed in its `.rmeta` notes.
 - `rusting asset generate <root> sprite "star 2"` makes a placeholder sprite the same way: one of six outlined shapes (circle, square, triangle, diamond, star, heart) on a clear 128 px background, for a `Quad` with `alpha_mode` `Blend`.
 - `benchmarks/agent/run.py --agent '<command>'` runs the benchmark tasks against any agent CLI and writes a JSON report: hidden-scenario pass rate, wall time, output size, and the agent's commands and corrective builds. `RUSTING_COMMAND_LOG=<file>` makes every `rusting` command append a JSON line with its arguments, result, diagnostic codes and duration.
