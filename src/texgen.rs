@@ -129,6 +129,97 @@ pub fn synth(preset: &str, seed: u64) -> Option<RgbaImage> {
     }))
 }
 
+/// Sprite shape names `sprite` accepts.
+pub const SPRITES: [&str; 6] =
+    ["circle", "square", "triangle", "diamond", "star", "heart"];
+
+/// Width and height of every sprite.
+pub const SPRITE_SIZE: u32 = 128;
+
+/// Signed distance in shape units (the shape spans about -1..1) from
+/// `(x, y)`, y up, to the edge of `shape`: negative inside.
+fn shape_distance(shape: &str, x: f32, y: f32) -> f32 {
+    match shape {
+        "circle" => x.hypot(y) - 0.8,
+        "square" => {
+            // Rounded square.
+            let (qx, qy) = (x.abs() - 0.6, y.abs() - 0.6);
+            qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - 0.15
+        }
+        "triangle" => {
+            // Upward triangle: the largest of three edge-line distances.
+            let side = (0.866 * x.abs() + 0.5 * y) - 0.4;
+            side.max(-y - 0.7)
+        }
+        "diamond" => (x.abs() + y.abs()) * 0.707 - 0.6,
+        "star" => {
+            // Five-pointed star (Inigo Quilez's exact distance): fold the
+            // plane into one point's wedge, then measure to its edge.
+            let (k1x, k1y) = (0.809_017_f32, -0.587_785_f32);
+            let (mut px, mut py) = (x.abs(), y);
+            let fold = 2.0 * (k1x * px + k1y * py).max(0.0);
+            (px, py) = (px - fold * k1x, py - fold * k1y);
+            let fold = 2.0 * (-k1x * px + k1y * py).max(0.0);
+            (px, py) = (px + fold * k1x, py - fold * k1y);
+            px = px.abs();
+            let (outer, inner) = (0.9, 0.45);
+            py -= outer;
+            let (bax, bay) = (inner * -k1y, inner * k1x - 1.0);
+            let h = ((px * bax + py * bay) / (bax * bax + bay * bay))
+                .clamp(0.0, outer);
+            let length = (px - bax * h).hypot(py - bay * h);
+            length * (py * bax - px * bay).signum()
+        }
+        // Heart (Inigo Quilez's exact distance), scaled to fill the sprite.
+        _ => {
+            let scale = 1.5;
+            let (px, py) = (x.abs() / scale, (y + 0.8) / scale);
+            let distance = if px + py > 1.0 {
+                (px - 0.25).hypot(py - 0.75) - std::f32::consts::SQRT_2 / 4.0
+            } else {
+                let along = 0.5 * (px + py).max(0.0);
+                px.hypot(py - 1.0).min((px - along).hypot(py - along))
+                    * (px - py).signum()
+            };
+            distance * scale
+        }
+    }
+}
+
+/// A `SPRITE_SIZE` square RGBA sprite of `shape` on a transparent
+/// background: a palette fill with a lighter top, a dark outline and
+/// antialiased edges. `None` for an unknown shape.
+#[must_use]
+pub fn sprite(shape: &str, seed: u64) -> Option<RgbaImage> {
+    if !SPRITES.contains(&shape) {
+        return None;
+    }
+    let base = PALETTE[(seed.wrapping_sub(1) % PALETTE.len() as u64) as usize];
+    let half = SPRITE_SIZE as f32 / 2.0;
+    let pixel = 1.0 / half;
+    Some(RgbaImage::from_fn(SPRITE_SIZE, SPRITE_SIZE, |px, py| {
+        let x = (px as f32 + 0.5 - half) / half;
+        let y = (half - py as f32 - 0.5) / half;
+        let distance = shape_distance(shape, x, y);
+        // Coverage of the whole shape, outline included.
+        let alpha = (0.5 - distance / pixel).clamp(0.0, 1.0);
+        // Outline is the outer 0.08 units.
+        let outline = (0.5 + (distance + 0.08) / pixel).clamp(0.0, 1.0);
+        let light = 1.0 + 0.25 * y;
+        let channel = |value: f32| {
+            let fill = (value * light).clamp(0.0, 1.0);
+            let color = fill + (value * 0.35 - fill) * outline;
+            (color * 255.0).round() as u8
+        };
+        Rgba([
+            channel(base[0]),
+            channel(base[1]),
+            channel(base[2]),
+            (alpha * 255.0).round() as u8,
+        ])
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +256,26 @@ mod tests {
             }
         }
         assert!(synth("marble", 1).is_none());
+    }
+
+    #[test]
+    fn sprites_are_shapes_on_a_clear_background() {
+        for shape in SPRITES {
+            let one = sprite(shape, 1).unwrap();
+            assert_eq!(one, sprite(shape, 1).unwrap(), "{shape} repeats");
+            assert_ne!(one, sprite(shape, 2).unwrap(), "{shape} seeds differ");
+            let at = |x, y| one.get_pixel(x, y)[3];
+            let half = SPRITE_SIZE / 2;
+            let last = SPRITE_SIZE - 1;
+            for i in 0..SPRITE_SIZE {
+                let border = [at(i, 0), at(i, last), at(0, i), at(last, i)];
+                assert_eq!(border, [0; 4], "{shape} touches the border");
+            }
+            assert_eq!(at(half, half), 255, "{shape}: the centre is solid");
+            let covered = one.pixels().filter(|p| p[3] > 127).count();
+            let share = covered as f32 / (SPRITE_SIZE * SPRITE_SIZE) as f32;
+            assert!((0.2..0.8).contains(&share), "{shape} covers {share}");
+        }
+        assert!(sprite("blob", 1).is_none());
     }
 }

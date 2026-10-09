@@ -801,11 +801,12 @@ pub fn generate_asset(
 
 /// Generator hook names built into the engine; a project hook with the same
 /// name wins.
-pub const BUILTIN_GENERATORS: [&str; 2] = ["sfx", "texture"];
+pub const BUILTIN_GENERATORS: [&str; 3] = ["sfx", "texture", "sprite"];
 
 /// A built-in generator: `prompt` is a preset and an optional seed (`coin`
 /// or `coin 7`). `sfx` synthesizes a WAV with [`crate::sfx::synth`];
-/// `texture` draws a tileable PNG with [`crate::texgen::synth`].
+/// `texture` draws a tileable PNG with [`crate::texgen::synth`], and
+/// `sprite` a transparent PNG shape with [`crate::texgen::sprite`].
 fn generate_builtin(
     project_root: &Path,
     hook: &str,
@@ -842,8 +843,13 @@ fn generate_builtin(
         crate::audio_output::write_wav(&file, &samples).map_err(io(&file))?;
         file
     } else {
-        let image = crate::texgen::synth(preset, seed)
-            .ok_or_else(|| unknown(&crate::texgen::PRESETS))?;
+        let image = if hook == "sprite" {
+            crate::texgen::sprite(preset, seed)
+                .ok_or_else(|| unknown(&crate::texgen::SPRITES))?
+        } else {
+            crate::texgen::synth(preset, seed)
+                .ok_or_else(|| unknown(&crate::texgen::PRESETS))?
+        };
         let file = output_dir.0.join(format!("{preset}_{seed}.png"));
         image
             .save(&file)
@@ -1553,6 +1559,19 @@ mod tests {
         assert_eq!(made.size, [crate::texgen::SIZE, crate::texgen::SIZE]);
         assert_eq!(made.source.license.as_deref(), Some("CC0-1.0"));
         assert_eq!(made.source.notes.as_deref(), Some("preset bricks, seed 3"));
+        let star = generate_asset(
+            &root,
+            &BTreeMap::new(),
+            "sprite",
+            "star 2",
+            GenerateTarget::Import {
+                folder: Path::new("sprites"),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(star.path, "assets/sprites/star_2.png");
+        assert_eq!(star.size, [crate::texgen::SPRITE_SIZE; 2]);
         for bad in ["marble", "bricks three"] {
             assert_eq!(generate(bad).unwrap_err().code(), "GENERATOR_FAILED");
         }

@@ -199,7 +199,10 @@ WAV, Ogg, MP3 or FLAC paths under `assets/`; `rusting asset generate . sfx
 "coin 7" --to sounds` makes a placeholder sound from a preset and seed,
 and `rusting asset generate . texture "bricks 3" --to textures` a
 tileable 256 px texture (grid, checker, bricks, planks, tiles, noise; the
-seed picks the colour) for a material's `base_color_texture`.
+seed picks the colour) for a material's `base_color_texture`;
+`sprite "star 2" --to sprites` makes a 128 px outlined shape on a clear
+background (circle, square, triangle, diamond, star, heart) for a `Quad`
+mesh with `alpha_mode` `Blend`.
 `load_scene` takes a path relative to the project folder.
 `set_field(name, path, value)` sets any scene field by the JSON pointer
 scenario `set` steps use, for example `scene.set_field("Hall",
