@@ -1,0 +1,18 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Left Action",
+    "components": {"rusting.input_action": {"action": "left", "inputs": ["ArrowLeft"]}}}},
+  {"op": "create", "entity": {"name": "Right Action",
+    "components": {"rusting.input_action": {"action": "right", "inputs": ["ArrowRight"]}}}},
+  {"op": "create", "entity": {"name": "Player",
+    "transform": {"position": [0.0, 0.5, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+      "material": {"Inline": {"base_color": [0.2, 0.6, 1.0, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Goal",
+    "transform": {"position": [3.0, 0.1, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 0.2, 1.0]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+      "material": {"Inline": {"base_color": [1.0, 0.8, 0.2, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Won",
+    "components": {"rusting.counter": {"name": "won"}}}},
+  {"op": "create", "entity": {"name": "Message",
+    "components": {"rusting.hud": {"text": ""}}}}
+]}

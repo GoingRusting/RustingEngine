@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `walker-new-game`: a new game from the empty template.
 - Agent benchmark task `racing-wide-road`: a bug fix on the racing template.
 - Agent benchmark task `tower-sell`: a feature request on the tower-defense template.
 - `rusting lint` warns `LINT_MISSING_FILE` on a literal `load_scene` path or `play_sound` clip with no file there.

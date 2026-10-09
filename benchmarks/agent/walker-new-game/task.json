@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a small walking game in this empty project. A cube named `Player` starts at x = 0 and a goal pad named `Goal` sits at x = 3. Tapping an input action named `left` (the left arrow) or `right` (the right arrow) moves the player 1 m along x per tap, never past x = -3 or x = 3. When the player reaches x = 3, a counter named `won` becomes 1 and the screen says `You win!`; taps after that change nothing. `won` starts at 0.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "const EDGE: f32 = 3.0;\n\nfn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.counter_or(\"won\", 0) == 1 {\n        return;\n    }\n    let step = match (scene.pressed(\"left\"), scene.pressed(\"right\")) {\n        (true, false) => -1.0,\n        (false, true) => 1.0,\n        _ => return,\n    };\n    let mut at = scene.object(\"Player\").position();\n    at[0] = (at[0] + step).clamp(-EDGE, EDGE);\n    scene.object(\"Player\").set_position(at);\n    if at[0] == EDGE {\n        scene.set_counter(\"won\", 1);\n        scene.set_hud(\"Message\", |hud| hud.text = \"You win!\".into());\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/walk.json"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "name": "walk: the player steps 1 m per tap, stops at the ends, and wins on the goal",
+  "ticks": 200,
+  "steps": [
+    {"tick": 5, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.001}},
+    {"tick": 5, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 10, "tap": "left"},
+    {"tick": 15, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": -1.0, "tolerance": 0.001}},
+    {"tick": 20, "tap": "left"},
+    {"tick": 30, "tap": "left"},
+    {"tick": 40, "tap": "left"},
+    {"tick": 45, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": -3.0, "tolerance": 0.001}},
+    {"tick": 50, "tap": "right"},
+    {"tick": 60, "tap": "right"},
+    {"tick": 70, "tap": "right"},
+    {"tick": 80, "tap": "right"},
+    {"tick": 90, "tap": "right"},
+    {"tick": 95, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 2.0, "tolerance": 0.001}},
+    {"tick": 95, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 100, "tap": "right"},
+    {"tick": 105, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 3.0, "tolerance": 0.001}},
+    {"tick": 105, "expect": {"counter": "won", "equals": 1}},
+    {"tick": 110, "tap": "right"},
+    {"tick": 120, "tap": "left"},
+    {"tick": 135, "expect": {"entity": "Player", "path": "/transform/position/0", "equals": 3.0, "tolerance": 0.001}},
+    {"tick": 135, "expect": {"counter": "won", "equals": 1}}
+  ]
+}
