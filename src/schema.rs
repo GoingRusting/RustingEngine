@@ -1470,6 +1470,7 @@ pub fn catalog() -> Value {
         "engine_version": env!("CARGO_PKG_VERSION"),
         "scene_format_version": SCENE_FORMAT_VERSION,
         "confine": "Any command takes --confine DIR, and RUSTING_CONFINE=DIR sets it for a whole session: the working folder, or an argument that names a path, outside DIR (after links and `..` resolve) fails with OUTSIDE_CONFINE before the command starts, and so does a project file write outside it.",
+        "command_log": "RUSTING_COMMAND_LOG=<file> makes every command append one JSON line to that file: args, ok, diagnostic codes and ms. The agent benchmark runner (benchmarks/agent/run.py) uses it to count an agent's commands and corrective builds.",
         "offline": "Any command takes --offline, and RUSTING_OFFLINE=1 sets it for a whole session: every cargo run (check, run, test, export) gets --offline, so a build uses only crates already downloaded and fails instead of reaching the network. The engine opens no connection itself; generator hooks are the project's own commands and may.",
         "read_only": {
             "summary": "Any command takes --read-only, and RUSTING_READ_ONLY=1 sets it for a whole session. Only these commands run then, and `scene patch` or `fix` with --dry-run; others fail with READ_ONLY before they start, and a file write fails the same way.",

@@ -385,6 +385,33 @@ fn offline_mode_keeps_cargo_off_the_network() {
 }
 
 #[test]
+fn the_command_log_records_every_command() {
+    let parent = temporary_parent();
+    let log = parent.join("commands.jsonl");
+    for args in [&["explain", "scene_conflict"][..], &["bogus"]] {
+        Command::new(env!("CARGO_BIN_EXE_rusting"))
+            .args(args)
+            .env("RUSTING_COMMAND_LOG", &log)
+            .output()
+            .unwrap();
+    }
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        lines[0]["args"],
+        serde_json::json!(["explain", "scene_conflict"])
+    );
+    assert_eq!(lines[0]["ok"], true);
+    assert_eq!(lines[1]["ok"], false);
+    assert_eq!(lines[1]["codes"], serde_json::json!(["CLI_USAGE"]));
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
 fn malformed_and_missing_inputs_have_json_diagnostics_and_nonzero_exit() {
     let parent = temporary_parent();
     let root = generated_project(&parent);

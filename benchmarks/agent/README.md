@@ -29,6 +29,19 @@ top of this suite.
 3. `rusting test <parent>/Task <task folder>/<hidden>` for each hidden
    scenario.
 
+## Running an agent
+
+`run.py --agent '<command>' [task folder ...]` runs every task (or the named
+ones) against any agent CLI. The command runs in the seeded project with the
+request on standard input and in `RUSTING_BENCH_REQUEST`, and the `rusting`
+under test first on `PATH`. The JSON report gives, per task, the hidden
+scenario results, wall time, agent output size, and the agent's `rusting`
+commands, failed commands, builds and corrective builds (a build right after
+a failed one), taken from `RUSTING_COMMAND_LOG`. Turns, failed edits and
+human interventions only the agent knows: a wrapper may write
+`{"turns": n, "failed_edits": n, "interventions": n}` to
+`RUSTING_BENCH_AGENT_REPORT`, and missing fields are null.
+
 ## Checks
 
 `cargo test --test agent_benchmark` checks that every task parses, its

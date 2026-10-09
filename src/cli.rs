@@ -1055,6 +1055,11 @@ pub const CONFINE_ENV: &str = "RUSTING_CONFINE";
 /// `--offline`.
 pub const OFFLINE_ENV: &str = "RUSTING_OFFLINE";
 
+/// Environment variable naming a file that every `rusting` command appends
+/// one JSON line to: its arguments, `ok`, diagnostic codes and duration.
+/// The agent benchmark runner reads it to count commands and rebuilds.
+pub const COMMAND_LOG_ENV: &str = "RUSTING_COMMAND_LOG";
+
 /// `OUTSIDE_CONFINE` when the working folder or an argument that names a path is
 /// outside `dir` (a canonical folder). An argument counts as a path when
 /// it exists or holds a path separator; any other word is at most a path

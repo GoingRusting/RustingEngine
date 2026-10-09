@@ -143,6 +143,27 @@ fn default_root(mut args: Vec<&str>) -> Vec<&str> {
 }
 
 fn execute(args: &[String]) -> CliResult {
+    let started = std::time::Instant::now();
+    let result = run_command(args);
+    if let Some(log) = std::env::var_os(cli::COMMAND_LOG_ENV) {
+        use std::io::Write;
+        let line = serde_json::json!({
+            "args": args,
+            "ok": result.ok,
+            "codes": result.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            "ms": started.elapsed().as_millis() as u64,
+        });
+        // A log that cannot be written must not fail the command.
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+            .and_then(|mut file| writeln!(file, "{line}"));
+    }
+    result
+}
+
+fn run_command(args: &[String]) -> CliResult {
     // Files written by the command are one operation in the journal.
     let _operation = rusting_engine::runtime::journal::begin(&args.join(" "));
     // The environment and every flag each limit commands; a flag can
