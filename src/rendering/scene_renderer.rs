@@ -881,6 +881,15 @@ struct BlendedInstance {
 /// Cached instance data rebuilt only when extracted render data changes.
 struct PreparedRenderInstances {
     renderables_revision: u64,
+    /// `renderables_layout_revision` the instances were packed for; while
+    /// it holds, a move only patches transforms. 0 never patches.
+    layout_revision: u64,
+    /// CPU copy of `instances`, patched when objects move.
+    packed: Vec<RenderInstanceUpload>,
+    /// Index into `RenderWorld::renderables` for each instance.
+    sources: Vec<u32>,
+    /// Mesh-space bounds for each instance that `bounds` culls.
+    local_bounds: Vec<Option<RenderBounds>>,
     flashes: Vec<(bevy_ecs::entity::Entity, [f32; 4])>,
     physics_revision: u64,
     material_revisions: Vec<(Handle<MaterialAsset>, u64)>,
@@ -919,6 +928,40 @@ struct PreparedRenderInstances {
     lod_signature: Vec<(u64, u64)>,
     /// Keys of the screen materials, each batched alone for its feed.
     screens: Vec<u64>,
+}
+
+impl PreparedRenderInstances {
+    /// Patches the transforms of the instances whose object moved, with
+    /// the same layout, and drops the visible list. Returns the bytes to
+    /// upload. Batches, order and materials stay as they were.
+    // ponytail: compares every instance's matrix; keep a moved list from
+    // extraction if 100k+ mostly static objects make this scan show up.
+    fn move_instances(&mut self, render_world: &RenderWorld) -> DeviceSize {
+        for (index, &source) in self.sources.iter().enumerate() {
+            let matrix =
+                render_world.renderables[source as usize].transform.matrix;
+            let instance = &mut self.packed[index];
+            if instance.model == matrix {
+                continue;
+            }
+            instance.model = matrix;
+            instance.normal = normal_columns(Matrix4::from(matrix));
+            if let Some(local) = self.local_bounds[index] {
+                self.bounds[index] = Some(local.transformed(&matrix));
+            }
+            if self.lod_spheres[index].is_some() {
+                self.lod_spheres[index] =
+                    Some(world_sphere(&matrix, self.cull_source[index].sphere));
+            }
+        }
+        for blended in &mut self.blended {
+            blended.position =
+                light_position(self.packed[blended.instance as usize].model);
+        }
+        self.renderables_revision = render_world.renderables_revision;
+        self.visibility = None;
+        std::mem::size_of_val(self.packed.as_slice()) as DeviceSize
+    }
 }
 
 /// Instances the main pass draws, compacted per batch.
@@ -4816,9 +4859,8 @@ impl SceneRenderer {
     /// Ten thousand cubes with the same mesh and material become one Vulkan
     /// draw call. GPU-owned objects store only their physics-buffer index here,
     /// so their changing transforms never need a CPU instance upload.
-    // ponytail: any CPU move re-sorts and repacks every instance. Patch
-    // only the moved slots if scenes with tens of thousands of CPU-moved
-    // objects show this in profiles.
+    /// When objects only moved (same layout revision), it patches their
+    /// transforms in the packed copy and uploads that, without sorting.
     fn prepare_render_instances(
         &mut self,
         render_world: &RenderWorld,
@@ -4833,9 +4875,8 @@ impl SceneRenderer {
             .map(|screen| screen.material.key())
             .collect::<Vec<_>>();
         screens.sort_unstable();
-        if self.prepared_instances.as_ref().is_some_and(|prepared| {
-            prepared.renderables_revision == render_world.renderables_revision
-                && prepared.flashes == render_world.flashes
+        let unchanged = |prepared: &PreparedRenderInstances| {
+            prepared.flashes == render_world.flashes
                 && prepared.lod_signature == lod_signature
                 && prepared.screens == screens
                 && prepared.physics_revision
@@ -4851,8 +4892,36 @@ impl SceneRenderer {
                         prepared.source_revision == *revision
                     })
                 })
-        }) {
-            return Ok(());
+        };
+        if let Some(prepared) = self
+            .prepared_instances
+            .as_mut()
+            .filter(|prepared| unchanged(prepared))
+        {
+            if prepared.renderables_revision
+                == render_world.renderables_revision
+            {
+                return Ok(());
+            }
+            if prepared.layout_revision != 0
+                && prepared.layout_revision
+                    == render_world.renderables_layout_revision
+            {
+                let bytes = prepared.move_instances(render_world);
+                let upload = self
+                    .instance_allocator
+                    .allocate_slice::<RenderInstanceUpload>(
+                        prepared.packed.len() as DeviceSize,
+                    )
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+                upload
+                    .write()
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .copy_from_slice(&prepared.packed);
+                self.counters.upload_bytes += bytes;
+                prepared.instances = upload;
+                return Ok(());
+            }
         }
 
         let mut materials = render_world
@@ -4882,10 +4951,15 @@ impl SceneRenderer {
         let mut renderables =
             Vec::with_capacity(render_world.renderables.len());
         let mut lod_ranges = Vec::with_capacity(render_world.renderables.len());
-        for renderable in &render_world.renderables {
+        let mut expanded_sources =
+            Vec::with_capacity(render_world.renderables.len());
+        for (source, renderable) in render_world.renderables.iter().enumerate()
+        {
+            let source = source as u32;
             let Some(group) = groups.get(&renderable.mesh.key()) else {
                 renderables.push(*renderable);
                 lod_ranges.push(None);
+                expanded_sources.push(source);
                 continue;
             };
             let screen_size = group.metric == LodMetric::ScreenSize;
@@ -4903,6 +4977,7 @@ impl SceneRenderer {
                     f32::from(u8::from(screen_size)),
                     0.0,
                 ]));
+                expanded_sources.push(source);
             }
         }
         let (order, batches, blended_start) = render_batch_order(
@@ -5007,6 +5082,7 @@ impl SceneRenderer {
         let mut mesh_revisions = Vec::new();
         let mut cull_source = Vec::with_capacity(order.len());
         let mut lod_spheres = Vec::with_capacity(order.len());
+        let mut local_bounds = Vec::with_capacity(order.len());
         let bounds = order
             .iter()
             .map(|&index| {
@@ -5038,8 +5114,10 @@ impl SceneRenderer {
                     world_sphere(&renderable.transform.matrix, sphere)
                 }));
                 if physics_indices.contains_key(&renderable.entity) {
+                    local_bounds.push(None);
                     return None;
                 }
+                local_bounds.push(local);
                 local.map(|local| {
                     local.transformed(&renderable.transform.matrix)
                 })
@@ -5118,9 +5196,16 @@ impl SceneRenderer {
             })
             .map(|(group, _)| group)
             .collect();
+        let sources =
+            order.iter().map(|&index| expanded_sources[index]).collect();
+        let packed = instances;
         let instances = upload;
         self.prepared_instances = Some(PreparedRenderInstances {
             renderables_revision: render_world.renderables_revision,
+            layout_revision: render_world.renderables_layout_revision,
+            packed,
+            sources,
+            local_bounds,
             flashes: render_world.flashes.clone(),
             physics_revision: render_world.gpu_physics_revision,
             material_revisions,
@@ -10982,6 +11067,65 @@ mod tests {
         }
         assert!(between(&hard) <= 1, "hard edge: {hard:?}");
         assert!(between(&soft) > between(&hard), "soft edge: {soft:?}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_move_patches_instances_without_repacking() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Two unlit cubes, both drawn; then the centered one moves out of
+        // the view under the same layout revision.
+        let unlit = MaterialAsset {
+            model: MaterialModel::Unlit,
+            ..MaterialAsset::default()
+        };
+        let mut scene = SlabScene::new(&[(0.0, unlit.clone()), (0.0, unlit)]);
+        scene.render_world.renderables_layout_revision = 1;
+        scene.render_world.renderables[0].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(-0.75, 0.0, 0.0))
+                * Matrix4::new_scaling(0.2))
+            .into();
+        scene.render_world.renderables[1].transform.matrix =
+            Matrix4::new_scaling(0.5).into();
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.center_pixel()
+        };
+        assert!(frame(&mut scene)[0] > 200);
+        assert_eq!(scene.renderer.last_frame_culled(), Some(0));
+        let sources = scene
+            .renderer
+            .prepared_instances
+            .as_ref()
+            .unwrap()
+            .sources
+            .clone();
+
+        let moved: [[f32; 4]; 4] =
+            Matrix4::new_translation(&Vector3::new(3.0, 0.0, 0.0)).into();
+        scene.render_world.renderables[1].transform.matrix = moved;
+        scene.render_world.renderables_revision += 1;
+        let center = frame(&mut scene);
+        assert!(center[0] < 20, "the moved cube left the center: {center:?}");
+        // Patched in place: same order, new matrix and bounds, so the CPU
+        // frustum test now culls the moved cube.
+        let prepared = scene.renderer.prepared_instances.as_ref().unwrap();
+        assert_eq!(prepared.sources, sources);
+        let slot = sources.iter().position(|&source| source == 1).unwrap();
+        assert_eq!(prepared.packed[slot].model, moved);
+        assert_eq!(scene.renderer.last_frame_culled(), Some(1));
     }
 
     #[test]

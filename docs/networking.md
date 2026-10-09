@@ -18,7 +18,7 @@ use rusting_engine::net::{NetEvent, NetSession, HOST};
 use rusting_engine::prelude::*;
 
 fn start_host(scene: &mut GameScene<'_>) {
-    match NetSession::host(7777) {
+    match NetSession::host(7777, "") {
         Ok(session) => scene.world().insert_resource(session),
         Err(error) => eprintln!("host failed: {error}"),
     }
@@ -26,7 +26,7 @@ fn start_host(scene: &mut GameScene<'_>) {
 
 fn start_client(scene: &mut GameScene<'_>, address: &str) {
     // A join waits up to 5 seconds for the host's answer.
-    if let Ok(session) = NetSession::join(address) {
+    if let Ok(session) = NetSession::join(address, "") {
         scene.world().insert_resource(session);
     }
 }
@@ -50,6 +50,9 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 - `broadcast(bytes)` sends to every client from the host, or to the host
   from a client.
 - `peers()` lists the host's connected clients.
+- Pass a password to `host` and the same one to `join` to keep strangers
+  out: `NetSession::host(7777, "raft")`. A wrong one fails the join with
+  `ConnectionRefused` and the message "wrong password". `""` means none.
 - Remove the resource (`scene.world().remove_resource::<NetSession>()`) to
   leave. Dropping a host session closes every client and frees the port.
 
@@ -62,13 +65,20 @@ reach:
 rusting relay 0.0.0.0:7777
 ```
 
+To expose a relay on the internet, give it a token. Hosts and clients
+without it are refused:
+
+```sh
+RUSTING_RELAY_TOKEN=long-random-string rusting relay 0.0.0.0:7777
+```
+
 The host asks the relay for a room, and players join with the code:
 
 ```rust
-let host = NetSession::host_room("relay.example.com:7777")?;
+let host = NetSession::host_room("relay.example.com:7777", TOKEN)?;
 let code = host.room_code().unwrap(); // six characters, such as "K7QXRM"
 
-let client = NetSession::join_room("relay.example.com:7777", "k7qxrm")?;
+let client = NetSession::join_room("relay.example.com:7777", "k7qxrm", TOKEN)?;
 ```
 
 Codes ignore case and leave out the look-alikes I, O, 0 and 1. The room
@@ -82,6 +92,9 @@ sessions; only the constructor differs.
   every frame.
 - No replication, prediction or rollback is built in. Send what changed
   (positions, counters) and apply it on the other side.
-- No encryption or authentication. Do not send secrets.
+- No encryption. The password and relay token travel in plain text, so
+  they keep strangers out but do not hide traffic from someone on the
+  path. Do not send other secrets.
+- The relay does not rate-limit wrong tokens. Use a long random token.
 - The wire protocol has a version (`PROTOCOL_VERSION`); a host or relay
   refuses clients built with another one.

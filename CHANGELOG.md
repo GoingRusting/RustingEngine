@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.3.0] - 2026-10-10
+
+Follow-up to 2.2.0 from Rusting Raft: animated copies, cheaper moving objects and passwords for networking.
+
+### Added
+
+- Networking passwords: a host can require a password from joining clients, and `RUSTING_RELAY_TOKEN` makes `rusting relay` refuse hosts and clients without that token, so a relay can face the internet
+
+### Changed
+
+- `NetSession::host`, `host_on` and `join` take a password, and `host_room`, `join_room` and `run_relay` a relay token, as a new last argument. Pass `""` for none
+- The network protocol version is 2. 2.2.0 games cannot join 2.3.0 hosts or relays, or the other way round
+
+### Fixed
+
+- Copies of rigged or animated models (`spawn_copy`, spawn grids) now animate: animation tracks, skin joints, ragdolls and retargeting find the copy's own bones instead of standing in bind pose. Copies of unnamed templates still have unnamed children and cannot be found by path
+
+### Performance
+
+- The renderer patches moved instances in place instead of repacking every instance: with 10,000 objects, 0.15 ms instead of 0.98 ms a frame for instance preparation
+
+### Known limits
+
+- Network passwords and relay tokens travel in plain text, and the relay does not rate-limit wrong tokens
+
+---
+
 ## [2.2.0] - 2026-10-10
 
 Engine features asked for while building the multiplayer raft game Rusting Raft.

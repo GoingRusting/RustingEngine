@@ -361,7 +361,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "relay",
         usage: "relay [address]",
-        summary: "Run a multiplayer relay until stopped. A game hosts through it with `NetSession::host_room(relay)`, which hands out a six-character room code, and players join with `NetSession::join_room(relay, code)`; the relay forwards host messages to clients and client messages to the host, so neither side needs an open port. Messages are reliable and in order (TCP). See `guide/networking`.",
+        summary: "Run a multiplayer relay until stopped. A game hosts through it with `NetSession::host_room(relay, token)`, which hands out a six-character room code, and players join with `NetSession::join_room(relay, code, token)`; the relay forwards host messages to clients and client messages to the host, so neither side needs an open port. Messages are reliable and in order (TCP). Set `RUSTING_RELAY_TOKEN` to require that token from hosts and clients before exposing the relay on the internet; unset, anyone can use it. See `guide/networking`.",
         gpu: NO_GPU,
         defaults: &[("address", "0.0.0.0:7777")],
         example: "relay 0.0.0.0:7777",

@@ -8,8 +8,8 @@
 //!
 //! ```no_run
 //! use rusting_engine::net::{NetEvent, NetSession, HOST};
-//! let host = NetSession::host(7777)?;
-//! let client = NetSession::join("127.0.0.1:7777")?;
+//! let host = NetSession::host(7777, "")?;
+//! let client = NetSession::join("127.0.0.1:7777", "")?;
 //! client.send(HOST, b"hello")?;
 //! for event in host.poll() {
 //!     if let NetEvent::Message { from, bytes } = event {
@@ -22,6 +22,10 @@
 //! Store the session as a resource from game code with
 //! `scene.world().insert_resource(session)` and read it back each frame
 //! with `scene.world().get_resource::<NetSession>()`.
+//!
+//! A host can require a password and a relay a token; an empty string
+//! means none. Both travel in plain text, so they keep strangers out of a
+//! game but do not hide traffic from someone on the path.
 
 use bevy_ecs::prelude::Resource;
 use std::collections::{BTreeMap, HashMap};
@@ -37,7 +41,7 @@ pub type PeerId = u32;
 /// The host's id.
 pub const HOST: PeerId = 0;
 /// Wire protocol version. A host or relay refuses other versions.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 /// Largest message, in bytes. Larger frames close the connection.
 pub const MAX_MESSAGE: usize = 16 << 20;
 
@@ -87,14 +91,16 @@ enum Route {
 }
 
 impl NetSession {
-    /// Hosts on `port` of every interface.
-    pub fn host(port: u16) -> io::Result<Self> {
-        Self::host_on(TcpListener::bind(("0.0.0.0", port))?)
+    /// Hosts on `port` of every interface. Clients must join with
+    /// `password`; an empty one lets anyone join.
+    pub fn host(port: u16, password: &str) -> io::Result<Self> {
+        Self::host_on(TcpListener::bind(("0.0.0.0", port))?, password)
     }
 
     /// Hosts on an already bound listener, such as one on port 0 for a
     /// free port.
-    pub fn host_on(listener: TcpListener) -> io::Result<Self> {
+    pub fn host_on(listener: TcpListener, password: &str) -> io::Result<Self> {
+        let password = password.to_owned();
         let address = listener.local_addr()?;
         let (sender, events) = channel();
         let peers = Arc::new(Mutex::new(BTreeMap::new()));
@@ -112,7 +118,7 @@ impl NetSession {
                 let Ok(stream) = stream else { continue };
                 // ponytail: handshakes run on the accept thread, so a
                 // silent client delays the next join by up to 5 seconds.
-                if handshake_client(&stream, next).is_err() {
+                if handshake_client(&stream, next, &password).is_err() {
                     continue;
                 }
                 let Ok(writer) = stream.try_clone() else {
@@ -151,10 +157,14 @@ impl NetSession {
         })
     }
 
-    /// Joins a host at `address`, such as `"192.168.1.20:7777"`.
-    pub fn join(address: impl ToSocketAddrs) -> io::Result<Self> {
+    /// Joins a host at `address`, such as `"192.168.1.20:7777"`, with the
+    /// host's password (empty if it has none).
+    pub fn join(
+        address: impl ToSocketAddrs,
+        password: &str,
+    ) -> io::Result<Self> {
         let stream = TcpStream::connect(address)?;
-        let me = request_join(&stream, "")?;
+        let me = request_join(&stream, "", password)?;
         let (sender, events) = channel();
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -174,17 +184,17 @@ impl NetSession {
 
     /// Hosts through the relay at `relay` (see [`run_relay`]). The relay
     /// hands out a room code, [`NetSession::room_code`], for clients to
-    /// join with.
-    pub fn host_room(relay: impl ToSocketAddrs) -> io::Result<Self> {
+    /// join with. `token` is the relay's token (empty if it has none).
+    pub fn host_room(
+        relay: impl ToSocketAddrs,
+        token: &str,
+    ) -> io::Result<Self> {
         let mut stream = TcpStream::connect(relay)?;
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-        write_frame(
-            &mut stream,
-            HOST_ROOM,
-            HOST,
-            &PROTOCOL_VERSION.to_le_bytes(),
-        )?;
+        let mut payload = PROTOCOL_VERSION.to_le_bytes().to_vec();
+        payload.extend(token.as_bytes());
+        write_frame(&mut stream, HOST_ROOM, HOST, &payload)?;
         let code = match read_frame(&mut stream)? {
             (ROOM, _, code) => String::from_utf8_lossy(&code).into_owned(),
             (REJECT, _, reason) => return Err(rejected(&reason)),
@@ -216,13 +226,15 @@ impl NetSession {
     }
 
     /// Joins the room `code` on the relay at `relay`. Codes ignore case.
+    /// `token` is the relay's token (empty if it has none).
     pub fn join_room(
         relay: impl ToSocketAddrs,
         code: &str,
+        token: &str,
     ) -> io::Result<Self> {
         let stream = TcpStream::connect(relay)?;
         let code = code.trim().to_ascii_uppercase();
-        let me = request_join(&stream, &code)?;
+        let me = request_join(&stream, &code, token)?;
         let (sender, events) = channel();
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -334,15 +346,20 @@ impl Drop for NetSession {
 /// Runs a relay on `listener` until it fails: hosts ask it for a room code
 /// with [`NetSession::host_room`] and clients join that code with
 /// [`NetSession::join_room`]. The relay forwards host messages to clients
-/// and client messages to the host. `rusting relay` runs one.
+/// and client messages to the host. Hosts and clients must give `token`;
+/// an empty one lets anyone in. `rusting relay` runs one.
 // ponytail: one lock over every room serialises forwarding; per-room locks
-// and a writer thread per socket if one relay serves many busy rooms.
-pub fn run_relay(listener: TcpListener) -> io::Result<()> {
+// and a writer thread per socket if one relay serves many busy rooms. No
+// rate limit on wrong tokens either; put the relay behind a firewall rule
+// or fail2ban if someone guesses at it.
+pub fn run_relay(listener: TcpListener, token: &str) -> io::Result<()> {
     let rooms = Arc::new(Mutex::new(HashMap::<String, RelayRoom>::new()));
+    let token: Arc<str> = token.into();
     for stream in listener.incoming() {
         let stream = stream?;
         let rooms = Arc::clone(&rooms);
-        std::thread::spawn(move || relay_connection(stream, &rooms));
+        let token = Arc::clone(&token);
+        std::thread::spawn(move || relay_connection(stream, &rooms, &token));
     }
     Ok(())
 }
@@ -355,25 +372,36 @@ struct RelayRoom {
 
 type Rooms = Mutex<HashMap<String, RelayRoom>>;
 
-fn relay_connection(mut stream: TcpStream, rooms: &Rooms) {
+fn relay_connection(mut stream: TcpStream, rooms: &Rooms, token: &str) {
     let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     let _ = stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
     let _ = stream.set_nodelay(true);
     let Ok((kind, _, payload)) = read_frame(&mut stream) else {
         return;
     };
-    if let Err(reason) = check_version(&payload) {
-        let _ = write_frame(&mut stream, REJECT, HOST, reason.as_bytes());
-        return;
+    let request = match kind {
+        HOST_ROOM => check_version(&payload).map(|()| (None, &payload[2..])),
+        JOIN => parse_join(&payload).map(|(code, secret)| (Some(code), secret)),
+        _ => return,
     }
-    let _ = stream.set_read_timeout(None);
-    match kind {
-        HOST_ROOM => relay_host(stream, rooms),
-        JOIN => {
-            let code = String::from_utf8_lossy(&payload[2..]).into_owned();
-            relay_client(stream, rooms, code);
+    .and_then(|(code, secret)| {
+        if same_secret(secret, token.as_bytes()) {
+            Ok(code)
+        } else {
+            Err("wrong relay token".to_owned())
         }
-        _ => {}
+    });
+    let code = match request {
+        Ok(code) => code,
+        Err(reason) => {
+            let _ = write_frame(&mut stream, REJECT, HOST, reason.as_bytes());
+            return;
+        }
+    };
+    let _ = stream.set_read_timeout(None);
+    match code {
+        None => relay_host(stream, rooms),
+        Some(code) => relay_client(stream, rooms, code),
     }
 }
 
@@ -472,7 +500,11 @@ fn room_code() -> String {
 }
 
 /// Host side of a direct join: reads JOIN, answers WELCOME or REJECT.
-fn handshake_client(stream: &TcpStream, peer: PeerId) -> io::Result<()> {
+fn handshake_client(
+    stream: &TcpStream,
+    peer: PeerId,
+    password: &str,
+) -> io::Result<()> {
     let mut stream = stream;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
@@ -480,7 +512,14 @@ fn handshake_client(stream: &TcpStream, peer: PeerId) -> io::Result<()> {
     if kind != JOIN {
         return Err(invalid("expected a join"));
     }
-    if let Err(reason) = check_version(&payload) {
+    let checked = parse_join(&payload).and_then(|(_, secret)| {
+        if same_secret(secret, password.as_bytes()) {
+            Ok(())
+        } else {
+            Err("wrong password".to_owned())
+        }
+    });
+    if let Err(reason) = checked {
         write_frame(&mut stream, REJECT, HOST, reason.as_bytes())?;
         return Err(invalid(&reason));
     }
@@ -489,12 +528,22 @@ fn handshake_client(stream: &TcpStream, peer: PeerId) -> io::Result<()> {
 }
 
 /// Client side of a join; returns the id the host or relay assigned.
-fn request_join(stream: &TcpStream, code: &str) -> io::Result<PeerId> {
+/// A JOIN carries the version, the room code's length as one byte, the
+/// code and then the password or relay token.
+fn request_join(
+    stream: &TcpStream,
+    code: &str,
+    secret: &str,
+) -> io::Result<PeerId> {
     let mut stream = stream;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    let length =
+        u8::try_from(code.len()).map_err(|_| invalid("room code too long"))?;
     let mut payload = PROTOCOL_VERSION.to_le_bytes().to_vec();
+    payload.push(length);
     payload.extend(code.as_bytes());
+    payload.extend(secret.as_bytes());
     write_frame(&mut stream, JOIN, HOST, &payload)?;
     let me = match read_frame(&mut stream)? {
         (WELCOME, me, _) => me,
@@ -518,6 +567,28 @@ fn check_version(payload: &[u8]) -> Result<(), String> {
         )),
         _ => Err("missing protocol version".into()),
     }
+}
+
+/// Splits a JOIN payload into its room code and secret.
+fn parse_join(payload: &[u8]) -> Result<(String, &[u8]), String> {
+    check_version(payload)?;
+    let rest = &payload[2..];
+    let length = usize::from(*rest.first().ok_or("missing room code")?);
+    let code = rest.get(1..=length).ok_or("short room code")?;
+    Ok((
+        String::from_utf8_lossy(code).into_owned(),
+        &rest[1 + length..],
+    ))
+}
+
+/// Compares secrets in time that does not depend on where they differ.
+fn same_secret(given: &[u8], expected: &[u8]) -> bool {
+    given.len() == expected.len()
+        && given
+            .iter()
+            .zip(expected)
+            .fold(0, |difference, (a, b)| difference | (a ^ b))
+            == 0
 }
 
 fn data_from_frame(kind: u8, peer: PeerId, bytes: Vec<u8>) -> Option<NetEvent> {
@@ -610,10 +681,10 @@ mod tests {
     fn a_direct_host_and_two_clients_exchange_messages_in_order() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let host = NetSession::host_on(listener).unwrap();
-        let first = NetSession::join(address).unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        let first = NetSession::join(address, "").unwrap();
         assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
-        let second = NetSession::join(address).unwrap();
+        let second = NetSession::join(address, "").unwrap();
         assert_eq!(wait(&host, 1), [NetEvent::Connected(2)]);
         assert_eq!((first.id(), second.id()), (1, 2));
         assert_eq!(host.peers(), [1, 2]);
@@ -647,15 +718,15 @@ mod tests {
     fn a_relay_pairs_a_host_and_a_client_by_room_code() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let relay = listener.local_addr().unwrap();
-        std::thread::spawn(move || run_relay(listener));
-        let host = NetSession::host_room(relay).unwrap();
+        std::thread::spawn(move || run_relay(listener, ""));
+        let host = NetSession::host_room(relay, "").unwrap();
         let code = host.room_code().unwrap().to_owned();
         assert_eq!(code.len(), 6);
 
-        let error = NetSession::join_room(relay, "NOROOM").err().unwrap();
+        let error = NetSession::join_room(relay, "NOROOM", "").err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
         let client =
-            NetSession::join_room(relay, &code.to_lowercase()).unwrap();
+            NetSession::join_room(relay, &code.to_lowercase(), "").unwrap();
         assert_eq!(client.id(), 1);
         assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
 
@@ -676,11 +747,40 @@ mod tests {
     fn a_host_refuses_another_protocol_version() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let _host = NetSession::host_on(listener).unwrap();
+        let _host = NetSession::host_on(listener, "").unwrap();
         let mut stream = TcpStream::connect(address).unwrap();
         write_frame(&mut stream, JOIN, HOST, &99u16.to_le_bytes()).unwrap();
         let (kind, _, reason) = read_frame(&mut stream).unwrap();
         assert_eq!(kind, REJECT);
         assert!(String::from_utf8_lossy(&reason).contains("99"));
+    }
+
+    #[test]
+    fn a_host_and_a_relay_refuse_the_wrong_secret() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "raft").unwrap();
+        for wrong in ["", "rafts", "Raft"] {
+            let error = NetSession::join(address, wrong).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+            assert_eq!(error.to_string(), "wrong password");
+        }
+        let client = NetSession::join(address, "raft").unwrap();
+        assert_eq!(client.id(), 1);
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        std::thread::spawn(move || run_relay(listener, "s3cret"));
+        let error = NetSession::host_room(relay, "").err().unwrap();
+        assert_eq!(error.to_string(), "wrong relay token");
+        let host = NetSession::host_room(relay, "s3cret").unwrap();
+        let code = host.room_code().unwrap().to_owned();
+        let error = NetSession::join_room(relay, &code, "nope").err().unwrap();
+        assert_eq!(error.to_string(), "wrong relay token");
+        assert!(host.poll().is_empty(), "a refused client never joins");
+        let client = NetSession::join_room(relay, &code, "s3cret").unwrap();
+        assert_eq!(client.id(), 1);
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
     }
 }

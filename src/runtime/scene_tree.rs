@@ -68,13 +68,16 @@ impl SceneTree<'_, '_> {
             .map_or(&[], |children| children.0.as_slice())
     }
 
-    /// The first direct child of `parent` called `name`.
+    /// The first direct child of `parent` called `name`, or, under a copy
+    /// made by `spawn_copy`, called `"<parent name>/<name>"`.
     #[must_use]
     pub fn child(&self, parent: Entity, name: &str) -> Option<Entity> {
-        self.children(parent)
-            .iter()
-            .copied()
-            .find(|&child| self.name(child) == Some(name))
+        let parent_name = self.name(parent);
+        self.children(parent).iter().copied().find(|&child| {
+            self.name(child).is_some_and(|child| {
+                super::animation::is_step(child, parent_name, name)
+            })
+        })
     }
 
     /// Follows a `/`-separated path of child names from `root`, like

@@ -8270,6 +8270,8 @@ mod tests {
         let glow = world
             .spawn((Name("Glow".into()), Transform::new([0.0, 1.0, 0.0])))
             .id();
+        let spark = world.spawn(Name("Spark".into())).id();
+        rusting_core::hierarchy::set_parent(world, spark, glow).unwrap();
         rusting_core::hierarchy::set_parent(world, glow, template).unwrap();
         rusting_core::hierarchy::set_parent(world, template, arena).unwrap();
         let mut scene = GameScene {
@@ -8278,6 +8280,23 @@ mod tests {
         let copy = scene
             .spawn_copy("Ember", "Ember 1", [3.0, 0.5, 0.0])
             .unwrap();
+        // Animation tracks and skin joints authored on the template (child
+        // paths, `..` steps) find the copy's own children.
+        let world = &*scene.world;
+        let copy_spark =
+            crate::runtime::find_target(world, copy, "Glow/Spark").unwrap();
+        assert_eq!(
+            world.get::<Name>(copy_spark).unwrap().0,
+            "Ember 1/Glow/Spark"
+        );
+        assert_eq!(
+            crate::runtime::find_target(world, copy_spark, "../../Glow"),
+            world.get::<crate::runtime::Parent>(copy_spark).map(|p| p.0)
+        );
+        assert_eq!(
+            crate::runtime::find_target(world, template, "Glow/Spark"),
+            Some(spark)
+        );
         scene.set_visible("Ember 1", true);
         assert!(scene.spawn_copy("Missing", "Ember 2", [0.0; 3]).is_none());
         assert_eq!(scene.in_class("ember"), ["Ember", "Ember 1"]);

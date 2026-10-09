@@ -1044,7 +1044,9 @@ pub fn apply_preview_pose(
 }
 
 /// The named descendant at `path` (`Arm/Hand`), or `root` for an empty path.
-/// `..` steps to the parent.
+/// `..` steps to the parent. A step also matches the
+/// `"<parent name>/<step>"` names that `spawn_copy` gives copied children,
+/// so paths authored on a template work on its copies.
 #[must_use]
 pub fn find_target(world: &World, root: Entity, path: &str) -> Option<Entity> {
     path.split('/').filter(|part| !part.is_empty()).try_fold(
@@ -1053,11 +1055,26 @@ pub fn find_target(world: &World, root: Entity, path: &str) -> Option<Entity> {
             if part == ".." {
                 return world.get::<super::Parent>(at).map(|parent| parent.0);
             }
+            let parent = world.get::<Name>(at).map(|name| name.0.as_str());
             world.get::<Children>(at)?.0.iter().copied().find(|child| {
-                world.get::<Name>(*child).is_some_and(|name| name.0 == part)
+                world
+                    .get::<Name>(*child)
+                    .is_some_and(|name| is_step(&name.0, parent, part))
             })
         },
     )
+}
+
+/// True when a child called `child`, under a parent called `parent`, is
+/// the path step `step`: its own name, or a copy's `"<parent>/<step>"`.
+pub(crate) fn is_step(child: &str, parent: Option<&str>, step: &str) -> bool {
+    child == step
+        || parent.is_some_and(|parent| {
+            child
+                .strip_prefix(parent)
+                .and_then(|rest| rest.strip_prefix('/'))
+                == Some(step)
+        })
 }
 
 fn apply(world: &mut World, root: Entity, write: Write) {

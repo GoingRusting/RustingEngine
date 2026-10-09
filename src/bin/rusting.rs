@@ -1632,7 +1632,10 @@ fn main() {
         let result =
             std::net::TcpListener::bind(address).and_then(|listener| {
                 eprintln!("relay listening on {}", listener.local_addr()?);
-                rusting_engine::net::run_relay(listener)
+                rusting_engine::net::run_relay(
+                    listener,
+                    &std::env::var("RUSTING_RELAY_TOKEN").unwrap_or_default(),
+                )
             });
         if let Err(error) = result {
             eprintln!("relay on {address}: {error}");
