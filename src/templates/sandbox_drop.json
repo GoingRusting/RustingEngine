@@ -1,0 +1,10 @@
+{
+  "name": "drop: the balls fall and land on the pile, not through the floor",
+  "ticks": 300,
+  "steps": [
+    {"tick": 60, "expect": {"entity": "Ball 1", "path": "/transform/position/1", "less_than": 5.0}},
+    {"tick": 300, "expect": {"entity": "Ball 1", "path": "/transform/position/1", "greater_than": 0.45}},
+    {"tick": 300, "expect": {"entity": "Ball 2", "path": "/transform/position/1", "less_than": 7.0}},
+    {"tick": 300, "expect": {"entity": "Ball 2", "path": "/transform/position/1", "greater_than": 0.45}}
+  ]
+}

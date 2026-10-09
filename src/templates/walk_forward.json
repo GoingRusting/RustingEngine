@@ -1,0 +1,11 @@
+{
+  "name": "walk: holding forward walks the player away from the start, and a jump lifts them",
+  "ticks": 120,
+  "steps": [
+    {"tick": 1, "press": "player.forward"},
+    {"tick": 60, "expect": {"entity": "Player", "path": "/transform/position/2", "less_than": 3.0}},
+    {"tick": 61, "release": "player.forward"},
+    {"tick": 70, "tap": "player.jump"},
+    {"tick": 72, "within": 100, "expect": {"entity": "Player", "path": "/transform/position/1", "greater_than": 1.5}}
+  ]
+}

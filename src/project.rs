@@ -796,6 +796,15 @@ fn write_project_template(
         ProjectTemplate::Rhythm => {
             Some(("song.json", include_str!("templates/rhythm_song.json")))
         }
+        ProjectTemplate::Platformer2d => {
+            Some(("run.json", include_str!("templates/platformer_run.json")))
+        }
+        ProjectTemplate::FirstPerson3d | ProjectTemplate::ThirdPerson3d => {
+            Some(("walk.json", include_str!("templates/walk_forward.json")))
+        }
+        ProjectTemplate::PhysicsSandbox => {
+            Some(("drop.json", include_str!("templates/sandbox_drop.json")))
+        }
         _ => None,
     };
     if let Some((file, text)) = scenario {
@@ -3334,6 +3343,32 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
         ) -> Result<(), crate::runtime::AppError> {
             app.add_system(crate::runtime::ScheduleStage::Update, self.0);
             Ok(())
+        }
+    }
+
+    #[test]
+    fn the_controller_templates_ship_scenarios_that_pass() {
+        for (template, file) in [
+            (ProjectTemplate::Platformer2d, "run.json"),
+            (ProjectTemplate::FirstPerson3d, "walk.json"),
+            (ProjectTemplate::ThirdPerson3d, "walk.json"),
+            (ProjectTemplate::PhysicsSandbox, "drop.json"),
+        ] {
+            let parent = std::env::temp_dir()
+                .join(format!("rusting-controller-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&parent).unwrap();
+            let project =
+                create_project_from(&parent, "Walker", template).unwrap();
+            // These templates ship no game code; the scene's controllers
+            // and physics play the scenario.
+            crate::project_runner::run_project_scenario(
+                project.scene_path.clone(),
+                TemplateUpdate(|_| {}),
+                project.root.join("tests").join(file),
+                Some(project.root.join("report.json")),
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", template.name()));
+            let _ = std::fs::remove_dir_all(parent);
         }
     }
 

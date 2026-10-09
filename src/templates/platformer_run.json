@@ -1,0 +1,10 @@
+{
+  "name": "run: holding right and jumping carries the player over the first bricks",
+  "ticks": 60,
+  "steps": [
+    {"tick": 1, "press": "player.right"},
+    {"tick": 5, "tap": "player.jump"},
+    {"tick": 7, "within": 30, "expect": {"entity": "Player", "path": "/transform/position/1", "greater_than": 1.5}},
+    {"tick": 50, "expect": {"entity": "Player", "path": "/transform/position/0", "greater_than": -5.0}}
+  ]
+}
