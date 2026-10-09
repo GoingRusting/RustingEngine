@@ -1305,6 +1305,37 @@ impl GameScene<'_> {
         (left as f64 * time.fixed_delta.as_secs_f64()) as f32
     }
 
+    /// Puts the status `effect` (such as `"poisoned"` or `"stunned"`) on
+    /// the named object for `seconds` of game time. A longer remaining
+    /// time is kept, so reapplying refreshes but never shortens. Statuses
+    /// are cooldowns in the counter `"<object>/<effect>"`, so they count
+    /// fixed ticks and snapshots and [`Self::save_counters`] keep them.
+    pub fn add_status(&mut self, object: &str, effect: &str, seconds: f32) {
+        let key = format!("{object}/{effect}");
+        if self.cooldown_left(&key) < seconds {
+            self.start_cooldown(&key, seconds);
+        }
+    }
+
+    /// Whether the named object has the status `effect`. See
+    /// [`Self::add_status`].
+    #[must_use]
+    pub fn has_status(&self, object: &str, effect: &str) -> bool {
+        self.status_left(object, effect) > 0.0
+    }
+
+    /// Seconds left on the status `effect` of the named object, 0 when it
+    /// has none.
+    #[must_use]
+    pub fn status_left(&self, object: &str, effect: &str) -> f32 {
+        self.cooldown_left(&format!("{object}/{effect}"))
+    }
+
+    /// Ends the status `effect` on the named object early.
+    pub fn clear_status(&mut self, object: &str, effect: &str) {
+        self.set_counter(&format!("{object}/{effect}"), 0);
+    }
+
     fn frame_time(&self) -> FrameTime {
         self.world
             .get_resource::<FrameTime>()
@@ -7281,6 +7312,28 @@ mod tests {
         }
         assert!(before.iter().any(|(_, v)| v.contains("chase")));
         assert_eq!(apply_object_save(&mut loaded, r#"{"version": 1}"#), None);
+    }
+
+    #[test]
+    fn statuses_last_their_duration_and_reapplying_never_shortens() {
+        let mut world = World::new();
+        world.insert_resource(FrameTime::default());
+        let mut scene = GameScene { world: &mut world };
+        scene.add_status("Orc", "poisoned", 1.0);
+        scene.add_status("Orc", "poisoned", 0.5);
+        assert!((scene.status_left("Orc", "poisoned") - 1.0).abs() < 1e-3);
+        assert!(!scene.has_status("Goblin", "poisoned"));
+        let ticks = (1.0 / FrameTime::default().fixed_delta.as_secs_f64())
+            .ceil() as u64;
+        world.resource_mut::<FrameTime>().fixed_tick = ticks - 1;
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.has_status("Orc", "poisoned"));
+        scene.add_status("Orc", "stunned", 2.0);
+        scene.clear_status("Orc", "stunned");
+        assert!(!scene.has_status("Orc", "stunned"));
+        world.resource_mut::<FrameTime>().fixed_tick = ticks;
+        let scene = GameScene { world: &mut world };
+        assert!(!scene.has_status("Orc", "poisoned"));
     }
 
     #[test]

@@ -708,7 +708,18 @@ const API_GROUPS: &[(&str, &[&str])] = &[
         &["cooldown_ready", "start_cooldown", "cooldown_left"],
     ),
     ("state machines", &["set_state", "state", "state_seconds"]),
-    ("health", &["damage", "health", "same_team"]),
+    (
+        "health",
+        &[
+            "damage",
+            "health",
+            "same_team",
+            "add_status",
+            "has_status",
+            "status_left",
+            "clear_status",
+        ],
+    ),
     (
         "input",
         &[

@@ -179,7 +179,7 @@ Every `GameScene` call by need, generated from the API index
 | counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
 | cooldowns | `cooldown_ready(name)`, `start_cooldown(name, seconds)`, `cooldown_left(name)` |
 | state machines | `set_state(name, state)`, `state(name)`, `state_seconds(name)` |
-| health | `damage(name, amount)`, `health(name)`, `same_team(a, b)` |
+| health | `damage(name, amount)`, `health(name)`, `same_team(a, b)`, `add_status(object, effect, seconds)`, `has_status(object, effect)`, `status_left(object, effect)`, `clear_status(object, effect)` |
 | input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
 | rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
 | cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |
