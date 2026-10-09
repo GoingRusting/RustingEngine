@@ -1,0 +1,26 @@
+{
+  "kind": "feature",
+  "template": "puzzle",
+  "request": "Add an undo to this box-pushing puzzle. A new input action `undo`, on a key of your choice, takes back the player's last move: the player returns to the cell they came from, a box that move pushed returns too, and the `boxes` counter follows. Undo before any move does nothing. One step of undo is enough. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "pub fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n",
+      "replace": "pub fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.pressed(\"undo\") {\n        undo(scene);\n        return;\n    }\n"
+    },
+    {
+      "file": "src/main.rs",
+      "find": "    let player = scene.object(\"Player\").position();\n    let (x, z) = cell(player);\n    let next = (x + dx, z + dz);\n    if on_cell(scene, \"wall\", next).is_some() {\n        return;\n    }\n    if let Some(pushed) = on_cell(scene, \"box\", next) {\n        let beyond = (next.0 + dx, next.1 + dz);\n        if on_cell(scene, \"wall\", beyond).is_some()\n            || on_cell(scene, \"box\", beyond).is_some()\n        {\n            return;\n        }\n        let y = scene.object(&pushed).position()[1];\n        scene.object(&pushed).set_position([\n            beyond.0 as f32,\n            y,\n            beyond.1 as f32,\n        ]);\n    }\n    scene.object(\"Player\").set_position([\n        next.0 as f32,\n        player[1],\n        next.1 as f32,\n    ]);\n    let goals: Vec<_> = scene\n        .in_class(\"goal\")\n        .into_iter()\n        .map(|goal| cell(scene.object(&goal).position()))\n        .collect();\n    let solved = scene\n        .in_class(\"box\")\n        .into_iter()\n        .filter(|name| goals.contains(&cell(scene.object(name).position())))\n        .count();\n    scene.set_counter(\"boxes\", solved as i32);\n}\n\n",
+      "replace": "    let player = scene.object(\"Player\").position();\n    let (x, z) = cell(player);\n    let next = (x + dx, z + dz);\n    if on_cell(scene, \"wall\", next).is_some() {\n        return;\n    }\n    let mut pushed_box = 0;\n    if let Some(pushed) = on_cell(scene, \"box\", next) {\n        let beyond = (next.0 + dx, next.1 + dz);\n        if on_cell(scene, \"wall\", beyond).is_some()\n            || on_cell(scene, \"box\", beyond).is_some()\n        {\n            return;\n        }\n        let y = scene.object(&pushed).position()[1];\n        scene.object(&pushed).set_position([\n            beyond.0 as f32,\n            y,\n            beyond.1 as f32,\n        ]);\n        pushed_box = 1;\n    }\n    scene.object(\"Player\").set_position([\n        next.0 as f32,\n        player[1],\n        next.1 as f32,\n    ]);\n    scene.set_counter(\"last_dx\", dx);\n    scene.set_counter(\"last_dz\", dz);\n    scene.set_counter(\"last_push\", pushed_box);\n    count_boxes(scene);\n}\n\n/// Takes back the last move, once.\nfn undo(scene: &mut GameScene<'_>) {\n    let (dx, dz) = (scene.counter_or(\"last_dx\", 0), scene.counter_or(\"last_dz\", 0));\n    if (dx, dz) == (0, 0) {\n        return;\n    }\n    let player = scene.object(\"Player\").position();\n    let (x, z) = cell(player);\n    if scene.counter_or(\"last_push\", 0) == 1 {\n        if let Some(pushed) = on_cell(scene, \"box\", (x + dx, z + dz)) {\n            let y = scene.object(&pushed).position()[1];\n            scene.object(&pushed).set_position([x as f32, y, z as f32]);\n        }\n    }\n    scene.object(\"Player\").set_position([\n        (x - dx) as f32,\n        player[1],\n        (z - dz) as f32,\n    ]);\n    scene.set_counter(\"last_dx\", 0);\n    scene.set_counter(\"last_dz\", 0);\n    count_boxes(scene);\n}\n\nfn count_boxes(scene: &mut GameScene<'_>) {\n    let goals: Vec<_> = scene\n        .in_class(\"goal\")\n        .into_iter()\n        .map(|goal| cell(scene.object(&goal).position()))\n        .collect();\n    let solved = scene\n        .in_class(\"box\")\n        .into_iter()\n        .filter(|name| goals.contains(&cell(scene.object(name).position())))\n        .count();\n    scene.set_counter(\"boxes\", solved as i32);\n}\n\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/puzzle_solve.json",
+    "hidden/undo.json"
+  ]
+}

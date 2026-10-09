@@ -1,0 +1,104 @@
+{
+  "name": "undo: takes back a step and a push, and the boxes counter follows",
+  "ticks": 40,
+  "steps": [
+    {
+      "tick": 5,
+      "tap": "undo"
+    },
+    {
+      "tick": 6,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": -2.0
+      }
+    },
+    {
+      "tick": 8,
+      "tap": "right"
+    },
+    {
+      "tick": 11,
+      "tap": "right"
+    },
+    {
+      "tick": 12,
+      "expect": {
+        "entity": "Box 1",
+        "path": "/transform/position/0",
+        "equals": 1.0
+      }
+    },
+    {
+      "tick": 14,
+      "tap": "undo"
+    },
+    {
+      "tick": 15,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/0",
+        "equals": -1.0
+      }
+    },
+    {
+      "tick": 15,
+      "expect": {
+        "entity": "Box 1",
+        "path": "/transform/position/0",
+        "equals": 0.0
+      }
+    },
+    {
+      "tick": 20,
+      "tap": "up"
+    },
+    {
+      "tick": 23,
+      "tap": "right"
+    },
+    {
+      "tick": 26,
+      "tap": "down"
+    },
+    {
+      "tick": 29,
+      "tap": "down"
+    },
+    {
+      "tick": 31,
+      "expect": {
+        "counter": "boxes",
+        "equals": 1
+      }
+    },
+    {
+      "tick": 32,
+      "tap": "undo"
+    },
+    {
+      "tick": 34,
+      "expect": {
+        "counter": "boxes",
+        "equals": 0
+      }
+    },
+    {
+      "tick": 34,
+      "expect": {
+        "entity": "Box 1",
+        "path": "/transform/position/2",
+        "equals": 0.0
+      }
+    },
+    {
+      "tick": 34,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/2",
+        "equals": -1.0
+      }
+    }
+  ]
+}
