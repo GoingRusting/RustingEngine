@@ -3201,9 +3201,38 @@ fn hud_text_fills_counter_placeholders() {
     };
     let counters = [(&coins, None)];
     assert_eq!(
-        hud_text("Coins {coins}/5 {missing} {", counters.iter().copied()),
+        hud_text(
+            "Coins {coins}/5 {missing} {",
+            counters.iter().copied(),
+            None
+        ),
         "Coins 4/5 {missing} {"
     );
+    assert_eq!(
+        hud_text("{tr:hud.coins}", counters.iter().copied(), None),
+        "hud.coins"
+    );
+    let french = Translations {
+        locale: "fr".into(),
+        strings: [
+            ("hud.coins", "Pièces {coins}/5"),
+            ("coins.one", "{count} pièce"),
+            ("coins.other", "{count} pièces"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .into(),
+    };
+    assert_eq!(
+        hud_text(
+            "{tr:hud.coins} {tr:gone}",
+            counters.iter().copied(),
+            Some(&french)
+        ),
+        "Pièces 4/5 gone"
+    );
+    assert_eq!(french.plural("coins", 1), "1 pièce");
+    assert_eq!(french.plural("coins", 0), "0 pièces");
+    assert_eq!(french.plural("lives", 2), "lives");
 }
 
 #[test]

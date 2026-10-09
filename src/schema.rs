@@ -964,7 +964,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.hud",
-        summary: "Text label or button drawn over the game view. offset points inward from the anchor, in logical pixels, and the text is measured after {counter} values are filled in, so right and bottom anchors keep their margin. A clicked button sends HudButtonPressed.",
+        summary: "Text label or button drawn over the game view. offset points inward from the anchor, in logical pixels, and {tr:key} shows the current locale's text for key (scene.set_locale reads assets/locales/<locale>.json) and may itself hold {counter} placeholders; the text is measured after {counter} values are filled in, so right and bottom anchors keep their margin. A clicked button sends HudButtonPressed.",
         gpu: "a few egui triangles",
         example: || json!({"text": "Score: 0", "anchor": "TopRight", "offset": [24.0, 24.0], "font_size": 24.0, "color": [1.0, 0.9, 0.4, 1.0], "button": false, "requires": null, "camera": null}),
     },

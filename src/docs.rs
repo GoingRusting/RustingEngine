@@ -915,6 +915,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "set_window_size",
         ],
     ),
+    ("translations", &["set_locale", "locale", "tr", "tr_count"]),
     ("tiles, fields", &["tile", "set_tile", "set_field"]),
     (
         "GPU bodies",

@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Localization: `GameScene::set_locale(locale)` loads `assets/locales/<locale>.json`, `tr(key)` and `tr_count(key, count)` read it, and HUD text's `{tr:key}` placeholders follow the locale.
 - `GameScene::saved_keys(folder)` lists the save files in a user data folder, for a load menu's save slots.
 - The component `rusting.loot_table` holds a weighted loot table on a named object, editable in the inspector, and `GameScene::roll_loot_table(name, stream)` rolls it from the run's seed.
 - `rusting.state` takes `actions` (`state`, `exit`, `counter`, `add`), which add to a counter when a state is entered or left, by a transition or `set_state`.
@@ -272,6 +273,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Changed
 
+- `runtime::hud_text` takes a third argument, the `Translations` to fill `{tr:key}` from; pass `None` to keep the old behaviour.
 - `ObjectState` has a new `transitions` field and no longer implements `Eq`. Migration: struct literals add `..Default::default()`.
 - `GameScene::save_data` writes through a temporary file and a rename, so a crash mid-save keeps the previous file.
 - `rusting_core::schedule::CpuFrameTimings` has new `update` and `post_update` fields. Migration: a struct literal needs `..Default::default()`. The `RUSTING_PERF` line says `CPU fixed` where it said `CPU physics`.

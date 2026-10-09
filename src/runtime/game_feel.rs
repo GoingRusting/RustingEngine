@@ -917,24 +917,71 @@ pub(crate) fn find_counter<'a, C: std::ops::Deref<Target = Counter>>(
         .map(|(counter, _)| counter)
 }
 
-/// Replaces every `{name}` whose name is a counter with its value.
+/// The current locale's strings, set by `GameScene::set_locale` from
+/// `assets/locales/<locale>.json`, a flat JSON object of key to text.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Translations {
+    pub locale: String,
+    pub strings: std::collections::BTreeMap<String, String>,
+}
+
+impl Translations {
+    /// The text for `key`, or `key` itself when the table lacks it, so a
+    /// missing translation shows where it is missing.
+    #[must_use]
+    pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
+        self.strings.get(key).map_or(key, String::as_str)
+    }
+
+    /// The text for `key.one` when `count` is 1, else `key.other`, with
+    /// `{count}` replaced by `count`; `key` when the table lacks it.
+    // ponytail: one/other plural forms only; add per-locale rules when a
+    // game ships a language with more forms.
+    #[must_use]
+    pub fn plural(&self, key: &str, count: i64) -> String {
+        let form = if count == 1 { "one" } else { "other" };
+        self.strings
+            .get(&format!("{key}.{form}"))
+            .map_or(key, String::as_str)
+            .replace("{count}", &count.to_string())
+    }
+}
+
+/// Replaces every `{tr:key}` with its translation, then every `{name}`
+/// whose name is a counter with its value, so a translation can hold
+/// counter placeholders.
 #[must_use]
 pub fn hud_text<'a>(
     text: &str,
     counters: impl Iterator<Item = (&'a Counter, Option<&'a SceneId>)> + Clone,
+    translations: Option<&Translations>,
+) -> String {
+    let translated = fill_placeholders(text, |name| {
+        let key = name.strip_prefix("tr:")?;
+        Some(translations.map_or(key, |t| t.get(key)).to_owned())
+    });
+    fill_placeholders(&translated, |name| {
+        find_counter(counters.clone(), name)
+            .map(|counter| counter.value.to_string())
+    })
+}
+
+/// Replaces every `{name}` that `value` knows; leaves the rest as written.
+fn fill_placeholders(
+    text: &str,
+    value: impl Fn(&str) -> Option<String>,
 ) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(open) = rest.find('{') {
         out.push_str(&rest[..open]);
         let after = &rest[open + 1..];
-        let counter = after.find('}').and_then(|close| {
-            find_counter(counters.clone(), &after[..close])
-                .map(|counter| (counter.value, close))
-        });
-        match counter {
-            Some((value, close)) => {
-                out.push_str(&value.to_string());
+        let filled = after
+            .find('}')
+            .and_then(|close| value(&after[..close]).map(|text| (text, close)));
+        match filled {
+            Some((text, close)) => {
+                out.push_str(&text);
                 rest = &after[close + 1..];
             }
             None => {
@@ -1658,6 +1705,7 @@ pub(super) fn draw_hud(
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
+    translations: Option<Res<Translations>>,
 ) {
     draw_perf_overlay(ui.context(), perf.as_deref());
     draw_captions(
@@ -1737,10 +1785,13 @@ pub(super) fn draw_hud(
     for (entity, element, align, point) in placed {
         let [r, g, b, a] =
             element.color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
-        let text =
-            egui::RichText::new(hud_text(&element.text, counters.iter()))
-                .size(element.font_size)
-                .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
+        let text = egui::RichText::new(hud_text(
+            &element.text,
+            counters.iter(),
+            translations.as_deref(),
+        ))
+        .size(element.font_size)
+        .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
         // Measure this frame's text: an anchored egui area places itself by
         // last frame's size, so a value that grew ran past the edge.
         let context = ui.context();

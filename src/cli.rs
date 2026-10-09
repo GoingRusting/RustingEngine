@@ -3120,6 +3120,9 @@ fn lint_scene(
             let text = crate::runtime::hud_text(
                 &hud.text,
                 counters.iter().map(|counter| (counter, None)),
+                // ponytail: measures `{tr:key}` as the key; measure each
+                // locale when games ship translations.
+                None,
             );
             let overflow = measure(&text, hud.font_size).and_then(|size| {
                 let fraction = |anchor: f32, view: f32| anchor / view;

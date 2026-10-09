@@ -266,6 +266,58 @@ impl GameScene<'_> {
         std::fs::read_to_string(self.assets_folder().join(path))
     }
 
+    /// Switches to the translations in `assets/locales/<locale>.json`, a
+    /// flat JSON object of key to text, so [`Self::tr`] and HUD
+    /// `{tr:key}` placeholders read them from the next frame. Warns and
+    /// returns `false`, keeping the current locale, when the file is
+    /// missing or not such an object.
+    pub fn set_locale(&mut self, locale: &str) -> bool {
+        let path = format!("locales/{locale}.json");
+        let strings = self.load_text(&path).ok().and_then(|text| {
+            serde_json::from_str::<std::collections::BTreeMap<String, String>>(
+                &text,
+            )
+            .ok()
+        });
+        let Some(strings) = strings else {
+            eprintln!("warning: `assets/{path}` is not a translation table");
+            return false;
+        };
+        self.world.insert_resource(crate::runtime::Translations {
+            locale: locale.to_owned(),
+            strings,
+        });
+        true
+    }
+
+    /// The locale [`Self::set_locale`] last switched to, or `""`.
+    #[must_use]
+    pub fn locale(&self) -> String {
+        self.translations().locale.clone()
+    }
+
+    /// The current locale's text for `key`, or `key` itself when it has
+    /// none.
+    #[must_use]
+    pub fn tr(&self, key: &str) -> String {
+        self.translations().get(key).to_owned()
+    }
+
+    /// The current locale's `key.one` when `count` is 1, else
+    /// `key.other`, with `{count}` replaced; `key` when it has none.
+    #[must_use]
+    pub fn tr_count(&self, key: &str, count: i64) -> String {
+        self.translations().plural(key, count)
+    }
+
+    fn translations(
+        &self,
+    ) -> std::borrow::Cow<'_, crate::runtime::Translations> {
+        self.world
+            .get_resource::<crate::runtime::Translations>()
+            .map_or_else(Default::default, std::borrow::Cow::Borrowed)
+    }
+
     fn assets_folder(&self) -> PathBuf {
         self.world
             .get_resource::<ProjectFolder>()
@@ -7378,6 +7430,33 @@ mod tests {
         assert_eq!(scene.counter_value("chasers"), 1);
         assert!(scene.set_state("Enemy", "patrol"));
         assert_eq!(scene.counter_value("chasers"), 0);
+    }
+
+    #[test]
+    fn set_locale_switches_translations_and_keeps_them_on_a_bad_file() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-locale-{}", uuid::Uuid::new_v4()));
+        let locales = folder.join("assets/locales");
+        std::fs::create_dir_all(&locales).unwrap();
+        std::fs::write(
+            locales.join("de.json"),
+            r#"{"menu.play": "Spielen", "lives.one": "{count} Leben", "lives.other": "{count} Leben!"}"#,
+        )
+        .unwrap();
+        std::fs::write(locales.join("bad.json"), "[1]").unwrap();
+        let mut world = World::new();
+        world.insert_resource(ProjectFolder(folder.clone()));
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.tr("menu.play"), "menu.play");
+        assert!(scene.set_locale("de"));
+        assert_eq!(scene.tr("menu.play"), "Spielen");
+        assert_eq!(scene.tr_count("lives", 1), "1 Leben");
+        assert_eq!(scene.tr_count("lives", 3), "3 Leben!");
+        assert!(!scene.set_locale("bad"));
+        assert!(!scene.set_locale("missing"));
+        assert_eq!(scene.locale(), "de");
+        assert_eq!(scene.tr("menu.play"), "Spielen");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]
