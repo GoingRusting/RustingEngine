@@ -405,6 +405,54 @@ struct Tracked {
     pitch: f32,
 }
 
+/// Gives a bus a room's reverb while the listener is inside this entity's
+/// collider (usually a sensor): a cave, a hall, a bathroom. Where zones
+/// overlap, the one first in entity order wins. Leaving turns the reverb
+/// off again, so a zone owns the reverb on its bus.
+#[derive(
+    bevy_ecs::component::Component,
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct ReverbZone {
+    /// Bus the reverb goes on; empty is every sound.
+    pub bus: String,
+    /// 0 small and dry, near 1 rings for seconds.
+    pub room: f32,
+    /// 0..1, darkens the tail.
+    pub damping: f32,
+    /// 0..1 wet share.
+    pub mix: f32,
+    /// Seconds the reverb takes to come in and go out.
+    pub fade: f32,
+}
+
+impl Default for ReverbZone {
+    fn default() -> Self {
+        Self {
+            bus: String::new(),
+            room: 0.8,
+            damping: 0.5,
+            mix: 0.4,
+            fade: 0.5,
+        }
+    }
+}
+
+impl ReverbZone {
+    fn effect(&self, mix: f32) -> BusEffect {
+        BusEffect::Reverb {
+            room: self.room,
+            damping: self.damping,
+            mix,
+        }
+    }
+}
+
 /// Requests waiting for the audio device, plus the presentation state that
 /// follows sounds after they start (listener, attached sounds, captions).
 /// Nothing here feeds the simulation.
@@ -419,6 +467,8 @@ pub struct AudioQueue {
     listener: Option<Entity>,
     /// Last listener sent to the device.
     heard_from: Option<([f32; 3], [f32; 3])>,
+    /// Reverb zone the listener was last inside.
+    reverb_zone: Option<(Entity, ReverbZone)>,
     tracked: std::collections::BTreeMap<SoundId, Tracked>,
     /// Every sound started and not yet ended, stopped or dropped.
     active: std::collections::BTreeMap<SoundId, ActiveSound>,
@@ -768,6 +818,15 @@ pub fn route_sound_events(world: &mut World) {
         .iter()
         .map(|(id, tracked)| (*id, tracked.clone()))
         .collect();
+    let zone = ear.and_then(|(at, _)| {
+        let physics = world.get_resource::<super::PhysicsWorld>()?;
+        physics
+            .overlap_sphere(at, 0.01, u32::MAX)
+            .into_iter()
+            .find_map(|entity| {
+                Some((entity, world.get::<ReverbZone>(entity)?.clone()))
+            })
+    });
     let mut placed = Vec::new();
     for (id, tracked) in &tracked {
         let mut position = tracked.position;
@@ -800,6 +859,19 @@ pub fn route_sound_events(world: &mut World) {
             ..Sound::default()
         };
         queue.play(&event.clip, &sound, tick);
+    }
+    if queue.reverb_zone != zone {
+        if let Some((_, left)) = queue.reverb_zone.take() {
+            queue.set_bus_effect(&left.bus, left.effect(0.0), left.fade);
+        }
+        if let Some((_, inside)) = &zone {
+            queue.set_bus_effect(
+                &inside.bus,
+                inside.effect(inside.mix),
+                inside.fade,
+            );
+        }
+        queue.reverb_zone = zone;
     }
     if let Some((position, right)) = ear {
         if queue.heard_from != Some((position, right)) {

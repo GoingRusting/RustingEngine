@@ -149,6 +149,22 @@ An effect with `mix` 0 is off. `/buses/<bus>/effects` lists the effects
 that are on, distortion first, then reverb, then the filter: the order the
 signal goes through them.
 
+### Reverb zones
+
+A `rusting.reverb_zone` on an entity with a sensor collider puts a reverb
+on its bus while the listener is inside the collider, and fades it out
+when the listener leaves:
+
+```json
+"collider": {"shape": {"Box": {"half_extents": [6, 3, 10]}}, "sensor": true},
+"rusting.reverb_zone": {"bus": "world", "room": 0.85, "damping": 0.4, "mix": 0.35, "fade": 0.5}
+```
+
+An empty `bus` is every sound, music included, so put world sounds on
+their own bus. Where zones overlap, the first in entity order wins. A zone
+owns the reverb on its bus: a `set_bus_effect` reverb there is turned off
+when the listener leaves.
+
 ## Voice limits
 
 A bus plays at most 64 sounds at once; `set_bus_voice_limit(bus, n)`

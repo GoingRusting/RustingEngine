@@ -16,7 +16,7 @@ use crate::runtime::{
     JointKind, JointMotor, JointSpring, LootEntry, LootTable, ObjectState,
     PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
     PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
-    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
+    RenderBounds, RenderSettings, ReverbZone, SceneBackground, SceneInstance,
     ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash, StateAction,
     StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
     TweenProperty, TweenRepeat, WaterBody,
@@ -269,6 +269,16 @@ crate::reflect! {
         easing: Easing,
         repeat: TweenRepeat,
         #[skip] elapsed: f32,
+    }
+}
+
+crate::reflect! {
+    struct ReverbZone {
+        bus: String { doc: "bus the reverb goes on; empty for every sound" },
+        room: f32 { unit: "0 to 1", min: 0.0, max: 1.0, doc: "0 small and dry, near 1 rings for seconds" },
+        damping: f32 { unit: "0 to 1", min: 0.0, max: 1.0, doc: "darkens the tail" },
+        mix: f32 { unit: "0 to 1", min: 0.0, max: 1.0, doc: "wet share" },
+        fade: f32 { unit: "s", min: 0.0, doc: "time the reverb takes to come in and go out" },
     }
 }
 

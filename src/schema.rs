@@ -909,6 +909,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true, "caption": "[thud]", "full_volume_speed": 6.0}),
     },
     ComponentSection {
+        key: "rusting.reverb_zone",
+        summary: "Room reverb on a bus while the listener (the active camera, or set_listener) is inside this entity's collider; give it a sensor collider. Leaving fades the reverb back out over fade seconds. Overlapping zones: the first in entity order wins. A zone owns the reverb on its bus, so do not also set_bus_effect a reverb there.",
+        gpu: NO_GPU,
+        example: || json!({"bus": "world", "room": 0.8, "damping": 0.5, "mix": 0.4, "fade": 0.5}),
+    },
+    ComponentSection {
         key: "rusting.burst_emitter",
         summary: "Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger(). rate above 0 emits that many particles per second with no trigger, starting anywhere in the area box (half extents); stretch makes particles taller, for rain. Particles copy the emitter's mesh.",
         gpu: NO_GPU,

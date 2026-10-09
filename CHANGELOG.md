@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.reverb_zone` puts a reverb on a bus while the listener is inside the entity's collider.
 - `Sound::falloff` picks a distance curve for positioned sounds: inverse (the default), inverse square, linear to silence, or off.
 - `Sound::doppler` raises a positioned sound's pitch as it closes on the listener and lowers it going away.
 - `GameScene::mute_bus` and `solo_bus` silence buses without losing their volume; `audio:/buses/<name>` reports `muted` and `solo`.

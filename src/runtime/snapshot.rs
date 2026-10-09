@@ -486,6 +486,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<Sleeping>();
     types.register::<super::SpawnOrder>();
     types.register::<SoundCue>();
+    types.register::<super::ReverbZone>();
     types.register::<super::CameraShake>();
     types.register::<super::Squash>();
     types.register::<super::Flash>();

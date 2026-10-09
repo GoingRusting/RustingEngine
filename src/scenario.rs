@@ -5527,6 +5527,47 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn a_reverb_zone_adds_reverb_while_the_listener_is_inside() {
+        let directory = tone_project(1.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 10 {
+                scene.object("Eye").set_position([20.0, 2.0, 0.0]);
+            }
+        });
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Cave".into()),
+            Transform::new([0.0, 2.0, 0.0]),
+            PhysicsBody::default(),
+            RigidBody {
+                kind: RigidBodyKind::Fixed,
+                ..RigidBody::default()
+            },
+            Collider {
+                shape: ColliderShape::Box {
+                    half_extents: [3.0, 3.0, 3.0],
+                },
+                sensor: true,
+                ..Collider::default()
+            },
+            crate::runtime::ReverbZone {
+                bus: "world".into(),
+                ..Default::default()
+            },
+        ));
+        let steps = json!([
+            {"tick": 5, "expect": {"entity": "audio:",
+                "path": "/buses/world/effects/0/kind", "equals": "Reverb"}},
+            {"tick": 14, "expect": {"entity": "audio:",
+                "path": "/buses/world/effects", "equals": []}},
+        ]);
+        let report = run_scenario(&mut app, &scenario(14, steps), &directory);
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn a_wall_between_listener_and_sound_lowers_its_volume() {
         use crate::runtime::{Sound, SoundId};
         let directory = tone_project(2.0);

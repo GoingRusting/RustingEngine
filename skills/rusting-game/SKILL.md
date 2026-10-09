@@ -238,6 +238,7 @@ each one's fields, defaults and an example:
 - `rusting.squash`: Squash and stretch spring.
 - `rusting.flash`: Hit flash.
 - `rusting.sound_cue`: Sends a SoundEvent when the body starts touching something or game code calls trigger().
+- `rusting.reverb_zone`: Room reverb on a bus while the listener (the active camera, or set_listener) is inside this entity's collider; give it a sensor collider.
 - `rusting.burst_emitter`: Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger().
 - `rusting.particle_emitter`: Particle effects: rate and bursts per cycle, an emission shape (Point, Box, Sphere, Cone, Circle), random [min, max] ranges for lifetime, speed, size, rotation and spin, gravity, drag, wind and turbulence, size and color keys over life, fades, World or Local space, Billboard or Velocity facing, Alpha or Additive blend.
 - `rusting.animation`: Keyframe animation: named clips of tracks keyed over time.

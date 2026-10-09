@@ -2563,7 +2563,7 @@ First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`
   - [x] Pan and distance falloff from a listener (`set_listener`), sounds attached to moving entities, and occlusion by a physics raycast. Evidence (audit 2026-10-09): `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres`, `scenario::tests::an_attached_sound_pans_as_its_entity_moves_and_the_listener_can_move`, `a_wall_between_listener_and_sound_lowers_its_volume`.
   - [x] Doppler: `Sound::doppler` scales pitch by the change in listener distance. Verified by `scenario::tests::doppler_raises_pitch_on_approach_and_lowers_it_going_away` (30 m/s pass: rate 1.096 then 0.92; a sound without doppler stays 1).
   - [x] Authored attenuation curves: `Sound::falloff` (`Inverse`, `InverseSquare`, `Linear`, `Off`). Verified by `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres` (curve values) and `scenario::tests::a_sound_follows_its_own_falloff_curve` (mixer volume at 6 m: 1/3 inverse, 0.5 linear).
-- [ ] Reverb zones tied to physics volumes.
+- [x] Reverb zones tied to physics volumes: `rusting.reverb_zone` on a sensor collider. Verified by `scenario::tests::a_reverb_zone_adds_reverb_while_the_listener_is_inside` (reverb on `world` while the camera is inside, off after it leaves).
 - [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
 - [x] Impact sounds scaled by contact closing speed: `SoundCue::full_volume_speed`. Verified by `runtime::tests::harder_landings_play_louder` (a 6 m drop plays louder than a 1 m drop; 0 ignores speed).
 - [ ] Scrape and roll sounds while bodies slide or roll, and sound choice by physics material.
