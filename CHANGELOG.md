@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::spawn_numbered(template, position, limit)`: a capped spawner that names copies `"<template> <n>"` and counts refused spawns in the counter `"<template> refused"` instead of dropping them silently.
 - `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` for tick-based cooldowns, and `GameScene::set_time_scale` and `time_scale` for slow motion. The dash, turret and health recipes use the cooldowns and no longer take `time`; projects that already applied them keep their own copies.
 - `scene.object(name).look_at(target)` turns an object's forward axis (-Z) toward a point, like Godot's `look_at`.
 - `GameScene::tween(name, property, to, seconds, easing)` starts a one-shot tween from the object's current value, like Godot's `tween_property`. `TweenProperty` and `Easing` are in the prelude.

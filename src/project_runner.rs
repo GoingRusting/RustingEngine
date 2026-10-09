@@ -1937,6 +1937,44 @@ impl GameScene<'_> {
         Some(copy)
     }
 
+    /// A spawner with a cap: copies `template` as [`Self::spawn_copy`]
+    /// does, named `"<template> <n>"` with the lowest free `n` from 1, while
+    /// fewer than `limit` such copies exist. At the cap it spawns nothing,
+    /// adds 1 to the counter `"<template> refused"` and warns once, so a
+    /// full spawner never drops silently. Returns the copy's name.
+    pub fn spawn_numbered(
+        &mut self,
+        template: &str,
+        position: [f32; 3],
+        limit: usize,
+    ) -> Option<String> {
+        let prefix = format!("{template} ");
+        let mut taken = vec![false; limit];
+        for name in self.world.query::<&Name>().iter(self.world) {
+            if let Some(n) = name.0.strip_prefix(&prefix) {
+                if let Some(slot) = n.parse::<usize>().ok().and_then(|n| {
+                    n.checked_sub(1).and_then(|i| taken.get_mut(i))
+                }) {
+                    *slot = true;
+                }
+            }
+        }
+        let Some(free) = taken.iter().position(|taken| !taken) else {
+            let counter = format!("{template} refused");
+            if self.counter_or(&counter, 0) == 0 {
+                eprintln!(
+                    "warning: `{template}` is at its limit of {limit} copies; \
+                     the counter `{counter}` counts refused spawns"
+                );
+            }
+            self.add_to_counter(&counter, 1);
+            return None;
+        };
+        let name = format!("{prefix}{}", free + 1);
+        self.spawn_copy(template, name.as_str(), position)?;
+        Some(name)
+    }
+
     /// Places the scene file `path` (relative to the project's `assets`
     /// folder, such as `"prefabs/tile.rscene"`) as a prefab: a new root
     /// object called `name` at `transform`, with the file's objects as its
@@ -6881,6 +6919,37 @@ mod tests {
         let before = scene.object("Turret").rotation();
         scene.object("Turret").look_at([1.0, 1.0, 1.0]);
         assert_eq!(scene.object("Turret").rotation(), before);
+    }
+
+    #[test]
+    fn spawn_numbered_reuses_free_numbers_and_counts_refusals() {
+        let mut world = World::new();
+        world.spawn((Name("Bullet".into()), Transform::new([0.0; 3])));
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(
+            scene
+                .spawn_numbered("Bullet", [1.0, 0.0, 0.0], 2)
+                .as_deref(),
+            Some("Bullet 1")
+        );
+        assert_eq!(
+            scene
+                .spawn_numbered("Bullet", [2.0, 0.0, 0.0], 2)
+                .as_deref(),
+            Some("Bullet 2")
+        );
+        assert_eq!(scene.spawn_numbered("Bullet", [0.0; 3], 2), None);
+        assert_eq!(scene.spawn_numbered("Bullet", [0.0; 3], 2), None);
+        assert_eq!(scene.counter_value("Bullet refused"), 2);
+        scene.despawn("Bullet 1");
+        assert_eq!(
+            scene
+                .spawn_numbered("Bullet", [3.0, 0.0, 0.0], 2)
+                .as_deref(),
+            Some("Bullet 1")
+        );
+        assert_eq!(scene.object("Bullet 1").position(), [3.0, 0.0, 0.0]);
+        assert_eq!(scene.spawn_numbered("Missing", [0.0; 3], 2), None);
     }
 
     #[test]

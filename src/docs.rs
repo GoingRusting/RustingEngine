@@ -767,6 +767,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "spawn_sphere_with_material",
             "spawn_copy",
             "spawn_copy_at_root",
+            "spawn_numbered",
             "spawn_prefab",
             "despawn",
         ],

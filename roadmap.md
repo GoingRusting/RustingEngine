@@ -3576,6 +3576,9 @@ Depends on: Milestones 8 and 9.
 - [x] Timers, cooldowns, and a game clock with pause and time scale that never affect the fixed simulation step's determinism.
   - Verified (2026-10-09): `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` count fixed ticks in an inspectable counter, so pause (`set_paused`) and the new `set_time_scale` stop or slow them with the simulation; `cooldowns_count_fixed_ticks` checks a 0.5 s cooldown ends on exactly tick 130 from tick 100 and that negative scales clamp to 0. The dash, turret and health recipes now use them, and their recipe scenario tests still pass.
 - [ ] Spawners and object pools with capacity reporting (no silent drops).
+  - [x] Capped spawner: `GameScene::spawn_numbered(template, position, limit)` names copies `"<template> <n>"` with the lowest free number and, at the limit, spawns nothing, adds to the counter `"<template> refused"` and warns once.
+    - Verified (2026-10-09): `spawn_numbered_reuses_free_numbers_and_counts_refusals` spawns Bullet 1 and 2 under a limit of 2, refuses two more with `Bullet refused` at 2, reuses `Bullet 1` after a despawn at the new position, and gives `None` for a missing template.
+  - [ ] Object pools that reuse hidden copies instead of spawning, with the same refusal counter. Wait for a game whose spawn cost shows in a profile; ECS spawns are cheap today.
 - [ ] Gamepad input with dead zones, rumble, and hot plug. Needs a gamepad backend dependency approved by the owner.
 
 ### Exit gate
