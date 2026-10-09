@@ -5424,6 +5424,49 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn the_eq_cuts_only_the_band_a_tone_sits_in() {
+        use crate::runtime::{BusEffect, Sound};
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 1 {
+                for bus in ["treble", "middle"] {
+                    let sound = Sound {
+                        bus: bus.into(),
+                        ..Sound::default()
+                    };
+                    scene.play_sound_with("tone.wav", sound);
+                }
+            }
+            if tick == 10 {
+                let cut = |band: usize| {
+                    let mut db = [0.0; 3];
+                    db[band] = -24.0;
+                    BusEffect::Eq {
+                        low_db: db[0],
+                        mid_db: db[1],
+                        high_db: db[2],
+                    }
+                };
+                // The 440 Hz tone is near the 1 kHz bell, far from 5 kHz.
+                scene.set_bus_effect("treble", cut(2), 0.0);
+                scene.set_bus_effect("middle", cut(1), 0.0);
+            }
+        });
+        let steps = json!([
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/middle/effects/0/mid_db", "equals": -24.0}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/treble/level/0", "greater_than": 0.3}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/middle/level/0", "less_than": 0.2}},
+        ]);
+        let report = run_scenario(&mut app, &scenario(20, steps), &directory);
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn a_thousand_sounds_in_one_tick_stay_within_the_voice_limit() {
         use crate::runtime::Sound;
         let directory = tone_project(1.0);

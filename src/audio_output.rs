@@ -189,13 +189,16 @@ struct Bus {
     distortion: kira::effect::distortion::DistortionHandle,
     reverb: kira::effect::reverb::ReverbHandle,
     filter: kira::effect::filter::FilterHandle,
+    /// Low shelf, bell and high shelf.
+    eq: [kira::effect::eq_filter::EqFilterHandle; 3],
     compressor: kira::effect::compressor::CompressorHandle,
     /// The bus volume, before the meter so the level includes it. The
     /// main output's volume stays on its track.
     volume: kira::effect::volume_control::VolumeControlHandle,
     meter: std::sync::Arc<std::sync::Mutex<MeterTotals>>,
-    /// Active effects by kind: distortion, reverb, low-pass, compressor.
-    effects: [Option<BusEffect>; 4],
+    /// Active effects by kind: distortion, reverb, low-pass, EQ,
+    /// compressor.
+    effects: [Option<BusEffect>; 5],
     /// Linear volume asked for; `volume` holds 0 instead while silenced.
     gain: f32,
     muted: bool,
@@ -208,11 +211,12 @@ struct Bus {
 }
 
 /// Adds a bus's effects to a track builder, all off: tape saturation,
-/// then the room, then a wall's low-pass, then a compressor, then the bus
-/// volume and a meter.
+/// then the room, then a wall's low-pass, then the EQ and a compressor,
+/// then the bus volume and a meter.
 #[cfg(feature = "audio")]
 macro_rules! bus_effects {
     ($builder:expr) => {{
+        use kira::effect::eq_filter::{EqFilterBuilder, EqFilterKind};
         use kira::effect::{compressor, distortion, filter, reverb};
         let distortion = $builder.add_effect(
             distortion::DistortionBuilder::new()
@@ -222,6 +226,19 @@ macro_rules! bus_effects {
         let reverb = $builder.add_effect(reverb::ReverbBuilder::new().mix(0.0));
         let filter = $builder
             .add_effect(filter::FilterBuilder::new().cutoff(20_000.0).mix(0.0));
+        let eq = [
+            (EqFilterKind::LowShelf, EQ_LOW_HZ),
+            (EqFilterKind::Bell, EQ_MID_HZ),
+            (EqFilterKind::HighShelf, EQ_HIGH_HZ),
+        ]
+        .map(|(kind, hz)| {
+            $builder.add_effect(EqFilterBuilder::new(
+                kind,
+                hz,
+                kira::Decibels(0.0),
+                0.7,
+            ))
+        });
         let compressor =
             $builder.add_effect(compressor::CompressorBuilder::new());
         let volume = $builder.add_effect(
@@ -229,7 +246,7 @@ macro_rules! bus_effects {
         );
         let meter = std::sync::Arc::<std::sync::Mutex<MeterTotals>>::default();
         $builder.add_effect(Meter(meter.clone()));
-        (distortion, reverb, filter, compressor, volume, meter)
+        (distortion, reverb, filter, eq, compressor, volume, meter)
     }};
 }
 
@@ -325,7 +342,7 @@ where
     ) -> Result<Self, B::Error> {
         let mut main = kira::track::MainTrackBuilder::new()
             .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
-        let (distortion, reverb, filter, compressor, volume, meter) =
+        let (distortion, reverb, filter, eq, compressor, volume, meter) =
             bus_effects!(main);
         let manager = kira::AudioManager::new(kira::AudioManagerSettings {
             backend_settings,
@@ -342,10 +359,11 @@ where
             distortion,
             reverb,
             filter,
+            eq,
             compressor,
             volume,
             meter,
-            effects: [None; 4],
+            effects: [None; 5],
             gain: 1.0,
             muted: false,
             solo: false,
@@ -810,7 +828,7 @@ where
         if !self.buses.contains_key(name) {
             let mut builder = kira::track::TrackBuilder::new()
                 .sound_capacity(2 * crate::runtime::MAX_VOICE_LIMIT);
-            let (distortion, reverb, filter, compressor, volume, meter) =
+            let (distortion, reverb, filter, eq, compressor, volume, meter) =
                 bus_effects!(builder);
             match self.manager.add_sub_track(builder) {
                 Ok(track) => {
@@ -821,10 +839,11 @@ where
                             distortion,
                             reverb,
                             filter,
+                            eq,
                             compressor,
                             volume,
                             meter,
-                            effects: [None; 4],
+                            effects: [None; 5],
                             gain: 1.0,
                             muted: false,
                             solo: false,
@@ -887,6 +906,21 @@ impl Bus {
                 self.filter.set_mix(on, tween);
                 2
             }
+            BusEffect::Eq {
+                low_db,
+                mid_db,
+                high_db,
+            } => {
+                for (band, gain) in
+                    self.eq.iter_mut().zip([low_db, mid_db, high_db])
+                {
+                    band.set_gain(
+                        kira::Decibels(gain.clamp(-24.0, 24.0)),
+                        tween,
+                    );
+                }
+                3
+            }
             BusEffect::Compressor {
                 threshold_db,
                 ratio,
@@ -899,12 +933,20 @@ impl Bus {
                     kira::Decibels(makeup_db.clamp(0.0, 24.0)),
                     tween,
                 );
-                3
+                4
             }
         };
         self.effects[slot] = effect.active().then_some(effect);
     }
 }
+
+/// Corner frequencies of the bus EQ's bands.
+#[cfg(feature = "audio")]
+const EQ_LOW_HZ: f64 = 200.0;
+#[cfg(feature = "audio")]
+const EQ_MID_HZ: f64 = 1_000.0;
+#[cfg(feature = "audio")]
+const EQ_HIGH_HZ: f64 = 5_000.0;
 
 /// Low-pass cutoff for an occlusion amount, falling evenly in octaves.
 #[cfg(feature = "audio")]

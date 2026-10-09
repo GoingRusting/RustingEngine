@@ -264,6 +264,14 @@ pub enum BusEffect {
     /// Soft clipping, like tape saturation: `drive` is decibels of gain
     /// into the clipper (0..24); `mix` 0..1 is the wet share.
     Distortion { drive: f32, mix: f32 },
+    /// Three-band equalizer, gains in decibels (-24..24): a low shelf
+    /// below 200 Hz, a bell at 1 kHz and a high shelf above 5 kHz. All 0
+    /// is off.
+    Eq {
+        low_db: f32,
+        mid_db: f32,
+        high_db: f32,
+    },
     /// Turns loud parts down: sound above `threshold_db` (dBFS, 0 or less)
     /// rises only 1/`ratio` as fast; `makeup_db` raises the result. A ratio
     /// of 1 is off; 20 or more acts as a limiter.
@@ -283,6 +291,11 @@ impl BusEffect {
             Self::Reverb { mix, .. } | Self::Distortion { mix, .. } => {
                 mix > 0.0
             }
+            Self::Eq {
+                low_db,
+                mid_db,
+                high_db,
+            } => [low_db, mid_db, high_db] != [0.0; 3],
             Self::Compressor { ratio, .. } => ratio > 1.0,
         }
     }
