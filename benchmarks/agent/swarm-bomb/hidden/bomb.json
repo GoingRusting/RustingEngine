@@ -1,0 +1,70 @@
+{
+ "name": "bomb: the one bomb clears the enemy within 3 m but not the one further off, and a second press does nothing",
+ "ticks": 270,
+ "steps": [
+  {
+   "tick": 5,
+   "expect": {
+    "counter": "bombs",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 200,
+   "tap": "bomb"
+  },
+  {
+   "tick": 202,
+   "expect": {
+    "entity": "Enemy 1",
+    "exists": false
+   }
+  },
+  {
+   "tick": 202,
+   "expect": {
+    "entity": "Enemy 2",
+    "exists": true
+   }
+  },
+  {
+   "tick": 202,
+   "expect": {
+    "counter": "kills",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 202,
+   "expect": {
+    "counter": "bombs",
+    "equals": 0
+   }
+  },
+  {
+   "tick": 260,
+   "tap": "bomb"
+  },
+  {
+   "tick": 262,
+   "expect": {
+    "entity": "Enemy 2",
+    "exists": true
+   }
+  },
+  {
+   "tick": 262,
+   "expect": {
+    "counter": "kills",
+    "equals": 1
+   }
+  },
+  {
+   "tick": 262,
+   "expect": {
+    "counter": "bombs",
+    "equals": 0
+   }
+  }
+ ]
+}

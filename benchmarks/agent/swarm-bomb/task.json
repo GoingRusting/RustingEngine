@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "twin-stick",
+  "request": "Add a bomb to this twin-stick shooter. A counter named `bombs` starts at 1 each round. Pressing a new input action named `bomb` (the B key) while `bombs` is above 0 takes one bomb and defeats every enemy within 3 m of the player, each counting as a kill; enemies further away are untouched, and pressing `bomb` with no bombs left does nothing. Keep everything else and the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "    // Aiming fires; a shot's heading is its Y rotation.\n",
+      "replace": "    // One bomb a round clears every enemy near the player.\n    if scene.pressed(\"bomb\") && scene.counter_value(\"bombs\") > 0 {\n        scene.add_to_counter(\"bombs\", -1);\n        for enemy in scene.in_class(\"enemy\") {\n            if distance(scene.object(&enemy).position(), player) <= 3.0 {\n                scene.despawn(&enemy);\n                scene.add_to_counter(\"kills\", 1);\n            }\n        }\n    }\n\n    // Aiming fires; a shot's heading is its Y rotation.\n"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/twin_stick_wave.json",
+    "hidden/bomb.json"
+  ]
+}

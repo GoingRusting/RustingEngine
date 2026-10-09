@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `swarm-bomb`: a fourth feature task, a once-a-round bomb in the twin-stick template.
 - Agent benchmark task `tapper-new-game`: a third new-game task, a ten-second tapping game with a countdown.
 - Agent benchmark task `rhythm-spark-leak`: a second performance task, where hit sparks are hidden instead of despawned.
 - `rusting lint` checks literal object names in every `GameScene` call that takes one, and warns `LINT_MISSING_EVENT` on a literal `gpu_events` name that no GPU physics rule in code or a scene names.
