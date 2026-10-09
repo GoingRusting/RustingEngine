@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `rhythm-spark-leak`: a second performance task, where hit sparks are hidden instead of despawned.
 - `rusting lint` checks literal object names in every `GameScene` call that takes one, and warns `LINT_MISSING_EVENT` on a literal `gpu_events` name that no GPU physics rule in code or a scene names.
 - `rusting lint` warns `LINT_SILENT_GOAL` on a counter with a target that nothing reacts to: no HUD element requires or shows it, no pickup requires it, and game code never names it.
 - `rusting lint` warns `LINT_COLOR_ONLY_STATUS` when game code changes a HUD element's colour with `set_hud` but never its text, so the state it shows depends on telling colours apart. Brightness or alpha changes on one hue and counter readouts are not flagged.

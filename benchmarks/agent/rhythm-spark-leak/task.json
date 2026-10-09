@@ -1,0 +1,29 @@
+{
+  "kind": "performance",
+  "template": "rhythm",
+  "request": "Players say this rhythm game gets heavier the longer they play: the more notes they hit, the more work every frame does, and long songs start to stutter. Find the cause and fix it without changing how the game plays or looks.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "const NOTE_SPEED: f32 = 8.0;\n",
+      "replace": "const NOTE_SPEED: f32 = 8.0;\n/// How long a hit spark rises before it goes.\nconst SPARK_MS: i32 = 300;\n"
+    },
+    {
+      "file": "src/main.rs",
+      "find": "        hit.push(name.clone());\n    }\n",
+      "replace": "        hit.push(name.clone());\n        // A spark rises from the line where the note was hit.\n        let spark = name.replace(\"Note\", \"Spark\");\n        let x = LANE_X[lane as usize - 1];\n        scene.spawn_copy(\"Note Template\", &spark, [x, 0.2, HIT_Z]);\n        scene.set_visible(&spark, true);\n        scene.add_class(&spark, \"spark\");\n    }\n    // Sparks rise for SPARK_MS after their note's beat, then go.\n    for spark in scene.in_class(\"spark\") {\n        let n: usize = spark[\"Spark \".len()..].parse().unwrap_or(1);\n        let age = clock - CHART[n - 1].0 * BEAT_MS;\n        if age > SPARK_MS {\n            scene.set_visible(&spark, false);\n            continue;\n        }\n        let mut at = scene.object(&spark).position();\n        at[1] = 0.2 + age as f32 / 1000.0 * 4.0;\n        scene.object(&spark).set_position(at);\n    }\n"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "            scene.set_visible(&spark, false);\n            continue;",
+      "replace": "            scene.despawn(&spark);\n            continue;"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/rhythm_song.json",
+    "hidden/sparks.json"
+  ]
+}
