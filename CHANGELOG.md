@@ -8,6 +8,7 @@ Engine features for the horror game FOREVER BEAR.
 
 - `--confine DIR` (or `RUSTING_CONFINE=DIR`) refuses with `OUTSIDE_CONFINE` a run whose working folder or path arguments resolve outside DIR, links and `..` included, and file writes outside it. A `--confine` flag can narrow `RUSTING_CONFINE` but never widen it.
 - `--read-only` (or `RUSTING_READ_ONLY=1`) lets only commands that write no file run, plus `scene patch` and `fix` with `--dry-run`; others fail with `READ_ONLY`. `rusting schema` lists the allowed commands under `read_only`.
+- `rusting lint` warns `LINT_TEXT_CONTRAST` when HUD button text falls below WCAG contrast (4.5:1, or 3:1 from 24 px) against the button fill.
 - `rusting lint` warns `LINT_TEXT_OVERFLOW` when HUD text, measured in the HUD's font, runs past the edge of a 1280 x 720 view.
 - `rusting lint` warns `LINT_GOAL_UNREACHABLE` for a sensor (pickup, goal, trigger) at the player's height that no walk or jump from the player's start reaches past fixed walls. Walls named as strings in game code count as doors.
 - `rusting systems [root]` also lists the game code functions of a project (stage `Game`, with file and line) and the components each reads and writes, from bevy system parameters and `GameScene` calls, so `rusting systems --writes Health` answers for game components too.
@@ -193,7 +194,8 @@ Engine features for the horror game FOREVER BEAR.
 - `air_jumps` on `rusting.player_controller` and `rusting.platformer_controller` (default 0) allows that many extra jumps before landing; 1 is a double jump.
 
 ### Fixed
--- A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.
+- The runtime HUD always uses egui's dark theme. It used to follow the desktop theme, so a light desktop gave buttons a light fill under white text.
+- A patch that puts `{"$asset": path}` in an inline material's texture slot now says to write a plain path string, and `rusting schema --json` explains that the `asset_types` form differs from inline scene materials.
 - The lighting and look-and-feel guides state the light budget per quality level (64 High, 32 Balanced, 16 Eco) and which level `Auto` picks.
 - `rusting preset apply` puts ambient, sky, tone mapping, grading and background on a new `Environment` entity instead of the sun, and `--only environment` applies them without touching the sun.
  A scenario keeps its whole audio mix only when it has `audio_out` or `audio_reference`, so a long soak no longer grows by 384 KB per second of game time (FOREVER BEAR F47).

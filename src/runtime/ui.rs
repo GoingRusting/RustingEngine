@@ -23,7 +23,7 @@
 use bevy_ecs::prelude::Resource;
 use rusting_core::input::{KeyCode, MouseButton, PadButton, RuntimeInput};
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct RuntimeUi {
     context: egui::Context,
     /// Window input for the next pass; taken when the pass begins. None
@@ -33,6 +33,22 @@ pub struct RuntimeUi {
     texts: Vec<(String, egui::Rect)>,
     /// Result of the last finished pass, until the runner takes it.
     output: Option<egui::FullOutput>,
+}
+
+impl Default for RuntimeUi {
+    fn default() -> Self {
+        let context = egui::Context::default();
+        // Dark always: following the desktop theme would turn button fills
+        // light under white HUD text, and `rusting lint` checks button
+        // contrast against the dark fill.
+        context.set_theme(egui::Theme::Dark);
+        Self {
+            context,
+            input: None,
+            texts: Vec::new(),
+            output: None,
+        }
+    }
 }
 
 impl RuntimeUi {
@@ -308,6 +324,19 @@ mod tests {
         assert!(ui.find_text("Slot 1").is_err(), "exact by default");
         let error = ui.find_text_where("-", false, Some(5)).unwrap_err();
         assert!(error.contains("#5 (of 3 matches)"), "{error}");
+    }
+
+    #[test]
+    fn the_hud_stays_dark_on_a_light_desktop() {
+        let mut ui = RuntimeUi::default();
+        ui.set_input(egui::RawInput {
+            system_theme: Some(egui::Theme::Light),
+            ..Default::default()
+        });
+        ui.begin_pass(&RuntimeInput::default());
+        let dark = ui.context().style().visuals.dark_mode;
+        ui.end_pass();
+        assert!(dark);
     }
 
     #[test]

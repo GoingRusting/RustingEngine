@@ -301,6 +301,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_TEXT_CONTRAST",
+        "HUD button text has a WCAG contrast ratio against the dark button fill below 4.5:1 (3:1 from 24 px), so it is hard to read. Plain HUD text is not judged: the scene behind it is only known from a rendered frame.",
+        "Use light text on buttons (the default white gives about 11:1), or raise the color's alpha to 1.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_TEXT_OFFSCREEN",
         "HUD text's anchored corner lands outside a 1280 x 720 view: its offset points away from the screen or is bigger than the screen, so the text is not seen.",
         "Offsets point from the anchor toward the screen centre; use a positive offset smaller than the view, or pick the anchor nearest where the text belongs.",

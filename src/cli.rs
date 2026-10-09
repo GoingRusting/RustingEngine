@@ -2146,6 +2146,47 @@ fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
     }
 }
 
+/// The WCAG 2 contrast ratio of HUD button text against the runtime's dark
+/// button fill, with the minimum for its size (4.5, or 3 from 24 px), when
+/// it falls short. Text with no button has the scene behind it, which only
+/// a rendered frame shows, so it is not judged.
+#[cfg(feature = "ui")]
+fn button_contrast(
+    button: bool,
+    color: [f32; 4],
+    font_size: f32,
+) -> Option<(f32, f32)> {
+    let luminance = |c: [f32; 3]| {
+        let linear = |v: f32| {
+            if v <= 0.040_45 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
+    };
+    let fill = egui::Visuals::dark()
+        .widgets
+        .inactive
+        .weak_bg_fill
+        .to_array()
+        .map(|c| f32::from(c) / 255.0);
+    let alpha = color[3].clamp(0.0, 1.0);
+    let text: [f32; 3] = std::array::from_fn(|i| {
+        color[i].clamp(0.0, 1.0) * alpha + fill[i] * (1.0 - alpha)
+    });
+    let (a, b) = (luminance(text), luminance([fill[0], fill[1], fill[2]]));
+    let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+    let minimum = if font_size >= 24.0 { 3.0 } else { 4.5 };
+    (button && ratio < minimum).then_some((ratio, minimum))
+}
+
+#[cfg(not(feature = "ui"))]
+fn button_contrast(_: bool, _: [f32; 4], _: f32) -> Option<(f32, f32)> {
+    None
+}
+
 /// Without egui there are no fonts to measure with.
 #[cfg(not(feature = "ui"))]
 fn hud_text_size() -> impl FnMut(&str, f32) -> Option<[f32; 2]> {
@@ -2407,6 +2448,18 @@ fn lint_scene(
                     format!(
                         "has HUD text at font_size {}, below the {MIN_HUD_FONT_SIZE} px that stays readable",
                         hud.font_size
+                    ),
+                );
+            }
+            if let Some((ratio, minimum)) =
+                button_contrast(hud.button, hud.color, hud.font_size)
+            {
+                warn(
+                    "LINT_TEXT_CONTRAST",
+                    index,
+                    &format!("/components/{HUD_ELEMENT_COMPONENT}/color"),
+                    format!(
+                        "has HUD button text at contrast {ratio:.1}:1 against the button fill, below the {minimum}:1 that stays readable"
                     ),
                 );
             }
@@ -6122,6 +6175,15 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             hud("Score", json!({"text": "Score {score}", "anchor": "TopRight"})),
             {"name": "Score Counter", "components": {"rusting.counter":
              json!({"name": "score", "value": 0}).to_string()}},
+            // Button text against the dark button fill: grey, faint white
+            // and mid grey at 18 px fall short; white, mid grey at 28 px
+            // (large text needs 3:1) and dark text with no button pass.
+            hud("Grey Button", json!({"text": "Go", "button": true, "color": [0.4, 0.4, 0.4, 1.0]})),
+            hud("Faint Button", json!({"text": "Go", "button": true, "color": [1.0, 1.0, 1.0, 0.2]})),
+            hud("Mid Button", json!({"text": "Go", "button": true, "color": [0.57, 0.57, 0.57, 1.0]})),
+            hud("Big Mid Button", json!({"text": "Go", "button": true, "font_size": 28.0, "color": [0.57, 0.57, 0.57, 1.0]})),
+            hud("White Button", json!({"text": "Go", "button": true})),
+            hud("Dark Label", json!({"text": "Go", "color": [0.1, 0.1, 0.1, 1.0]})),
         ]});
         for (index, entity) in scene["entities"]
             .as_array_mut()
@@ -6144,6 +6206,9 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             [
                 ("LINT_TEXT_OVERFLOW", "Long Left".to_owned()),
                 ("LINT_TEXT_OVERFLOW", "Tall".to_owned()),
+                ("LINT_TEXT_CONTRAST", "Grey Button".to_owned()),
+                ("LINT_TEXT_CONTRAST", "Faint Button".to_owned()),
+                ("LINT_TEXT_CONTRAST", "Mid Button".to_owned()),
             ]
         );
     }

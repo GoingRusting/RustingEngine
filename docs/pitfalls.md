@@ -62,11 +62,12 @@ Code: none.
 Fix: give the panel `Frame::NONE` or your own translucent fill; see
 `guide/menus-and-ui`.
 
-**HUD text too small to read, or anchored off screen.** A right-anchored text
-with a `{counter}` placeholder grows past the edge.
-Code: `LINT_TEXT_SMALL`, `LINT_TEXT_OFFSCREEN`.
+**HUD text too small to read, anchored off screen, or faint on a button.** A
+right-anchored text with a `{counter}` placeholder grows past the edge; dark or
+translucent text on a button vanishes into the dark button fill.
+Code: `LINT_TEXT_SMALL`, `LINT_TEXT_OFFSCREEN`, `LINT_TEXT_CONTRAST`.
 Fix: font size 14 or more; offset text inward from its anchor and leave room
-for the longest value.
+for the longest value; keep button text light and opaque.
 
 **More lights than the renderer uploads.** The extra lights light nothing.
 Code: `LINT_LIGHT_BUDGET`.

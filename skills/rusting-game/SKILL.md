@@ -435,7 +435,7 @@ say:
 <!-- pitfalls:start -->
 - Game code does not compile: Two `scene` borrows at once; A guessed method name; `f64` or tuples where the scene wants `f32` arrays; Importing from engine modules.
 - Objects do not collide, or are hit where they are not drawn: A collider with no body; A collider sized by hand that does not match the mesh; A scaled player; Hiding an object with a zero scale; A pickup or goal placed inside a wall or the floor.
-- The view or the HUD is wrong: A camera inside a wall, pillar or other solid; A full-screen egui menu hides the game; HUD text too small to read, or anchored off screen; More lights than the renderer uploads; A light that can never light anything.
+- The view or the HUD is wrong: A camera inside a wall, pillar or other solid; A full-screen egui menu hides the game; HUD text too small to read, anchored off screen, or faint on a button; More lights than the renderer uploads; A light that can never light anything.
 - Assets and scene files: An asset path in code that is not a file; A scene that names a missing asset; A misspelled scene key.
 - Runs do not repeat: Timing by frames or wall-clock time; `rand` or the system clock; Round state in Rust statics; Using objects after `restart` or `load_scene`; A score lost on `load_scene`; Gameplay reading GPU bodies.
 - Tests prove less than they seem: A scenario that passes without the feature it tests; A stale CLI or project guide; A recipe applied to a scene with no `Player`.
