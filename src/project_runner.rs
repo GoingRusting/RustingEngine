@@ -4054,6 +4054,7 @@ fn run_simple_game_update(world: &mut World) {
     // Copy these small values before giving the whole world to GameScene.
     let time = *world.resource::<FrameTime>();
     let update = world.resource::<GameUpdateFunction>().0;
+    click_dialogue_buttons(&mut GameScene { world });
     update(&mut GameScene { world }, &time);
     let input = world.resource::<RuntimeInput>().clone();
     if let Some(mut state) = world.get_resource_mut::<TickInput>() {
@@ -4061,6 +4062,36 @@ fn run_simple_game_update(world: &mut World) {
             state.pending.merge_frame_edges(&input);
         }
         state.ticked = false;
+    }
+}
+
+/// A clicked HUD button whose text is `{dialogue:Object/n}` picks choice
+/// `n` of that object's dialogue, or moves past a line with no choices,
+/// so a dialogue box needs no game code.
+fn click_dialogue_buttons(scene: &mut GameScene) {
+    let Some(pressed) = scene
+        .world
+        .get_resource::<EventQueue<crate::runtime::HudButtonPressed>>()
+    else {
+        return;
+    };
+    let picks: Vec<(String, usize)> = pressed
+        .iter()
+        .filter_map(|click| {
+            let hud = scene
+                .world
+                .get::<crate::runtime::HudElement>(click.entity)?;
+            let (object, n) = hud
+                .text
+                .trim()
+                .strip_prefix("{dialogue:")?
+                .strip_suffix('}')?
+                .rsplit_once('/')?;
+            Some((object.to_owned(), n.parse::<usize>().ok()?.checked_sub(1)?))
+        })
+        .collect();
+    for (object, choice) in picks {
+        scene.advance_dialogue(&object, choice);
     }
 }
 
@@ -5643,6 +5674,59 @@ mod tests {
         request_project_window(&mut world, &folder);
         assert_eq!(world.resource::<WindowRequest>().size, Some([1920, 1080]));
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn clicking_a_dialogue_choice_button_steps_the_dialogue() {
+        use crate::runtime::{Dialogue, DialogueChoice, DialogueLine};
+        let mut world = World::new();
+        let line = |id: &str, next: &str, choices| DialogueLine {
+            id: id.into(),
+            next: next.into(),
+            choices,
+            ..DialogueLine::default()
+        };
+        let to = |next: &str| DialogueChoice {
+            next: next.into(),
+            counter: "asked".into(),
+            add: 1,
+            ..DialogueChoice::default()
+        };
+        let smith = world
+            .spawn((
+                Name("Smith".into()),
+                Dialogue {
+                    lines: vec![
+                        line("hi", "ask", vec![]),
+                        line("ask", "", vec![to("hi"), to("")]),
+                    ],
+                    current: "hi".into(),
+                },
+            ))
+            .id();
+        let hud = |text: &str| crate::runtime::HudElement {
+            text: text.into(),
+            button: true,
+            ..Default::default()
+        };
+        let next = world.spawn(hud("{dialogue:Smith/1}")).id();
+        let second = world.spawn(hud(" {dialogue:Smith/2} ")).id();
+        let other = world.spawn(hud("Quit")).id();
+        let click = |world: &mut World, entities: &[Entity]| {
+            let mut queue =
+                EventQueue::<crate::runtime::HudButtonPressed>::default();
+            for &entity in entities {
+                queue.send(crate::runtime::HudButtonPressed { entity });
+            }
+            queue.begin_frame();
+            world.insert_resource(queue);
+            click_dialogue_buttons(&mut GameScene { world });
+            world.get::<Dialogue>(smith).unwrap().current.clone()
+        };
+        assert_eq!(click(&mut world, &[other]), "hi");
+        assert_eq!(click(&mut world, &[next]), "ask", "Continue");
+        assert_eq!(click(&mut world, &[second]), "", "an empty next ends");
+        assert_eq!(GameScene { world: &mut world }.counter_value("asked"), 1);
     }
 
     #[test]

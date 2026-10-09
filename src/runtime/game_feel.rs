@@ -1038,6 +1038,46 @@ pub fn hud_text<'a>(
     })
 }
 
+/// The text of a `{dialogue:Object}` HUD placeholder: the line the named
+/// object's dialogue shows, as `speaker: text` translated; and of
+/// `{dialogue:Object/n}`: the line's choice `n` (from 1), or `Continue`
+/// (the `dialogue.continue` translation) for `/1` on a line with no
+/// choices. Empty when the dialogue is not running or has no such
+/// choice; `None` when no object with a dialogue has that name.
+#[must_use]
+pub fn dialogue_placeholder<'a>(
+    placeholder: &str,
+    mut dialogues: impl Iterator<Item = (&'a super::Name, &'a Dialogue)>,
+    translations: Option<&Translations>,
+) -> Option<String> {
+    let key = placeholder.strip_prefix("dialogue:")?;
+    let (object, choice) = match key.rsplit_once('/') {
+        Some((object, n)) => (object, Some(n.parse::<usize>().ok()?)),
+        None => (key, None),
+    };
+    let (_, dialogue) = dialogues.find(|(name, _)| name.0 == object)?;
+    let tr = |key: &str| translations.map_or(key, |t| t.get(key)).to_owned();
+    let Some(line) = dialogue
+        .lines
+        .iter()
+        .find(|line| line.id == dialogue.current && !line.id.is_empty())
+    else {
+        return Some(String::new());
+    };
+    Some(match choice {
+        None if line.speaker.is_empty() => tr(&line.text),
+        None => format!("{}: {}", tr(&line.speaker), tr(&line.text)),
+        Some(1) if line.choices.is_empty() => translations
+            .and_then(|t| t.strings.get("dialogue.continue").cloned())
+            .unwrap_or_else(|| "Continue".to_owned()),
+        Some(n) => n
+            .checked_sub(1)
+            .and_then(|i| line.choices.get(i))
+            .map(|choice| tr(&choice.text))
+            .unwrap_or_default(),
+    })
+}
+
 /// Replaces every `{name}` that `value` knows; leaves the rest as written.
 fn fill_placeholders(
     text: &str,
@@ -1777,7 +1817,10 @@ pub(super) fn draw_hud(
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
-    translations: Option<Res<Translations>>,
+    (translations, dialogues): (
+        Option<Res<Translations>>,
+        Query<(&super::Name, &Dialogue)>,
+    ),
 ) {
     draw_perf_overlay(ui.context(), perf.as_deref());
     draw_captions(
@@ -1857,13 +1900,23 @@ pub(super) fn draw_hud(
     for (entity, element, align, point) in placed {
         let [r, g, b, a] =
             element.color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
-        let text = egui::RichText::new(hud_text(
-            &element.text,
-            counters.iter(),
-            translations.as_deref(),
-        ))
-        .size(element.font_size)
-        .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
+        let filled = fill_placeholders(&element.text, |placeholder| {
+            dialogue_placeholder(
+                placeholder,
+                dialogues.iter(),
+                translations.as_deref(),
+            )
+        });
+        let filled =
+            hud_text(&filled, counters.iter(), translations.as_deref());
+        // An empty element draws nothing, so a dialogue's unused choice
+        // buttons hide.
+        if filled.trim().is_empty() {
+            continue;
+        }
+        let text = egui::RichText::new(filled)
+            .size(element.font_size)
+            .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
         // Measure this frame's text: an anchored egui area places itself by
         // last frame's size, so a value that grew ran past the edge.
         let context = ui.context();

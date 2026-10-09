@@ -3269,6 +3269,74 @@ fn hud_text_fills_counter_placeholders() {
 }
 
 #[test]
+fn dialogue_placeholders_show_the_line_and_its_choices() {
+    let choice = |text: &str| DialogueChoice {
+        text: text.into(),
+        ..DialogueChoice::default()
+    };
+    let mut dialogue = Dialogue {
+        lines: vec![
+            DialogueLine {
+                id: "hi".into(),
+                speaker: "smith".into(),
+                text: "hello".into(),
+                choices: vec![choice("buy"), choice("bye")],
+                ..DialogueLine::default()
+            },
+            DialogueLine {
+                id: "sign".into(),
+                text: "Keep out".into(),
+                ..DialogueLine::default()
+            },
+        ],
+        current: "hi".into(),
+    };
+    let german = Translations {
+        locale: "de".into(),
+        strings: [
+            ("smith", "Schmied"),
+            ("buy", "Kaufen"),
+            ("dialogue.continue", "Weiter"),
+        ]
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .into(),
+    };
+    let name = Name("Smith".into());
+    let fill = |dialogue: &Dialogue, placeholder: &str| {
+        dialogue_placeholder(
+            placeholder,
+            [(&name, dialogue)].into_iter(),
+            Some(&german),
+        )
+    };
+    assert_eq!(
+        fill(&dialogue, "dialogue:Smith").as_deref(),
+        Some("Schmied: hello")
+    );
+    assert_eq!(
+        fill(&dialogue, "dialogue:Smith/1").as_deref(),
+        Some("Kaufen")
+    );
+    assert_eq!(fill(&dialogue, "dialogue:Smith/2").as_deref(), Some("bye"));
+    assert_eq!(fill(&dialogue, "dialogue:Smith/3").as_deref(), Some(""));
+    assert_eq!(fill(&dialogue, "dialogue:Smith/0").as_deref(), Some(""));
+    assert_eq!(fill(&dialogue, "dialogue:Rock"), None);
+    assert_eq!(fill(&dialogue, "coins"), None);
+    dialogue.current = "sign".into();
+    assert_eq!(
+        fill(&dialogue, "dialogue:Smith").as_deref(),
+        Some("Keep out")
+    );
+    assert_eq!(
+        fill(&dialogue, "dialogue:Smith/1").as_deref(),
+        Some("Weiter")
+    );
+    assert_eq!(fill(&dialogue, "dialogue:Smith/2").as_deref(), Some(""));
+    dialogue.current.clear();
+    assert_eq!(fill(&dialogue, "dialogue:Smith").as_deref(), Some(""));
+}
+
+#[test]
 fn shader_pragmas_declare_determinism() {
     let source =
         "#version 450\n  // rusting: determinism = Local\nvoid main() {}";

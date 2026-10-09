@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- HUD text `{dialogue:Name}` shows a dialogue's line, and a HUD button whose text is `{dialogue:Name/n}` shows and picks choice n, so a dialogue box needs no game code. HUD elements whose text fills to nothing are no longer drawn.
 - Registered component `rusting.dialogue` (lines with speakers, texts as translation keys, and choices that add to counters) stepped by `GameScene::start_dialogue`, `dialogue_line` and `advance_dialogue`.
 - `tr_count` follows the locale's plural rule: `key.few` and `key.many` for Russian-family languages and Polish, `key.few` for Czech and Slovak, and French `one` for 0. A missing form falls back to `key.other`.
 - `rusting lint` warns `LINT_MISSING_TRANSLATION` for each literal `tr("key")`, `tr_count("key", ..)` or HUD `{tr:key}` key that a locale file in `assets/locales/` lacks.
