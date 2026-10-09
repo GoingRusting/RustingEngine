@@ -33,6 +33,9 @@ pub struct RuntimeUi {
     texts: Vec<(String, egui::Rect)>,
     /// Result of the last finished pass, until the runner takes it.
     output: Option<egui::FullOutput>,
+    /// Screen size in pixels the HUD is laid out for; see
+    /// [`Self::set_base_size`].
+    base_size: Option<[f32; 2]>,
 }
 
 impl Default for RuntimeUi {
@@ -47,6 +50,7 @@ impl Default for RuntimeUi {
             input: None,
             texts: Vec::new(),
             output: None,
+            base_size: None,
         }
     }
 }
@@ -56,6 +60,33 @@ impl RuntimeUi {
     #[must_use]
     pub fn context(&self) -> &egui::Context {
         &self.context
+    }
+
+    /// Lays the UI out for a `[width, height]` screen in pixels and scales
+    /// it uniformly to fit the real one, keeping the aspect ratio, like
+    /// Godot's `canvas_items` stretch mode. `None` (the default) draws at
+    /// the desktop's DPI scale instead.
+    pub fn set_base_size(&mut self, size: Option<[f32; 2]>) {
+        self.base_size =
+            size.filter(|[width, height]| *width > 0.0 && *height > 0.0);
+    }
+
+    /// Factor the window's `native` DPI scale must be multiplied by so a
+    /// `physical` pixel screen fits the base size.
+    fn zoom(&self, physical: [f32; 2], native: f32) -> f32 {
+        match self.base_size {
+            Some([width, height]) if physical[0] > 0.0 && physical[1] > 0.0 => {
+                (physical[0] / width).min(physical[1] / height) / native
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// Scales the UI for a window of `physical` pixels at the `native` DPI
+    /// scale. The runner calls it before reading window input, which egui
+    /// then converts with the new scale.
+    pub fn fit_window(&mut self, physical: [f32; 2], native: f32) {
+        self.context.set_zoom_factor(self.zoom(physical, native));
     }
 
     /// Sets the input the next pass reads.
@@ -153,7 +184,11 @@ impl RuntimeUi {
     }
 
     pub(super) fn begin_pass(&mut self, input: &RuntimeInput) {
-        let mut raw = self.input.take().unwrap_or_else(|| raw_input(input));
+        let mut raw = self.input.take().unwrap_or_else(|| {
+            let zoom = self.zoom(input.viewport_size(), 1.0);
+            self.context.set_zoom_factor(zoom);
+            raw_input(input, zoom)
+        });
         let focused = self.context.memory(|memory| memory.focused().is_some());
         raw.events.extend(pad_keys(input, focused));
         self.context.begin_pass(raw);
@@ -164,6 +199,14 @@ impl RuntimeUi {
         self.texts.clear();
         for clipped in &output.shapes {
             collect_texts(&clipped.shape, clipped.clip_rect, &mut self.texts);
+        }
+        // In pixels, where clicks land, when a base size scales the UI.
+        let zoom = self.context.zoom_factor();
+        for (_, rect) in &mut self.texts {
+            *rect = egui::Rect::from_min_max(
+                (rect.min.to_vec2() * zoom).to_pos2(),
+                (rect.max.to_vec2() * zoom).to_pos2(),
+            );
         }
         // Texture changes are cumulative; keep ones the runner has not
         // uploaded yet (a headless run never takes them).
@@ -197,9 +240,10 @@ fn collect_texts(
     }
 }
 
-/// egui input for a pass with no window, read from `RuntimeInput`.
-fn raw_input(input: &RuntimeInput) -> egui::RawInput {
-    let [width, height] = input.viewport_size();
+/// egui input for a pass with no window, read from `RuntimeInput`, in
+/// points of `zoom` pixels.
+fn raw_input(input: &RuntimeInput, zoom: f32) -> egui::RawInput {
+    let [width, height] = input.viewport_size().map(|side| side / zoom);
     let mut raw = egui::RawInput {
         screen_rect: (width > 0.0 && height > 0.0).then(|| {
             egui::Rect::from_min_size(
@@ -209,7 +253,9 @@ fn raw_input(input: &RuntimeInput) -> egui::RawInput {
         }),
         ..egui::RawInput::default()
     };
-    let cursor = input.cursor_position().map(|[x, y]| egui::pos2(x, y));
+    let cursor = input
+        .cursor_position()
+        .map(|[x, y]| egui::pos2(x / zoom, y / zoom));
     if let Some(pos) = cursor {
         raw.events.push(egui::Event::PointerMoved(pos));
         for (button, egui_button) in [
@@ -324,6 +370,42 @@ mod tests {
         assert!(ui.find_text("Slot 1").is_err(), "exact by default");
         let error = ui.find_text_where("-", false, Some(5)).unwrap_err();
         assert!(error.contains("#5 (of 3 matches)"), "{error}");
+    }
+
+    #[test]
+    fn a_base_size_scales_the_ui_to_fit_the_screen() {
+        let label_at = |base: Option<[f32; 2]>, screen: [f32; 2]| {
+            let mut ui = RuntimeUi::default();
+            ui.set_base_size(base);
+            let mut input = RuntimeInput::default();
+            input.record_viewport_size(screen);
+            ui.begin_pass(&input);
+            ui.context()
+                .layer_painter(egui::LayerId::background())
+                .text(
+                    egui::pos2(100.0, 50.0),
+                    egui::Align2::LEFT_TOP,
+                    "Score",
+                    egui::FontId::default(),
+                    egui::Color32::WHITE,
+                );
+            ui.end_pass();
+            ui.find_text("Score").unwrap()
+        };
+        let small = label_at(Some([640.0, 360.0]), [640.0, 360.0]);
+        // Twice the base size: twice as far from the corner.
+        let large = label_at(Some([640.0, 360.0]), [1280.0, 720.0]);
+        for axis in 0..2 {
+            assert!(
+                (large[axis] - 2.0 * small[axis]).abs() < 1.0,
+                "{small:?} {large:?}"
+            );
+        }
+        // A wider screen scales by its height and keeps the aspect.
+        let wide = label_at(Some([640.0, 360.0]), [1920.0, 720.0]);
+        assert!((wide[0] - large[0]).abs() < 1.0, "{wide:?} {large:?}");
+        // No base size: points are pixels at any size.
+        assert_eq!(label_at(None, [1280.0, 720.0]), small);
     }
 
     #[test]

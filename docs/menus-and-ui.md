@@ -128,6 +128,17 @@ scene.set_exposure(1.8); // brighter, e.g. a CCTV feed; 1 is neutral
 - None of these are saved. Store them with `save_data` and set them again
   at startup.
 
+## Scaling the HUD to the window
+
+By default the HUD is drawn at the desktop's DPI scale, so a bigger window
+shows more empty screen around the same-sized text. Put
+`"ui_base_size": [1280, 720]` in `project.json` to lay the HUD out for a
+1280x720 screen instead: it then scales uniformly to fit any window, like
+Godot's `canvas_items` stretch mode. A 2560x1440 window draws it at 2x; a
+wider window scales by its height, so anchored elements keep to the edges
+and nothing stretches. Headless runs scale from the viewport size the same
+way, and scenario clicks and `find_text` positions stay in window pixels.
+
 ## Testing menus
 
 Scenarios drive egui the same way a player does:

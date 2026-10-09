@@ -4309,17 +4309,24 @@ fn apply_seed(
 
 /// Asks for the `window` size in the folder's `project.json`, if any. The
 /// window opens at its default size and takes this one after the first
-/// frame, the same way [`GameScene::set_window_size`] works.
+/// frame, the same way [`GameScene::set_window_size`] works. A
+/// `ui_base_size` there scales the HUD to fit the window; see
+/// [`crate::runtime::RuntimeUi::set_base_size`].
 fn request_project_window(world: &mut World, folder: &Path) {
-    let size = std::fs::read(folder.join("project.json"))
+    let project = std::fs::read(folder.join("project.json"))
         .ok()
         .and_then(|bytes| {
             serde_json::from_slice::<serde_json::Value>(&bytes).ok()
         })
-        .and_then(|project| {
-            serde_json::from_value(project["window"].clone()).ok()
-        });
-    if let Some(size) = size {
+        .unwrap_or_default();
+    #[cfg(feature = "ui")]
+    if let (Ok(size), Some(mut ui)) = (
+        serde_json::from_value(project["ui_base_size"].clone()),
+        world.get_resource_mut::<crate::runtime::RuntimeUi>(),
+    ) {
+        ui.set_base_size(Some(size));
+    }
+    if let Ok(size) = serde_json::from_value(project["window"].clone()) {
         GameScene { world }.set_window_size(size);
     }
 }
@@ -4574,7 +4581,13 @@ impl WindowRunner {
                 .world_mut()
                 .get_resource_mut::<crate::runtime::RuntimeUi>(),
         ) {
-            runtime_ui.set_input(ui.input.take_egui_input(renderer.window()));
+            let window = renderer.window();
+            let size = window.inner_size();
+            runtime_ui.fit_window(
+                [size.width as f32, size.height as f32],
+                window.scale_factor() as f32,
+            );
+            runtime_ui.set_input(ui.input.take_egui_input(window));
         }
         let _ = (window_id, runtime);
     }
@@ -5730,11 +5743,24 @@ mod tests {
         assert!(world.get_resource::<WindowRequest>().is_none());
         std::fs::write(
             folder.join("project.json"),
-            r#"{"name": "n", "window": [1920, 1080]}"#,
+            r#"{"name": "n", "window": [1920, 1080], "ui_base_size": [960, 540]}"#,
         )
         .unwrap();
+        #[cfg(feature = "ui")]
+        world.insert_resource(crate::runtime::RuntimeUi::default());
         request_project_window(&mut world, &folder);
         assert_eq!(world.resource::<WindowRequest>().size, Some([1920, 1080]));
+        #[cfg(feature = "ui")]
+        {
+            // A 1920x1080 window at 1.5x DPI shows the 960x540 HUD at 2x.
+            let mut ui = world.resource_mut::<crate::runtime::RuntimeUi>();
+            ui.fit_window([1920.0, 1080.0], 1.5);
+            // egui takes a new zoom when the next pass begins.
+            ui.context().begin_pass(egui::RawInput::default());
+            let zoom = ui.context().zoom_factor();
+            let _ = ui.context().end_pass();
+            assert!((zoom * 1.5 - 2.0).abs() < 1e-4, "{zoom}");
+        }
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

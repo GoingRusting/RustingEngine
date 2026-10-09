@@ -1432,6 +1432,9 @@ pub fn json_schemas() -> Value {
                 "determinism": {"type": "string"},
                 "window": {"type": "array", "items": {"type": "integer",
                     "minimum": 1}, "minItems": 2, "maxItems": 2},
+                "ui_base_size": {"type": "array", "items": {"type": "integer",
+                    "minimum": 1}, "minItems": 2, "maxItems": 2,
+                    "description": "[width, height] in pixels the HUD is laid out for; it scales uniformly to fit the window, keeping its aspect ratio. Unset: drawn at the desktop's DPI scale."},
             },
             "required": ["name", "main_scene", "cooked_scene"],
         },
@@ -1696,9 +1699,13 @@ mod tests {
             generators: Default::default(),
             determinism: Default::default(),
             window: None,
+            ui_base_size: None,
         };
         let mut keys = written_keys(&project);
-        keys.extend(["generators", "determinism", "window"].map(String::from));
+        keys.extend(
+            ["generators", "determinism", "window", "ui_base_size"]
+                .map(String::from),
+        );
         assert_eq!(keys, schema_keys(&schemas["project"]));
         for name in
             ["scene", "scene_patch", "scenario", "project", "asset_meta"]

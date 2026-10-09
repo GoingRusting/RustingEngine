@@ -2601,7 +2601,16 @@ Depends on: Milestones 1, 3, and 9.
   named camera, hidden behind it; evidence
   `runtime::tests::a_hud_element_follows_an_object_on_screen`
   (mutation-checked against dropping `follow_offset`).
-- [ ] Scaling across resolutions, aspect ratios, and DPI settings.
+- [x] Scaling across resolutions, aspect ratios, and DPI settings. DPI was
+  already covered by egui-winit's native scale. `project.json`
+  `ui_base_size` lays the HUD out for a base screen and scales it uniformly
+  to fit the window (Godot `canvas_items` stretch, aspect kept); headless
+  runs scale from the viewport and `find_text` reports window pixels.
+  Evidence: `runtime::ui::tests::a_base_size_scales_the_ui_to_fit_the_screen`
+  (2x at twice the base, height-limited on a wider screen, unchanged
+  without a base) and `project_runner::tests::project_json_window_size_is_asked_for`
+  (a 1920x1080 window at 1.5x DPI zooms a 960x540 base to 2 pixels per
+  point).
 - [x] Localization: translation tables, pluralization, locale switching at runtime, and extraction of translatable strings.
   - [x] Translation tables, one/other plurals and runtime locale switching. `GameScene::set_locale(locale)` reads `assets/locales/<locale>.json` (key to text) into the `Translations` resource, keeping the old locale on a bad file; `tr(key)` and `tr_count(key, count)` read it, with the key as the fallback; HUD text's `{tr:key}` placeholders follow the locale each frame and may hold counter placeholders. Verified by `set_locale_switches_translations_and_keeps_them_on_a_bad_file` and `hud_text_fills_counter_placeholders` (translated HUD text with a counter, a missing key, plurals).
   - [x] Per-locale plural rules beyond one/other.

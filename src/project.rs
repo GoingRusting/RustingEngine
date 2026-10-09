@@ -285,6 +285,11 @@ pub struct ProjectManifest {
     /// Game code can still change it with `GameScene::set_window_size`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<[u32; 2]>,
+    /// Screen size in pixels, `[width, height]`, the HUD is laid out for.
+    /// The HUD then scales uniformly to fit any window, keeping its aspect
+    /// ratio; `None` draws it at the desktop's DPI scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_base_size: Option<[u32; 2]>,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -744,6 +749,7 @@ fn write_project_template(
         generators: std::collections::BTreeMap::new(),
         determinism: Default::default(),
         window: None,
+        ui_base_size: None,
     };
     std::fs::write(
         root.join("project.json"),
