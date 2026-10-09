@@ -5040,10 +5040,12 @@ fn build_scene_debug_overlay(
     overlay
 }
 
+// Red leans pink and green leans yellow-light so X and Y stay apart for
+// red-green color-blind users; see `axis_colors_survive_color_blindness`.
 const fn gizmo_base_color(axis: GizmoAxis) -> [f32; 4] {
     match axis {
-        GizmoAxis::X => [0.95, 0.24, 0.24, 1.0],
-        GizmoAxis::Y => [0.25, 0.90, 0.35, 1.0],
+        GizmoAxis::X => [0.9, 0.18, 0.28, 1.0],
+        GizmoAxis::Y => [0.55, 0.95, 0.2, 1.0],
         GizmoAxis::Z => [0.25, 0.52, 1.0, 1.0],
     }
 }
@@ -5200,6 +5202,96 @@ fn select_added_model(state: &mut EditorState, world: &World, root: Entity) {
 #[cfg(test)]
 mod gizmo_tests {
     use super::*;
+
+    /// CIELAB of an sRGB colour as a protanope (`1`) or deuteranope
+    /// (`2`) sees it, by Machado et al. 2009 at full severity, or as
+    /// typical vision does (`0`).
+    fn seen_lab(srgb: [f32; 3], vision: usize) -> [f32; 3] {
+        const MATRICES: [[[f32; 3]; 3]; 3] = [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [
+                [0.152_286, 1.052_583, -0.204_868],
+                [0.114_503, 0.786_281, 0.099_216],
+                [-0.003_882, -0.048_116, 1.051_998],
+            ],
+            [
+                [0.367_322, 0.860_646, -0.227_968],
+                [0.280_085, 0.672_501, 0.047_413],
+                [-0.011_82, 0.042_94, 0.968_881],
+            ],
+        ];
+        let linear = srgb.map(|c| {
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        let [r, g, b] = MATRICES[vision].map(|row| {
+            (row[0] * linear[0] + row[1] * linear[1] + row[2] * linear[2])
+                .clamp(0.0, 1.0)
+        });
+        let f = |t: f32| {
+            if t > 0.008_856 {
+                t.cbrt()
+            } else {
+                7.787 * t + 16.0 / 116.0
+            }
+        };
+        let x = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.950_47);
+        let y = f(0.2126 * r + 0.7152 * g + 0.0722 * b);
+        let z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.088_83);
+        [116.0 * y - 16.0, 500.0 * (x - y), 200.0 * (y - z)]
+    }
+
+    /// Every pair of `colors` differs by at least CIE76 delta E 25 under
+    /// typical, protan and deutan vision.
+    fn assert_distinct_for_color_blindness(colors: &[[f32; 3]], what: &str) {
+        for vision in 0..3 {
+            for (i, a) in colors.iter().enumerate() {
+                for b in &colors[i + 1..] {
+                    let (a, b) = (seen_lab(*a, vision), seen_lab(*b, vision));
+                    let distance = (0..3)
+                        .map(|k| (a[k] - b[k]).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+                    assert!(
+                        distance >= 25.0,
+                        "{what}: {distance} apart in vision {vision}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn axis_colors_survive_color_blindness() {
+        let rgb = |color: [f32; 4]| [color[0], color[1], color[2]];
+        let theme = |color: egui::Color32| {
+            [color.r(), color.g(), color.b()].map(|c| f32::from(c) / 255.0)
+        };
+        assert_distinct_for_color_blindness(
+            &[GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z]
+                .map(|axis| rgb(gizmo_base_color(axis))),
+            "gizmo axes",
+        );
+        assert_distinct_for_color_blindness(
+            &gui_elements::EditorTheme::AXIS.map(theme),
+            "theme axes",
+        );
+        assert_distinct_for_color_blindness(
+            &[
+                gui_elements::EditorTheme::WARNING,
+                gui_elements::EditorTheme::ERROR,
+            ]
+            .map(theme),
+            "warning and error",
+        );
+        assert_distinct_for_color_blindness(
+            &[[1.0, 0.78, 0.12], [0.85, 0.42, 0.08], [0.72, 0.74, 0.78]],
+            "active, selected and plain wireframes",
+        );
+    }
 
     #[test]
     fn gpu_pass_times_label_shows_total_then_each_pass() {

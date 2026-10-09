@@ -44,10 +44,11 @@ impl EditorTheme {
         egui::Color32::from_rgb(178, 148, 235);
     pub const BUTTON: egui::Color32 = egui::Color32::from_rgb(53, 57, 67);
     pub const BUTTON_HOVER: egui::Color32 = egui::Color32::from_rgb(65, 70, 82);
-    /// X, Y, and Z axis colors used by vector fields and gizmos.
+    /// X, Y, and Z axis colors used by vector fields and gizmos; X and Y
+    /// differ in lightness so red-green color-blind users tell them apart.
     pub const AXIS: [egui::Color32; 3] = [
-        egui::Color32::from_rgb(222, 72, 72),
-        egui::Color32::from_rgb(128, 190, 40),
+        egui::Color32::from_rgb(222, 52, 72),
+        egui::Color32::from_rgb(150, 220, 45),
         egui::Color32::from_rgb(60, 132, 228),
     ];
     /// Height of one control or property row.

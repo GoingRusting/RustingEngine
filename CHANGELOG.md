@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Editor gizmo and axis colours stay distinct for red-green color-blind users (X red leans pink, Y green is lighter), checked by a simulated-vision test.
 - HUD button text `{binding:action}` shows an input action's keys, and clicking it rebinds the action to the next key pressed (Escape cancels), so a controls menu needs no game code.
 - `GameScene::set_text_scale(scale)` and `text_scale()`: larger HUD text and captions for players who need them.
 - HUD text `{state:Name}` shows an object's `rusting.state`, translated when the locale has it as a key, so a quest's stage shows with no game code.
