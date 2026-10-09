@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.state` takes `actions` (`state`, `exit`, `counter`, `add`), which add to a counter when a state is entered or left, by a transition or `set_state`.
 - The recipe `alarm` builds a state machine with no code: a plate that alarms when the player touches it, counts alarms and calms after 2 seconds, with a scenario that checks it.
 - `rusting.state` transitions take `held`, an input action that must be held for the edge to be taken, and `touching`, the name of an object the machine's object must touch.
 - `rusting.state` takes `transitions` (`from`, `to`, `after_seconds`, `counter`, `at_least`), which the engine runs each fixed tick, so a state machine needs no game code. A transition's `then_counter` and `then_add` add to a counter when it is taken.

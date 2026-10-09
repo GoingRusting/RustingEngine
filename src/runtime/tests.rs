@@ -2334,6 +2334,52 @@ fn state_machines_follow_timed_and_counter_guarded_transitions() {
 }
 
 #[test]
+fn state_transitions_run_exit_then_enter_actions() {
+    let mut app = App::new();
+    let action = |state: &str, exit, add| StateAction {
+        state: state.into(),
+        exit,
+        counter: "log".into(),
+        add,
+    };
+    let lamp = app.spawn(ObjectState {
+        state: "off".into(),
+        transitions: vec![
+            StateTransition {
+                from: "off".into(),
+                to: "on".into(),
+                ..StateTransition::default()
+            },
+            StateTransition {
+                from: "on".into(),
+                to: "off".into(),
+                after_seconds: 1.0,
+                ..StateTransition::default()
+            },
+        ],
+        actions: vec![
+            action("off", true, 1),
+            action("on", false, 10),
+            action("on", true, 100),
+        ],
+        ..ObjectState::default()
+    });
+    let log = |app: &mut App| {
+        let mut counters = app.world_mut().query::<&Counter>();
+        counters
+            .iter(app.world())
+            .find(|counter| counter.name == "log")
+            .map(|counter| counter.value)
+    };
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(log(&mut app), Some(11));
+    run_fixed_steps(&mut app, 60);
+    // Off again on tick 60, 1 s later: leaving on adds 100.
+    assert_eq!(app.world().get::<ObjectState>(lamp).unwrap().state, "off");
+    assert_eq!(log(&mut app), Some(111));
+}
+
+#[test]
 fn state_transitions_can_wait_for_a_contact() {
     let mut app = App::new();
     let world = app.world_mut();

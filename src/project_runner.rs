@@ -1390,7 +1390,8 @@ impl GameScene<'_> {
 
     /// Puts the named object's state machine in `state`, as a
     /// `rusting.state` component scenarios can expect on. Returns `true`
-    /// when the state changed, so enter actions go in an `if`; setting the
+    /// when the state changed, so enter actions go in an `if`; the
+    /// component's own enter and exit actions run too. Setting the
     /// current state again keeps its start tick and returns `false`.
     /// Warns once and returns `false` when no object has that name.
     pub fn set_state(&mut self, name: &str, state: &str) -> bool {
@@ -1411,8 +1412,12 @@ impl GameScene<'_> {
             .entry::<crate::runtime::ObjectState>()
             .or_default()
             .into_mut();
+        let changes = current.changes(&current.state, state);
         current.state = state.to_owned();
         current.since_tick = tick;
+        for (counter, add) in changes {
+            self.add_to_counter(&counter, add);
+        }
         true
     }
 
@@ -7292,6 +7297,38 @@ mod tests {
         assert!(crate::runtime::SceneComponentRegistry::default()
             .names()
             .any(|name| name == crate::runtime::OBJECT_STATE_COMPONENT));
+    }
+
+    #[test]
+    fn set_state_runs_the_enter_and_exit_actions() {
+        use crate::runtime::{ObjectState, StateAction};
+        let mut world = World::new();
+        world.insert_resource(FrameTime::default());
+        let action = |state: &str, exit, counter: &str, add| StateAction {
+            state: state.into(),
+            exit,
+            counter: counter.into(),
+            add,
+        };
+        world.spawn((
+            Name("Enemy".into()),
+            ObjectState {
+                state: "patrol".into(),
+                actions: vec![
+                    action("chase", false, "chasers", 1),
+                    action("chase", true, "chasers", -1),
+                    action("patrol", true, "", 5),
+                ],
+                ..ObjectState::default()
+            },
+        ));
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.set_state("Enemy", "chase"));
+        assert_eq!(scene.counter_value("chasers"), 1);
+        assert!(!scene.set_state("Enemy", "chase"));
+        assert_eq!(scene.counter_value("chasers"), 1);
+        assert!(scene.set_state("Enemy", "patrol"));
+        assert_eq!(scene.counter_value("chasers"), 0);
     }
 
     #[test]

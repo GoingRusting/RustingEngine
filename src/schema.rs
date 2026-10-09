@@ -988,7 +988,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.state",
-        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least, whose held input action (empty for none) is held, and whose touching object (empty for none) touches it, moves it to `to` and adds then_add to the counter then_counter (empty for none).",
+        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least, whose held input action (empty for none) is held, and whose touching object (empty for none) touches it, moves it to `to` and adds then_add to the counter then_counter (empty for none). actions add to a counter when their state is entered, or left when exit is true, by a transition or set_state.",
         gpu: NO_GPU,
         example: || {
             json!({
@@ -1005,6 +1005,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
                     "then_counter": "alerts",
                     "then_add": 1,
                 }],
+                "actions": [{"state": "chase", "exit": false, "counter": "chasers", "add": 1}],
             })
         },
     },

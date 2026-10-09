@@ -691,6 +691,33 @@ pub struct ObjectState {
     /// The fixed tick the state was entered on.
     pub since_tick: u64,
     pub transitions: Vec<StateTransition>,
+    pub actions: Vec<StateAction>,
+}
+
+impl ObjectState {
+    /// The counter additions `actions` make when leaving `from` for `to`:
+    /// exit actions of `from`, then enter actions of `to`.
+    pub fn changes(&self, from: &str, to: &str) -> Vec<(String, i32)> {
+        let exits = self.actions.iter().filter(|a| a.exit && a.state == from);
+        let enters = self.actions.iter().filter(|a| !a.exit && a.state == to);
+        exits
+            .chain(enters)
+            .filter(|action| !action.counter.is_empty())
+            .map(|action| (action.counter.clone(), action.add))
+            .collect()
+    }
+}
+
+/// Adds `add` to the counter `counter` (created when missing) when an
+/// [`ObjectState`] enters `state`, or leaves it when `exit` is set, by a
+/// transition or `GameScene::set_state`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StateAction {
+    pub state: String,
+    pub exit: bool,
+    pub counter: String,
+    pub add: i32,
 }
 
 /// One edge of an [`ObjectState`] machine. It applies when the object is
@@ -768,9 +795,13 @@ pub fn run_state_machines(
                         .is_some_and(|counter| counter.value >= edge.at_least))
         });
         if let Some(edge) = next {
-            if !edge.then_counter.is_empty() {
-                let add = adds.entry(edge.then_counter.clone()).or_default();
-                *add = add.saturating_add(edge.then_add);
+            let mut changes = vec![(edge.then_counter.clone(), edge.then_add)];
+            changes.extend(machine.changes(&machine.state, &edge.to));
+            for (counter, value) in changes {
+                if !counter.is_empty() {
+                    let add = adds.entry(counter).or_default();
+                    *add = add.saturating_add(value);
+                }
             }
             let to = edge.to.clone();
             machine.state = to;
