@@ -82,6 +82,12 @@ pub const RECIPES: &[Recipe] = &[Recipe {
     source: Some(include_str!("recipes/dash.rs")),
     call: Some("dash::dash(scene);"),
     build: dash_scene,
+}, Recipe {
+    name: "alarm",
+    summary: "A state machine with no code: the sensor `Alarm Plate`, 2.5 units along +X from the player, goes from `quiet` to `alarmed` when the `Player` touches it, adds 1 to the counter `alarms`, and goes back to `quiet` 2 seconds later. Edit its `rusting.state` transitions to change the rules. No source file.",
+    source: None,
+    call: None,
+    build: alarm_scene,
 }];
 
 /// The recipe called `name`.
@@ -374,6 +380,35 @@ fn turret_scene(player: &SceneEntity) -> Built {
     Ok((creates(entities), scenario))
 }
 
+fn alarm_scene(player: &SceneEntity) -> Built {
+    let player = position(player);
+    let plate = [player[0] + 2.5, player[1], player[2]];
+    let mut alarm = sensor("Alarm Plate", "alarm", plate);
+    alarm["components"] = json!({"rusting.state": {"state": "quiet", "transitions": [
+        {"from": "quiet", "to": "alarmed", "touching": "Player", "then_counter": "alarms", "then_add": 1},
+        {"from": "alarmed", "to": "quiet", "after_seconds": 2.0},
+    ]}});
+    let state = "/components/rusting.state/state";
+    // Standing on the plate alarms once, it calms after 2 s, and standing
+    // there still alarms it again.
+    let scenario = json!({
+        "name": "alarm: touching the plate alarms it once and it calms after 2 s",
+        "ticks": 200,
+        "steps": [
+            {"tick": 5, "expect": {"entity": "Alarm Plate", "path": state, "equals": "quiet"}},
+            {"tick": 10, "set": {"entity": "Player", "path": "/transform/position", "value": plate}},
+            {"tick": 20, "expect": {"entity": "Alarm Plate", "path": state, "equals": "alarmed"}},
+            {"tick": 20, "expect": {"counter": "alarms", "equals": 1}},
+            {"tick": 20, "set": {"entity": "Player", "path": "/transform/position", "value": player}},
+            {"tick": 150, "expect": {"entity": "Alarm Plate", "path": state, "equals": "quiet"}},
+            {"tick": 150, "expect": {"counter": "alarms", "equals": 1}},
+            {"tick": 160, "set": {"entity": "Player", "path": "/transform/position", "value": plate}},
+            {"tick": 170, "expect": {"counter": "alarms", "equals": 2}},
+        ]
+    });
+    Ok((creates(vec![alarm]), scenario))
+}
+
 fn dash_scene(player: &SceneEntity) -> Built {
     // Which way an idle player dashes: forward by its yaw in 3D, +X in 2D.
     let yaw = if let Some(text) =
@@ -591,6 +626,11 @@ mod tests {
         applies_and_passes("turret", |world| {
             super::turret::turret(&mut GameScene { world });
         });
+    }
+
+    #[test]
+    fn alarm_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
+        applies_and_passes("alarm", |_| {});
     }
 
     #[test]

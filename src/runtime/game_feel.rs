@@ -782,13 +782,21 @@ pub fn run_state_machines(
             Some(mut counter) => {
                 counter.value = counter.value.saturating_add(add);
             }
-            None => {
-                commands.spawn(Counter {
-                    name,
-                    value: add,
-                    target: None,
-                });
-            }
+            // Made the way `GameScene::set_counter` makes one, so
+            // scenarios and saves find it.
+            None => commands.queue(move |world: &mut World| {
+                let order = super::next_spawn_order(world);
+                world.spawn((
+                    super::Name(name.clone()),
+                    SceneId::new(),
+                    order,
+                    Counter {
+                        name,
+                        value: add,
+                        target: None,
+                    },
+                ));
+            }),
         }
     }
 }
