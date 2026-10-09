@@ -509,10 +509,16 @@ share one undoable command layer.
   Night Market F10.
 - [ ] Gap: `rusting capture` does not run game code.
 - [x] Gap: a scenario stops at its first failed check. `"keep_going": true` in the scenario file reports every failure; test `keep_going_reports_every_failed_check`.
-- [ ] Gap: a windowed `rusting run` shows no on-screen FPS or frame time.
+- [x] Gap: a windowed `rusting run` shows no on-screen FPS or frame time.
   `RUSTING_PERF=1` prints fps, update/render split, CPU phases, GPU pass
   times and draw counts to stderr once a second and shows fps and frame
-  time in the window title. An in-game overlay is still open.
+  time in the window title. Now it also draws fps, frame time and p95 in
+  the top-right corner (the `PerfOverlay` resource, painted by the HUD
+  pass), and F3 toggles the report in a running game. Evidence: unit test
+  `the_perf_overlay_draws_only_while_its_resource_exists`; an 8000-frame
+  `RUSTING_PERF=1` window run of the empty template (RTX 3060, 2026-10-09)
+  printed three perf lines at about 2400 fps with no error. The corner
+  text and the F3 key were not checked by eye. Full AGENTS.md check clean.
 - [x] Perf (Same Shift, RTX 3060, 1080p, clean GPU): 355 to about 1000 fps.
   Swapchain image count 2 to 4 (Wayland throttled Immediate with 2), a
   `reflections` render setting that skips the scene copy, mip chain and depth

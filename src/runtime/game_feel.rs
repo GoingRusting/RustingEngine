@@ -1362,6 +1362,40 @@ pub(super) fn update_burst_particles(
     }
 }
 
+/// Frame rate and frame time the window runner shows in the top-right
+/// corner while F3 or `RUSTING_PERF` turns it on. Absent, nothing is drawn.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct PerfOverlay(pub String);
+
+/// The [`PerfOverlay`] text, top right over a dark band.
+#[cfg(feature = "ui")]
+fn draw_perf_overlay(context: &egui::Context, overlay: Option<&PerfOverlay>) {
+    let Some(PerfOverlay(text)) = overlay else {
+        return;
+    };
+    egui::Area::new(egui::Id::new("rusting.perf_overlay"))
+        .sense(egui::Sense::hover())
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+        .fade_in(false)
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(170))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .monospace()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .selectable(false),
+                    );
+                });
+        });
+}
+
 /// Caption lines of the sounds playing, bottom center over a dark band.
 #[cfg(feature = "ui")]
 fn draw_captions(
@@ -1414,7 +1448,9 @@ pub(super) fn draw_hud(
     cameras: Query<(&super::Name, &super::Camera)>,
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
+    perf: Option<Res<PerfOverlay>>,
 ) {
+    draw_perf_overlay(ui.context(), perf.as_deref());
     draw_captions(
         ui.context(),
         audio.as_deref(),

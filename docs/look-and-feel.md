@@ -284,7 +284,9 @@ To measure your own game in its real window, run it with `RUSTING_PERF=1`
 (for example `RUSTING_PERF=1 rusting run --release`). Once a second it
 prints a `[rusting] perf` line with the frame rate, the p50, p95, p99 and
 largest frame time over that second, and where the time went (update,
-render, CPU and GPU passes). The CPU part splits into `fixed` (physics and
+render, CPU and GPU passes), and shows the frame rate, frame time and p95
+in the window's top-right corner. F3 turns the same report on and off
+while the game runs; the game also sees the F3 press. The CPU part splits into `fixed` (physics and
 fixed systems), `update` (the game's systems), `post_update` (transform
 propagation and other engine work) and `extract`; a scenario run reports
 the same split per tick as `perf.stages_ms_mean`. `rusting test` captures render offscreen and

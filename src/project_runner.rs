@@ -3988,7 +3988,8 @@ struct ProjectApplication {
     /// State file and the flag the standard input reader sets when the
     /// editor asks for a code reload.
     code_reload: Option<(PathBuf, Arc<AtomicBool>)>,
-    /// Set by `RUSTING_PERF`: frames counted since the last printed line.
+    /// Set by `RUSTING_PERF` or F3: frames counted since the last printed
+    /// line.
     perf: Option<(Instant, u32)>,
     /// Time spent in `runtime.update` and in `render` since the last line.
     perf_spent: [std::time::Duration; 2],
@@ -4134,7 +4135,24 @@ impl ProjectApplication {
         work.push([cpu, gpu].map(|time| time.as_secs_f64() * 1000.0));
     }
 
-    /// Prints `[rusting] perf` once a second when `RUSTING_PERF` is set.
+    /// F3: starts or stops the once-a-second perf line and its overlay.
+    fn toggle_perf_overlay(&mut self) {
+        let world = self.runtime.world_mut();
+        if self.perf.take().is_some() {
+            world.remove_resource::<crate::runtime::PerfOverlay>();
+            if let Some(window) = self.window.windows.get_primary_window() {
+                window.set_title(&self.window.title);
+            }
+        } else {
+            self.perf = Some((Instant::now(), 0));
+            self.perf_frames = Default::default();
+            self.perf_spent = Default::default();
+            world.insert_resource(crate::runtime::PerfOverlay("-- fps".into()));
+        }
+    }
+
+    /// Prints `[rusting] perf` once a second while `RUSTING_PERF` or F3 has
+    /// it on, and shows fps and frame time in the title and the overlay.
     fn report_perf(&mut self) {
         let Some((since, frames)) = &mut self.perf else {
             return;
@@ -4155,13 +4173,14 @@ impl ProjectApplication {
         let [update, render] =
             std::mem::take(&mut self.perf_spent).map(|time| time / *frames);
         (*since, *frames) = (Instant::now(), 0);
+        let summary =
+            format!("{fps:.0} fps  {:.2} ms  p95 {p95:.2} ms", 1000.0 / fps);
         if let Some(window) = self.window.windows.get_primary_window() {
-            window.set_title(&format!(
-                "{} - {fps:.0} fps ({:.2} ms)",
-                self.window.title,
-                1000.0 / fps
-            ));
+            window.set_title(&format!("{} - {summary}", self.window.title));
         }
+        self.runtime
+            .world_mut()
+            .insert_resource(crate::runtime::PerfOverlay(summary));
         let ms = |time: std::time::Duration| time.as_secs_f64() * 1000.0;
         let mut cpu = *self
             .runtime
@@ -4248,6 +4267,12 @@ impl ApplicationHandler for ProjectApplication {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
+                    if code == crate::runtime::KeyCode::F3
+                        && event.state.is_pressed()
+                        && !event.repeat
+                    {
+                        self.toggle_perf_overlay();
+                    }
                     let tick = self.event_tick();
                     let mut input =
                         self.runtime.world_mut().resource_mut::<RuntimeInput>();

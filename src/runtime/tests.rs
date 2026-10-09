@@ -2555,6 +2555,33 @@ fn hud_draws_scene_text_and_reports_button_clicks() {
 
 #[cfg(feature = "ui")]
 #[test]
+fn the_perf_overlay_draws_only_while_its_resource_exists() {
+    let mut app = App::new();
+    let frame = |app: &mut App| {
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..egui::RawInput::default()
+            });
+        app.update(Duration::from_millis(16)).unwrap();
+    };
+    let text = "60 fps  16.67 ms  p95 17.00 ms";
+    app.insert_resource(PerfOverlay(text.into()));
+    frame(&mut app);
+    frame(&mut app);
+    let [x, y] = app.world().resource::<RuntimeUi>().find_text(text).unwrap();
+    assert!(x > 400.0 && y < 100.0, "top right, not at {x}, {y}");
+    app.world_mut().remove_resource::<PerfOverlay>();
+    frame(&mut app);
+    assert!(app.world().resource::<RuntimeUi>().find_text(text).is_err());
+}
+
+#[cfg(feature = "ui")]
+#[test]
 fn hud_elements_follow_their_camera_viewport() {
     let mut app = App::new();
     let camera = app.spawn((
