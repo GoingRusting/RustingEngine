@@ -498,9 +498,14 @@ share one undoable command layer.
   step records `entity.path` (every tick with `until`) and never fails;
   `rusting test --json` lists the lines. Evidence:
   `scenario::tests::log_steps_record_a_value_every_tick_and_never_fail`.
-- [ ] Gap (Same Shift): GPU bodies reach game code 1 to 3 frames late and
+- [x] Gap (Same Shift): GPU bodies reach game code 1 to 3 frames late and
   cannot be reset or teleported after setup. Document their feature set
-  and let game code move one to a pose with zero velocity.
+  and let game code move one to a pose with zero velocity. Closed by
+  existing work: `GameScene::gpu_command` with `GpuBodyCommand::Teleport`
+  and `SetVelocity` (v1.3.0), applied before the next GPU tick; the GPU
+  test `commands_apply_once_before_the_step_and_reject_stale_bodies`
+  covers both. The lateness and the reset recipe are in
+  `docs/pitfalls.md` and `docs/determinism.md` (2026-10-09 audit).
 - [ ] Gap (Same Shift): a camera that renders into a texture or a screen
   rectangle, for monitors and split screen.
 - [x] Gap: `RenderSettings::render_scale` is read by the window and headless

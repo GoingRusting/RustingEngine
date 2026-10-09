@@ -122,7 +122,10 @@ Fix: read the counter before `load_scene` and set it after.
 are not covered by `restart` determinism.
 Code: none.
 Fix: use `"simulation": "Cpu"` for anything gameplay reads; keep GPU bodies
-for decorative piles.
+for decorative piles. To put one GPU body back at a pose at rest, send
+`scene.gpu_command(name, GpuBodyCommand::Teleport(transform))` and then
+`GpuBodyCommand::SetVelocity` with zero velocities; both apply before the
+next GPU tick.
 
 ## Tests prove less than they seem
 
