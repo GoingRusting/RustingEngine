@@ -13,10 +13,10 @@ use uuid::Uuid;
 
 use super::{
     App, AppError, BurstEmitter, Collider, ColliderShape, CollisionLayers,
-    Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Health, Joint, Name,
-    ObjectState, PhysicsBody, PhysicsIdRegistry, PhysicsSettings, PhysicsWorld,
-    Pickup, PlatformerController, PlayerController, RandomSeed, RigidBody,
-    SceneId, Sleeping, Tween,
+    Counter, Dialogue, FrameTime, GpuPhysicsCommands, GpuProxyOf, Health,
+    Joint, Name, ObjectState, PhysicsBody, PhysicsIdRegistry, PhysicsSettings,
+    PhysicsWorld, Pickup, PlatformerController, PlayerController, RandomSeed,
+    RigidBody, SceneId, Sleeping, Tween,
 };
 
 /// Ticks of history kept in [`StateHashes`] (about 17 seconds at 60 Hz).
@@ -168,6 +168,7 @@ fn entity_places(world: &mut World) -> HashMap<Entity, u64> {
             With<BurstEmitter>,
             With<Health>,
             With<ObjectState>,
+            With<Dialogue>,
         )>>()
         .iter(world)
         .collect();
@@ -242,6 +243,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         Option<&BurstEmitter>,
         Option<&Health>,
         Option<&ObjectState>,
+        Option<&Dialogue>,
     ), Or<(
         With<PlayerController>,
         With<PlatformerController>,
@@ -251,6 +253,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         With<BurstEmitter>,
         With<Health>,
         With<ObjectState>,
+        With<Dialogue>,
     )>>();
     for (
         entity,
@@ -260,8 +263,9 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         pickup,
         counter,
         emitter,
-        state,
         health,
+        state,
+        dialogue,
     ) in gameplay.iter(world)
     {
         let hasher = hashers.entry(entity).or_default();
@@ -288,8 +292,12 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         });
         let _ = write!(
             hasher,
-            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}{state:?}{health:?}"
+            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}{health:?}{state:?}"
         );
+        // Only when present, so hashes of scenes without one stay the same.
+        if let Some(dialogue) = dialogue {
+            let _ = write!(hasher, "{dialogue:?}");
+        }
     }
     hashers
         .into_iter()

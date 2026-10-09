@@ -652,6 +652,44 @@ pub struct LootTable {
     pub entries: Vec<LootEntry>,
 }
 
+/// A branching conversation on a named object, edited in the scene and
+/// stepped by game code's `GameScene::start_dialogue` and
+/// `advance_dialogue`. `current` is the id of the line being shown, empty
+/// when the dialogue is not running, so snapshots and saves keep the spot.
+#[derive(
+    Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(default)]
+pub struct Dialogue {
+    pub lines: Vec<DialogueLine>,
+    pub current: String,
+}
+
+/// One [`Dialogue`] line. `speaker`, `text` and choice texts are
+/// translation keys (shown as they are when the locale lacks them). With
+/// no choices the dialogue moves on to `next`; an empty or unknown `next`
+/// ends it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DialogueLine {
+    pub id: String,
+    pub speaker: String,
+    pub text: String,
+    pub next: String,
+    pub choices: Vec<DialogueChoice>,
+}
+
+/// A player answer on a [`DialogueLine`]: picking it adds `add` to the
+/// counter `counter` (empty for none) and moves on to `next`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DialogueChoice {
+    pub text: String,
+    pub next: String,
+    pub counter: String,
+    pub add: i32,
+}
+
 /// One [`LootTable`] entry: `item` is picked with a chance of `weight`
 /// over the table's total.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

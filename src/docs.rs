@@ -916,6 +916,10 @@ const API_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("translations", &["set_locale", "locale", "tr", "tr_count"]),
+    (
+        "dialogue",
+        &["start_dialogue", "dialogue_line", "advance_dialogue"],
+    ),
     ("tiles, fields", &["tile", "set_tile", "set_field"]),
     (
         "GPU bodies",

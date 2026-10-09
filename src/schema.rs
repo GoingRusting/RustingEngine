@@ -987,6 +987,16 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"value": 3, "max": 3, "team": "enemies"}),
     },
     ComponentSection {
+        key: "rusting.dialogue",
+        summary: "A branching conversation on a named object, such as a shopkeeper or quest giver. Game code's scene.start_dialogue(name) shows the first line, scene.dialogue_line(name) gives the shown line with speaker, text and choice texts translated by the locale (keys the locale lacks are shown as they are), and scene.advance_dialogue(name, choice) moves to the line's next, or to the picked choice's next after adding add to its counter (empty for none); an empty or unknown next ends it. current is the shown line's id, empty when not running, so snapshots, saves and scenarios see where the talk is.",
+        gpu: NO_GPU,
+        example: || json!({"current": "", "lines": [
+            {"id": "hello", "speaker": "npc.smith", "text": "smith.hello", "next": "", "choices": [
+                {"text": "smith.buy", "next": "buy", "counter": "", "add": 0},
+                {"text": "smith.quest", "next": "", "counter": "quest.smith", "add": 1}]},
+            {"id": "buy", "speaker": "npc.smith", "text": "smith.buy_reply", "next": "", "choices": []}]}),
+    },
+    ComponentSection {
         key: "rusting.loot_table",
         summary: "A weighted loot table on a named object, such as a chest or an enemy's drops. Game code's scene.roll_loot_table(name, stream) picks one entry's item with a chance of its weight over the total, from the run's seed, so the same seed rolls the same loot; weight 0 never drops.",
         gpu: NO_GPU,

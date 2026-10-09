@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Registered component `rusting.dialogue` (lines with speakers, texts as translation keys, and choices that add to counters) stepped by `GameScene::start_dialogue`, `dialogue_line` and `advance_dialogue`.
 - `tr_count` follows the locale's plural rule: `key.few` and `key.many` for Russian-family languages and Polish, `key.few` for Czech and Slovak, and French `one` for 0. A missing form falls back to `key.other`.
 - `rusting lint` warns `LINT_MISSING_TRANSLATION` for each literal `tr("key")`, `tr_count("key", ..)` or HUD `{tr:key}` key that a locale file in `assets/locales/` lacks.
 - Localization: `GameScene::set_locale(locale)` loads `assets/locales/<locale>.json`, `tr(key)` and `tr_count(key, count)` read it, and HUD text's `{tr:key}` placeholders follow the locale.

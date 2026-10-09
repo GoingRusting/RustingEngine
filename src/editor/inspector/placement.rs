@@ -22,7 +22,7 @@ use crate::runtime::{
 use crate::runtime::{
     ANIMATION_COMPONENT, ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT,
     BURST_EMITTER_COMPONENT, CONNECTIONS_COMPONENT, COUNTER_COMPONENT,
-    FLUID_BLOCK_COMPONENT, HEALTH_COMPONENT, IK_COMPONENT,
+    DIALOGUE_COMPONENT, FLUID_BLOCK_COMPONENT, HEALTH_COMPONENT, IK_COMPONENT,
     INPUT_ACTION_COMPONENT, JOINT_COMPONENT, LOOT_TABLE_COMPONENT,
     MORPH_COMPONENT, OBJECT_STATE_COMPONENT, PARTICLE_EMITTER_COMPONENT,
     PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
@@ -239,6 +239,10 @@ pub(in crate::editor) fn component_help(
         HEALTH_COMPONENT => (
             "Hit points that game code lowers with damage; same-team objects are allies.",
             "Player lives, enemy health, breakable crates.",
+        ),
+        DIALOGUE_COMPONENT => (
+            "Lines and player choices that game code steps through by this object's name.",
+            "Shopkeeper talk, quest givers, signposts.",
         ),
         LOOT_TABLE_COMPONENT => (
             "Weighted items that game code rolls by this object's name.",

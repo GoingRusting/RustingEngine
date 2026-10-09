@@ -1135,6 +1135,8 @@ pub const AMBIENT_OCCLUSION_COMPONENT: &str = "rusting.ambient_occlusion";
 pub const BACKGROUND_COMPONENT: &str = "rusting.background";
 /// Registry name of the built-in named counter.
 pub const COUNTER_COMPONENT: &str = "rusting.counter";
+/// Registry name of the built-in branching conversation.
+pub const DIALOGUE_COMPONENT: &str = "rusting.dialogue";
 /// Registry name of the built-in hit points.
 pub const HEALTH_COMPONENT: &str = "rusting.health";
 /// Registry name of the built-in weighted loot table.
@@ -1272,6 +1274,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Health>(HEALTH_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Dialogue>(DIALOGUE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::LootTable>(LOOT_TABLE_COMPONENT)

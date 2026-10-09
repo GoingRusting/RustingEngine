@@ -1579,6 +1579,84 @@ impl GameScene<'_> {
         weighted_pick(&entries, self.random(stream)).map(str::to_owned)
     }
 
+    /// Starts the `rusting.dialogue` on the object called `name` at its
+    /// first line, even when it is already running. Returns `false` when
+    /// it has no dialogue or no lines; warns once when no object has that
+    /// name.
+    pub fn start_dialogue(&mut self, name: &str) -> bool {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        let Some(mut dialogue) =
+            self.world.get_mut::<crate::runtime::Dialogue>(entity)
+        else {
+            return false;
+        };
+        let Some(first) = dialogue.lines.first().map(|line| line.id.clone())
+        else {
+            return false;
+        };
+        dialogue.current = first;
+        true
+    }
+
+    /// The line the named object's dialogue shows, with its speaker, text
+    /// and choice texts translated by [`Self::tr`]; `None` when it is not
+    /// running.
+    #[must_use]
+    pub fn dialogue_line(
+        &mut self,
+        name: &str,
+    ) -> Option<crate::runtime::DialogueLine> {
+        let entity = find_or_warn(self.world, name)?;
+        let dialogue = self.world.get::<crate::runtime::Dialogue>(entity)?;
+        let mut line = dialogue
+            .lines
+            .iter()
+            .find(|line| line.id == dialogue.current && !line.id.is_empty())?
+            .clone();
+        line.speaker = self.tr(&line.speaker);
+        line.text = self.tr(&line.text);
+        for choice in &mut line.choices {
+            choice.text = self.tr(&choice.text);
+        }
+        Some(line)
+    }
+
+    /// Moves the named object's dialogue on: to the shown line's `next`
+    /// when it has no choices, else to choice `choice`'s `next` after
+    /// adding its `add` to its counter. An empty or unknown `next` ends
+    /// the dialogue. A choice index the line lacks changes nothing.
+    /// Returns whether the dialogue is still running.
+    pub fn advance_dialogue(&mut self, name: &str, choice: usize) -> bool {
+        let Some(line) = self.dialogue_line(name) else {
+            return false;
+        };
+        let next = if line.choices.is_empty() {
+            line.next
+        } else {
+            let Some(picked) = line.choices.get(choice) else {
+                return true;
+            };
+            if !picked.counter.is_empty() {
+                self.add_to_counter(&picked.counter, picked.add);
+            }
+            picked.next.clone()
+        };
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        let Some(mut dialogue) =
+            self.world.get_mut::<crate::runtime::Dialogue>(entity)
+        else {
+            return false;
+        };
+        let running = !next.is_empty()
+            && dialogue.lines.iter().any(|line| line.id == next);
+        dialogue.current = if running { next } else { String::new() };
+        running
+    }
+
     /// Takes `amount` from the counter `name` (such as an item count or
     /// money) when it holds at least that much, and returns whether it
     /// did; otherwise the counter is unchanged.
@@ -7433,6 +7511,77 @@ mod tests {
         assert_eq!(scene.counter_value("chasers"), 1);
         assert!(scene.set_state("Enemy", "patrol"));
         assert_eq!(scene.counter_value("chasers"), 0);
+    }
+
+    #[test]
+    fn dialogues_step_through_lines_and_choices() {
+        use crate::runtime::{Dialogue, DialogueChoice, DialogueLine};
+        let line = |id: &str, text: &str, next: &str, choices| DialogueLine {
+            id: id.into(),
+            speaker: "smith".into(),
+            text: text.into(),
+            next: next.into(),
+            choices,
+        };
+        let choice = |next: &str, counter: &str| DialogueChoice {
+            text: format!("pick {next}"),
+            next: next.into(),
+            counter: counter.into(),
+            add: 2,
+        };
+        let mut world = World::new();
+        world.insert_resource(crate::runtime::Translations {
+            locale: "de".into(),
+            strings: [("smith", "Schmied"), ("hello", "Hallo")]
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .into(),
+        });
+        world.spawn((
+            Name("Smith".into()),
+            Dialogue {
+                lines: vec![
+                    line("hi", "hello", "ask", vec![]),
+                    line(
+                        "ask",
+                        "need",
+                        "",
+                        vec![choice("bye", "quest"), choice("", "")],
+                    ),
+                    line("bye", "farewell", "gone", vec![]),
+                ],
+                current: String::new(),
+            },
+        ));
+        world.spawn(Name("Rock".into()));
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.dialogue_line("Smith"), None, "not started");
+        assert!(scene.start_dialogue("Smith"));
+        let shown = scene.dialogue_line("Smith").unwrap();
+        assert_eq!(
+            (shown.speaker.as_str(), shown.text.as_str()),
+            ("Schmied", "Hallo")
+        );
+        assert!(scene.advance_dialogue("Smith", 0));
+        assert_eq!(
+            scene.dialogue_line("Smith").unwrap().choices[0].text,
+            "pick bye"
+        );
+        assert!(scene.advance_dialogue("Smith", 5), "a missing choice stays");
+        assert_eq!(scene.dialogue_line("Smith").unwrap().id, "ask");
+        assert!(scene.advance_dialogue("Smith", 0));
+        assert_eq!(scene.counter_value("quest"), 2);
+        assert!(!scene.advance_dialogue("Smith", 0), "unknown next ends");
+        assert_eq!(scene.dialogue_line("Smith"), None);
+        assert!(scene.start_dialogue("Smith"));
+        assert!(scene.advance_dialogue("Smith", 0));
+        assert!(!scene.advance_dialogue("Smith", 1), "empty next ends");
+        assert_eq!(
+            scene.counter_value("quest"),
+            2,
+            "an empty counter adds nothing"
+        );
+        assert!(!scene.start_dialogue("Rock"));
+        assert!(!scene.advance_dialogue("Missing", 0));
     }
 
     #[test]

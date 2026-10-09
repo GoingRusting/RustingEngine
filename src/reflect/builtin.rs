@@ -10,15 +10,16 @@ use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
-    Connection, Connections, Counter, CullingMode, DeterminismMode, Easing,
-    EnvironmentMap, Flash, FluidBlock, Fog, Health, HudAnchor, HudElement,
-    InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    LootEntry, LootTable, ObjectState, PhysicsSettings, PhysicsSyncMode,
-    Pickup, PlatformerController, PlayerController, PostVolume, QualityProfile,
-    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
-    SceneInstance, ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash,
-    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
-    Tween, TweenProperty, TweenRepeat, WaterBody,
+    Connection, Connections, Counter, CullingMode, DeterminismMode, Dialogue,
+    DialogueChoice, DialogueLine, Easing, EnvironmentMap, Flash, FluidBlock,
+    Fog, Health, HudAnchor, HudElement, InputAction, Joint, JointAxis,
+    JointKind, JointMotor, JointSpring, LootEntry, LootTable, ObjectState,
+    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
+    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
+    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
+    ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash, StateAction,
+    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
+    TweenProperty, TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -709,6 +710,32 @@ crate::reflect! {
 crate::reflect! {
     struct LootTable {
         entries: Vec<LootEntry> { doc: "one is picked per roll" },
+    }
+}
+
+crate::reflect! {
+    struct Dialogue {
+        lines: Vec<DialogueLine> { doc: "the first line starts it" },
+        current: String { doc: "id of the line shown; empty when not running" },
+    }
+}
+
+crate::reflect! {
+    struct DialogueLine {
+        id: String { doc: "what next and choices point at" },
+        speaker: String { doc: "translation key or name" },
+        text: String { doc: "translation key or text" },
+        next: String { doc: "line after this one when it has no choices; empty ends" },
+        choices: Vec<DialogueChoice> { doc: "player answers" },
+    }
+}
+
+crate::reflect! {
+    struct DialogueChoice {
+        text: String { doc: "translation key or text" },
+        next: String { doc: "line it leads to; empty ends" },
+        counter: String { doc: "counter it adds to; empty for none" },
+        add: i32 { doc: "amount added to counter" },
     }
 }
 

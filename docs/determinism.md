@@ -109,7 +109,8 @@ machine, and it must never feed back into simulation state.
   `grounded`, `jump_buffer`, `air_time`), `Tween` (including its played
   time), `Pickup`, `Counter`, `BurstEmitter` trigger flags, and
   `ObjectState` (which game code sets and its `transitions` advance)
-  and `Health`, which game code sets. `LootTable` is not hashed: no
+  and `Health` and `Dialogue` (its `current` line), which game code
+  sets. `LootTable` is not hashed: no
   system changes it, and rolls read it with the seeded `random`.
 - Resources: `PhysicsWorld` (warm-start impulses and sleep counters),
   `PhysicsSettings`, `FrameTime::fixed_tick` and `fixed_delta`,

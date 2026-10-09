@@ -251,6 +251,7 @@ each one's fields, defaults and an example:
 - `rusting.input_action`: Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps.
 - `rusting.counter`: Named integer.
 - `rusting.health`: Hit points.
+- `rusting.dialogue`: A branching conversation on a named object, such as a shopkeeper or quest giver.
 - `rusting.loot_table`: A weighted loot table on a named object, such as a chest or an enemy's drops.
 - `rusting.state`: The current state of an object's state machine, such as an enemy's patrol or chase.
 - `rusting.pickup`: Collected once when a platformer or player body touches its collider (make it a sensor): adds value to the counter, hides the entity, and triggers its sound cue and burst emitter.
@@ -342,6 +343,7 @@ works too.
 | menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `set_time_scale(scale)`, `time_scale()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `saved_keys(folder)`, `save_counters(key, version, names)`, `save_objects(key, version, objects, components)`, `load_objects(key)`, `load_counters(key)`, `load_text(path)` |
 | video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
 | translations | `set_locale(locale)`, `locale()`, `tr(key)`, `tr_count(key, count)` |
+| dialogue | `start_dialogue(name)`, `dialogue_line(name)`, `advance_dialogue(name, choice)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
 | GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |
 | on `object(name)` | `entity()`, `position()`, `set_position(position)`, `move_by(offset)`, `move_x(distance)`, `move_y(distance)`, `move_z(distance)`, `rotation()`, `scale()`, `set_rotation(rotation)`, `look_at(target)`, `rotate_by(rotation)`, `rotate_x(rotation)`, `rotate_y(rotation)`, `rotate_z(rotation)`, `set_scale(scale)` |
