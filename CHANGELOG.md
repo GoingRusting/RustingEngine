@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting asset generate <root> mesh "barrel 4"` builds a seeded low-poly CC0 glTF prop: crate, barrel, rock, tree or gem.
 - `rusting revert` undoes `scene split` and `scene join`: both now journal the old form they delete.
 - `rusting asset generate <root> texture "bricks 3"` makes a tileable placeholder texture with no generator hook: six presets (grid, checker, bricks, planks, tiles, noise) in one shared palette, the seed picking the colour, imported as CC0 with the preset and seed in its `.rmeta` notes.
 - `rusting asset generate <root> sprite "star 2"` makes a placeholder sprite the same way: one of six outlined shapes (circle, square, triangle, diamond, star, heart) on a clear 128 px background, for a `Quad` with `alpha_mode` `Blend`.

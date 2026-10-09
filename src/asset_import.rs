@@ -801,12 +801,13 @@ pub fn generate_asset(
 
 /// Generator hook names built into the engine; a project hook with the same
 /// name wins.
-pub const BUILTIN_GENERATORS: [&str; 3] = ["sfx", "texture", "sprite"];
+pub const BUILTIN_GENERATORS: [&str; 4] = ["sfx", "texture", "sprite", "mesh"];
 
 /// A built-in generator: `prompt` is a preset and an optional seed (`coin`
 /// or `coin 7`). `sfx` synthesizes a WAV with [`crate::sfx::synth`];
 /// `texture` draws a tileable PNG with [`crate::texgen::synth`], and
-/// `sprite` a transparent PNG shape with [`crate::texgen::sprite`].
+/// `sprite` a transparent PNG shape with [`crate::texgen::sprite`], and
+/// `mesh` a low-poly binary glTF with [`crate::meshgen::synth`].
 fn generate_builtin(
     project_root: &Path,
     hook: &str,
@@ -841,6 +842,12 @@ fn generate_builtin(
             .ok_or_else(|| unknown(&crate::sfx::PRESETS))?;
         let file = output_dir.0.join(format!("{preset}_{seed}.wav"));
         crate::audio_output::write_wav(&file, &samples).map_err(io(&file))?;
+        file
+    } else if hook == "mesh" {
+        let glb = crate::meshgen::synth(preset, seed)
+            .ok_or_else(|| unknown(&crate::meshgen::PRESETS))?;
+        let file = output_dir.0.join(format!("{preset}_{seed}.glb"));
+        std::fs::write(&file, glb).map_err(io(&file))?;
         file
     } else {
         let image = if hook == "sprite" {
@@ -1572,6 +1579,23 @@ mod tests {
         .unwrap();
         assert_eq!(star.path, "assets/sprites/star_2.png");
         assert_eq!(star.size, [crate::texgen::SPRITE_SIZE; 2]);
+        #[cfg(feature = "gltf")]
+        {
+            let barrel = generate_asset(
+                &root,
+                &BTreeMap::new(),
+                "mesh",
+                "barrel 4",
+                GenerateTarget::Import {
+                    folder: Path::new("models"),
+                },
+                false,
+            )
+            .unwrap();
+            assert_eq!(barrel.path, "assets/models/barrel_4.glb");
+            assert_eq!(barrel.kind, ImportedKind::Gltf);
+            assert_eq!(barrel.source.license.as_deref(), Some("CC0-1.0"));
+        }
         for bad in ["marble", "bricks three"] {
             assert_eq!(generate(bad).unwrap_err().code(), "GENERATOR_FAILED");
         }

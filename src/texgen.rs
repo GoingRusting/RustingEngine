@@ -26,6 +26,11 @@ const PALETTE: [[f32; 3]; 8] = [
     [0.58, 0.58, 0.60], // grey
 ];
 
+/// The palette colour for `seed`, shared by every generator.
+pub(crate) fn palette(seed: u64) -> [f32; 3] {
+    PALETTE[(seed.wrapping_sub(1) % PALETTE.len() as u64) as usize]
+}
+
 /// Seeded splitmix64 hash of a lattice point; never the global RNG.
 fn hash(seed: u64, x: u32, y: u32) -> f32 {
     let mut z = seed
@@ -60,7 +65,7 @@ pub fn synth(preset: &str, seed: u64) -> Option<RgbaImage> {
     if !PRESETS.contains(&preset) {
         return None;
     }
-    let base = PALETTE[(seed.wrapping_sub(1) % PALETTE.len() as u64) as usize];
+    let base = palette(seed);
     Some(RgbaImage::from_fn(SIZE, SIZE, |x, y| {
         // Fine grain on every preset so no surface is perfectly flat.
         let grain = noise(seed, x, y, 64) * 0.08 - 0.04;
@@ -194,7 +199,7 @@ pub fn sprite(shape: &str, seed: u64) -> Option<RgbaImage> {
     if !SPRITES.contains(&shape) {
         return None;
     }
-    let base = PALETTE[(seed.wrapping_sub(1) % PALETTE.len() as u64) as usize];
+    let base = palette(seed);
     let half = SPRITE_SIZE as f32 / 2.0;
     let pixel = 1.0 / half;
     Some(RgbaImage::from_fn(SPRITE_SIZE, SPRITE_SIZE, |px, py| {
