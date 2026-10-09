@@ -313,6 +313,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_MISSING_EVENT",
+        "Game code reads GPU physics events by a literal name, as in `scene.gpu_events(\"landd\")`, that no `GpuPhysicsRule` in game code and no scene names, so the read always returns no events.",
+        "Fix the name (the message lists close names from game code), or add a rule that raises the event with `watch_gpu_object` or `watch_gpu_class`.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_MISSING_FILE",
         "Game code loads a scene, places a prefab or plays a clip by a literal path, as in `scene.load_scene(\"scenes/levl_2.rscene\")`, and no file is there, so the load fails or the sound never plays.",
         "Fix the path (scenes are relative to the project, prefabs and clips to `assets/`; the message lists close names in the same folder), or add the file.",

@@ -2325,7 +2325,9 @@ fn lint_silent_goal(document: &SceneDocument, code: &str) -> Vec<Diagnostic> {
 /// such as `scene.pressed("jmup")`, that no `rusting.input_action` there,
 /// `rebind` call or built-in player action defines, a `LINT_MISSING_CLASS`
 /// per literal class in `in_class`, such as `scene.in_class("enemys")`,
-/// that no entity has and no other literal in game code names, and a
+/// that no entity has and no other literal in game code names, a
+/// `LINT_MISSING_EVENT` per literal `gpu_events` name that no other literal
+/// in game code and no scene names, and a
 /// `LINT_MISSING_FILE` per literal scene path or sound clip, such as
 /// `scene.load_scene("scenes/levl_2.rscene")` or a `spawn_prefab` path,
 /// with no file there (a
@@ -2333,7 +2335,7 @@ fn lint_silent_goal(document: &SceneDocument, code: &str) -> Vec<Diagnostic> {
 /// are not checked, and a literal on a line that spawns something may be
 /// the spawned name.
 fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
-    const OBJECT_CALLS: [&str; 18] = [
+    const OBJECT_CALLS: &[&str] = &[
         ".object(\"",
         ".despawn(\"",
         ".set_visible(\"",
@@ -2352,8 +2354,40 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
         ".trigger(\"",
         ".spawn_copy(\"",
         ".set_look(\"",
+        ".angular_velocity(\"",
+        ".basis(\"",
+        ".camera_fov(\"",
+        ".color(\"",
+        ".dash(\"",
+        ".initial(\"",
+        ".is_limp(\"",
+        ".is_playing(\"",
+        ".linear_velocity(\"",
+        ".play_sound_on(\"",
+        ".reparent(\"",
+        ".reset_ragdoll(\"",
+        ".set_angular_velocity(\"",
+        ".set_animation_speed(\"",
+        ".set_body_kind(\"",
+        ".set_camera(\"",
+        ".set_camera_fov(\"",
+        ".set_light(\"",
+        ".set_material(\"",
+        ".set_mouse_look(\"",
+        ".set_ragdoll(\"",
+        ".set_ragdoll_muscle(\"",
+        ".set_text(\"",
+        ".set_text_in_font(\"",
+        ".set_tile(\"",
+        ".spawn_copy_at_root(\"",
+        ".stop_animation(\"",
+        ".take_root_motion(\"",
+        ".tile(\"",
+        ".touching(\"",
+        ".watch_gpu_object(\"",
     ];
     const CLASS_CALL: &str = ".in_class(\"";
+    const EVENT_CALL: &str = ".gpu_events(\"";
     const ACTION_CALLS: [&str; 4] =
         [".pressed(\"", ".held(\"", ".press_tick(\"", ".binding(\""];
     // Scene paths are relative to the project, clips to `assets/`.
@@ -2431,18 +2465,40 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
         for literal in line.split('"').skip(1).step_by(2) {
             *uses.entry(literal).or_default() += 1;
         }
-        for (start, _) in line.match_indices(CLASS_CALL) {
-            let rest = &line[start + CLASS_CALL.len()..];
-            if let Some((name, _)) = rest.split_once('"') {
-                *uses.entry(name).or_default() -= 1;
+        for call in [CLASS_CALL, EVENT_CALL] {
+            for (start, _) in line.match_indices(call) {
+                let rest = &line[start + call.len()..];
+                if let Some((name, _)) = rest.split_once('"') {
+                    *uses.entry(name).or_default() -= 1;
+                }
             }
         }
     }
-    classes.extend(
-        uses.into_iter()
-            .filter(|&(_, count)| count > 0)
-            .map(|(name, _)| name.to_owned()),
-    );
+    let named_elsewhere: BTreeSet<String> = uses
+        .into_iter()
+        .filter(|&(_, count)| count > 0)
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    classes.extend(named_elsewhere.iter().cloned());
+    // A GPU event is named by a `GpuPhysicsRule` in code or a rule in a
+    // scene file, so any other literal or any scene text naming it counts.
+    let scene_text: String = scene_files
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .collect();
+    let mut events = named_elsewhere;
+    for line in texts.iter().flat_map(|(_, text)| text.lines()) {
+        for (start, _) in line.match_indices(EVENT_CALL) {
+            let rest = &line[start + EVENT_CALL.len()..];
+            if let Some((name, _)) = rest.split_once('"') {
+                if scene_text.contains(&format!("\"{name}\""))
+                    || scene_text.contains(&format!("\\\"{name}\\\""))
+                {
+                    events.insert(name.to_owned());
+                }
+            }
+        }
+    }
     for line in texts.iter().flat_map(|(_, text)| text.lines()) {
         if line.contains("spawn") {
             names.extend(literals(line));
@@ -2456,7 +2512,7 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
         for (line, content) in text.lines().enumerate() {
             let checks = [
                 (
-                    &OBJECT_CALLS[..],
+                    OBJECT_CALLS,
                     &names,
                     "LINT_MISSING_OBJECT",
                     "no scene has an object named",
@@ -2472,6 +2528,12 @@ fn lint_missing_names(root: &Path) -> Vec<Diagnostic> {
                     &classes,
                     "LINT_MISSING_CLASS",
                     "no object or code puts anything in class",
+                ),
+                (
+                    &[EVENT_CALL][..],
+                    &events,
+                    "LINT_MISSING_EVENT",
+                    "no GPU physics rule raises an event named",
                 ),
             ];
             for (calls, known, code, what) in checks {
@@ -7036,7 +7098,11 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
              for shot in scene.in_class(\"shot\") {}\n\
              spawn(scene, \"Enemy Template\", &name, \"enemy\", at);\n\
              for enemy in scene.in_class(\"enemys\") {}\n\
-             scene.spawn_prefab(\"prefabs/tlie.rscene\", \"Tile\", at);\n",
+             scene.spawn_prefab(\"prefabs/tlie.rscene\", \"Tile\", at);\n\
+             scene.set_material(\"Plyer\", material);\n\
+             scene.gpu_events(\"landed\");\n\
+             watch(GpuPhysicsRule::new(\"landed\", condition));\n\
+             scene.gpu_events(\"landd\");\n",
         )
         .unwrap();
         let found = lint_missing_names(&root);
@@ -7050,8 +7116,10 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
                 "src/main.rs:18: no file `hit.wav` under assets/",
                 "src/main.rs:23: no object or code puts anything in class `enemys`; did you mean `enemy`?",
                 "src/main.rs:24: no file `prefabs/tlie.rscene` under assets/",
+                "src/main.rs:25: no scene has an object named `Plyer`; did you mean `Player`?",
+                "src/main.rs:28: no GPU physics rule raises an event named `landd`; did you mean `landed`?",
             ],
-            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene, a built-in clip, a scene class, an added class and a helper's class pass"
+            "a scene name, a spawned literal, a spawned constant, a run-time name, a scene action, a player action, a rebound action, an existing scene, a built-in clip, a scene class, an added class, a helper's class and a GPU event a rule names pass"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

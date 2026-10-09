@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lint` checks literal object names in every `GameScene` call that takes one, and warns `LINT_MISSING_EVENT` on a literal `gpu_events` name that no GPU physics rule in code or a scene names.
 - `rusting lint` warns `LINT_SILENT_GOAL` on a counter with a target that nothing reacts to: no HUD element requires or shows it, no pickup requires it, and game code never names it.
 - `rusting lint` warns `LINT_COLOR_ONLY_STATUS` when game code changes a HUD element's colour with `set_hud` but never its text, so the state it shows depends on telling colours apart. Brightness or alpha changes on one hue and counter readouts are not flagged.
 - `rusting capture` warns `CAPTURE_TEXT_CONTRAST` when plain HUD text is hard to read against the scene behind it (WCAG AA, judged on the rendered frame). Captures at tick 0 now include the HUD: plain HUD text is painted directly instead of in an egui area, which hid it for its first frame, and no longer blocks the pointer. The starter and racing templates use dark HUD text that passes the check.
