@@ -289,6 +289,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_NO_ENDING",
+        "The scene keeps counters, but no counter has a target and the game code never calls counter_complete, load_scene or quit, so a round can never be won or lost.",
+        "Give the counter that decides the round a target and show a win or lose `rusting.hud` with `requires` set to it, or end the round from game code.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_PLAYER_SCALE",
         "A player body is outside 0.5 to 3 m tall, usually a scale left on it or a parent.",
         "Set the scale on the player and its parents to 1 and size the collider instead.",

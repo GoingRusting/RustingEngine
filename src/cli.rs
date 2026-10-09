@@ -2012,13 +2012,58 @@ pub fn lint_project(root: &Path) -> CliResult {
         Ok(document) => document,
         Err(result) => return result,
     };
-    let diagnostics = lint_scene(&document, &code_strings(&project.root));
+    let mut diagnostics = lint_scene(&document, &code_strings(&project.root));
+    let mut files = Vec::new();
+    rust_files(&project.root.join("src"), &mut files);
+    let code: String = files
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .collect();
+    diagnostics.extend(lint_no_ending(&document, &code));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
         data: json!({"root": project.root, "main_scene": project.scene_path, "warnings": diagnostics.len()}),
         diagnostics,
     }
+}
+
+/// `LINT_NO_ENDING` on the first counter when a scene keeps counters but
+/// nothing can end a round: no counter has a target (which `requires` HUD
+/// screens and `counter_complete` read), and game code never calls
+/// `counter_complete`, `load_scene` or `quit`. A scene with no counters is
+/// a toy or a sandbox and is not judged.
+// ponytail: a text search of the code, so a call in a comment counts.
+fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
+    let counters: Vec<(usize, crate::runtime::Counter)> = document
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, e)| {
+            let text = e.components.get(crate::runtime::COUNTER_COMPONENT)?;
+            Some((index, serde_json::from_str(text).ok()?))
+        })
+        .collect();
+    let (index, _) = counters.first()?;
+    if counters.iter().any(|(_, counter)| counter.target.is_some())
+        || ["counter_complete(", "load_scene(", "quit("]
+            .iter()
+            .any(|call| code.contains(call))
+    {
+        return None;
+    }
+    let entity = &document.entities[*index];
+    Some(Diagnostic {
+        code: "LINT_NO_ENDING",
+        severity: "warning",
+        message: format!(
+            "the scene keeps {} counter(s) but nothing ends a round: no counter has a target and game code never calls counter_complete, load_scene or quit",
+            counters.len()
+        ),
+        scene_location: Some(format!("/entities/{index}")),
+        entity: Some(EntityRef::of(entity)),
+        ..Diagnostic::default()
+    })
 }
 
 /// Local half sizes of a solid collider and its entity's built-in mesh when
@@ -6031,6 +6076,33 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
             .collect();
         assert_eq!(found, [("LINT_LIGHT_BUDGET", "Spot".to_owned())]);
+    }
+
+    #[test]
+    fn lint_warns_when_counters_exist_but_nothing_ends_a_round() {
+        let scene = |target: serde_json::Value| {
+            let counter =
+                json!({"name": "score", "value": 0, "target": target});
+            let scene = json!({"format_version": 7, "name": "Ending", "entities": [
+                {"id": "00000000-0000-0000-0000-000000000001", "name": "Score",
+                 "components": {"rusting.counter": counter.to_string()}}]});
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap()
+        };
+        let endless = scene(serde_json::Value::Null);
+        let warning = lint_no_ending(&endless, "fn update() {}").unwrap();
+        assert_eq!(warning.code, "LINT_NO_ENDING");
+        assert_eq!(warning.entity.unwrap().name.as_deref(), Some("Score"));
+        // A target, or code that ends the round itself, is an ending.
+        assert!(lint_no_ending(&scene(json!(10)), "").is_none());
+        let code = "if scene.counter_value(\"score\") > 9 { scene.load_scene(\"scenes/2.rscene\"); }";
+        assert!(lint_no_ending(&endless, code).is_none());
+        // No counters: a toy or a sandbox, not judged.
+        let empty = crate::runtime::parse_scene_document(
+            br#"{"format_version": 7, "name": "Toy", "entities": []}"#,
+        )
+        .unwrap();
+        assert!(lint_no_ending(&empty, "").is_none());
     }
 
     #[cfg(feature = "ui")]

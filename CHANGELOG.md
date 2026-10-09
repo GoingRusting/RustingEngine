@@ -44,6 +44,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting new --template roguelike` creates Crypt, a turn-based roguelike with code: each of three floors is laid out from the run's seed, walking into an enemy defeats it, and enemies next to you strike. Its `tests/descend.json` plays a run on seed 1.
 - `rusting new --template card-game` creates Duel, a card battle with code: play Strike, Guard and Heal cards from a seeded deck with keys 1 to 3 or the card buttons, against a foe whose next attack shows in advance. Its `tests/duel.json` plays a duel on seed 1.
 - `rusting new --template rhythm` creates Beat, a rhythm game with code: hit notes in three lanes with D, F and J as they cross the line, scored PERFECT or GOOD by timing. Its `tests/song.json` plays the song.
+- `rusting lint` warns `LINT_NO_ENDING` when a scene keeps counters but nothing can end a round: no counter has a target and game code never calls `counter_complete`, `load_scene` or `quit`.
 - The agent skill lists the pitfall catalog's entries by symptom, generated from `docs/pitfalls.md`.
 - The agent skill lists every scene component with its one-line summary, generated from the schema and checked by the same test.
 - The API table in the agent skill (`SKILL.md`) and in a new project's `AGENTS.md` is generated from the API index and lists every `GameScene` call with its parameters; a test fails when it goes stale, and `RUSTING_UPDATE_GOLDEN=1` rewrites it.
