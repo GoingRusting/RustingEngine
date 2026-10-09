@@ -126,8 +126,8 @@ the listener's and the followed object's own entities do not count.
 
 ## Bus effects
 
-Every bus, and the main track (`""`), has a low-pass filter, a reverb and a
-distortion, all off until you set them. Setting an effect again replaces
+Every bus, and the main track (`""`), has a low-pass filter, a reverb, a
+distortion and a compressor, all off until you set them. Setting an effect again replaces
 its settings; the fade is in seconds.
 
 ```rust
@@ -144,10 +144,13 @@ scene.set_bus_effect("bears", BusEffect::LowPass { cutoff_hz: 20_000.0 }, 0.5);
 - `Reverb`: `room` 0 to 1 is how long the tail rings, `damping` 0 to 1
   dulls it, `mix` 0 dry to 1 wet.
 - `Distortion`: `drive` in decibels, `mix` 0 to 1. A soft clip.
+- `Compressor`: `threshold_db` (0 or less), `ratio`, `makeup_db`. Sound
+  above the threshold rises only 1/`ratio` as fast; a ratio of 1 is off,
+  20 or more keeps a loud bus under the threshold like a limiter.
 
 An effect with `mix` 0 is off. `/buses/<bus>/effects` lists the effects
-that are on, distortion first, then reverb, then the filter: the order the
-signal goes through them.
+that are on, distortion first, then reverb, then the filter, then the
+compressor: the order the signal goes through them.
 
 ### Reverb zones
 

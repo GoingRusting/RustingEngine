@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `BusEffect::Compressor` compresses or limits a bus.
 - `SoundCue::on_gpu_event` plays a cue when the GPU solver emits the named physics event for its body.
 - `rusting.reverb_zone` puts a reverb on a bus while the listener is inside the entity's collider.
 - `Sound::falloff` picks a distance curve for positioned sounds: inverse (the default), inverse square, linear to silence, or off.

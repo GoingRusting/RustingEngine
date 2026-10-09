@@ -5387,6 +5387,43 @@ mod tests {
 
     #[cfg(feature = "audio")]
     #[test]
+    fn a_compressor_turns_a_loud_bus_down() {
+        use crate::runtime::{BusEffect, Sound};
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| {
+            if tick == 1 {
+                scene.play_sound_with(
+                    "tone.wav",
+                    Sound {
+                        bus: "world".into(),
+                        ..Sound::default()
+                    },
+                );
+            }
+            if tick == 10 {
+                let limiter = BusEffect::Compressor {
+                    threshold_db: -24.0,
+                    ratio: 20.0,
+                    makeup_db: 0.0,
+                };
+                scene.set_bus_effect("world", limiter, 0.0);
+            }
+        });
+        let steps = json!([
+            {"tick": 5, "expect": {"entity": "audio:",
+                "path": "/level/0", "greater_than": 0.3}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/buses/world/effects/0/ratio", "equals": 20.0}},
+            {"tick": 20, "expect": {"entity": "audio:",
+                "path": "/level/0", "less_than": 0.15}},
+        ]);
+        let report = run_scenario(&mut app, &scenario(20, steps), &directory);
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[cfg(feature = "audio")]
+    #[test]
     fn a_thousand_sounds_in_one_tick_stay_within_the_voice_limit() {
         use crate::runtime::Sound;
         let directory = tone_project(1.0);
