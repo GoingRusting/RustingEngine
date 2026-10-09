@@ -463,11 +463,14 @@ pub enum ProjectTemplate {
     /// Crypt, a roguelike with code: step through three floors made from
     /// the run's seed, defeating enemies on the way to the stairs.
     Roguelike,
+    /// Duel, a card battle with code: play Strike, Guard and Heal cards from
+    /// a seeded deck against a foe whose next attack shows in advance.
+    CardGame,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -480,6 +483,7 @@ impl ProjectTemplate {
         Self::TwinStick,
         Self::TowerDefense,
         Self::Roguelike,
+        Self::CardGame,
         Self::Empty,
     ];
 
@@ -500,6 +504,7 @@ impl ProjectTemplate {
             Self::TwinStick => "twin-stick",
             Self::TowerDefense => "tower-defense",
             Self::Roguelike => "roguelike",
+            Self::CardGame => "card-game",
         }
     }
 
@@ -520,6 +525,7 @@ impl ProjectTemplate {
             Self::TwinStick => "Swarm (twin-stick shooter)",
             Self::TowerDefense => "Outpost (tower defense)",
             Self::Roguelike => "Crypt (roguelike)",
+            Self::CardGame => "Duel (card game)",
         }
     }
 
@@ -752,6 +758,7 @@ fn write_project_template(
             ProjectTemplate::Roguelike => {
                 include_str!("templates/roguelike.rs")
             }
+            ProjectTemplate::CardGame => include_str!("templates/card_game.rs"),
             _ => default_game_source(),
         },
     )?;
@@ -776,6 +783,9 @@ fn write_project_template(
             "descend.json",
             include_str!("templates/roguelike_descend.json"),
         )),
+        ProjectTemplate::CardGame => {
+            Some(("duel.json", include_str!("templates/card_game_duel.json")))
+        }
         _ => None,
     };
     if let Some((file, text)) = scenario {
@@ -813,6 +823,7 @@ fn write_project_template(
             ProjectTemplate::TwinStick => twin_stick_scene(name),
             ProjectTemplate::TowerDefense => tower_defense_scene(name),
             ProjectTemplate::Roguelike => roguelike_scene(name),
+            ProjectTemplate::CardGame => card_game_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1810,6 +1821,120 @@ fn twin_stick_scene(name: &str) -> SceneDocument {
     json_scene(name, entities)
 }
 
+/// Duel: a table, the foe, three card slots with a HUD button each, and
+/// the `foe_damage`, `damage` and `intent` counters. The game code,
+/// `src/templates/card_game.rs`, deals the cards.
+fn card_game_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor, HudElement};
+
+    let mut entities = vec![
+        mesh_object(
+            "Table",
+            None,
+            "Cube",
+            [0.35, 0.22, 0.15],
+            [0.0, -0.1, 0.0],
+            [10.0, 0.2, 7.0],
+        ),
+        mesh_object(
+            "Foe",
+            None,
+            "Sphere",
+            [0.6, 0.25, 0.7],
+            [0.0, 1.0, -2.0],
+            [1.6; 3],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [0.0, 6.0, 6.0], "rotation": [-0.8, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    for slot in 1..=3 {
+        let x = (slot as f32 - 2.0) * 1.8;
+        entities.push(mesh_object(
+            &format!("Slot {slot}"),
+            None,
+            "Cube",
+            [0.9, 0.9, 0.85],
+            [x, 0.05, 1.8],
+            [1.4, 0.05, 2.0],
+        ));
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": null, "name": format!("Card {slot}"),
+            "components": {"rusting.hud": component(&HudElement {
+                text: slot.to_string(),
+                anchor: HudAnchor::Bottom,
+                offset: [(slot as f32 - 2.0) * 220.0, 60.0],
+                font_size: 26.0,
+                button: true,
+                ..Default::default()
+            })}
+        }));
+    }
+    let counter = |name: &str, target| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target,
+        })
+    };
+    let hud = |name: &str, text: &str, anchor, size, requires: Option<&str>| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "components": {"rusting.hud": hud_component(text, anchor, size, requires)}
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Foe Damage",
+            "components": {
+                "rusting.counter": counter("foe_damage", Some(30)),
+                "rusting.hud": hud_component("Foe {foe_damage}/30", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Damage",
+            "components": {
+                "rusting.counter": counter("damage", Some(20)),
+                "rusting.hud": hud_component("You {damage}/20", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Intent",
+            "components": {
+                "rusting.counter": counter("intent", None),
+                "rusting.hud": hud_component("Foe attacks for {intent}", HudAnchor::Top, 28.0, None),
+            }
+        }),
+        hud("Won", "You win! R plays again.", HudAnchor::Center, 48.0, Some("foe_damage")),
+        hud("Lost", "Game over. R tries again.", HudAnchor::Center, 48.0, Some("damage")),
+        hud("Help", "Keys 1 to 3 play a card. Guard blocks the foe's next attack.", HudAnchor::BottomLeft, 20.0, None),
+    ]);
+    for (action, inputs) in [
+        ("play_1", ["Digit1", "PadWest"]),
+        ("play_2", ["Digit2", "PadSouth"]),
+        ("play_3", ["Digit3", "PadEast"]),
+        ("restart", ["KeyR", "PadStart"]),
+    ] {
+        entities.push(json!({
+            "id": Uuid::new_v4(), "parent": null, "name": format!("Action {action}"),
+            "components": {"rusting.input_action": component(&json!({"action": action, "inputs": inputs}))}
+        }));
+    }
+    json_scene(name, entities)
+}
+
 /// Crypt: a floor inside four walls, the player, the stairs, hidden
 /// rubble and enemy templates, and the `depth` and `wounds` counters. The
 /// game code, `src/templates/roguelike.rs`, lays out each floor.
@@ -2509,6 +2634,10 @@ pub fn built_executable(
 #[allow(dead_code)]
 #[path = "templates/arena.rs"]
 mod arena_template;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/card_game.rs"]
+mod card_game_template;
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "templates/puzzle.rs"]
@@ -3237,6 +3366,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/descend.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_card_game_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-card-game-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Duel", ProjectTemplate::CardGame)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/card_game.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::card_game_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/duel.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();

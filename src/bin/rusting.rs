@@ -218,7 +218,7 @@ fn execute(args: &[String]) -> CliResult {
                     cli::new_project(Path::new(parent), name, template)
                 }
                 None => usage(
-                    "--template takes 3d, first-person, third-person, sandbox, 2d, starter, puzzle, top-down, racing, twin-stick, tower-defense, roguelike, or empty",
+                    "--template takes 3d, first-person, third-person, sandbox, 2d, starter, puzzle, top-down, racing, twin-stick, tower-defense, roguelike, card-game, or empty",
                 ),
             }
         }

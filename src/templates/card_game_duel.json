@@ -1,0 +1,27 @@
+{
+  "name": "duel: on seed 1, three strikes, a guard against a 7 and a heal, and a click on the last strike win with 13 damage taken",
+  "seed": 1,
+  "ticks": 32,
+  "steps": [
+    {"tick": 2, "tap": "play_1"},
+    {"tick": 4, "tap": "play_2"},
+    {"tick": 6, "tap": "play_3"},
+    {"tick": 7, "expect": {"counter": "foe_damage", "equals": 18}},
+    {"tick": 7, "expect": {"counter": "damage", "equals": 8}},
+    {"tick": 8, "tap": "play_1"},
+    {"tick": 10, "tap": "play_1"},
+    {"tick": 12, "tap": "play_1"},
+    {"tick": 14, "tap": "play_1"},
+    {"tick": 15, "expect": {"counter": "damage", "equals": 10}},
+    {"tick": 16, "tap": "play_2"},
+    {"tick": 17, "expect": {"counter": "damage", "equals": 9}},
+    {"tick": 18, "tap": "play_1"},
+    {"tick": 20, "tap": "play_1"},
+    {"tick": 22, "tap": "play_2"},
+    {"tick": 24, "tap": "play_1"},
+    {"tick": 26, "click": "1: Strike 6"},
+    {"tick": 27, "expect": {"counter": "foe_damage", "equals": 24}},
+    {"tick": 29, "expect": {"counter": "foe_damage", "equals": 30}},
+    {"tick": 29, "expect": {"counter": "damage", "equals": 13}}
+  ]
+}
