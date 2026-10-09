@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "top-down",
+  "request": "In this top-down arena game, an enemy that hits the player is thrown through the player and lands behind them, instead of being knocked back the way it came. A hit should knock the enemy KNOCKBACK meters from the player, on the side it came from. Fix it.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "            position[0] = player[0] - ux * KNOCKBACK;\n            position[2] = player[2] - uz * KNOCKBACK;\n",
+      "replace": "            position[0] = player[0] + ux * KNOCKBACK;\n            position[2] = player[2] + uz * KNOCKBACK;\n"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "            position[0] = player[0] + ux * KNOCKBACK;\n            position[2] = player[2] + uz * KNOCKBACK;\n",
+      "replace": "            position[0] = player[0] - ux * KNOCKBACK;\n            position[2] = player[2] - uz * KNOCKBACK;\n"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/arena_fight.json",
+    "hidden/knockback.json"
+  ]
+}
