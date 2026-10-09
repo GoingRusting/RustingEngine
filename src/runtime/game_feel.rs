@@ -24,7 +24,7 @@
 //! see the same values on every run. Burst directions come from
 //! [`RandomSeed`] indexed by the fixed tick and the emitter's `SceneId`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::{PI, TAU};
 use std::time::Duration;
 
@@ -496,11 +496,19 @@ pub struct SoundCue {
     /// as `[glass breaks]`; empty shows none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub caption: String,
+    /// Closing speed in m/s at which a collision plays at full `volume`;
+    /// slower hits play quieter in proportion. 0 plays every hit at full
+    /// `volume`.
+    pub full_volume_speed: f32,
     /// Set by [`SoundCue::trigger`]; the next fixed step fires and clears it.
     #[serde(skip)]
     pub triggered: bool,
     #[serde(skip)]
     pub touching: bool,
+    /// Closing speed of the contact that triggered it; `None` when game
+    /// code did.
+    #[serde(skip)]
+    pub hit_speed: Option<f32>,
 }
 
 impl Default for SoundCue {
@@ -510,8 +518,10 @@ impl Default for SoundCue {
             volume: 1.0,
             on_collision: true,
             caption: String::new(),
+            full_volume_speed: 0.0,
             triggered: false,
             touching: false,
+            hit_speed: None,
         }
     }
 }
@@ -519,6 +529,7 @@ impl Default for SoundCue {
 impl SoundCue {
     pub fn trigger(&mut self) {
         self.triggered = true;
+        self.hit_speed = None;
     }
 }
 
@@ -1591,18 +1602,24 @@ pub(super) fn trigger_on_contact(
     if cues.is_empty() && emitters.is_empty() {
         return;
     }
-    let touching: BTreeSet<Entity> = physics
-        .contacts()
-        .iter()
-        .flat_map(|contact| [contact.a, contact.b])
-        .collect();
+    // Fastest closing speed per touching body.
+    let mut touching = BTreeMap::<Entity, f32>::new();
+    for contact in physics.contacts() {
+        for body in [contact.a, contact.b] {
+            let speed = touching.entry(body).or_default();
+            *speed = speed.max(contact.speed);
+        }
+    }
     for (entity, mut cue) in &mut cues {
-        let now = cue.on_collision && touching.contains(&entity);
-        cue.triggered |= now && !cue.touching;
-        cue.touching = now;
+        let hit = touching.get(&entity).filter(|_| cue.on_collision);
+        if hit.is_some() && !cue.touching {
+            cue.triggered = true;
+            cue.hit_speed = hit.copied();
+        }
+        cue.touching = hit.is_some();
     }
     for (entity, mut emitter) in &mut emitters {
-        let now = emitter.on_collision && touching.contains(&entity);
+        let now = emitter.on_collision && touching.contains_key(&entity);
         emitter.triggered |= now && !emitter.touching;
         emitter.touching = now;
     }
@@ -1681,10 +1698,17 @@ pub(super) fn fire_sound_cues(
 ) {
     for (entity, mut cue) in &mut cues {
         if std::mem::take(&mut cue.triggered) {
+            let mut volume = cue.volume;
+            match cue.hit_speed.take() {
+                Some(speed) if cue.full_volume_speed > 0.0 => {
+                    volume *= (speed / cue.full_volume_speed).min(1.0);
+                }
+                _ => {}
+            }
             events.send(SoundEvent {
                 entity,
                 clip: cue.clip.clone(),
-                volume: cue.volume,
+                volume,
                 caption: cue.caption.clone(),
             });
         }

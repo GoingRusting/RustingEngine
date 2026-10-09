@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `SoundCue::full_volume_speed` scales collision sound volume by how fast the bodies close, so soft landings play quieter.
 - A tick function sees each timed key or mouse press on the fixed tick it happened in, when one frame runs several ticks, instead of all on the frame's first tick.
 - Editor gizmo and axis colours stay distinct for red-green color-blind users (X red leans pink, Y green is lighter), checked by a simulated-vision test.
 - HUD button text `{binding:action}` shows an input action's keys, and clicking it rebinds the action to the next key pressed (Escape cancels), so a controls menu needs no game code.

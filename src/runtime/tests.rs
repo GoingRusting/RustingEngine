@@ -2515,6 +2515,39 @@ fn squash_flattens_keeps_volume_and_springs_back_to_rest() {
 }
 
 #[test]
+fn harder_landings_play_louder() {
+    let landing = |height: f32, full_volume_speed: f32| {
+        let mut app = App::new();
+        cpu_ground(app.world_mut());
+        let body = cpu_body(
+            app.world_mut(),
+            [0.0, height, 0.0],
+            UNIT_BOX,
+            RigidBodyKind::Dynamic,
+        );
+        app.world_mut().entity_mut(body).insert(SoundCue {
+            clip: "sounds/land.ogg".into(),
+            full_volume_speed,
+            ..SoundCue::default()
+        });
+        for _ in 0..240 {
+            run_fixed_steps(&mut app, 1);
+            let sounds = app.world().resource::<EventQueue<SoundEvent>>();
+            if let Some(sound) = sounds.iter().next() {
+                return sound.volume;
+            }
+        }
+        panic!("no landing sound from {height} m");
+    };
+    let soft = landing(1.0, 20.0);
+    let hard = landing(6.0, 20.0);
+    assert!(soft > 0.0 && soft < hard && hard < 1.0, "{soft} {hard}");
+    // A low full-volume speed caps at the cue's volume; 0 ignores speed.
+    assert_eq!(landing(6.0, 0.5), 1.0);
+    assert_eq!(landing(1.0, 0.0), 1.0);
+}
+
+#[test]
 fn landing_fires_one_sound_and_a_seeded_burst_that_expires() {
     let run = || {
         let mut app = App::new();

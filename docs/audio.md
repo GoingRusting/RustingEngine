@@ -180,6 +180,12 @@ A `rusting.sound_cue` with a `caption` such as `[glass breaks]` shows it for
 2 s each time it fires. Captions stay up for their whole time even when the
 clip is shorter.
 
+Set `full_volume_speed` on a sound cue to make collision sounds follow how
+hard the body hits: a hit closing at that speed (m/s) or faster plays at the
+cue's `volume`, a slower one plays quieter in proportion. A crate dropped
+from 1 m thuds softly; from 6 m it plays loud. `trigger()` from game code
+always plays at full `volume`.
+
 ## Long files
 
 In a window, files over 1 MiB stream from disk while they play instead of

@@ -2563,7 +2563,8 @@ First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`
   - [ ] Doppler and authored attenuation curves.
 - [ ] Reverb zones tied to physics volumes.
 - [ ] Event-driven playback triggered by gameplay events and by GPU physics events.
-- [ ] Physics-driven impact, scrape, and roll sounds parameterized by contact impulse, relative velocity, and physics material.
+- [x] Impact sounds scaled by contact closing speed: `SoundCue::full_volume_speed`. Verified by `runtime::tests::harder_landings_play_louder` (a 6 m drop plays louder than a 1 m drop; 0 ignores speed).
+- [ ] Scrape and roll sounds while bodies slide or roll, and sound choice by physics material.
 - [x] Voice limiting and priority so large destruction events do not exhaust the mixer. Evidence (audit 2026-10-09): `GameScene::set_bus_voice_limit` and per-sound `priority`; `scenario::tests::a_thousand_sounds_in_one_tick_stay_within_the_voice_limit` and `runtime::audio::tests::bus_voice_limits_clamp_and_inactive_effects_report_off`.
 - [x] Offline render path for deterministic audio tests. Evidence (audit 2026-10-09): `OfflineMixer` renders each scenario tick with kira and no device, and scenario `audio:` checks read its level, peak, pan and playing list (`scenario::tests::the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`).
 - [x] Audio state is presentation only and never affects simulation or replay hashes. Evidence (audit 2026-10-09): `AudioQueue` is not in snapshots or state hashes and sound events are routed by the runner, not a schedule system; `scenario::tests::bus_effects_show_change_the_mix_and_leave_state_hashes_alone` compares state hashes with and without audio effects.

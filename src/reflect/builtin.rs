@@ -313,8 +313,10 @@ crate::reflect! {
         volume: f32 { unit: "linear gain", min: 0.0 },
         on_collision: bool { doc: "CPU collider contacts only" },
         caption: String { doc: "shown for 2 s each time it fires, like [glass breaks]; empty for none" },
+        full_volume_speed: f32 { unit: "m/s", min: 0.0, doc: "hits this fast play at full volume, slower ones quieter; 0 for always full" },
         #[skip] triggered: bool,
         #[skip] touching: bool,
+        #[skip] hit_speed: Option<f32>,
     }
 }
 
