@@ -46,7 +46,10 @@ command takes `--json` for output a program can read.
    view, given as fractions: `{"tick": 1, "pointer": [0.5, 0.5]}` is the
    center.
 6. `rusting capture scenes/main.rscene shot.png --tick 60` renders a frame so
-   you can look at the result. Scenario files can capture frames too.
+   you can look at the result. It runs the scene alone; add `--game` to
+   build the game and run its code up to that tick first, so spawned
+   objects and HUD text game code sets are in the frame. Scenario files
+   can capture frames too.
    A working game is not done until it looks good: run the polish loop and
    checklist in `rusting docs show guide/look-and-feel` (lighting, palette,
    HUD, shapes, free CC0 models with `rusting scene add-model`).

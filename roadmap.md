@@ -507,7 +507,14 @@ share one undoable command layer.
   capture: the scene renders into an offscreen image of the scaled size and a
   linear blit stretches it over the target (`rendering::render_scale`). See
   Night Market F10.
-- [ ] Gap: `rusting capture` does not run game code.
+- [x] Gap: `rusting capture` does not run game code. `--game` builds the
+  project the scene path is in and captures its game, code included, at
+  `--tick` through a one-step scenario (`build/capture-game.json`);
+  `--camera`, `--size` and `--no-hud` apply. Evidence: on the reference
+  `reaction-new-game` project, `capture --game --tick 150` shows the `Go!`
+  that game code sets and the plain capture shows the scene's
+  `Wait for it...` (RTX 3060, 2026-10-09); unit test
+  `capture_game_needs_a_path_inside_a_project`.
 - [x] Gap: a scenario stops at its first failed check. `"keep_going": true` in the scenario file reports every failure; test `keep_going_reports_every_failed_check`.
 - [x] Gap: a windowed `rusting run` shows no on-screen FPS or frame time.
   `RUSTING_PERF=1` prints fps, update/render split, CPU phases, GPU pass

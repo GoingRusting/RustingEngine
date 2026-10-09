@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting capture --game` builds the project and captures its game with game code run up to `--tick`.
 - A running game shows fps, frame time and p95 in its top-right corner while `RUSTING_PERF` is set; F3 toggles that report on and off.
 - Agent benchmark task `reaction-new-game`: a new-game task from the empty template, a reaction-time game with false starts.
 - Agent benchmark task `platformer-goal`: a feature task on the 2D platformer template, where touching the Goal clears the level once.

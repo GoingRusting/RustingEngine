@@ -6087,6 +6087,52 @@ pub struct CaptureOptions {
     pub look: Option<[f32; 2]>,
 }
 
+/// `rusting capture --game`: builds the project that holds `path` and
+/// captures its game, game code included, at `options.tick` through a
+/// one-step scenario. Picks and placed cameras are not supported here.
+pub fn capture_game(path: &Path, options: &CaptureOptions) -> CliResult {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.into());
+    let Some(root) = absolute
+        .ancestors()
+        .find(|dir| dir.join("project.json").is_file())
+    else {
+        return CliResult::failure(
+            "PROJECT_MISSING_FILE",
+            "--game needs a path inside a project (a folder with project.json)",
+            Some(path.into()),
+        );
+    };
+    let output = std::path::absolute(&options.output)
+        .unwrap_or_else(|_| options.output.clone());
+    let tick = options.tick.max(1);
+    let scenario = json!({
+        "name": format!("capture tick {tick}"),
+        "ticks": tick,
+        "capture_size": options.extent,
+        "steps": [{"tick": tick, "capture": {
+            "path": output, "camera": options.camera, "hud": options.hud,
+        }}],
+    });
+    let file = root.join("build/capture-game.json");
+    let written = std::fs::create_dir_all(root.join("build"))
+        .and_then(|()| std::fs::write(&file, scenario.to_string()));
+    if let Err(error) = written {
+        return CliResult::failure("IO_ERROR", error.to_string(), Some(file));
+    }
+    let mut result = run_game_project(
+        root,
+        RunOptions {
+            scenario: Some(file),
+            ..RunOptions::default()
+        },
+    );
+    if result.ok {
+        result.data = json!({"output": output, "tick": tick,
+            "size": options.extent, "game": true});
+    }
+    result
+}
+
 /// Loads a scene, simulates `tick` fixed ticks, and renders one camera
 /// offscreen to a PNG. Only the last few ticks are rendered, unless the
 /// scene has GPU bodies: those advance only while frames render, so then
@@ -6607,6 +6653,27 @@ mod shape_tests {
 
 #[cfg(test)]
 mod hint_tests {
+    #[test]
+    fn capture_game_needs_a_path_inside_a_project() {
+        let dir = std::env::temp_dir().join("rusting-capture-game-no-project");
+        let options = super::CaptureOptions {
+            camera: None,
+            tick: 1,
+            extent: [8, 8],
+            output: dir.join("shot.png"),
+            picks: Vec::new(),
+            pick_rects: Vec::new(),
+            hud: true,
+            at: None,
+            look_at: None,
+            look: None,
+        };
+        let result =
+            super::capture_game(&dir.join("scenes/main.rscene"), &options);
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0].code, "PROJECT_MISSING_FILE");
+    }
+
     use super::*;
 
     #[test]

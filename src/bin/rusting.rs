@@ -715,10 +715,15 @@ fn run_command(args: &[String]) -> CliResult {
                 let (a, b) = value.split_once(separator)?;
                 Some([a.parse().ok()?, b.parse().ok()?])
             };
+            let mut game = false;
             let mut flags = flags.iter();
             while let Some(flag) = flags.next() {
                 if *flag == "--no-hud" {
                     options.hud = false;
+                    continue;
+                }
+                if *flag == "--game" {
+                    game = true;
                     continue;
                 }
                 let value = flags.next().copied();
@@ -773,6 +778,15 @@ fn run_command(args: &[String]) -> CliResult {
                 && (options.look_at.is_some() || options.look.is_some())
             {
                 return usage("--look-at and --look need --at X,Y,Z");
+            }
+            if game {
+                if !options.picks.is_empty()
+                    || !options.pick_rects.is_empty()
+                    || options.at.is_some()
+                {
+                    return usage("--game takes no --pick, --pick-rect or --at");
+                }
+                return cli::capture_game(Path::new(scene), &options);
             }
             cli::capture_scene(Path::new(scene), &options)
         }
