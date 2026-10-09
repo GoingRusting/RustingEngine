@@ -313,6 +313,15 @@ share one undoable command layer.
   `GameScene::remove_class` does this. Evidence:
   `project_runner::tests::spawn_copy_clones_the_template_tree_and_in_class_lists_it`
   (2026-10-09).
+- [x] Gap (Godot `tween_property`): a tween could only be authored in the
+  scene, so game code could not slide a door open or fly a coin to the
+  HUD without writing the motion per frame. Acceptance: one call starts a
+  one-shot tween of position, rotation or scale from the object's current
+  value, a second call restarts from wherever it is, and a missing object
+  reports `false`. `GameScene::tween(name, property, to, seconds, easing)`
+  does this; `TweenProperty` and `Easing` are in the prelude. Evidence:
+  `project_runner::tests::tween_starts_from_the_current_value_and_restarts_on_a_new_call`
+  (2026-10-09).
 - [x] Gap: a patch that created a registered component with some fields
   missing failed with "missing field". Registered components now take
   defaults like built-in sections. Evidence:

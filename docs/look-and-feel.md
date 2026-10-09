@@ -52,7 +52,9 @@ Do this after the game works and before calling it done.
 - **Motion and feedback.** Every action the player takes gets a response
   within a few frames: a sound, a burst, a flash, a scale pop or a camera
   shake. Idle objects that should feel alive move a little
-  (`rusting.tween`).
+  (`rusting.tween`). Game code moves an object to a new place, turn or
+  size once with `scene.tween(name, TweenProperty::Position, to, seconds,
+  Easing::QuadOut)`, starting from where it is now.
 - **Air.** An empty sky reads as a stage set. A few slow particles (dust
   motes, falling leaves, snow, fireflies) make the space feel lived in;
   keep them small, sparse and in the palette. `rusting effect apply

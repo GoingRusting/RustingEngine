@@ -767,7 +767,10 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "despawn",
         ],
     ),
-    ("classes", &["in_class", "has_class", "add_class", "remove_class"]),
+    (
+        "classes",
+        &["in_class", "has_class", "add_class", "remove_class"],
+    ),
     (
         "sound",
         &[
@@ -824,6 +827,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "hit_stop",
             "particles",
             "trigger",
+            "tween",
         ],
     ),
     (

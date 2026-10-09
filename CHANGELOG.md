@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::tween(name, property, to, seconds, easing)` starts a one-shot tween from the object's current value, like Godot's `tween_property`. `TweenProperty` and `Easing` are in the prelude.
 - `GameScene::remove_class(name, class)` takes an object out of a class, the counterpart of `add_class`.
 - Agent benchmark task `platformer-bricks`: a bug-fix task on the 2D template whose bug is a tile marked not solid in the scene.
 - Agent benchmark task `crypt-wait`: a feature task on the roguelike template, a wait action that spends a turn.

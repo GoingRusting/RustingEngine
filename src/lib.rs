@@ -77,13 +77,14 @@ pub mod prelude {
     };
     pub use crate::rendering::scene_renderer::RenderCapacityDiagnostics;
     pub use crate::runtime::{
-        ActiveSound, BeatClock, BusEffect, Caption, FrameTime, GpuBodyCommand,
-        GpuCondition, GpuConditionShader, GpuConditionShaders, GpuEventMode,
-        GpuEventPayload, GpuFieldCondition, GpuPhysicsEvent,
+        ActiveSound, BeatClock, BusEffect, Caption, Easing, FrameTime,
+        GpuBodyCommand, GpuCondition, GpuConditionShader, GpuConditionShaders,
+        GpuEventMode, GpuEventPayload, GpuFieldCondition, GpuPhysicsEvent,
         GpuPhysicsEventsLost, GpuPhysicsRule, GpuPhysicsWatch, GpuStateField,
         HudAnchor, HudElement, Name, ObjectClasses, ParticleCommand,
         PhysicsSolver, PhysicsSyncMode, PhysicsWorld, PlayerController,
-        RigidBody, RigidBodyKind, Sound, SoundId, Stick, WaypointGraph,
+        RigidBody, RigidBodyKind, Sound, SoundId, Stick, TweenProperty,
+        WaypointGraph,
     };
     pub use crate::rusting_game;
     pub use crate::{AlphaMode, MaterialAsset, MaterialModel};

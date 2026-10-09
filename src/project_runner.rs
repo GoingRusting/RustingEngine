@@ -2391,6 +2391,45 @@ impl GameScene<'_> {
         }
     }
 
+    /// Moves one `Transform` property of the named object from its current
+    /// value to `to` over `seconds` of game time, then holds it there, like
+    /// Godot's `tween_property`. It replaces any tween the object had, so
+    /// calling it again mid-way turns toward the new target. Use it on
+    /// objects without a dynamic body (a sliding door, a coin flying to the
+    /// HUD); rotation is in radians. Returns `false` when the object does
+    /// not exist.
+    pub fn tween(
+        &mut self,
+        name: &str,
+        property: crate::runtime::TweenProperty,
+        to: [f32; 3],
+        seconds: f32,
+        easing: crate::runtime::Easing,
+    ) -> bool {
+        use crate::runtime::TweenProperty;
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        let mut entity = self.world.entity_mut(entity);
+        let transform = entity.get::<Transform>().copied().unwrap_or_default();
+        let from = match property {
+            TweenProperty::Position => transform.position,
+            TweenProperty::Rotation => transform.rotation,
+            TweenProperty::Scale => transform.scale,
+        };
+        entity.insert(crate::runtime::Tween {
+            property,
+            from,
+            to,
+            duration: seconds.max(f32::EPSILON),
+            delay: 0.0,
+            easing,
+            repeat: crate::runtime::TweenRepeat::Once,
+            elapsed: 0.0,
+        });
+        true
+    }
+
     /// Flashes the named object and its children through its
     /// `rusting.flash`, giving it a default white one first if it has none.
     pub fn flash(&mut self, name: &str) {
@@ -6748,6 +6787,48 @@ mod tests {
         assert_eq!(world.get::<crate::runtime::Parent>(copy).unwrap().0, pit);
         assert!(world.get::<crate::runtime::SpawnGrid>(copy).is_none());
         assert!(world.get::<crate::runtime::SpawnGrid>(ball).is_none());
+    }
+
+    #[test]
+    fn tween_starts_from_the_current_value_and_restarts_on_a_new_call() {
+        use crate::runtime::{Easing, Tween, TweenProperty, TweenRepeat};
+        let mut world = World::new();
+        let door = world
+            .spawn((Name("Door".into()), Transform::new([1.0, 0.0, 0.0])))
+            .id();
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.tween(
+            "Door",
+            TweenProperty::Position,
+            [1.0, 3.0, 0.0],
+            0.5,
+            Easing::QuadOut,
+        ));
+        assert!(!scene.tween(
+            "Missing",
+            TweenProperty::Scale,
+            [2.0; 3],
+            1.0,
+            Easing::Linear,
+        ));
+        let tween = *world.get::<Tween>(door).unwrap();
+        assert_eq!(tween.from, [1.0, 0.0, 0.0]);
+        assert_eq!(tween.repeat, TweenRepeat::Once);
+        let mut half = tween;
+        half.elapsed = 0.25;
+        assert!(half.sample()[1] > 1.5);
+        world.get_mut::<Transform>(door).unwrap().position = [1.0, 2.0, 0.0];
+        world.get_mut::<Tween>(door).unwrap().elapsed = 0.3;
+        let mut scene = GameScene { world: &mut world };
+        scene.tween(
+            "Door",
+            TweenProperty::Position,
+            [1.0, 0.0, 0.0],
+            0.5,
+            Easing::Linear,
+        );
+        let tween = world.get::<Tween>(door).unwrap();
+        assert_eq!((tween.from, tween.elapsed), ([1.0, 2.0, 0.0], 0.0));
     }
 
     #[test]
