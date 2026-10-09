@@ -331,6 +331,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_MISSING_TRANSLATION",
+        "Game code calls `tr(\"key\")` or `tr_count(\"key\", ..)`, or a HUD text holds `{tr:key}`, but a locale file in `assets/locales/` has no text for that key, so players in that locale see the bare key.",
+        "Add the key to that locale's JSON file; `tr_count` needs `key.one` and `key.other`.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_NO_ENDING",
         "The scene keeps counters, but no counter has a target and the game code never calls counter_complete, load_scene or quit, so a round can never be won or lost.",
         "Give the counter that decides the round a target and show a win or lose `rusting.hud` with `requires` set to it, or end the round from game code.",

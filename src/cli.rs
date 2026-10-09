@@ -795,13 +795,21 @@ fn code_asset_diagnostics(root: &Path) -> Vec<Diagnostic> {
 /// Every literal asset path in game code as (file, 1-based line, path), in
 /// file order.
 fn code_asset_literals(root: &Path) -> Vec<(PathBuf, usize, String)> {
-    const CALLS: [&str; 5] = [
-        "load_text(\"",
-        "play_sound(\"",
-        "play_sound_looped(\"",
-        "play_sound_with(\"",
-        "spawn_prefab(\"",
-    ];
+    code_literals(
+        root,
+        &[
+            "load_text(\"",
+            "play_sound(\"",
+            "play_sound_looped(\"",
+            "play_sound_with(\"",
+            "spawn_prefab(\"",
+        ],
+    )
+}
+
+/// The first string argument of every `calls` entry (written up to its
+/// opening quote) in game code as (file, 1-based line, literal).
+fn code_literals(root: &Path, calls: &[&str]) -> Vec<(PathBuf, usize, String)> {
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
     files.sort();
@@ -811,7 +819,7 @@ fn code_asset_literals(root: &Path) -> Vec<(PathBuf, usize, String)> {
             continue;
         };
         for (line, content) in text.lines().enumerate() {
-            for call in CALLS {
+            for call in calls {
                 for (start, _) in content.match_indices(call) {
                     let rest = &content[start + call.len()..];
                     if let Some(path) = rest.split('"').next() {
@@ -2101,12 +2109,88 @@ pub fn lint_project(root: &Path) -> CliResult {
     diagnostics.extend(lint_silent_goal(&document, &code));
     diagnostics.extend(lint_missing_names(&project.root));
     diagnostics.extend(lint_color_only_status(&project.root));
+    diagnostics.extend(lint_missing_translations(&project.root, &document));
     CliResult {
         schema_version: 1,
         ok: diagnostics.is_empty(),
         data: json!({"root": project.root, "main_scene": project.scene_path, "warnings": diagnostics.len()}),
         diagnostics,
     }
+}
+
+/// `LINT_MISSING_TRANSLATION` per key that a `tr("key")` or
+/// `tr_count("key", ..)` call in game code, or a `{tr:key}` in the main
+/// scene's HUD text, uses but a locale file in `assets/locales/` lacks.
+/// `tr_count` needs `key.one` and `key.other`.
+// ponytail: literal keys only; keys built at run time are not checked.
+fn lint_missing_translations(
+    root: &Path,
+    document: &SceneDocument,
+) -> Vec<Diagnostic> {
+    let mut uses = Vec::new();
+    for (call, forms) in [
+        (".tr(\"", &[""][..]),
+        ("tr_count(\"", &[".one", ".other"][..]),
+    ] {
+        for (file, line, key) in code_literals(root, &[call]) {
+            let place = format!(
+                "{}:{line}",
+                file.strip_prefix(root).unwrap_or(&file).display()
+            );
+            for form in forms {
+                uses.push((place.clone(), format!("{key}{form}")));
+            }
+        }
+    }
+    for entity in &document.entities {
+        let Some(hud) = entity
+            .components
+            .get(crate::runtime::HUD_ELEMENT_COMPONENT)
+            .and_then(|hud| {
+                serde_json::from_str::<crate::runtime::HudElement>(hud).ok()
+            })
+        else {
+            continue;
+        };
+        for piece in hud.text.split("{tr:").skip(1) {
+            if let Some(key) = piece.split('}').next() {
+                let name = entity.name.as_deref().unwrap_or("unnamed");
+                uses.push((format!("HUD `{name}`"), key.to_owned()));
+            }
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(root.join("assets/locales")) else {
+        return Vec::new();
+    };
+    let mut files: Vec<_> = entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .collect();
+    files.sort();
+    let mut diagnostics = Vec::new();
+    for file in files {
+        let strings: BTreeMap<String, String> = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let shown = file
+            .strip_prefix(root)
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        for (place, key) in &uses {
+            if !strings.contains_key(key) {
+                diagnostics.push(Diagnostic {
+                    code: "LINT_MISSING_TRANSLATION",
+                    severity: "warning",
+                    message: format!("{place}: `{key}` has no text in {shown}"),
+                    file: Some(file.clone()),
+                    ..Diagnostic::default()
+                });
+            }
+        }
+    }
+    diagnostics
 }
 
 /// `LINT_COLOR_ONLY_STATUS` on the first `set_hud("Name", ...)` call that
@@ -7139,6 +7223,46 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         assert!(
             messages[0].starts_with("src/main.rs:2: HUD `Dot` changes colour"),
             "a size change, a colour set with the text in another call, a counter readout and an alpha-only change on the scene's white pass: {messages:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lint_flags_translation_keys_a_locale_lacks() {
+        let root = std::env::temp_dir()
+            .join(format!("rusting-locales-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("assets/locales")).unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "let a = scene.tr(\"title\");\n\
+             let b = scene.tr_count(\"coins\", n);\n\
+             let c = s.to_str(\"x\");\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("assets/locales/en.json"),
+            r#"{"title": "Hi", "coins.one": "1 coin", "coins.other": "{count} coins", "menu": "Menu"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("assets/locales/fr.json"),
+            r#"{"title": "Salut", "coins.other": "{count} pièces"}"#,
+        )
+        .unwrap();
+        let scene: SceneDocument = serde_json::from_value(json!({
+            "format_version": 7, "name": "Main", "entities": [
+            {"id": uuid::Uuid::new_v4(), "name": "Menu", "components": {"rusting.hud":
+                json!({"text": "{tr:menu} {coins}"}).to_string()}}]}))
+        .unwrap();
+        let found = lint_missing_translations(&root, &scene);
+        let messages: Vec<_> = found.iter().map(|d| &d.message).collect();
+        assert_eq!(
+            messages,
+            [
+                "src/main.rs:2: `coins.one` has no text in assets/locales/fr.json",
+                "HUD `Menu`: `menu` has no text in assets/locales/fr.json",
+            ]
         );
         std::fs::remove_dir_all(root).unwrap();
     }

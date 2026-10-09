@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting lint` warns `LINT_MISSING_TRANSLATION` for each literal `tr("key")`, `tr_count("key", ..)` or HUD `{tr:key}` key that a locale file in `assets/locales/` lacks.
 - Localization: `GameScene::set_locale(locale)` loads `assets/locales/<locale>.json`, `tr(key)` and `tr_count(key, count)` read it, and HUD text's `{tr:key}` placeholders follow the locale.
 - `GameScene::saved_keys(folder)` lists the save files in a user data folder, for a load menu's save slots.
 - The component `rusting.loot_table` holds a weighted loot table on a named object, editable in the inspector, and `GameScene::roll_loot_table(name, stream)` rolls it from the run's seed.
