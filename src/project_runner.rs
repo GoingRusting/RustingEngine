@@ -4074,7 +4074,7 @@ fn run_simple_game_update(world: &mut World) {
     // Copy these small values before giving the whole world to GameScene.
     let time = *world.resource::<FrameTime>();
     let update = world.resource::<GameUpdateFunction>().0;
-    click_dialogue_buttons(&mut GameScene { world });
+    run_hud_buttons(&mut GameScene { world });
     update(&mut GameScene { world }, &time);
     let input = world.resource::<RuntimeInput>().clone();
     if let Some(mut state) = world.get_resource_mut::<TickInput>() {
@@ -4085,33 +4085,57 @@ fn run_simple_game_update(world: &mut World) {
     }
 }
 
-/// A clicked HUD button whose text is `{dialogue:Object/n}` picks choice
-/// `n` of that object's dialogue, or moves past a line with no choices,
-/// so a dialogue box needs no game code.
-fn click_dialogue_buttons(scene: &mut GameScene) {
+/// Runs HUD buttons that need no game code. A clicked button whose text
+/// is `{dialogue:Object/n}` picks choice `n` of that object's dialogue, or
+/// moves past a line with no choices. A clicked `{binding:action}` button
+/// waits for a key: the next one pressed becomes the action's only input,
+/// Escape cancels.
+fn run_hud_buttons(scene: &mut GameScene) {
+    let waiting = scene
+        .world
+        .get_resource::<crate::runtime::RebindWait>()
+        .and_then(|wait| wait.0.clone());
+    if let Some(action) = waiting {
+        if let Some(key) = scene.keys_pressed().into_iter().next() {
+            if key != "Escape" {
+                let _ = scene.rebind(&action, &[&key]);
+            }
+            scene
+                .world
+                .insert_resource(crate::runtime::RebindWait(None));
+        }
+    }
     let Some(pressed) = scene
         .world
         .get_resource::<EventQueue<crate::runtime::HudButtonPressed>>()
     else {
         return;
     };
-    let picks: Vec<(String, usize)> = pressed
+    let clicked: Vec<String> = pressed
         .iter()
         .filter_map(|click| {
             let hud = scene
                 .world
                 .get::<crate::runtime::HudElement>(click.entity)?;
-            let (object, n) = hud
-                .text
-                .trim()
-                .strip_prefix("{dialogue:")?
-                .strip_suffix('}')?
-                .rsplit_once('/')?;
-            Some((object.to_owned(), n.parse::<usize>().ok()?.checked_sub(1)?))
+            let inner = hud.text.trim().strip_prefix('{')?.strip_suffix('}')?;
+            Some(inner.to_owned())
         })
         .collect();
-    for (object, choice) in picks {
-        scene.advance_dialogue(&object, choice);
+    for inner in clicked {
+        if let Some((object, n)) = inner
+            .strip_prefix("dialogue:")
+            .and_then(|key| key.rsplit_once('/'))
+        {
+            if let Some(choice) =
+                n.parse::<usize>().ok().and_then(|n| n.checked_sub(1))
+            {
+                scene.advance_dialogue(object, choice);
+            }
+        } else if let Some(action) = inner.strip_prefix("binding:") {
+            scene.world.insert_resource(crate::runtime::RebindWait(Some(
+                action.to_owned(),
+            )));
+        }
     }
 }
 
@@ -5740,13 +5764,61 @@ mod tests {
             }
             queue.begin_frame();
             world.insert_resource(queue);
-            click_dialogue_buttons(&mut GameScene { world });
+            run_hud_buttons(&mut GameScene { world });
             world.get::<Dialogue>(smith).unwrap().current.clone()
         };
         assert_eq!(click(&mut world, &[other]), "hi");
         assert_eq!(click(&mut world, &[next]), "ask", "Continue");
         assert_eq!(click(&mut world, &[second]), "", "an empty next ends");
         assert_eq!(GameScene { world: &mut world }.counter_value("asked"), 1);
+    }
+
+    #[test]
+    fn clicking_a_binding_button_rebinds_to_the_next_key() {
+        use crate::runtime::KeyCode;
+        let mut world = World::new();
+        world.insert_resource(RuntimeInput::default());
+        let button = world
+            .spawn(crate::runtime::HudElement {
+                text: "{binding:jump}".into(),
+                button: true,
+                ..Default::default()
+            })
+            .id();
+        let frame = |world: &mut World, click: bool, key: Option<KeyCode>| {
+            let mut queue =
+                EventQueue::<crate::runtime::HudButtonPressed>::default();
+            if click {
+                queue.send(crate::runtime::HudButtonPressed { entity: button });
+            }
+            queue.begin_frame();
+            world.insert_resource(queue);
+            let mut input = RuntimeInput::default();
+            if let Some(key) = key {
+                input.record_key(key, true);
+            }
+            world.insert_resource(input);
+            run_hud_buttons(&mut GameScene { world });
+            GameScene { world }.binding("jump")
+        };
+        assert!(frame(&mut world, true, None).is_empty());
+        assert_eq!(
+            world.resource::<crate::runtime::RebindWait>().0.as_deref(),
+            Some("jump")
+        );
+        assert_eq!(frame(&mut world, false, Some(KeyCode::KeyJ)), ["KeyJ"]);
+        assert_eq!(
+            frame(&mut world, false, Some(KeyCode::KeyK)),
+            ["KeyJ"],
+            "only the key after a click rebinds"
+        );
+        frame(&mut world, true, None);
+        assert_eq!(
+            frame(&mut world, false, Some(KeyCode::Escape)),
+            ["KeyJ"],
+            "Escape cancels"
+        );
+        assert_eq!(world.resource::<crate::runtime::RebindWait>().0, None);
     }
 
     #[test]

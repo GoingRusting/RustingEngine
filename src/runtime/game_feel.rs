@@ -966,6 +966,11 @@ impl Default for TextScale {
     }
 }
 
+/// The action a `{binding:action}` HUD button waits to rebind: the next
+/// key pressed becomes its only input, Escape cancels.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RebindWait(pub Option<String>);
+
 /// The current locale's strings, set by `GameScene::set_locale` from
 /// `assets/locales/<locale>.json`, a flat JSON object of key to text.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -1105,6 +1110,33 @@ pub fn state_placeholder<'a>(
         translations
             .map_or(&*state.state, |t| t.get(&state.state))
             .to_owned(),
+    )
+}
+
+/// The text of a `{binding:action}` HUD placeholder: the inputs the
+/// scene's `rusting.input_action` binds to `action`, joined with ` / `,
+/// or `Press a key` (the `binding.waiting` translation) while `waiting`
+/// names that action. `None` for other placeholders.
+#[must_use]
+pub fn binding_placeholder<'a>(
+    placeholder: &str,
+    mut actions: impl Iterator<Item = &'a super::InputAction>,
+    waiting: Option<&str>,
+    translations: Option<&Translations>,
+) -> Option<String> {
+    let action = placeholder.strip_prefix("binding:")?;
+    if waiting == Some(action) {
+        return Some(
+            translations
+                .and_then(|t| t.strings.get("binding.waiting").cloned())
+                .unwrap_or_else(|| "Press a key".to_owned()),
+        );
+    }
+    Some(
+        actions
+            .find(|found| found.action == action)
+            .map(|found| found.inputs.join(" / "))
+            .unwrap_or_default(),
     )
 }
 
@@ -1847,11 +1879,13 @@ pub(super) fn draw_hud(
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
-    (translations, dialogues, states, text_scale): (
+    (translations, dialogues, states, text_scale, actions, rebind): (
         Option<Res<Translations>>,
         Query<(&super::Name, &Dialogue)>,
         Query<(&super::Name, &ObjectState)>,
         Option<Res<TextScale>>,
+        Query<&super::InputAction>,
+        Option<Res<RebindWait>>,
     ),
 ) {
     let scale = text_scale.map_or(1.0, |scale| scale.0);
@@ -1947,6 +1981,14 @@ pub(super) fn draw_hud(
                 state_placeholder(
                     placeholder,
                     states.iter(),
+                    translations.as_deref(),
+                )
+            })
+            .or_else(|| {
+                binding_placeholder(
+                    placeholder,
+                    actions.iter(),
+                    rebind.as_ref().and_then(|wait| wait.0.as_deref()),
                     translations.as_deref(),
                 )
             })

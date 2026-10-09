@@ -2593,7 +2593,8 @@ Depends on: Milestones 1, 3, and 9.
     - Verified (2026-10-09): `runtime::tests::text_scale_enlarges_hud_text` (a top-left label's centre moves down by 2x at scale 2) and `project_runner::tests::text_scale_is_clamped_and_read_back` (default 1, clamp to 3, NaN resets to 1).
   - [ ] Screen-reader metadata. egui's AccessKit output needs the `accesskit` feature and a platform adapter, which are new dependencies; ask the owner first.
   - [ ] Color-blind-safe defaults: a default HUD and debug palette that stays distinct under deuteranopia and protanopia, checked by a simulated-vision test.
-- [ ] Input remapping UI component built on the action map.
+- [x] Input remapping UI component built on the action map. A HUD button whose text is `{binding:action}` shows the scene's `rusting.input_action` inputs for that action joined with ` / `; clicking it shows `Press a key` (the `binding.waiting` translation) and the next key pressed becomes the action's only input through `GameScene::rebind`, Escape cancels. Bindings made in code with `ActionMap` are not shown, the same as `GameScene::binding`.
+  - Verified (2026-10-09): `runtime::tests::binding_placeholders_show_the_inputs_or_the_wait` and `project_runner::tests::clicking_a_binding_button_rebinds_to_the_next_key` (click, then KeyJ rebinds; a later key does nothing; Escape cancels).
 - [ ] Decouple input sampling rate from the simulation tick without introducing nondeterminism.
 
 ### Exit gate

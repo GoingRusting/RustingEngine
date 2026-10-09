@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- HUD button text `{binding:action}` shows an input action's keys, and clicking it rebinds the action to the next key pressed (Escape cancels), so a controls menu needs no game code.
 - `GameScene::set_text_scale(scale)` and `text_scale()`: larger HUD text and captions for players who need them.
 - HUD text `{state:Name}` shows an object's `rusting.state`, translated when the locale has it as a key, so a quest's stage shows with no game code.
 - HUD text `{dialogue:Name}` shows a dialogue's line, and a HUD button whose text is `{dialogue:Name/n}` shows and picks choice n, so a dialogue box needs no game code. HUD elements whose text fills to nothing are no longer drawn.

@@ -3373,6 +3373,24 @@ fn dialogue_placeholders_show_the_line_and_its_choices() {
 }
 
 #[test]
+fn binding_placeholders_show_the_inputs_or_the_wait() {
+    let jump = InputAction {
+        action: "jump".into(),
+        inputs: vec!["Space".into(), "KeyW".into()],
+    };
+    let show = |placeholder: &str, waiting: Option<&str>| {
+        binding_placeholder(placeholder, [&jump].into_iter(), waiting, None)
+    };
+    assert_eq!(show("binding:jump", None).as_deref(), Some("Space / KeyW"));
+    assert_eq!(show("binding:fire", None).as_deref(), Some(""));
+    assert_eq!(
+        show("binding:jump", Some("jump")).as_deref(),
+        Some("Press a key")
+    );
+    assert_eq!(show("state:jump", None), None);
+}
+
+#[test]
 fn state_placeholders_show_the_translated_state() {
     let quest = ObjectState {
         state: "quest.hammer".into(),
