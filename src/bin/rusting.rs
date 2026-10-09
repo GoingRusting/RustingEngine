@@ -280,6 +280,8 @@ fn execute(args: &[String]) -> CliResult {
         }
         ["scene", "inspect", scene] => cli::inspect_scene(Path::new(scene)),
         ["scene", "map", scene] => cli::map_scene(Path::new(scene)),
+        ["scene", "split", scene] => cli::convert_scene(Path::new(scene), true),
+        ["scene", "join", scene] => cli::convert_scene(Path::new(scene), false),
         ["scene", "query", scene] => {
             cli::query_scene(Path::new(scene), &SceneFilter::All)
         }

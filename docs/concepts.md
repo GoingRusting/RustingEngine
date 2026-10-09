@@ -24,6 +24,10 @@ by registered name.
   tools address them by ID.
 - `rusting scene query` prints entities, `rusting scene patch` changes them
   as one atomic batch, and the editor edits them with undo.
+- `rusting scene split` turns a large scene into folder form, a `.rscene`
+  directory with one file per entity, so edits to different objects do not
+  conflict in git; `rusting scene join` turns it back. Every tool reads and
+  writes both forms.
 - `rusting schema` lists every component and field, with defaults, units,
   and valid ranges.
 - Registered components are described with `reflect!`. The description

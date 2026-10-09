@@ -17,7 +17,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::runtime::{
-    error_object, parse_scene_document, scene_revision,
+    error_object, parse_scene_document, read_scene_bytes, scene_revision,
     set_registered_component, validate_scene_structure, write_atomic, App,
     SceneComponentRegistry, SceneDocument, SceneIoError,
 };
@@ -1069,8 +1069,7 @@ pub fn patch_scene_file(
     patch: &ScenePatch,
     dry_run: bool,
 ) -> Result<PatchOutcome, PatchError> {
-    let bytes =
-        std::fs::read(path).map_err(|error| PatchError::Scene(error.into()))?;
+    let bytes = read_scene_bytes(path).map_err(PatchError::Scene)?;
     let revision = scene_revision(&bytes);
     if let Some(expected) = &patch.expected_revision {
         if *expected != revision {
@@ -1089,8 +1088,7 @@ pub fn patch_scene_file(
     if !dry_run {
         // ponytail: a writer between this read and the rename still wins;
         // an OS file lock closes that window if it ever matters.
-        let current = std::fs::read(path)
-            .map_err(|error| PatchError::Scene(error.into()))?;
+        let current = read_scene_bytes(path).map_err(PatchError::Scene)?;
         if scene_revision(&current) != revision {
             return Err(PatchError::Revision {
                 expected: revision,
@@ -1560,5 +1558,52 @@ mod tests {
         assert_eq!(outcome.changes[0].path, "/components/game.health");
         assert_ne!(outcome.revision_after, revision);
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn a_patch_on_a_folder_form_scene_rewrites_only_the_changed_entity() {
+        let path = scene_file("folder");
+        let single = read_scene_bytes(&path).unwrap();
+        // Saved at the current format, so the first patch does not
+        // migrate `scene.json`.
+        let canonical =
+            serde_json::to_vec_pretty(&parse_scene_document(&single).unwrap())
+                .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        write_atomic(&path, &canonical).unwrap();
+        let file = |id: &str| path.join("entities").join(format!("{id}.json"));
+        let (index, lamp) = (path.join("scene.json"), file(LAMP));
+        let unchanged = |path: &Path| std::fs::read(path).unwrap();
+        let (index_before, lamp_before) = (unchanged(&index), unchanged(&lamp));
+        let cube_before = unchanged(&file(CUBE));
+        let joined = read_scene_bytes(&path).unwrap();
+        assert_eq!(joined, canonical, "folder form joins to the same scene");
+
+        let outcome = patch_scene_file(
+            &path,
+            &patch(json!({"operations": [
+            {"op": "set", "id": CUBE, "path": "/name", "value": "Box"}]})),
+            false,
+        )
+        .unwrap();
+        assert_ne!(unchanged(&file(CUBE)), cube_before);
+        assert_eq!(unchanged(&index), index_before);
+        assert_eq!(unchanged(&lamp), lamp_before);
+        let current = read_scene_bytes(&path).unwrap();
+        assert_eq!(outcome.revision_after, scene_revision(&current));
+        // The revision chains into the next patch.
+        patch_scene_file(
+            &path,
+            &patch(json!({
+            "expected_revision": outcome.revision_after,
+            "operations": [{"op": "delete", "name": "Lamp"}]})),
+            false,
+        )
+        .unwrap();
+        assert!(!lamp.exists());
+        let document = crate::runtime::read_scene_document(&path).unwrap();
+        assert_eq!(document.entities.len(), 1);
+        assert_eq!(document.entities[0].name.as_deref(), Some("Box"));
     }
 }

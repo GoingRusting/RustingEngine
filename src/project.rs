@@ -617,7 +617,7 @@ pub fn open_project(root: &Path) -> Result<OpenProject, ProjectError> {
         )?;
     }
     let scene_path = checked_project_path(&root, &manifest.main_scene)?;
-    if !scene_path.is_file() {
+    if !scene_path.exists() {
         return Err(ProjectError::MissingFile(scene_path));
     }
     // The cooked file may not exist yet, but its configured destination must

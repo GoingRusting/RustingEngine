@@ -1985,12 +1985,107 @@ pub fn write_atomic(
     bytes: &[u8],
 ) -> std::io::Result<()> {
     let path = path.as_ref();
+    if path.is_dir() {
+        return write_scene_folder(path, bytes);
+    }
     super::lease::check_write(path)?;
     let before = super::journal::active()
         .then(|| std::fs::read(path).ok())
         .flatten();
     write_atomic_unchecked(path, bytes)?;
     super::journal::record(path, before.as_deref(), Some(bytes))
+}
+
+/// Bytes of the scene at `path`. A scene in folder form (a `.rscene`
+/// directory from `rusting scene split`) comes back joined, as the pretty
+/// JSON a single-file scene holds, so revisions and patches work the same
+/// on both forms.
+pub fn read_scene_bytes(
+    path: impl AsRef<Path>,
+) -> Result<Vec<u8>, SceneIoError> {
+    let path = path.as_ref();
+    if !path.is_dir() {
+        return Ok(std::fs::read(path)?);
+    }
+    let mut document: Value =
+        serde_json::from_slice(&std::fs::read(path.join("scene.json"))?)?;
+    let ids: Vec<Uuid> = serde_json::from_value(
+        document
+            .get_mut("entities")
+            .map(Value::take)
+            .unwrap_or_default(),
+    )?;
+    let entities = ids
+        .iter()
+        .map(|id| {
+            Ok(serde_json::from_slice(&std::fs::read(entity_file(
+                path, *id,
+            ))?)?)
+        })
+        .collect::<Result<Vec<Value>, SceneIoError>>()?;
+    document["entities"] = Value::Array(entities);
+    let document = parse_scene_document(&serde_json::to_vec(&document)?)?;
+    Ok(serde_json::to_vec_pretty(&document)?)
+}
+
+fn entity_file(folder: &Path, id: Uuid) -> PathBuf {
+    folder.join("entities").join(format!("{id}.json"))
+}
+
+/// Splits a scene's bytes into folder form under `folder`: `scene.json`
+/// holds everything but the entities, in place of which it lists their
+/// IDs in order, and `entities/<id>.json` holds each entity. Only files
+/// whose content changed are written, so one entity's edit touches one
+/// file.
+fn write_scene_folder(folder: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let invalid = |message: &str| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+    };
+    let mut document: Value = serde_json::from_slice(bytes)?;
+    let Some(Value::Array(entities)) =
+        document.get_mut("entities").map(Value::take)
+    else {
+        return Err(invalid("a scene needs an `entities` array"));
+    };
+    let write_changed = |path: &Path, bytes: &[u8]| {
+        if std::fs::read(path).ok().as_deref() == Some(bytes) {
+            return Ok(());
+        }
+        write_atomic(path, bytes)
+    };
+    std::fs::create_dir_all(folder.join("entities"))?;
+    let mut ids = Vec::new();
+    for entity in &entities {
+        let id = entity
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .ok_or_else(|| invalid("every entity needs a UUID `id`"))?;
+        write_changed(
+            &entity_file(folder, id),
+            &serde_json::to_vec_pretty(entity)?,
+        )?;
+        ids.push(id);
+    }
+    document["entities"] = serde_json::to_value(&ids)?;
+    write_changed(
+        &folder.join("scene.json"),
+        &serde_json::to_vec_pretty(&document)?,
+    )?;
+    for entry in std::fs::read_dir(folder.join("entities"))? {
+        let file = entry?.path();
+        let gone = file.extension().is_some_and(|ext| ext == "json")
+            && !ids.iter().any(|id| entity_file(folder, *id) == file);
+        if gone {
+            super::lease::check_write(&file)?;
+            let before = super::journal::active()
+                .then(|| std::fs::read(&file).ok())
+                .flatten();
+            std::fs::remove_file(&file)?;
+            super::journal::record(&file, before.as_deref(), None)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn write_atomic_unchecked(
@@ -2024,7 +2119,7 @@ pub fn load_scene(
     mode: SceneLoadMode,
 ) -> Result<usize, SceneIoError> {
     let path = path.as_ref();
-    let bytes = std::fs::read(path)?;
+    let bytes = read_scene_bytes(path)?;
     let mut document = decode_scene(&bytes)?;
     if let Some(parent) = path.parent() {
         absolutize_scene_assets(&mut document, parent)?;
@@ -2067,7 +2162,7 @@ pub fn cook_scene(
     let source = source.as_ref();
     let destination = destination.as_ref();
     let mut document: SceneDocument =
-        serde_json::from_slice(&std::fs::read(source)?)?;
+        serde_json::from_slice(&read_scene_bytes(source)?)?;
     migrate_scene_document(&mut document)?;
     validate_version(&document)?;
     validate_scene_structure(&document)?;
@@ -2576,7 +2671,7 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
 pub fn read_scene_document(
     path: impl AsRef<Path>,
 ) -> Result<SceneDocument, SceneIoError> {
-    parse_scene_document(&std::fs::read(path)?)
+    parse_scene_document(&read_scene_bytes(path)?)
 }
 
 /// [`read_scene_document`] for bytes already in memory.

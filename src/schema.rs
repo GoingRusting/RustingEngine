@@ -239,6 +239,22 @@ pub const OPERATIONS: &[Operation] = &[
         example: "scene patch my_game/scenes/main.rscene patch.json --dry-run --json",
     },
     Operation {
+        name: "scene split",
+        usage: "scene split <scene-path> [--json]",
+        summary: "Turn a scene file into folder form: a `.rscene` directory holding `scene.json` (everything but the entities, which it lists by ID in order) and `entities/<id>.json` per entity. Every command, the editor and the runtime read and write both forms the same way, and a patch rewrites only the entity files it changed, so parallel edits to different objects do not conflict in git. A scene already in folder form is left alone.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "scene split my_game/scenes/main.rscene --json",
+    },
+    Operation {
+        name: "scene join",
+        usage: "scene join <scene-path> [--json]",
+        summary: "Turn a folder-form scene (see `scene split`) back into one file. A scene that is already one file is left alone.",
+        gpu: NO_GPU,
+        defaults: &[],
+        example: "scene join my_game/scenes/main.rscene --json",
+    },
+    Operation {
         name: "scene add-model",
         usage: "scene add-model <scene-path> <model.glb|gltf> [--name NAME] [--dry-run] [--json]",
         summary: "Place a glTF or GLB model in a scene as one object (named after the file, or NAME) with a child per node and primitive, keeping its materials and textures. Import the model under assets/ first with `asset import`, which records its license and author in the `.rmeta`; add-model takes no provenance flags. Move the object with a patch afterwards.",

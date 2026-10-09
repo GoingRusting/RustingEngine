@@ -18,7 +18,8 @@ use crate::project::{
     ProjectTemplate,
 };
 use crate::runtime::{
-    cook_scene, read_scene_document, SceneDocument, SceneEntity, SceneIoError,
+    cook_scene, read_scene_bytes, read_scene_document, SceneDocument,
+    SceneEntity, SceneIoError,
 };
 
 /// Stable envelope for this and future commands, including scene patches and capture.
@@ -1254,10 +1255,10 @@ pub fn impact(root: &Path, target: &str) -> CliResult {
 fn scene_files_in(folder: &Path, files: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            scene_files_in(&path, files);
-        } else if path.extension().is_some_and(|ext| ext == "rscene") {
+        if path.extension().is_some_and(|ext| ext == "rscene") {
             files.push(path);
+        } else if path.is_dir() {
+            scene_files_in(&path, files);
         }
     }
 }
@@ -1548,7 +1549,7 @@ pub fn inspect_scene(path: &Path) -> CliResult {
         Err(result) => return result,
     };
     // The runtime loader migrates old scenes in memory. Report both versions.
-    let source_version = std::fs::read(path).ok().and_then(|bytes| {
+    let source_version = read_scene_bytes(path).ok().and_then(|bytes| {
         serde_json::from_slice::<Value>(&bytes)
             .ok()
             .and_then(|value| {
@@ -1651,9 +1652,45 @@ pub fn query_scene(path: &Path, filter: &SceneFilter) -> CliResult {
 }
 
 fn file_revision(path: &Path) -> Option<String> {
-    std::fs::read(path)
+    read_scene_bytes(path)
         .ok()
         .map(|bytes| crate::runtime::scene_revision(&bytes))
+}
+
+/// Converts the scene at `path` to folder form (`split`: a `.rscene`
+/// directory with one file per entity, for fewer merge conflicts) or back
+/// to a single file. Does nothing when it already has that form.
+pub fn convert_scene(path: &Path, split: bool) -> CliResult {
+    // Canonical, so the first patch afterwards rewrites only what it changes.
+    let bytes = match read_scene(path).and_then(|document| {
+        serde_json::to_vec_pretty(&document)
+            .map_err(|error| scene_error(error.into(), path))
+    }) {
+        Ok(bytes) => bytes,
+        Err(result) => return result,
+    };
+    let changed = path.is_dir() != split;
+    let converted = (|| {
+        if !changed {
+            return Ok(());
+        }
+        crate::runtime::lease::check_write(path)?;
+        if split {
+            std::fs::remove_file(path)?;
+            std::fs::create_dir(path)?;
+        } else {
+            std::fs::remove_dir_all(path)?;
+        }
+        crate::runtime::write_atomic(path, &bytes)
+    })();
+    match converted {
+        Ok(()) => CliResult::success(json!({
+            "scene": path,
+            "form": if split { "folder" } else { "file" },
+            "changed": changed,
+        })),
+        Err(error) => scene_error(error.into(), path),
+    }
 }
 
 pub fn patch_scene(path: &Path, patch_path: &Path, dry_run: bool) -> CliResult {
@@ -3405,9 +3442,9 @@ pub fn apply_preset(
             None,
         );
     };
-    let bytes = match std::fs::read(path) {
+    let bytes = match read_scene_bytes(path) {
         Ok(bytes) => bytes,
-        Err(error) => return scene_error(error.into(), path),
+        Err(error) => return scene_error(error, path),
     };
     let document = match read_scene(path) {
         Ok(document) => document,
@@ -3461,9 +3498,9 @@ pub fn apply_effect(
             None,
         );
     };
-    let bytes = match std::fs::read(path) {
+    let bytes = match read_scene_bytes(path) {
         Ok(bytes) => bytes,
-        Err(error) => return scene_error(error.into(), path),
+        Err(error) => return scene_error(error, path),
     };
     let document = match read_scene(path) {
         Ok(document) => document,
@@ -3552,9 +3589,9 @@ pub fn apply_recipe(root: &Path, name: &str, dry_run: bool) -> CliResult {
             );
         }
     }
-    let bytes = match std::fs::read(&project.scene_path) {
+    let bytes = match read_scene_bytes(&project.scene_path) {
         Ok(bytes) => bytes,
-        Err(error) => return scene_error(error.into(), &project.scene_path),
+        Err(error) => return scene_error(error, &project.scene_path),
     };
     let document = match read_scene(&project.scene_path) {
         Ok(document) => document,

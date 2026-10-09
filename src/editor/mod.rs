@@ -142,7 +142,7 @@ pub struct SceneFileRevision {
 
 impl SceneFileRevision {
     fn read(path: &std::path::Path) -> Option<Self> {
-        let bytes = std::fs::read(path).ok()?;
+        let bytes = crate::runtime::read_scene_bytes(path).ok()?;
         Some(Self {
             // Canonical, so project and Save paths to one file compare equal.
             path: path.canonicalize().ok(),
