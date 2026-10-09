@@ -199,6 +199,21 @@ fn user_data_path(key: &str) -> std::io::Result<PathBuf> {
     Ok(crate::project::user_data_folder().join(relative))
 }
 
+/// `<folder>/<name>` for each file directly in `path`, sorted.
+fn keys_in(path: &Path, folder: &str) -> Vec<String> {
+    let mut keys: Vec<String> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            Some(format!("{folder}/{}", entry.file_name().to_str()?))
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
 /// Keys already executed through [`GameScene::once`].
 #[derive(Resource, Clone, Default)]
 struct GameOnceState(HashSet<String>);
@@ -1704,6 +1719,9 @@ impl GameScene<'_> {
     /// Saves the counters called `names` under `key` (a save slot such as
     /// `saves/1.json`) with the game's save `version`, as JSON through
     /// [`Self::save_data`]. A counter that does not exist saves as 0.
+    /// For an autosave, save when [`Self::cooldown_ready`]`("autosave")`
+    /// and then [`Self::start_cooldown`]`("autosave", 60.0)`; the
+    /// cooldown counts fixed ticks, so a paused game does not autosave.
     ///
     /// # Errors
     /// Returns the error from [`Self::save_data`].
@@ -1797,6 +1815,17 @@ impl GameScene<'_> {
     #[must_use]
     pub fn load_data(&self, key: &str) -> Option<String> {
         std::fs::read_to_string(user_data_path(key).ok()?).ok()
+    }
+
+    /// The keys of the files [`Self::save_data`] stored in the user data
+    /// folder `folder` (such as `saves`), sorted, for a load menu's save
+    /// slots: `["saves/1.json", "saves/2.json"]`. Empty when there is no
+    /// such folder.
+    #[must_use]
+    pub fn saved_keys(&self, folder: &str) -> Vec<String> {
+        user_data_path(folder)
+            .map(|path| keys_in(&path, folder))
+            .unwrap_or_default()
     }
 
     /// Deletes the file [`Self::save_data`] stored under `key`. Returns
@@ -7349,6 +7378,24 @@ mod tests {
         assert_eq!(scene.counter_value("chasers"), 1);
         assert!(scene.set_state("Enemy", "patrol"));
         assert_eq!(scene.counter_value("chasers"), 0);
+    }
+
+    #[test]
+    fn saved_keys_list_the_files_of_a_save_folder_in_order() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-saves-{}", uuid::Uuid::new_v4()));
+        assert!(keys_in(&folder, "saves").is_empty());
+        std::fs::create_dir_all(folder.join("old")).unwrap();
+        for name in ["2.json", "10.json", "1.json"] {
+            std::fs::write(folder.join(name), "{}").unwrap();
+        }
+        assert_eq!(
+            keys_in(&folder, "saves"),
+            ["saves/1.json", "saves/10.json", "saves/2.json"]
+        );
+        let world = &mut World::new();
+        assert!(GameScene { world }.saved_keys("../x").is_empty());
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

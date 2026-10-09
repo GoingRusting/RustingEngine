@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::saved_keys(folder)` lists the save files in a user data folder, for a load menu's save slots.
 - The component `rusting.loot_table` holds a weighted loot table on a named object, editable in the inspector, and `GameScene::roll_loot_table(name, stream)` rolls it from the run's seed.
 - `rusting.state` takes `actions` (`state`, `exit`, `counter`, `add`), which add to a counter when a state is entered or left, by a transition or `set_state`.
 - The recipe `alarm` builds a state machine with no code: a plate that alarms when the player touches it, counts alarms and calms after 2 seconds, with a scenario that checks it.
