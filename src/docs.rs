@@ -664,6 +664,24 @@ pub fn component_list() -> String {
         .collect()
 }
 
+/// The agent skill's pitfall list: each section of `docs/pitfalls.md` with
+/// its entries' bold titles.
+#[must_use]
+pub fn pitfall_list() -> String {
+    let mut list = String::new();
+    for section in include_str!("../docs/pitfalls.md").split("\n## ").skip(1) {
+        let heading = section.lines().next().unwrap_or_default();
+        let titles: Vec<&str> = section
+            .split("\n**")
+            .skip(1)
+            .filter_map(|entry| entry.split_once("**"))
+            .map(|(title, _)| title.trim_end_matches('.'))
+            .collect();
+        list += &format!("- {heading}: {}.\n", titles.join("; "));
+    }
+    list
+}
+
 /// The `GameScene` methods in each row of the agent guides' API table, by
 /// need. A method in no row lands in the last row, so a new method still
 /// shows; [`api_table`] fails a test if a row names a missing method.
@@ -1518,6 +1536,7 @@ mod tests {
             ("api-table", super::api_table(), skill),
             ("api-table", super::api_table(), agents),
             ("components", super::component_list(), skill),
+            ("pitfalls", super::pitfall_list(), skill),
         ] {
             let start = format!("<!-- {marker}:start -->\n");
             let end = format!("<!-- {marker}:end -->");
