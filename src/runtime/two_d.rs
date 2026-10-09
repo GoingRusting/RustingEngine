@@ -521,14 +521,18 @@ pub(super) fn platformer_move(
         player.vertical_speed -= player.gravity * dt;
         let shape = collider
             .map_or(DEFAULT_PLATFORMER_SHAPE, |collider| collider.shape);
-        let start = CharacterMove::ride(
+        // ponytail: translation only; a platform turning around Z does
+        // not swing a 2D rider.
+        let (start, _) = CharacterMove::ride(
             &physics,
             shape,
             transform.position,
-            player.floor,
+            player.floor.map(|(floor, at)| {
+                (floor, at, super::cpu_physics::NO_ROTATION)
+            }),
             player.collision_mask,
             entity,
-            floor_at,
+            |floor| Some((floor_at(floor)?, super::cpu_physics::NO_ROTATION)),
         );
         let mut motion =
             [run * player.run_speed * dt, player.vertical_speed * dt, 0.0];

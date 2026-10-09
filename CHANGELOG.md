@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.2.0] - 2026-10-10
+
+Engine features asked for while building the multiplayer raft game Rusting Raft.
+
+### Added
+
+- Networking: `rusting_engine::net::NetSession` hosts, joins by address, or joins through a relay by room code, with reliable, ordered messages over TCP. `rusting relay` runs the relay. See `guide/networking`
+- Swimming: a player controller with `swim_speed` above 0 swims in water, floats at the surface, dives while crouch is held and rises while jump is held
+- Turning platforms: players riding a kinematic floor turn with it, not only move with it
+- Hard shadows: `scene.set_hard_shadows(true)`, or Hard shadows in the editor's project settings, gives crisp, stair-stepped shadow edges
+- Flat shading on any mesh: `flat_shading` on a material, and on `rusting.water` for low-poly waves
+- Window title: `"window_title"` in `project.json`, or `scene.set_window_title`
+
+### Changed
+
+- New public fields: `MaterialAsset::flat_shading`, `WaterBody::flat_shading`, `RenderSettings::hard_shadows`, and `PlayerController::swim_speed`, `float_depth`, `swimming` and `floor_rotation`. Add `..Default::default()` to struct literals
+- Scene format 10 stores material flat shading. Version 9 cooked scenes still load; older engine builds cannot read the new files
+
+### Fixed
+
+- The scenario stall watchdog no longer ends a unit-test run during long GPU tests
+
+### Performance
+
+- Scenes with many moving objects: when objects only move, the renderable list updates them in place instead of being rebuilt. With 10,000 objects, one moving object costs 0.36 ms instead of 6.4 ms a frame, and all moving cost 1.6 ms instead of 9.8 ms
+
+### Known limits
+
+- Networking is TCP only, with no unreliable channel, replication, prediction or encryption
+- The renderer still repacks every instance when one object moves
+- 2D platforms carry riders by translation only
+
+---
+
 ## [2.1.0] - 2026-10-09
 
 Engine features for the horror game FOREVER BEAR, and a large batch of tools for building games with an agent.

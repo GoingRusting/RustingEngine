@@ -3328,6 +3328,93 @@ fn controllers_ride_moving_platforms_and_stop_at_ceilings() {
 }
 
 #[test]
+fn a_turning_platform_carries_and_turns_its_rider() {
+    let mut app = App::new();
+    let platform = cpu_body(
+        app.world_mut(),
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [3.0, 0.5, 3.0],
+        },
+        RigidBodyKind::Kinematic,
+    );
+    let walker = app
+        .world_mut()
+        .spawn((Transform::new([1.5, 1.0, 0.0]), PlayerController::default()))
+        .id();
+    run_fixed_steps(&mut app, 60);
+    // A quarter turn around +Y in 90 steps.
+    let steps = 90;
+    for step in 1..=steps {
+        app.world_mut()
+            .get_mut::<Transform>(platform)
+            .unwrap()
+            .rotation[1] =
+            std::f32::consts::FRAC_PI_2 * step as f32 / steps as f32;
+        run_fixed_steps(&mut app, 1);
+    }
+    let at = app.world().get::<Transform>(walker).unwrap().position;
+    assert!(at[0].abs() < 0.05 && (at[2] + 1.5).abs() < 0.05, "{at:?}");
+    let yaw = app.world().get::<PlayerController>(walker).unwrap().yaw;
+    assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 0.02, "{yaw}");
+}
+
+#[test]
+fn swimming_players_float_at_the_surface_dive_and_rise() {
+    use crate::runtime::WaterBody;
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.world_mut().spawn((
+        Transform::new([0.0, 0.0, 0.0]),
+        WaterBody {
+            wave_height: 0.0,
+            ..WaterBody::default()
+        },
+    ));
+    let player = app
+        .world_mut()
+        .spawn((
+            Transform::new([0.0, -3.0, 0.0]),
+            PlayerController {
+                swim_speed: 2.0,
+                ..PlayerController::default()
+            },
+        ))
+        .id();
+    let height =
+        |app: &App| app.world().get::<Transform>(player).unwrap().position[1];
+    run_fixed_steps(&mut app, 240);
+    assert!(
+        app.world()
+            .get::<PlayerController>(player)
+            .unwrap()
+            .swimming
+    );
+    assert!((height(&app) + 0.5).abs() < 0.05, "{}", height(&app));
+
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::KeyC, true);
+    run_fixed_steps(&mut app, 60);
+    assert!(height(&app) < -2.0, "dived to {}", height(&app));
+
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    input.record_key(KeyCode::KeyC, false);
+    input.record_key(KeyCode::Space, true);
+    input.clear_frame_edges();
+    run_fixed_steps(&mut app, 120);
+    assert!((height(&app) + 0.5).abs() < 0.05, "{}", height(&app));
+
+    // Without swimming the same player sinks.
+    app.world_mut()
+        .get_mut::<PlayerController>(player)
+        .unwrap()
+        .swim_speed = 0.0;
+    run_fixed_steps(&mut app, 60);
+    assert!(height(&app) < -2.0, "sank to {}", height(&app));
+}
+
+#[test]
 fn pickups_count_hide_and_unlock_in_scene_id_order() {
     let mut app = App::new();
     let world = app.world_mut();

@@ -114,6 +114,7 @@ scene.set_vsync(true);
 scene.set_max_fps(Some(60)); // None removes the cap
 scene.set_fullscreen(true); // borderless, on the current monitor
 scene.set_window_size([1280, 720]);
+scene.set_window_title("Rusting Raft"); // or "window_title" in project.json
 scene.set_exposure(1.8); // brighter, e.g. a CCTV feed; 1 is neutral
 ```
 

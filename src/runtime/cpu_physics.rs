@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Component, Resource, World};
-use nalgebra::{Matrix3, Matrix4, Rotation3, Vector3};
+use nalgebra::{
+    Matrix3, Matrix4, Quaternion, Rotation3, UnitQuaternion, Vector3,
+};
 
 use crate::assets::{AssetServer, MeshAsset};
 use crate::runtime::sim_math;
@@ -114,36 +116,88 @@ pub(crate) fn world_position(
     }
 }
 
+/// Where an object is turned in the world, as quaternion `[x, y, z, w]`:
+/// the propagated pose for a child, the local rotation otherwise.
+pub(crate) fn world_rotation(
+    transform: &Transform,
+    parent: Option<&Parent>,
+    global: Option<&GlobalTransform>,
+) -> [f32; 4] {
+    let rotation = match (parent, global) {
+        (Some(_), Some(global)) => {
+            let m = global.matrix;
+            let column =
+                |i: usize| Vector3::new(m[i][0], m[i][1], m[i][2]).normalize();
+            Rotation3::from_matrix_unchecked(Matrix3::from_columns(&[
+                column(0),
+                column(1),
+                column(2),
+            ]))
+        }
+        _ => sim_math::rotation_from_euler(
+            transform.rotation[0],
+            transform.rotation[1],
+            transform.rotation[2],
+        ),
+    };
+    UnitQuaternion::from_rotation_matrix(&rotation)
+        .coords
+        .into()
+}
+
+/// The identity of [`world_rotation`].
+pub(crate) const NO_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
 impl CharacterMove {
-    /// Moves a character standing on `floor` (that body and where it was
-    /// after the previous step) as far as the floor has moved since, so it
-    /// rides moving platforms. Returns the new position. A separate move
-    /// keeps the character's own downward probe short enough to stay
-    /// grounded.
-    // ponytail: translation only; a rotating platform does not turn or
-    // swing its rider.
+    /// Moves a character standing on `floor` (that body and its position
+    /// and [`world_rotation`] after the previous step) the way the floor
+    /// has moved since, so it rides moving and turning platforms. Returns
+    /// the new position and how far the floor turned around +Y, in
+    /// radians, for the rider to turn its heading by. A separate move keeps
+    /// the character's own downward probe short enough to stay grounded.
     pub(crate) fn ride(
         physics: &PhysicsWorld,
         shape: ColliderShape,
         position: [f32; 3],
-        floor: Option<(Entity, [f32; 3])>,
+        floor: Option<(Entity, [f32; 3], [f32; 4])>,
         layer_mask: u32,
         rider: Entity,
-        position_of: impl Fn(Entity) -> Option<[f32; 3]>,
-    ) -> [f32; 3] {
-        let Some((floor, was)) = floor else {
-            return position;
+        pose_of: impl Fn(Entity) -> Option<([f32; 3], [f32; 4])>,
+    ) -> ([f32; 3], f32) {
+        let Some((floor, was, was_turn)) = floor else {
+            return (position, 0.0);
         };
-        let Some(now) = position_of(floor) else {
-            return position;
+        let Some((now, now_turn)) = pose_of(floor) else {
+            return (position, 0.0);
         };
-        let carried = [now[0] - was[0], now[1] - was[1], now[2] - was[2]];
+        let (carried, yaw) = if now_turn == was_turn {
+            (std::array::from_fn(|axis| now[axis] - was[axis]), 0.0)
+        } else {
+            let quaternion = |[x, y, z, w]: [f32; 4]| {
+                UnitQuaternion::new_unchecked(Quaternion::new(w, x, y, z))
+            };
+            let turn = quaternion(now_turn) * quaternion(was_turn).inverse();
+            // The rider's offset from the floor turns with the floor.
+            let offset = turn
+                * Vector3::from(std::array::from_fn::<f32, 3, _>(|axis| {
+                    position[axis] - was[axis]
+                }));
+            // +X turned by a yaw of `a` around +Y is (cos a, 0, -sin a).
+            let x = turn * Vector3::x();
+            (
+                std::array::from_fn(|axis| {
+                    now[axis] + offset[axis] - position[axis]
+                }),
+                sim_math::atan2(-x.z, x.x),
+            )
+        };
         if carried == [0.0; 3] {
-            return position;
+            return (position, yaw);
         }
-        physics
+        let moved = physics
             .move_character(shape, position, carried, layer_mask, Some(rider))
-            .position
+            .position;
+        (moved, yaw)
     }
 }
 

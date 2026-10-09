@@ -1174,6 +1174,9 @@ pub struct MaterialAsset {
     pub uv_scale: [f32; 2],
     /// Shifts the textures across each face, in whole-texture units.
     pub uv_offset: [f32; 2],
+    /// Lights each triangle with its own face normal, taken from
+    /// screen-space derivatives, for a faceted low-poly look on any mesh.
+    pub flat_shading: bool,
     pub base_color_texture: Option<Handle<TextureAsset>>,
     pub normal_texture: Option<Handle<TextureAsset>>,
     pub metallic_roughness_texture: Option<Handle<TextureAsset>>,
@@ -1196,6 +1199,7 @@ impl Default for MaterialAsset {
             thickness: 0.0,
             uv_scale: [1.0; 2],
             uv_offset: [0.0; 2],
+            flat_shading: false,
             base_color_texture: None,
             normal_texture: None,
             metallic_roughness_texture: None,

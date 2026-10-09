@@ -100,6 +100,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/pitfalls.md"),
     ),
+    (
+        "guide/networking",
+        "guide",
+        include_str!("../docs/networking.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
@@ -835,6 +840,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "set_background_color",
             "set_reflections",
             "set_exposure",
+            "set_hard_shadows",
             "create_texture",
             "edit_texture",
         ],
@@ -917,6 +923,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "set_fullscreen",
             "fullscreen",
             "set_window_size",
+            "set_window_title",
         ],
     ),
     ("translations", &["set_locale", "locale", "tr", "tr_count"]),

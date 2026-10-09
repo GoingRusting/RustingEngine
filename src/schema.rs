@@ -359,6 +359,14 @@ pub const OPERATIONS: &[Operation] = &[
         example: "serve",
     },
     Operation {
+        name: "relay",
+        usage: "relay [address]",
+        summary: "Run a multiplayer relay until stopped. A game hosts through it with `NetSession::host_room(relay)`, which hands out a six-character room code, and players join with `NetSession::join_room(relay, code)`; the relay forwards host messages to clients and client messages to the host, so neither side needs an open port. Messages are reliable and in order (TCP). See `guide/networking`.",
+        gpu: NO_GPU,
+        defaults: &[("address", "0.0.0.0:7777")],
+        example: "relay 0.0.0.0:7777",
+    },
+    Operation {
         name: "mcp",
         usage: "mcp [root]",
         summary: "Run as a Model Context Protocol server over stdio (newline-delimited JSON-RPC), scoped to the project `root` (default: the current folder). Every command except `serve`, `debug` and `mcp` is a tool named with underscores (`scene_query`) taking `{\"args\": [...]}`, the arguments after the command words. Tools that change nothing carry `readOnlyHint: true`; the rest are mutating. A result is the `--json` envelope as text, with `isError` set when `ok` is false, so it matches the CLI. Arguments with an absolute path or `..` are refused.",
@@ -641,6 +649,7 @@ const ENTITY_SECTIONS: &[Section] = &[
                 "metallic": 0.0, "roughness": 0.6,
                 "transmission": 0.0, "ior": 1.5, "thickness": 0.0,
                 "uv_scale": [1.0, 1.0], "uv_offset": [0.0, 0.0],
+                "flat_shading": false,
                 "base_color_texture": null, "normal_texture": null,
                 "metallic_roughness_texture": null, "occlusion_texture": null,
                 "emissive_texture": null
@@ -661,6 +670,7 @@ const ENTITY_SECTIONS: &[Section] = &[
             field("/material/Inline/thickness", "m", ">= 0", "optional, default 0; how far the refracted ray travels"),
             field("/material/Inline/uv_scale", "", "[u, v]", "optional, default [1, 1]; texture repeats per face, [8, 4] tiles a long floor"),
             field("/material/Inline/uv_offset", "", "[u, v]", "optional, default [0, 0]; texture shift in whole-texture units"),
+            field("/material/Inline/flat_shading", "", "", "optional, default false; light each triangle with its face normal for a faceted low-poly look"),
             field("/material/Inline/base_color_texture", "path relative to the scene file", "", "a plain string such as \"../assets/textures/crate.png\", not {\"$asset\": ...}; null for none; same for the other texture slots"),
             field("/material/Inline/normal_texture", "path relative to the scene file", "", ""),
             field("/material/Inline/metallic_roughness_texture", "path relative to the scene file", "", "glTF layout: roughness in G, metallic in B"),
@@ -868,9 +878,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.player_controller",
-        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction. pitch_limits and yaw_limits ([low, high] radians; yaw_limits null turns freely) bound the view, for a seated or turret camera. crouch_height above 0 lets player.crouch (C, left Ctrl, pad East) shrink the body to that height from the top, at crouch_multiplier speed; it stands again only where there is room. air_jumps allows that many extra jumps before landing (1 is a double jump). Game code's scene.dash(name, velocity, seconds) moves it at that velocity with no gravity for that long.",
+        summary: "First- or third-person walking body. Reads the player.* actions; parent a camera to it at eye height. camera_distance above 0 orbits that camera behind the body. Ground steeper than max_slope is a wall; ledges up to max_step_height are stepped onto; push_bodies false keeps it from moving dynamic bodies. turn_speed (rad/s) turns its non-camera children toward the walking direction. pitch_limits and yaw_limits ([low, high] radians; yaw_limits null turns freely) bound the view, for a seated or turret camera. crouch_height above 0 lets player.crouch (C, left Ctrl, pad East) shrink the body to that height from the top, at crouch_multiplier speed; it stands again only where there is room. air_jumps allows that many extra jumps before landing (1 is a double jump). Game code's scene.dash(name, velocity, seconds) moves it at that velocity with no gravity for that long. swim_speed above 0 makes it swim in rusting.water: below the surface it moves at swim_speed, floats with its center float_depth under the waves, rises while player.jump is held, dives while player.crouch is held, drifts with the current, and jumps out from the surface. It rides moving and turning platforms, turning with them.",
         gpu: NO_GPU,
-        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "pitch_limits": [-1.55, 1.55], "yaw_limits": null, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0, "crouch_height": 1.0, "crouch_multiplier": 0.5, "air_jumps": 0}),
+        example: || json!({"walk_speed": 5.0, "sprint_multiplier": 1.5, "jump_speed": 6.0, "gravity": 12.0, "look_sensitivity": 0.003, "mouse_look": true, "collision_mask": 1, "yaw": 1.57, "pitch": 0.0, "pitch_limits": [-1.55, 1.55], "yaw_limits": null, "camera_distance": 4.0, "camera_height": 0.6, "camera_offset": [0.0, 0.0, 0.0], "max_slope": 0.78, "max_step_height": 0.3, "push_bodies": true, "turn_speed": 0.0, "crouch_height": 1.0, "crouch_multiplier": 0.5, "air_jumps": 0, "swim_speed": 3.0, "float_depth": 0.5}),
     },
     ComponentSection {
         key: "rusting.tween",
@@ -970,9 +980,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.water",
-        summary: "Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored). Dynamic bodies with sphere, box or capsule colliders float in it, and flow_speed carries them along flow_direction, which also turns the waves. Deterministic and cheap; a long thin rectangle with a flow_speed is a river. Put it on an empty object.",
+        summary: "Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored). Dynamic bodies with sphere, box or capsule colliders float in it, and flow_speed carries them along flow_direction, which also turns the waves. Deterministic and cheap; a long thin rectangle with a flow_speed is a river. flat_shading gives faceted low-poly waves. A player_controller with swim_speed swims in it. Put it on an empty object.",
         gpu: "one mesh of about resolution squared vertices, rewritten every fixed tick",
-        example: || json!({"size": [20.0, 20.0], "resolution": 64, "wave_height": 0.25, "wave_length": 4.0, "wave_speed": 1.0, "flow_direction": 0.0, "flow_speed": 0.0, "color": [0.1, 0.4, 0.7, 0.7]}),
+        example: || json!({"size": [20.0, 20.0], "resolution": 64, "wave_height": 0.25, "wave_length": 4.0, "wave_speed": 1.0, "flow_direction": 0.0, "flow_speed": 0.0, "color": [0.1, 0.4, 0.7, 0.7], "flat_shading": false}),
     },
     ComponentSection {
         key: "rusting.hud",
@@ -1435,6 +1445,8 @@ pub fn json_schemas() -> Value {
                 "ui_base_size": {"type": "array", "items": {"type": "integer",
                     "minimum": 1}, "minItems": 2, "maxItems": 2,
                     "description": "[width, height] in pixels the HUD is laid out for; it scales uniformly to fit the window, keeping its aspect ratio. Unset: drawn at the desktop's DPI scale."},
+                "window_title": {"type": "string",
+                    "description": "Window title when the game opens from the project folder."},
             },
             "required": ["name", "main_scene", "cooked_scene"],
         },
@@ -1700,11 +1712,18 @@ mod tests {
             determinism: Default::default(),
             window: None,
             ui_base_size: None,
+            window_title: None,
         };
         let mut keys = written_keys(&project);
         keys.extend(
-            ["generators", "determinism", "window", "ui_base_size"]
-                .map(String::from),
+            [
+                "generators",
+                "determinism",
+                "window",
+                "ui_base_size",
+                "window_title",
+            ]
+            .map(String::from),
         );
         assert_eq!(keys, schema_keys(&schemas["project"]));
         for name in

@@ -377,6 +377,14 @@ fn rendering(
             });
             rows.row(
                 ui,
+                "Hard shadows",
+                "One shadow-map tap: crisp edges for a low-poly look",
+                |ui| {
+                    kit::toggle(ui, &mut settings.hard_shadows);
+                },
+            );
+            rows.row(
+                ui,
                 "Reflections",
                 "Screen-space reflections; turn off to save GPU time",
                 |ui| {

@@ -139,6 +139,14 @@ crate::reflect! {
         crouch_multiplier: f32 {
             unit: "factor", min: 0.0, doc: "speed factor while crouched",
         },
+        swim_speed: f32 {
+            unit: "m/s", min: 0.0,
+            doc: "speed in a water body; 0 turns swimming off",
+        },
+        float_depth: f32 {
+            unit: "m", doc: "how far below the surface the body center floats",
+        },
+        #[skip] swimming: bool,
         #[skip] crouched: bool,
         #[skip] crouch_drop: f32,
         #[skip] camera_drop: f32,
@@ -147,6 +155,7 @@ crate::reflect! {
         #[skip] jump_requested: bool,
         #[skip] air_jumps_used: u32,
         #[skip] floor: Option<(bevy_ecs::entity::Entity, [f32; 3])>,
+        #[skip] floor_rotation: [f32; 4],
         #[skip] wall: Option<bevy_ecs::entity::Entity>,
         #[skip] velocity: [f32; 3],
         #[skip] dash_velocity: [f32; 3],
@@ -674,6 +683,9 @@ crate::reflect! {
         flow_direction: f32 { unit: "deg", doc: "direction of waves and current around +Y; 0 is +X" },
         flow_speed: f32 { unit: "m/s", min: 0.0, doc: "current that carries floating bodies; 0 is a lake" },
         color: [f32; 4] { doc: "RGBA of the surface" },
+        flat_shading: bool {
+            doc: "Light each wave triangle with its own face normal for a faceted sea.",
+        },
     }
 }
 
@@ -1105,6 +1117,9 @@ crate::reflect! {
         culling: CullingMode,
         antialiasing: Antialiasing,
         shadows: ShadowQuality,
+        hard_shadows: bool {
+            doc: "One shadow-map tap per pixel: crisp shadow edges instead of 3x3 filtered ones.",
+        },
         reflections: bool,
     }
 }
@@ -1152,6 +1167,9 @@ crate::reflect! {
         thickness: f32 { unit: "m", min: 0.0 },
         uv_scale: [f32; 2],
         uv_offset: [f32; 2],
+        flat_shading: bool {
+            doc: "Light each triangle with its own face normal for a faceted, low-poly look.",
+        },
         base_color_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
         normal_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
         metallic_roughness_texture: Option<crate::assets::Handle<crate::assets::TextureAsset>>,

@@ -32,7 +32,7 @@ use super::{
 use crate::runtime::DeterminismMode;
 use crate::runtime::{CullingMode, QualityProfile};
 
-pub const SCENE_FORMAT_VERSION: u32 = 9;
+pub const SCENE_FORMAT_VERSION: u32 = 10;
 const COMPILED_MAGIC: &[u8; 8] = b"RSCENE01";
 
 #[derive(Debug)]
@@ -286,24 +286,25 @@ impl From<LegacySceneDocumentV5> for SceneDocument {
     }
 }
 
-/// Cooked shape of version 8, before material names.
+/// Cooked shape of version 8, before material names, and with
+/// [`SceneMaterialDataV9`] the shape of version 9, before flat shading.
 #[derive(Serialize, Deserialize)]
-struct LegacySceneDocumentV8 {
+struct LegacySceneDocumentV8<M = SceneMaterialDataV8> {
     format_version: u32,
     name: String,
-    entities: Vec<SceneEntityV8>,
+    entities: Vec<SceneEntityV8<M>>,
     render: SceneRenderSettings,
     simulation: SceneSimulationSettings,
 }
 
 #[derive(Serialize, Deserialize)]
-struct SceneEntityV8 {
+struct SceneEntityV8<M = SceneMaterialDataV8> {
     id: Uuid,
     parent: Option<Uuid>,
     name: Option<String>,
     classes: Vec<String>,
     transform: Option<SceneTransform>,
-    mesh_renderer: Option<SceneMeshRendererV8>,
+    mesh_renderer: Option<SceneMeshRendererV8<M>>,
     camera: Option<SceneCamera>,
     visible: Option<bool>,
     physics_body: Option<PhysicsBody>,
@@ -318,20 +319,20 @@ struct SceneEntityV8 {
 }
 
 #[derive(Serialize, Deserialize)]
-struct SceneMeshRendererV8 {
+struct SceneMeshRendererV8<M> {
     mesh: SceneMesh,
-    material: SceneMaterialV8,
+    material: SceneMaterialV8<M>,
     cast_shadows: bool,
     receive_shadows: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-enum SceneMaterialV8 {
+enum SceneMaterialV8<M> {
     BuiltinError,
-    Inline(SceneMaterialDataV8),
+    Inline(M),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SceneMaterialDataV8 {
     model: SceneMaterialModel,
     alpha_mode: SceneAlphaMode,
@@ -351,8 +352,53 @@ struct SceneMaterialDataV8 {
     emissive_texture: Option<PathBuf>,
 }
 
-impl From<LegacySceneDocumentV8> for SceneDocument {
-    fn from(document: LegacySceneDocumentV8) -> Self {
+/// Cooked material of version 9, before flat shading. Bincode writes a
+/// nested struct as its fields in order, so this is the name followed by
+/// the version 8 fields.
+#[derive(Serialize, Deserialize)]
+struct SceneMaterialDataV9 {
+    name: String,
+    rest: SceneMaterialDataV8,
+}
+
+impl From<SceneMaterialDataV9> for SceneMaterialData {
+    fn from(material: SceneMaterialDataV9) -> Self {
+        Self {
+            name: material.name,
+            ..material.rest.into()
+        }
+    }
+}
+
+impl From<SceneMaterialDataV8> for SceneMaterialData {
+    fn from(material: SceneMaterialDataV8) -> Self {
+        Self {
+            name: String::new(),
+            model: material.model,
+            alpha_mode: material.alpha_mode,
+            base_color: material.base_color,
+            emissive: material.emissive,
+            metallic: material.metallic,
+            roughness: material.roughness,
+            transmission: material.transmission,
+            ior: material.ior,
+            thickness: material.thickness,
+            uv_scale: material.uv_scale,
+            uv_offset: material.uv_offset,
+            flat_shading: false,
+            base_color_texture: material.base_color_texture,
+            normal_texture: material.normal_texture,
+            metallic_roughness_texture: material.metallic_roughness_texture,
+            occlusion_texture: material.occlusion_texture,
+            emissive_texture: material.emissive_texture,
+        }
+    }
+}
+
+impl<M: Into<SceneMaterialData>> From<LegacySceneDocumentV8<M>>
+    for SceneDocument
+{
+    fn from(document: LegacySceneDocumentV8<M>) -> Self {
         Self {
             format_version: document.format_version,
             name: document.name,
@@ -363,8 +409,8 @@ impl From<LegacySceneDocumentV8> for SceneDocument {
     }
 }
 
-impl From<SceneEntityV8> for SceneEntity {
-    fn from(entity: SceneEntityV8) -> Self {
+impl<M: Into<SceneMaterialData>> From<SceneEntityV8<M>> for SceneEntity {
+    fn from(entity: SceneEntityV8<M>) -> Self {
         Self {
             id: entity.id,
             parent: entity.parent,
@@ -379,26 +425,7 @@ impl From<SceneEntityV8> for SceneEntity {
                             SceneMaterial::BuiltinError
                         }
                         SceneMaterialV8::Inline(material) => {
-                            SceneMaterial::Inline(SceneMaterialData {
-                                name: String::new(),
-                                model: material.model,
-                                alpha_mode: material.alpha_mode,
-                                base_color: material.base_color,
-                                emissive: material.emissive,
-                                metallic: material.metallic,
-                                roughness: material.roughness,
-                                transmission: material.transmission,
-                                ior: material.ior,
-                                thickness: material.thickness,
-                                uv_scale: material.uv_scale,
-                                uv_offset: material.uv_offset,
-                                base_color_texture: material.base_color_texture,
-                                normal_texture: material.normal_texture,
-                                metallic_roughness_texture: material
-                                    .metallic_roughness_texture,
-                                occlusion_texture: material.occlusion_texture,
-                                emissive_texture: material.emissive_texture,
-                            })
+                            SceneMaterial::Inline(material.into())
                         }
                     },
                     cast_shadows: renderer.cast_shadows,
@@ -535,6 +562,7 @@ impl From<SceneEntityV7> for SceneEntity {
                                 thickness: 0.0,
                                 uv_scale: default_uv_scale(),
                                 uv_offset: [0.0; 2],
+                                flat_shading: false,
                                 base_color_texture: material.base_color_texture,
                                 normal_texture: material.normal_texture,
                                 metallic_roughness_texture: material
@@ -708,6 +736,7 @@ impl From<LegacySceneMeshRendererV4> for SceneMeshRenderer {
                         thickness: 0.0,
                         uv_scale: default_uv_scale(),
                         uv_offset: [0.0; 2],
+                        flat_shading: false,
                         base_color_texture: material.base_color_texture,
                         normal_texture: material.normal_texture,
                         metallic_roughness_texture: material
@@ -968,6 +997,10 @@ pub struct SceneMaterialData {
     pub uv_scale: [f32; 2],
     #[serde(default)]
     pub uv_offset: [f32; 2],
+    /// Light each triangle with its own face normal for a faceted look.
+    /// Cooked version 9 scenes end the shading fields before it.
+    #[serde(default)]
+    pub flat_shading: bool,
     pub base_color_texture: Option<PathBuf>,
     pub normal_texture: Option<PathBuf>,
     pub metallic_roughness_texture: Option<PathBuf>,
@@ -2654,6 +2687,11 @@ fn decode_scene(bytes: &[u8]) -> Result<SceneDocument, SceneIoError> {
                 compiled,
             )?
             .into()
+        } else if version == 9 {
+            crate::assets::deserialize_bounded::<
+                LegacySceneDocumentV8<SceneMaterialDataV9>,
+            >(compiled)?
+            .into()
         } else if version == 8 {
             crate::assets::deserialize_bounded::<LegacySceneDocumentV8>(
                 compiled,
@@ -2742,7 +2780,7 @@ fn migrate_scene_document(
     document: &mut SceneDocument,
 ) -> Result<(), SceneIoError> {
     match document.format_version {
-        0..=8 => {
+        0..=9 => {
             // Versions before programmable GPU watches, render settings, and
             // simulation settings
             // use safe defaults for the fields that were added later.
@@ -2832,6 +2870,7 @@ fn scene_material(
         thickness: material.thickness,
         uv_scale: material.uv_scale,
         uv_offset: material.uv_offset,
+        flat_shading: material.flat_shading,
         base_color_texture: texture_path(material.base_color_texture)?,
         normal_texture: texture_path(material.normal_texture)?,
         metallic_roughness_texture: texture_path(
@@ -2992,6 +3031,7 @@ fn runtime_material(
         thickness: material.thickness,
         uv_scale: material.uv_scale,
         uv_offset: material.uv_offset,
+        flat_shading: material.flat_shading,
         base_color_texture: texture(assets, &material.base_color_texture)?,
         normal_texture: texture(assets, &material.normal_texture)?,
         metallic_roughness_texture: texture(
@@ -3740,9 +3780,48 @@ mod tests {
     }
 
     #[test]
-    fn version_eight_cooked_scenes_read_materials_without_a_name() {
+    fn version_eight_and_nine_cooked_scenes_migrate_their_materials() {
+        let data = SceneMaterialDataV8 {
+            model: SceneMaterialModel::Pbr,
+            alpha_mode: SceneAlphaMode::Opaque,
+            base_color: [0.1, 0.2, 0.3, 1.0],
+            emissive: [0.0; 3],
+            metallic: 0.5,
+            roughness: 0.6,
+            transmission: 0.7,
+            ior: 1.4,
+            thickness: 0.2,
+            uv_scale: [2.0, 3.0],
+            uv_offset: [0.1, 0.2],
+            base_color_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
+            occlusion_texture: None,
+            emissive_texture: None,
+        };
+        let v8 = migrate_legacy(8, data.clone());
+        assert_eq!(v8.name, "");
+        assert_eq!(v8.transmission, 0.7);
+        assert_eq!(v8.uv_scale, [2.0, 3.0]);
+        let v9 = migrate_legacy(
+            9,
+            SceneMaterialDataV9 {
+                name: "glass".into(),
+                rest: data,
+            },
+        );
+        assert_eq!(v9.name, "glass");
+        assert_eq!(v9.transmission, 0.7);
+        assert!(!v9.flat_shading);
+    }
+
+    /// Cooks a one-box scene in an old format and reads it back.
+    fn migrate_legacy<M: Serialize>(
+        format_version: u32,
+        material: M,
+    ) -> SceneMaterialData {
         let legacy = LegacySceneDocumentV8 {
-            format_version: 8,
+            format_version,
             name: "Scene Before Material Names".into(),
             entities: vec![SceneEntityV8 {
                 id: Uuid::new_v4(),
@@ -3752,24 +3831,7 @@ mod tests {
                 transform: None,
                 mesh_renderer: Some(SceneMeshRendererV8 {
                     mesh: SceneMesh::BuiltinCube,
-                    material: SceneMaterialV8::Inline(SceneMaterialDataV8 {
-                        model: SceneMaterialModel::Pbr,
-                        alpha_mode: SceneAlphaMode::Opaque,
-                        base_color: [0.1, 0.2, 0.3, 1.0],
-                        emissive: [0.0; 3],
-                        metallic: 0.5,
-                        roughness: 0.6,
-                        transmission: 0.7,
-                        ior: 1.4,
-                        thickness: 0.2,
-                        uv_scale: [2.0, 3.0],
-                        uv_offset: [0.1, 0.2],
-                        base_color_texture: None,
-                        normal_texture: None,
-                        metallic_roughness_texture: None,
-                        occlusion_texture: None,
-                        emissive_texture: None,
-                    }),
+                    material: SceneMaterialV8::Inline(material),
                     cast_shadows: true,
                     receive_shadows: true,
                 }),
@@ -3796,9 +3858,7 @@ mod tests {
         let SceneMaterial::Inline(material) = &renderer.material else {
             panic!("inline material expected");
         };
-        assert_eq!(material.name, "");
-        assert_eq!(material.transmission, 0.7);
-        assert_eq!(material.uv_scale, [2.0, 3.0]);
+        material.clone()
     }
 
     #[test]

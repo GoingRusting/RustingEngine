@@ -428,6 +428,9 @@ pub struct RenderSettings {
     pub culling: CullingMode,
     pub antialiasing: Antialiasing,
     pub shadows: ShadowQuality,
+    /// One shadow-map tap per pixel instead of 3x3 filtering: crisp,
+    /// stair-stepped shadow edges for a low-poly look.
+    pub hard_shadows: bool,
     /// Screen-space reflections and refraction of the opaque scene. Off
     /// skips the scene copy, mip chain and depth pyramid.
     pub reflections: bool,
@@ -446,6 +449,7 @@ impl Default for RenderSettings {
             culling: CullingMode::Auto,
             antialiasing: Antialiasing::Auto,
             shadows: ShadowQuality::Auto,
+            hard_shadows: false,
             reflections: true,
         }
     }

@@ -285,6 +285,11 @@ pub struct ProjectManifest {
     /// Game code can still change it with `GameScene::set_window_size`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<[u32; 2]>,
+    /// Window title shown when the game opens from the project folder;
+    /// `None` keeps the runner's title. Game code can change it with
+    /// `GameScene::set_window_title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
     /// Screen size in pixels, `[width, height]`, the HUD is laid out for.
     /// The HUD then scales uniformly to fit any window, keeping its aspect
     /// ratio; `None` draws it at the desktop's DPI scale.
@@ -750,6 +755,7 @@ fn write_project_template(
         determinism: Default::default(),
         window: None,
         ui_base_size: None,
+        window_title: None,
     };
     std::fs::write(
         root.join("project.json"),
@@ -909,6 +915,7 @@ fn default_scene(name: &str) -> SceneDocument {
                         thickness: 0.0,
                         uv_scale: [1.0; 2],
                         uv_offset: [0.0; 2],
+                        flat_shading: false,
                         base_color_texture: None,
                         normal_texture: None,
                         metallic_roughness_texture: None,

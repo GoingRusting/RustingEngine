@@ -1511,7 +1511,7 @@ fn mcp_request(line: &str) -> Option<serde_json::Value> {
         Some("tools/list") => {
             let tools: Vec<Value> = OPERATIONS
                 .iter()
-                .filter(|op| !matches!(op.name, "serve" | "debug" | "mcp"))
+                .filter(|op| !matches!(op.name, "serve" | "debug" | "mcp" | "relay"))
                 .map(|op| {
                     json!({
                         "name": op.name.replace(' ', "_"),
@@ -1538,7 +1538,9 @@ fn mcp_request(line: &str) -> Option<serde_json::Value> {
             let Some(op) = OPERATIONS
                 .iter()
                 .find(|op| op.name.replace(' ', "_") == name)
-                .filter(|op| !matches!(op.name, "serve" | "debug" | "mcp"))
+                .filter(|op| {
+                    !matches!(op.name, "serve" | "debug" | "mcp" | "relay")
+                })
             else {
                 return fail(id, -32602, "unknown tool");
             };
@@ -1620,6 +1622,22 @@ fn main() {
     }
     if args == ["serve"] {
         serve();
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "relay")
+        && args.len() <= 2
+        && !args.iter().any(|arg| arg == "--help" || arg == "-h")
+    {
+        let address = args.get(1).map_or("0.0.0.0:7777", String::as_str);
+        let result =
+            std::net::TcpListener::bind(address).and_then(|listener| {
+                eprintln!("relay listening on {}", listener.local_addr()?);
+                rusting_engine::net::run_relay(listener)
+            });
+        if let Err(error) = result {
+            eprintln!("relay on {address}: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     if args.first().is_some_and(|arg| arg == "debug")
@@ -1746,7 +1764,7 @@ mod tests {
         assert_eq!(tool("scene_patch")["annotations"]["readOnlyHint"], false);
         assert!(tools.iter().all(|t| !matches!(
             t["name"].as_str(),
-            Some("serve" | "debug" | "mcp")
+            Some("serve" | "debug" | "mcp" | "relay")
         )));
         let call = |args: Value| {
             let line = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"schema","arguments":{"args":args}}});

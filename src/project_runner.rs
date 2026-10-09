@@ -223,6 +223,7 @@ struct GameOnceState(HashSet<String>);
 struct WindowRequest {
     fullscreen: bool,
     size: Option<[u32; 2]>,
+    title: Option<String>,
 }
 
 /// Convenient access to objects in the loaded scene.
@@ -809,6 +810,12 @@ impl GameScene<'_> {
         self.world.resource_mut::<RenderSettings>().reflections = enabled;
     }
 
+    /// Draws shadow edges with one shadow-map tap (`true`) for crisp,
+    /// low-poly shadows, or with 3x3 filtering (`false`, the default).
+    pub fn set_hard_shadows(&mut self, hard: bool) {
+        self.world.resource_mut::<RenderSettings>().hard_shadows = hard;
+    }
+
     /// Renders the 3D scene at `scale` of the window size, from 0.25 to 2.0,
     /// and stretches it over the window. Below 1 trades sharpness for frame
     /// rate; above 1 supersamples. UI stays at full resolution. Captures and
@@ -909,6 +916,13 @@ impl GameScene<'_> {
         self.world
             .get_resource_or_insert_with(WindowRequest::default)
             .size = Some(size.map(|side| side.max(1)));
+    }
+
+    /// Sets the window title after this frame. Headless runs ignore it.
+    pub fn set_window_title(&mut self, title: impl Into<String>) {
+        self.world
+            .get_resource_or_insert_with(WindowRequest::default)
+            .title = Some(title.into());
     }
 
     /// Creates one visible procedural sphere with a unique object name. Panics
@@ -4330,6 +4344,9 @@ fn request_project_window(world: &mut World, folder: &Path) {
     if let Ok(size) = serde_json::from_value(project["window"].clone()) {
         GameScene { world }.set_window_size(size);
     }
+    if let Some(title) = project["window_title"].as_str() {
+        GameScene { world }.set_window_title(title);
+    }
 }
 
 /// Styles HUD buttons and menus from `assets/ui/theme.json`, if the
@@ -4662,11 +4679,16 @@ impl WindowRunner {
             return;
         };
         let size = request.size.take();
+        let title = request.title.take();
         let fullscreen = request.fullscreen;
         let Some(renderer) = self.windows.get_primary_renderer() else {
             return;
         };
         let window = renderer.window();
+        if let Some(title) = title {
+            window.set_title(&title);
+            self.title = title;
+        }
         if self.applied_fullscreen != fullscreen {
             window.set_fullscreen(
                 fullscreen.then_some(Fullscreen::Borderless(None)),
@@ -5556,7 +5578,11 @@ fn start_stall_watchdog(
         .ok()
         .and_then(|secs| secs.parse().ok())
         .unwrap_or(crate::scenario::DEFAULT_STALL_SECS);
-    if secs == 0 {
+    // Unit tests run scenarios in one long-lived process, where the thread
+    // would outlive its run and exit the process during later slow tests.
+    // ponytail: no per-run stop signal; add one if a process ever runs
+    // several scenarios outside tests.
+    if secs == 0 || cfg!(test) {
         return;
     }
     let limit = std::time::Duration::from_secs(secs);
@@ -5801,6 +5827,17 @@ mod tests {
         world.insert_resource(crate::runtime::RuntimeUi::default());
         request_project_window(&mut world, &folder);
         assert_eq!(world.resource::<WindowRequest>().size, Some([1920, 1080]));
+        assert_eq!(world.resource::<WindowRequest>().title, None);
+        std::fs::write(
+            folder.join("project.json"),
+            r#"{"name": "n", "window_title": "Rusting Raft"}"#,
+        )
+        .unwrap();
+        request_project_window(&mut world, &folder);
+        assert_eq!(
+            world.resource::<WindowRequest>().title.as_deref(),
+            Some("Rusting Raft")
+        );
         #[cfg(feature = "ui")]
         {
             // A 1920x1080 window at 1.5x DPI shows the 960x540 HUD at 2x.

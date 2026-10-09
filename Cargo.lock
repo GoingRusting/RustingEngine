@@ -2726,7 +2726,7 @@ dependencies = [
 
 [[package]]
 name = "rusting-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bevy_ecs",
  "nalgebra",
@@ -2748,7 +2748,7 @@ dependencies = [
 
 [[package]]
 name = "rusting_engine"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "bevy_ecs",
  "bincode",

@@ -1098,6 +1098,10 @@ fn schema_catalog_examples_parse_and_help_lists_every_operation() {
         // In an empty folder, a valid example fails on the missing project
         // at worst (exit 1); only an argument error exits 2.
         let example = operation["example"].as_str().unwrap();
+        // The relay needs no project, so its example would serve forever.
+        if operation["name"] == "relay" {
+            continue;
+        }
         let folder = temporary_parent();
         let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
             .args(example.split_whitespace().skip(1))

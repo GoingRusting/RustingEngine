@@ -1,6 +1,6 @@
 //! Renderer-facing snapshot extracted from canonical gameplay ECS state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use bevy_ecs::change_detection::{DetectChanges, Tick};
@@ -119,6 +119,10 @@ pub struct RenderWorld {
     /// Changes only when the extracted object list or one of its transforms
     /// changes. The renderer uses this instead of comparing every object.
     pub renderables_revision: u64,
+    /// Changes when objects are added, removed, hidden or change mesh,
+    /// material or bounds, but not when they only move. Mesh preparation
+    /// keys on this so moving objects skip it.
+    pub renderables_layout_revision: u64,
     pub active_camera: Option<ExtractedCamera>,
     /// Active cameras with a viewport (`[x, y, width, height]` fractions
     /// of the target), lowest priority first. They draw over the active
@@ -190,13 +194,16 @@ pub struct RenderWorld {
     pub culling: super::CullingMode,
     pub antialiasing: super::Antialiasing,
     pub shadows: super::ShadowQuality,
+    /// From `RenderSettings::hard_shadows`.
+    pub hard_shadows: bool,
     /// Set from `RenderSettings::reflections` being off; the default keeps
     /// reflections on.
     pub reflections_disabled: bool,
     /// Drawn tint of each flashing renderable, sorted by entity: rgb from
     /// its own or an ancestor's [`super::Flash`], a the strength.
     pub flashes: Vec<(Entity, [f32; 4])>,
-    cached: HashMap<Entity, ExtractedRenderable>,
+    /// Index of each entity in `renderables`.
+    index: HashMap<Entity, usize>,
     renderables_signature: Option<u64>,
     /// Tick and component counts seen by the last signature hash.
     renderables_fingerprint: Option<(Tick, [usize; 6])>,
@@ -221,12 +228,24 @@ pub fn extract_render_world(world: &mut World) {
     // of ten thousand objects only to discover that nothing changed.
     let previous_renderables_signature =
         world.resource::<RenderWorld>().renderables_signature;
-    let renderables_signature = if renderables_changed(world) {
-        Some(renderables_signature(world))
-    } else {
-        previous_renderables_signature
+    let mut moved = Vec::new();
+    let renderables_signature = match renderables_changed(world) {
+        RenderablesChange::None => previous_renderables_signature,
+        RenderablesChange::Rebuild => Some(renderables_signature(world)),
+        // Objects that only moved update in place. The signature goes
+        // stale, so the next real change rebuilds.
+        RenderablesChange::Moved(entities) => {
+            moved = entities
+                .into_iter()
+                .filter_map(|entity| {
+                    Some((entity, *world.get::<GlobalTransform>(entity)?))
+                })
+                .collect();
+            None
+        }
     };
-    let renderables = (previous_renderables_signature != renderables_signature)
+    let renderables = (moved.is_empty()
+        && previous_renderables_signature != renderables_signature)
         .then(|| collect_renderables(world));
     let mut active_camera = collect_active_camera(world);
     let mut views = collect_views(world);
@@ -356,6 +375,7 @@ pub fn extract_render_world(world: &mut World) {
         culling,
         antialiasing,
         shadows,
+        hard_shadows,
         reflections,
     ) = (
         render_settings.background_color,
@@ -363,6 +383,7 @@ pub fn extract_render_world(world: &mut World) {
         render_settings.culling,
         render_settings.antialiasing,
         render_settings.shadows,
+        render_settings.hard_shadows,
         render_settings.reflections,
     );
 
@@ -371,43 +392,51 @@ pub fn extract_render_world(world: &mut World) {
     render_world.flashes = flashes;
     match renderables {
         None => {
-            // GPU-owned effects usually leave their canonical ECS transforms
-            // unchanged. Avoid rebuilding three large hash collections when the
-            // extracted render list is byte-for-byte identical to last frame.
+            // Moving objects keep their place in the sorted list, since the
+            // order does not depend on the transform. GPU-owned effects
+            // often rewrite transforms unchanged; those bump nothing.
+            let render_world = &mut *render_world;
+            let mut changed = 0;
+            for (entity, transform) in moved {
+                let Some(&at) = render_world.index.get(&entity) else {
+                    continue;
+                };
+                let renderable = &mut render_world.renderables[at];
+                if renderable.transform != transform {
+                    renderable.transform = transform;
+                    changed += 1;
+                }
+            }
             render_world.report = ExtractionReport {
+                changed,
                 total: render_world.renderables.len(),
                 ..ExtractionReport::default()
             };
+            if changed > 0 {
+                render_world.renderables_revision =
+                    render_world.renderables_revision.wrapping_add(1);
+            }
         }
         Some(renderables) => {
-            let current_entities = renderables
-                .iter()
-                .map(|renderable| renderable.entity)
-                .collect::<HashSet<_>>();
-            let removed = render_world
-                .cached
-                .keys()
-                .filter(|entity| !current_entities.contains(entity))
-                .count();
             let mut added = 0;
-            let mut dirty_entities = HashSet::new();
+            let mut changed = 0;
             for renderable in &renderables {
-                match render_world.cached.get(&renderable.entity) {
-                    None => {
-                        added += 1;
-                        dirty_entities.insert(renderable.entity);
-                    }
-                    Some(previous) if previous != renderable => {
-                        dirty_entities.insert(renderable.entity);
+                match render_world.index.get(&renderable.entity) {
+                    None => added += 1,
+                    Some(&at)
+                        if render_world.renderables[at] != *renderable =>
+                    {
+                        changed += 1;
                     }
                     Some(_) => {}
                 }
             }
-            let changed = dirty_entities.len().saturating_sub(added);
-            render_world.cached = renderables
+            let removed =
+                render_world.renderables.len() + added - renderables.len();
+            render_world.index = renderables
                 .iter()
-                .copied()
-                .map(|renderable| (renderable.entity, renderable))
+                .enumerate()
+                .map(|(at, renderable)| (renderable.entity, at))
                 .collect();
             render_world.report = ExtractionReport {
                 added,
@@ -418,6 +447,8 @@ pub fn extract_render_world(world: &mut World) {
             render_world.renderables = renderables;
             render_world.renderables_revision =
                 render_world.renderables_revision.wrapping_add(1);
+            render_world.renderables_layout_revision =
+                render_world.renderables_layout_revision.wrapping_add(1);
         }
     }
     render_world.renderables_signature = renderables_signature;
@@ -480,6 +511,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.culling = culling;
     render_world.antialiasing = antialiasing;
     render_world.shadows = shadows;
+    render_world.hard_shadows = hard_shadows;
     render_world.reflections_disabled = !reflections;
 }
 
@@ -506,11 +538,19 @@ fn collect_particles(world: &mut World) -> Vec<super::ParticleBatch> {
     batches
 }
 
-/// True unless no `GlobalTransform`, `MeshRenderer`, `Visibility`, or
+enum RenderablesChange {
+    None,
+    /// Only these entities' `GlobalTransform`s changed.
+    Moved(Vec<Entity>),
+    Rebuild,
+}
+
+/// `None` when no `GlobalTransform`, `MeshRenderer`, `Visibility`, or
 /// `Parent` changed since the last call and none was removed. Removing one
 /// lowers a count; adding one back is itself a change. A static scene then
-/// skips the per-object hash and parent-chain walks.
-fn renderables_changed(world: &mut World) -> bool {
+/// skips the per-object hash and parent-chain walks, and a scene where
+/// objects only move updates just those objects.
+fn renderables_changed(world: &mut World) -> RenderablesChange {
     let this_run = world.increment_change_tick();
     let last_run = world
         .resource::<RenderWorld>()
@@ -521,7 +561,9 @@ fn renderables_changed(world: &mut World) -> bool {
     };
     let mut counts = [0; 6];
     let mut changed = false;
+    let mut moved = Vec::new();
     let mut query = world.query_filtered::<(
+        Entity,
         Option<Ref<GlobalTransform>>,
         Option<Ref<MeshRenderer>>,
         Option<Ref<Visibility>>,
@@ -534,7 +576,7 @@ fn renderables_changed(world: &mut World) -> bool {
         With<super::Parent>,
         With<RenderBounds>,
     )>>();
-    for (transform, renderer, visibility, parent, bounds, skinned) in
+    for (entity, transform, renderer, visibility, parent, bounds, skinned) in
         query.iter(world)
     {
         let ticks = [
@@ -545,10 +587,16 @@ fn renderables_changed(world: &mut World) -> bool {
             bounds.map(|value| value.last_changed()),
             skinned.map(|value| value.last_changed()),
         ];
-        for (count, tick) in counts.iter_mut().zip(ticks) {
+        for (slot, (count, tick)) in counts.iter_mut().zip(ticks).enumerate() {
             if let Some(tick) = tick {
                 *count += 1;
-                changed |= newer(tick);
+                if newer(tick) {
+                    if slot == 0 {
+                        moved.push(entity);
+                    } else {
+                        changed = true;
+                    }
+                }
             }
         }
     }
@@ -557,7 +605,13 @@ fn renderables_changed(world: &mut World) -> bool {
         .renderables_fingerprint
         .is_none_or(|(_, previous)| previous != counts);
     render_world.renderables_fingerprint = Some((this_run, counts));
-    changed
+    if changed {
+        RenderablesChange::Rebuild
+    } else if moved.is_empty() {
+        RenderablesChange::None
+    } else {
+        RenderablesChange::Moved(moved)
+    }
 }
 
 /// Creates a small fingerprint without allocating or sorting render objects.
@@ -984,8 +1038,21 @@ mod tests {
             .get_mut::<Transform>(second)
             .unwrap()
             .position[0] = 3.0;
+        let layout = app
+            .world()
+            .resource::<RenderWorld>()
+            .renderables_layout_revision;
         app.update(Duration::ZERO).unwrap();
-        assert_eq!(app.world().resource::<RenderWorld>().report.changed, 1);
+        let render_world = app.world().resource::<RenderWorld>();
+        assert_eq!(render_world.report.changed, 1);
+        // Moving updates the object in place without a new layout.
+        assert_eq!(render_world.renderables_layout_revision, layout);
+        let moved = render_world
+            .renderables
+            .iter()
+            .find(|renderable| renderable.entity == second)
+            .unwrap();
+        assert_eq!(moved.transform.matrix[3][0], 3.0);
 
         app.despawn(first).unwrap();
         app.update(Duration::ZERO).unwrap();

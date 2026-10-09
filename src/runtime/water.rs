@@ -50,6 +50,9 @@ pub struct WaterBody {
     pub flow_speed: f32,
     /// Linear RGBA of the surface.
     pub color: [f32; 4],
+    /// Lights each wave triangle with its own face normal, for a faceted
+    /// low-poly sea.
+    pub flat_shading: bool,
 }
 
 impl Default for WaterBody {
@@ -63,6 +66,7 @@ impl Default for WaterBody {
             flow_direction: 0.0,
             flow_speed: 0.0,
             color: [0.1, 0.4, 0.7, 0.7],
+            flat_shading: false,
         }
     }
 }
@@ -96,7 +100,17 @@ impl WaterBody {
         (height, slope)
     }
 
-    fn contains(&self, center: [f32; 3], x: f32, z: f32) -> bool {
+    /// Velocity of the current in metres per second.
+    pub fn current(&self) -> [f32; 3] {
+        let angle = self.flow_direction.to_radians();
+        [
+            angle.cos() * self.flow_speed,
+            0.0,
+            angle.sin() * self.flow_speed,
+        ]
+    }
+
+    pub(super) fn contains(&self, center: [f32; 3], x: f32, z: f32) -> bool {
         (x - center[0]).abs() <= self.size[0] / 2.0
             && (z - center[2]).abs() <= self.size[1] / 2.0
     }
@@ -116,17 +130,15 @@ impl WaterMesh {
     }
 }
 
-fn water_material(
-    assets: &mut AssetServer,
-    color: [f32; 4],
-) -> Handle<MaterialAsset> {
-    assets.materials.insert(MaterialAsset {
+fn water_material(water: &WaterBody) -> MaterialAsset {
+    MaterialAsset {
         name: "River Water".into(),
         alpha_mode: AlphaMode::Blend,
-        base_color: color,
+        base_color: water.color,
         roughness: 0.05,
+        flat_shading: water.flat_shading,
         ..MaterialAsset::default()
-    })
+    }
 }
 
 fn build_mesh(water: &WaterBody, center: [f32; 3], time: f32) -> MeshAsset {
@@ -202,21 +214,22 @@ pub(super) fn sync_water(
                 if let Some(slot) = assets.meshes.get_mut(mesh.mesh) {
                     *slot = built;
                 }
+                let wanted = water_material(water);
                 if assets
                     .materials
                     .get(mesh.material)
-                    .is_some_and(|material| material.base_color != water.color)
+                    .is_some_and(|material| *material != wanted)
                 {
                     if let Some(material) =
                         assets.materials.get_mut(mesh.material)
                     {
-                        material.base_color = water.color;
+                        *material = wanted;
                     }
                 }
             }
             None => {
                 let handle = assets.meshes.insert(built);
-                let material = water_material(&mut assets, water.color);
+                let material = assets.materials.insert(water_material(water));
                 let entity = commands
                     .spawn((
                         crate::Transform::default(),
@@ -359,12 +372,7 @@ pub(super) fn float_in_water(
                         gravity[axis] / gravity_size * lift * dt;
                 }
             }
-            let angle = water.flow_direction.to_radians();
-            let current = [
-                angle.cos() * water.flow_speed,
-                0.0,
-                angle.sin() * water.flow_speed,
-            ];
+            let current = water.current();
             for axis in 0..3 {
                 // Drag pulls the body toward the current, which is still
                 // water (zero) for a lake.

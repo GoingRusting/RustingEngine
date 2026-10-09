@@ -1001,6 +1001,7 @@ fn draw_material(
             .speed(0.01),
     );
     widgets::color(ui, "Emissive", &mut material.emissive);
+    widgets::checkbox(ui, "Flat Shading", &mut material.flat_shading);
     widgets::drag(
         ui,
         "Transmission",

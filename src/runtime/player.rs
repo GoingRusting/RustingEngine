@@ -21,6 +21,15 @@
 //! them. Surfaces steeper than `max_slope` are walls, and ledges up to
 //! `max_step_height` are stepped onto.
 //!
+//! The body rides moving and turning floors: a platform that turns carries
+//! the body around with it and turns its heading by the same yaw.
+//!
+//! With `swim_speed` above zero the body swims in a [`WaterBody`] whose
+//! surface is above the body center: it moves at `swim_speed`, floats with
+//! its center `float_depth` below the waves, rises while `player.jump` is
+//! held, dives while `player.crouch` is held, and jumps out from the
+//! surface. The water's current carries it.
+//!
 //! Movement reads the named actions in [`PLAYER_ACTIONS`] from the
 //! [`ActionMap`]. `App::new` binds them to WASD/arrow keys, Space, and Shift;
 //! a game can add more bindings to the same names.
@@ -29,12 +38,13 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut, With, Without};
 use serde::{Deserialize, Serialize};
 
-use super::cpu_physics::world_position;
+use super::cpu_physics::{world_position, world_rotation, NO_ROTATION};
 use super::sim_math;
 use super::{
     ActionMap, Camera, CharacterMove, Children, Collider, ColliderShape,
     FrameTime, GlobalTransform, InputBinding, KeyCode, MouseButton, PadButton,
     Parent, PhysicsWorld, RigidBody, RigidBodyKind, RuntimeInput, Stick,
+    WaterBody,
 };
 use crate::Transform;
 
@@ -132,6 +142,15 @@ pub struct PlayerController {
     pub crouch_height: f32,
     /// Speed factor while crouched, instead of sprinting.
     pub crouch_multiplier: f32,
+    /// Swimming speed in metres per second in a [`WaterBody`]; sprint
+    /// multiplies it. 0 turns swimming off: the body walks on the bottom.
+    pub swim_speed: f32,
+    /// How far below the water surface the body center floats, in metres.
+    /// 0.5 keeps the head of a 1.8 m body above the waves.
+    pub float_depth: f32,
+    /// Whether the body is swimming now.
+    #[serde(skip)]
+    pub swimming: bool,
     /// Whether the body is crouched now.
     #[serde(skip)]
     pub crouched: bool,
@@ -158,6 +177,10 @@ pub struct PlayerController {
     /// it was, so a moving platform carries the controller.
     #[serde(skip)]
     pub floor: Option<(Entity, [f32; 3])>,
+    /// How `floor` was turned after the last step, as quaternion
+    /// `[x, y, z, w]`, so a turning platform turns the controller.
+    #[serde(skip)]
+    pub floor_rotation: [f32; 4],
     /// The body the last step walked into, if any (not the floor). A
     /// pushed crate shows here too.
     #[serde(skip)]
@@ -199,6 +222,9 @@ impl Default for PlayerController {
             turn_speed: 0.0,
             crouch_height: 0.0,
             crouch_multiplier: 0.5,
+            swim_speed: 0.0,
+            float_depth: 0.5,
+            swimming: false,
             crouched: false,
             crouch_drop: 0.0,
             camera_drop: 0.0,
@@ -207,6 +233,7 @@ impl Default for PlayerController {
             jump_requested: false,
             air_jumps_used: 0,
             floor: None,
+            floor_rotation: NO_ROTATION,
             wall: None,
             velocity: [0.0; 3],
             dash_velocity: [0.0; 3],
@@ -436,7 +463,7 @@ fn push(
 }
 
 /// Per fixed step: walking, gravity, jumping, and collision sliding.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(super) fn player_move(
     time: Res<FrameTime>,
     input: Res<RuntimeInput>,
@@ -452,9 +479,27 @@ pub(super) fn player_move(
         (&Transform, Option<&Parent>, Option<&GlobalTransform>),
         Without<PlayerController>,
     >,
+    waters: Query<
+        (
+            &WaterBody,
+            &Transform,
+            Option<&Parent>,
+            Option<&GlobalTransform>,
+        ),
+        Without<PlayerController>,
+    >,
     mut pushed: Query<&mut RigidBody, Without<PlayerController>>,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
+    let seconds =
+        (time.fixed_tick as f64 * time.fixed_delta.as_secs_f64()) as f32;
+    let pose_of = |floor: Entity| {
+        let (t, parent, global) = floors.get(floor).ok()?;
+        Some((
+            world_position(t, parent, global),
+            world_rotation(t, parent, global),
+        ))
+    };
     let axis = |positive, negative| {
         f32::from(u8::from(actions.held(&input, positive)))
             - f32::from(u8::from(actions.held(&input, negative)))
@@ -465,10 +510,16 @@ pub(super) fn player_move(
     );
     let sprint = actions.held(&input, PLAYER_SPRINT);
     let crouch = actions.held(&input, PLAYER_CROUCH);
+    let rise = actions.held(&input, PLAYER_JUMP);
     for (entity, mut player, mut transform, collider) in &mut players {
         let mut shape =
             collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
-        match (player.crouch_height > 0.0)
+        let water = (player.swim_speed > 0.0)
+            .then(|| water_at(&waters, transform.position, seconds))
+            .flatten()
+            .filter(|(surface, _)| transform.position[1] < *surface);
+        player.swimming = water.is_some();
+        match (player.crouch_height > 0.0 && !player.swimming)
             .then(|| crouch_shape(shape, player.crouch_height))
             .flatten()
         {
@@ -511,7 +562,12 @@ pub(super) fn player_move(
             -cos * forward - sin * right,
         ];
         let length = motion[0].hypot(motion[2]);
-        let speed = player.walk_speed
+        let base = if player.swimming {
+            player.swim_speed
+        } else {
+            player.walk_speed
+        };
+        let speed = base
             * if player.crouched {
                 player.crouch_multiplier
             } else if sprint {
@@ -522,35 +578,57 @@ pub(super) fn player_move(
         if length > 0.0 {
             motion = motion.map(|value| value / length * speed * dt);
         }
-        if player.jump_requested && !player.crouched {
-            if player.grounded {
-                player.vertical_speed = player.jump_speed;
-            } else if player.air_jumps_used < player.air_jumps {
-                player.air_jumps_used += 1;
-                player.vertical_speed = player.jump_speed;
+        if let Some((surface, current)) = water {
+            // Float toward the rest depth unless rising or diving; a jump
+            // only leaves the water from the surface.
+            let rest = surface - player.float_depth;
+            let y = transform.position[1];
+            player.vertical_speed = if player.jump_requested && y >= rest - 0.1
+            {
+                player.jump_speed
+            } else if crouch {
+                -speed
+            } else if rise && y < rest {
+                speed
+            } else {
+                (2.0 * (rest - y)).clamp(-speed, speed)
+            };
+            for axis in [0, 2] {
+                motion[axis] += current[axis] * dt;
             }
+        } else {
+            if player.jump_requested && !player.crouched {
+                if player.grounded {
+                    player.vertical_speed = player.jump_speed;
+                } else if player.air_jumps_used < player.air_jumps {
+                    player.air_jumps_used += 1;
+                    player.vertical_speed = player.jump_speed;
+                }
+            }
+            player.vertical_speed -= player.gravity * dt;
         }
         player.jump_requested = false;
-        player.vertical_speed -= player.gravity * dt;
         motion[1] = player.vertical_speed * dt;
         if player.dash_left > 0.0 {
             motion = player.dash_velocity.map(|value| value * dt);
             player.vertical_speed = 0.0;
             player.dash_left = (player.dash_left - dt).max(0.0);
         }
-        let start = CharacterMove::ride(
+        let (start, turn) = CharacterMove::ride(
             &physics,
             shape,
             transform.position,
-            player.floor,
+            player
+                .floor
+                .map(|(floor, at)| (floor, at, player.floor_rotation)),
             player.collision_mask,
             entity,
-            |floor| {
-                floors.get(floor).ok().map(|(t, parent, global)| {
-                    world_position(t, parent, global)
-                })
-            },
+            pose_of,
         );
+        if turn != 0.0 {
+            player.yaw += turn;
+            transform.rotation = [0.0, player.yaw, 0.0];
+        }
 
         let moved = physics.move_character_on_foot(
             shape,
@@ -574,10 +652,11 @@ pub(super) fn player_move(
         {
             player.vertical_speed = 0.0;
         }
-        player.floor = moved.floor.and_then(|floor| {
-            let (t, parent, global) = floors.get(floor).ok()?;
-            Some((floor, world_position(t, parent, global)))
-        });
+        let floor =
+            moved.floor.and_then(|floor| Some((floor, pose_of(floor)?)));
+        player.floor = floor.map(|(floor, (at, _))| (floor, at));
+        player.floor_rotation =
+            floor.map_or(NO_ROTATION, |(_, (_, turn))| turn);
         player.wall = moved.wall.map(|(wall, _)| wall);
         if dt > 0.0 {
             player.velocity = std::array::from_fn(|axis| {
@@ -586,6 +665,40 @@ pub(super) fn player_move(
         }
         transform.position = moved.position;
     }
+}
+
+/// The highest water surface over `position` at `seconds` and that water's
+/// current in metres per second, or `None` outside every [`WaterBody`].
+#[allow(clippy::type_complexity)]
+fn water_at(
+    waters: &Query<
+        (
+            &WaterBody,
+            &Transform,
+            Option<&Parent>,
+            Option<&GlobalTransform>,
+        ),
+        Without<PlayerController>,
+    >,
+    position: [f32; 3],
+    seconds: f32,
+) -> Option<(f32, [f32; 3])> {
+    let [x, _, z] = position;
+    waters
+        .iter()
+        .filter_map(|(water, transform, parent, global)| {
+            let origin = world_position(transform, parent, global);
+            water.contains(origin, x, z).then(|| {
+                (origin[1] + water.wave(x, z, seconds).0, water.current())
+            })
+        })
+        // Highest wins, then the stronger current, so query order never
+        // matters.
+        .max_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then(a.1[0].total_cmp(&b.1[0]))
+                .then(a.1[2].total_cmp(&b.1[2]))
+        })
 }
 
 /// Per fixed step: turns the non-camera children of a walking player toward

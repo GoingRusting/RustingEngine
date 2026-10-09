@@ -42,6 +42,11 @@ Do this after the game works and before calling it done.
 - **Materials.** Not everything has roughness 0.5. Metal is metallic and
   smoother; cloth, wood and stone are rough. Emissive is for lights,
   screens and pickups only.
+- **Low-poly look.** Set `flat_shading: true` on a material for faceted
+  normals from screen-space derivatives; it works on generated meshes
+  such as water. Pair it with `scene.set_hard_shadows(true)` (or Hard
+  shadows in the editor's project settings) for crisp one-tap shadow
+  edges.
 - **Shapes.** Use the rounded primitives (below) or real models for
   anything the player looks at closely. Plain cubes are for floors and
   walls.
@@ -296,6 +301,8 @@ read every frame back, so their frame times run higher than the window's;
 use them as a regression guard, not as the frame budget.
 To measure at a set size, put `"window": [1920, 1080]` in `project.json`:
 the game asks for that window size when it runs from the project folder.
+`"window_title": "My Game"` sets the window title the same way; game code
+can change it later with `GameScene::set_window_title`.
 
 For one number to compare runs, use `rusting run --release --bench 1000
 --json`. The game opens its window, skips 60 warm-up frames (pipeline

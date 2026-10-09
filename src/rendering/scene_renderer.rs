@@ -445,7 +445,8 @@ struct RenderInstanceUpload {
     color: [f32; 4],
     /// rgb: emissive factor; w: 1 for `MaterialModel::Unlit`, else 0.
     emissive: [f32; 4],
-    /// x: metallic; y: roughness; z: 1 when a normal map is bound.
+    /// x: metallic; y: roughness; z: 1 when a normal map is bound; w: 1
+    /// for flat shading.
     surface: [f32; 4],
     /// x: GPU physics index or `u32::MAX`; y: alpha mode (0 opaque, 1 mask,
     /// 2 blend); z: mask cutoff as `f32` bits; w: bit 0 casts shadows, bit 1
@@ -499,7 +500,8 @@ struct ShadowUpload {
     fog: [f32; 4],
     /// Fog height, height falloff, sun scatter and sky affect.
     fog_shape: [f32; 4],
-    /// x is 1 when binding 6 holds this frame's ambient occlusion.
+    /// x is 1 when binding 6 holds this frame's ambient occlusion; y is 1
+    /// for single-tap hard shadows.
     ambient_occlusion: [f32; 4],
 }
 
@@ -1399,7 +1401,7 @@ pub struct SceneRenderer {
     /// [`transient_upload_budget`].
     instance_budget: DeviceSize,
     prepared_meshes: HashMap<u64, PreparedMesh>,
-    prepared_meshes_revision: u64,
+    prepared_meshes_revision: (u64, u64),
     /// `lod_signature` `visible_meshes` was collected with.
     prepared_meshes_lods: Vec<(u64, u64)>,
     prepared_textures: HashMap<u64, PreparedTexture>,
@@ -1771,7 +1773,7 @@ impl SceneRenderer {
             depth_prepass_framebuffer,
             depth_extent: initial_extent,
             prepared_meshes: HashMap::new(),
-            prepared_meshes_revision: 0,
+            prepared_meshes_revision: (0, 0),
             prepared_meshes_lods: Vec::new(),
             visible_meshes: Vec::new(),
             prepared_instances: None,
@@ -2681,7 +2683,7 @@ impl SceneRenderer {
                 }),
                 ambient_occlusion: [
                     f32::from(u8::from(ambient_occlusion.is_some())),
-                    0.0,
+                    f32::from(u8::from(render_world.hard_shadows)),
                     0.0,
                     0.0,
                 ],
@@ -4415,7 +4417,13 @@ impl SceneRenderer {
         assets: &AssetServer,
     ) -> Result<(), SceneRenderError> {
         let lods = lod_signature(assets);
-        if self.prepared_meshes_revision != render_world.renderables_revision
+        // A world filled by hand (tests, tools) never bumps the layout
+        // revision; follow every list change for it instead.
+        let revision = match render_world.renderables_layout_revision {
+            0 => (0, render_world.renderables_revision),
+            layout => (layout, 0),
+        };
+        if self.prepared_meshes_revision != revision
             || self.prepared_meshes_lods != lods
         {
             let groups = lod_groups(assets);
@@ -4437,7 +4445,7 @@ impl SceneRenderer {
                 .collect();
             self.visible_meshes.sort_unstable_by_key(|mesh| mesh.key());
             self.visible_meshes.dedup_by_key(|mesh| mesh.key());
-            self.prepared_meshes_revision = render_world.renderables_revision;
+            self.prepared_meshes_revision = revision;
             self.prepared_meshes_lods = lods;
         }
         for mesh_handle in self.visible_meshes.iter().copied() {
@@ -4808,6 +4816,9 @@ impl SceneRenderer {
     /// Ten thousand cubes with the same mesh and material become one Vulkan
     /// draw call. GPU-owned objects store only their physics-buffer index here,
     /// so their changing transforms never need a CPU instance upload.
+    // ponytail: any CPU move re-sorts and repacks every instance. Patch
+    // only the moved slots if scenes with tens of thousands of CPU-moved
+    // objects show this in profiles.
     fn prepare_render_instances(
         &mut self,
         render_world: &RenderWorld,
@@ -4933,7 +4944,7 @@ impl SceneRenderer {
                             f32::from(u8::from(
                                 material.normal_texture.is_some(),
                             )),
-                            0.0,
+                            f32::from(u8::from(material.flat_shading)),
                         ],
                     )
                 });
@@ -8630,6 +8641,9 @@ float shadow_factor(vec3 surface_normal) {
         return 1.0;
     }
     vec2 uv = coords.xy * 0.5 + 0.5;
+    if (shadow.ambient_occlusion.y > 0.5) {
+        return texture(shadow_map, vec3(uv, coords.z));
+    }
     float lit = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
@@ -8666,6 +8680,13 @@ void main() {
         return;
     }
     vec3 normal = normalize(v_normal);
+    if (v_surface.w > 0.5) {
+        // Flat shading: the triangle's face normal from screen-space
+        // derivatives, turned to the side the vertex normal points to.
+        vec3 face = normalize(cross(dFdx(v_world_position),
+            dFdy(v_world_position)));
+        normal = dot(face, normal) < 0.0 ? -face : face;
+    }
     if (v_surface.z > 0.5) {
         vec3 tangent = normalize(
             v_tangent.xyz - normal * dot(normal, v_tangent.xyz)
@@ -10870,6 +10891,97 @@ mod tests {
             assert_eq!(red < 30, shadowed, "{quality:?}, got r={red}");
             assert_eq!(scene.renderer.shadow_framebuffer.extent(), [size; 2]);
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn hard_shadows_leave_no_soft_edge() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The occluder at x 5..9, z 1 throws its shadow edge near x = 0 on
+        // the floor; a 2-unit-wide view across that edge spans several
+        // shadow texels, so 3x3 filtering shows a ramp there.
+        let mut scene = SlabScene::with_extent(
+            &[
+                (0.0, MaterialAsset::default()),
+                (1.0, MaterialAsset::default()),
+            ],
+            [64, 4],
+        );
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(7.0, 0.0, 1.0))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    4.0, 4.0, 0.1,
+                )))
+            .into();
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        camera.transform.matrix =
+            Matrix4::new_translation(&Vector3::new(0.0, 0.0, 5.0)).into();
+        camera.projection = Projection::Orthographic {
+            vertical_size: 0.125,
+            near: 0.1,
+            far: 100.0,
+        };
+        let direction = Vector3::new(-5.0, 0.0, -1.0).normalize();
+        scene.render_world.directional_lights.push(
+            crate::runtime::ExtractedDirectionalLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2000).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: nalgebra::Rotation3::rotation_between(
+                        &-Vector3::z(),
+                        &direction,
+                    )
+                    .unwrap()
+                    .to_homogeneous()
+                    .into(),
+                },
+                light: crate::runtime::DirectionalLight {
+                    color: [1.0; 3],
+                    illuminance: 500_000.0,
+                    shadows: true,
+                },
+            },
+        );
+        // Red of each pixel along the middle row.
+        let row = |scene: &mut SlabScene| {
+            scene.render_world.renderables_revision += 1;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            (0..64)
+                .map(|x| pixels[(2 * 64 + x) * 4 + 2])
+                .collect::<Vec<_>>()
+        };
+        let between =
+            |row: &[u8]| row.iter().filter(|r| (20..=230).contains(*r)).count();
+        let soft = row(&mut scene);
+        scene.render_world.hard_shadows = true;
+        let hard = row(&mut scene);
+        for row in [&soft, &hard] {
+            assert!(
+                row.iter().any(|r| *r < 20) && row.iter().any(|r| *r > 230),
+                "the view crosses the shadow edge: {row:?}"
+            );
+        }
+        assert!(between(&hard) <= 1, "hard edge: {hard:?}");
+        assert!(between(&soft) > between(&hard), "soft edge: {soft:?}");
     }
 
     #[test]
