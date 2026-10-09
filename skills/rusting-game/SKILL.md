@@ -109,8 +109,6 @@ Prefer these components over game code when they fit:
 - `rusting.input_action` `{"action", "inputs"}`: named actions such as
   `{"action": "restart", "inputs": ["KeyR"]}`. Key names are winit
   `KeyCode` names; mouse is `MouseLeft`.
-- `rusting.tween`, `rusting.sound_cue`, `rusting.burst_emitter`,
-  `rusting.player_controller`, `rusting.joint`, `rusting.tile_map`.
 - `rusting.fluid_block` makes a particle fluid: `count_x/y/z` particles of
   `spacing` meters resting in a box of `container_half_extents` centered on
   the entity. Dynamic bodies with sphere colliders float and sink in it.
@@ -213,6 +211,53 @@ Prefer these components over game code when they fit:
   --license CC0-1.0 --author NAME`, then `rusting scene add-model
   scenes/main.rscene assets/models/model.glb --name "Tree 1"` places it as
   one object with its materials. See `guide/look-and-feel`.
+
+Every component, generated from the schema; `rusting schema --json` gives
+each one's fields, defaults and an example:
+
+<!-- components:start -->
+- `rusting.ambient_light`: Flat light added everywhere.
+- `rusting.sky_light`: Hemisphere light: up-facing surfaces see sky_color, down-facing ones ground_color.
+- `rusting.tone_mapping`: Exposure and the curve that maps HDR color to the display.
+- `rusting.color_grading`: Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, vignette (0..1) darkening the corners, and film/CRT effects (0..1, off at 0): grain, chromatic_aberration, scanlines, color_bleed, noise_band, distortion.
+- `rusting.camera_screen`: On an object with a mesh: shows what the camera entity named camera sees, at size [w, h] pixels, in place of the material's base color and emissive maps.
+- `rusting.environment_map`: Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere.
+- `rusting.reflection_probe`: Box of half size extents around the object's position.
+- `rusting.fog`: Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre.
+- `rusting.post_volume`: Makes the rusting.fog and rusting.color_grading on the same object apply only near it: fully while the active camera is inside the box of half size extents (world axes, metres), fading out over blend metres outside.
+- `rusting.bloom`: Glow around pixels brighter than threshold (linear, before exposure), spread over the screen before tone mapping.
+- `rusting.ambient_occlusion`: Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres.
+- `rusting.background`: Clear color behind the scene.
+- `rusting.render_bounds`: Render-only visibility bounds in local space, separate from the collider.
+- `rusting.physics_sync`: What a GPU body sends back to the CPU.
+- `rusting.auto_simulation`: Lets the engine choose CPU or GPU simulation for the body.
+- `rusting.player_controller`: First- or third-person walking body.
+- `rusting.tween`: Animates one Transform property from `from` to `to` on the fixed step.
+- `rusting.camera_shake`: Trauma shake on a camera.
+- `rusting.spawn_grid`: Bulk spawn.
+- `rusting.squash`: Squash and stretch spring.
+- `rusting.flash`: Hit flash.
+- `rusting.sound_cue`: Sends a SoundEvent when the body starts touching something or game code calls trigger().
+- `rusting.burst_emitter`: Spawns particles that fly out, fall, and shrink, when the body starts touching something or game code calls trigger().
+- `rusting.particle_emitter`: Particle effects: rate and bursts per cycle, an emission shape (Point, Box, Sphere, Cone, Circle), random [min, max] ranges for lifetime, speed, size, rotation and spin, gravity, drag, wind and turbulence, size and color keys over life, fades, World or Local space, Billboard or Velocity facing, Alpha or Additive blend.
+- `rusting.animation`: Keyframe animation: named clips of tracks keyed over time.
+- `rusting.skin`: Skinned mesh: joint paths from this object (child names joined by /, .. for the parent) and one column-major inverse bind matrix per joint.
+- `rusting.ik`: Inverse kinematics on the end of a joint chain, solved each fixed step after the animation pose.
+- `rusting.ragdoll`: Hands a character's bones from animation to CPU physics and back.
+- `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
+- `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.
+- `rusting.water`: Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored).
+- `rusting.hud`: Text label or button drawn over the game view.
+- `rusting.input_action`: Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps.
+- `rusting.counter`: Named integer.
+- `rusting.pickup`: Collected once when a platformer or player body touches its collider (make it a sensor): adds value to the counter, hides the entity, and triggers its sound cue and burst emitter.
+- `rusting.tile_map`: Grid of square tiles written as text rows, top row first; the Transform position is the top-left corner.
+- `rusting.platformer_controller`: Side-view run and jump in the XY plane.
+- `rusting.scene_instance`: Places another scene under this entity when the scene loads, as a prefab.
+- `rusting.connections`: Signal connections of the object that emits them: each runs a Rust handler the game registered with App::add_signal_handler, with target as the receiver, when this object sends the handler's event or gains or loses its component.
+- `rusting.joint`: Joins this CPU body to target's (null: the world) at anchor and target_anchor.
+- `rusting.articulation`: Makes this body the root of a reduced-coordinate joint tree.
+<!-- components:end -->
 
 Player actions are `player.forward`, `player.back`, `player.left`,
 `player.right`, `player.jump`, `player.sprint`, `player.crouch` (set

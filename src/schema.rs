@@ -549,6 +549,14 @@ struct Section {
     fields: &'static [Field],
 }
 
+/// Each registered component's key and summary, in catalog order.
+pub(crate) fn component_summaries(
+) -> impl Iterator<Item = (&'static str, &'static str)> {
+    COMPONENT_SECTIONS
+        .iter()
+        .map(|section| (section.key, section.summary))
+}
+
 /// A registered component. Its fields come from its reflected type.
 struct ComponentSection {
     key: &'static str,

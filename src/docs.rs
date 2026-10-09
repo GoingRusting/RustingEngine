@@ -150,10 +150,14 @@ pub fn tokens(text: &str) -> usize {
 }
 
 fn first_sentence(text: &str) -> String {
-    let end = [". ", ".\n"]
-        .iter()
-        .filter_map(|stop| text.find(stop))
-        .min()
+    // A stop ends the sentence unless it is part of `..`.
+    let end = text
+        .match_indices(['.'])
+        .map(|(index, _)| index)
+        .find(|&index| {
+            text[index + 1..].starts_with([' ', '\n'])
+                && !text[..index].ends_with('.')
+        })
         .map_or(text.len(), |index| index + 1);
     text[..end].trim().replace('\n', " ")
 }
@@ -648,6 +652,17 @@ pub fn brief(budget: usize) -> (String, usize, usize) {
 }
 
 const FOOTER_TOKENS: usize = 20;
+
+/// The agent skill's component list: each registered component with the
+/// first sentence of its schema summary.
+#[must_use]
+pub fn component_list() -> String {
+    crate::schema::component_summaries()
+        .map(|(key, summary)| {
+            format!("- `{key}`: {}\n", first_sentence(summary))
+        })
+        .collect()
+}
 
 /// The `GameScene` methods in each row of the agent guides' API table, by
 /// need. A method in no row lands in the last row, so a new method still
@@ -1495,28 +1510,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_guides_hold_the_generated_api_table() {
-        let table = super::api_table();
+    fn agent_guides_hold_their_generated_parts() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (start, end) =
-            ("<!-- api-table:start -->\n", "<!-- api-table:end -->");
-        for file in ["skills/rusting-game/SKILL.md", "src/project_agents.md"] {
+        let (skill, agents) =
+            ("skills/rusting-game/SKILL.md", "src/project_agents.md");
+        for (marker, generated, file) in [
+            ("api-table", super::api_table(), skill),
+            ("api-table", super::api_table(), agents),
+            ("components", super::component_list(), skill),
+        ] {
+            let start = format!("<!-- {marker}:start -->\n");
+            let end = format!("<!-- {marker}:end -->");
             let text = std::fs::read_to_string(root.join(file)).unwrap();
-            let (head, rest) = text.split_once(start).expect(start);
-            let (old, tail) = rest.split_once(end).expect(end);
-            if old == table {
+            let (head, rest) = text.split_once(&start).expect(&start);
+            let (old, tail) = rest.split_once(&end).expect(&end);
+            if old == generated {
                 continue;
             }
             if std::env::var_os(crate::scenario::UPDATE_GOLDEN_ENV).is_some() {
-                std::fs::write(
-                    root.join(file),
-                    format!("{head}{start}{table}{end}{tail}"),
-                )
-                .unwrap();
+                let text = format!("{head}{start}{generated}{end}{tail}");
+                std::fs::write(root.join(file), text).unwrap();
                 continue;
             }
             panic!(
-                "{file}: the API table is stale; run with {}=1 to rewrite it",
+                "{file}: the generated {marker} is stale; run with {}=1 to rewrite it",
                 crate::scenario::UPDATE_GOLDEN_ENV
             );
         }
