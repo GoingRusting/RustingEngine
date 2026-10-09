@@ -76,6 +76,8 @@ pub struct BusReport {
     pub stolen: u64,
     /// Effects that change the sound, in processing order.
     pub effects: Vec<BusEffect>,
+    pub muted: bool,
+    pub solo: bool,
     /// `[left, right]` RMS of the bus's output since the last report,
     /// after its effects and volume. On `""` it is the whole mix before
     /// the master volume.
@@ -189,6 +191,12 @@ struct Bus {
     meter: std::sync::Arc<std::sync::Mutex<MeterTotals>>,
     /// Active effects by kind: distortion, reverb, low-pass.
     effects: [Option<BusEffect>; 3],
+    /// Linear volume asked for; `volume` holds 0 instead while silenced.
+    gain: f32,
+    muted: bool,
+    solo: bool,
+    /// Muted, or another bus is soloed.
+    silent: bool,
     limit: usize,
     dropped: u64,
     stolen: u64,
@@ -328,6 +336,10 @@ where
             volume,
             meter,
             effects: [None; 3],
+            gain: 1.0,
+            muted: false,
+            solo: false,
+            silent: false,
             limit: crate::runtime::DEFAULT_VOICE_LIMIT,
             dropped: 0,
             stolen: 0,
@@ -433,8 +445,23 @@ where
                         .main_track()
                         .set_volume(decibels(volume), tween(fade));
                 } else if let Some(bus) = self.bus(&bus) {
-                    bus.volume.set_volume(decibels(volume), tween(fade));
+                    bus.gain = volume;
+                    if !bus.silent {
+                        bus.volume.set_volume(decibels(volume), tween(fade));
+                    }
                 }
+            }
+            AudioCommand::SetBusMute { bus, muted } => {
+                if let Some(bus) = self.bus(&bus) {
+                    bus.muted = muted;
+                }
+                self.silence_buses();
+            }
+            AudioCommand::SetBusSolo { bus, solo } => {
+                if let Some(bus) = self.bus(&bus) {
+                    bus.solo = solo;
+                }
+                self.silence_buses();
             }
             AudioCommand::SetBusEffect { bus, effect, fade } => {
                 if let Some(bus) = self.bus(&bus) {
@@ -726,12 +753,31 @@ where
                     dropped: bus.dropped,
                     stolen: bus.stolen,
                     effects: bus.effects.iter().flatten().copied().collect(),
+                    muted: bus.muted,
+                    solo: bus.solo,
                     level,
                     peak,
                 };
                 (name.clone(), report)
             })
             .collect()
+    }
+
+    /// Applies mute and solo to every bus whose silence changed.
+    fn silence_buses(&mut self) {
+        let soloing = self
+            .buses
+            .iter()
+            .any(|(name, bus)| !name.is_empty() && bus.solo);
+        for (name, bus) in &mut self.buses {
+            let silent =
+                bus.muted || (soloing && !bus.solo && !name.is_empty());
+            if silent != bus.silent {
+                bus.silent = silent;
+                let gain = if silent { 0.0 } else { bus.gain };
+                bus.volume.set_volume(decibels(gain), tween(0.0));
+            }
+        }
     }
 
     fn bus(&mut self, name: &str) -> Option<&mut Bus> {
@@ -752,6 +798,10 @@ where
                             volume,
                             meter,
                             effects: [None; 3],
+                            gain: 1.0,
+                            muted: false,
+                            solo: false,
+                            silent: false,
                             limit: crate::runtime::DEFAULT_VOICE_LIMIT,
                             dropped: 0,
                             stolen: 0,
@@ -763,6 +813,7 @@ where
                     return None;
                 }
             }
+            self.silence_buses();
         }
         self.buses.get_mut(name)
     }

@@ -548,6 +548,18 @@ impl GameScene<'_> {
         self.audio().set_bus_volume(bus, volume, fade);
     }
 
+    /// Silences `bus` without forgetting its volume; `false` brings it
+    /// back. `""` mutes everything.
+    pub fn mute_bus(&mut self, bus: &str, muted: bool) {
+        self.audio().mute_bus(bus, muted);
+    }
+
+    /// While any bus is soloed, only soloed buses play: `solo_bus("voice",
+    /// true)` to hear only dialogue while tuning it.
+    pub fn solo_bus(&mut self, bus: &str, solo: bool) {
+        self.audio().solo_bus(bus, solo);
+    }
+
     /// Stops one sound. An ID that already ended is ignored.
     pub fn stop_sound(&mut self, id: crate::runtime::SoundId) {
         self.audio().stop(id);

@@ -27,6 +27,10 @@ scene.stop_sound(hit);
 - `set_bus_volume(bus, volume, fade)` does the same for a whole bus. To
   duck the music under an alarm: `set_bus_volume("music", 0.3, 0.2)`, then
   back to 1 when the alarm ends.
+- `mute_bus(bus, true)` silences a bus and `false` brings it back at the
+  volume it had. `solo_bus(bus, true)` plays only soloed buses while any
+  is soloed; the main bus `""` is never silenced by solo. Scenarios read
+  both under `audio:/buses/<name>/muted` and `/solo`.
 - `set_master_volume(volume)` sets the main track.
 - `restart()` and `load_scene(...)` stop no sound. A loop started in a
   `once` block would play twice after a restart, so call

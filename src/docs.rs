@@ -811,6 +811,8 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "sounds_requested",
             "set_master_volume",
             "set_bus_volume",
+            "mute_bus",
+            "solo_bus",
             "set_bus_effect",
             "set_bus_voice_limit",
             "set_listener",

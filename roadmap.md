@@ -2556,7 +2556,8 @@ First slice built (owner approved `kira`, 2026-10-01): `src/runtime/audio.rs` (`
   - [ ] Hot-plug and output selection.
 - [ ] Mixer with buses, sends, volume/mute/solo, and bus effects (reverb, delay, EQ, compressor, limiter, filters).
   - [x] Named buses with faded volume (`GameScene::set_bus_volume`), pause by bus, and `BusEffect` low-pass, reverb and distortion (`set_bus_effect`). Evidence (audit 2026-10-09): `scenario::tests::the_offline_mix_reports_levels_pan_buses_and_scheduled_starts`, `bus_effects_show_change_the_mix_and_leave_state_hashes_alone`, `runtime::audio::tests::playing_lists_live_sounds_and_pauses_them_by_bus`.
-  - [ ] Sends, mute/solo, and delay, EQ, compressor and limiter effects.
+  - [x] Mute and solo (`GameScene::mute_bus`, `solo_bus`); a bus keeps its volume through both. Verified by `scenario::tests::mute_and_solo_silence_buses_and_keep_their_volume` (offline mix levels per side; fails when silencing is skipped).
+  - [ ] Sends, and delay, EQ, compressor and limiter effects.
 - [x] WAV, OGG Vorbis, and FLAC import; streaming playback for long assets. Evidence (audit 2026-10-09): kira decodes WAV, Ogg, MP3 and FLAC; files over the streaming size stream from disk in windows and in the offline mix (`audio_output::tests::large_files_stream_and_still_mix`; `streamed` in `audio:` reports).
 - [ ] 3D spatial audio with attenuation curves, doppler, and an occlusion approximation using physics raycasts.
   - [x] Pan and distance falloff from a listener (`set_listener`), sounds attached to moving entities, and occlusion by a physics raycast. Evidence (audit 2026-10-09): `runtime::audio::tests::spatialize_pans_to_the_side_and_falls_off_past_two_metres`, `scenario::tests::an_attached_sound_pans_as_its_entity_moves_and_the_listener_can_move`, `a_wall_between_listener_and_sound_lowers_its_volume`.

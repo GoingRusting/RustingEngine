@@ -308,6 +308,17 @@ pub enum AudioCommand {
         effect: BusEffect,
         fade: f32,
     },
+    /// Silences a bus without forgetting its volume.
+    SetBusMute {
+        bus: String,
+        muted: bool,
+    },
+    /// While any named bus is soloed, only soloed buses play. The main
+    /// output `""` is never silenced by solo.
+    SetBusSolo {
+        bus: String,
+        solo: bool,
+    },
     /// Most sounds the bus plays at once, 1 to [`MAX_VOICE_LIMIT`].
     SetBusVoiceLimit {
         bus: String,
@@ -529,6 +540,20 @@ impl AudioQueue {
             bus: bus.to_owned(),
             effect,
             fade,
+        });
+    }
+
+    pub fn mute_bus(&mut self, bus: &str, muted: bool) {
+        self.push(AudioCommand::SetBusMute {
+            bus: bus.to_owned(),
+            muted,
+        });
+    }
+
+    pub fn solo_bus(&mut self, bus: &str, solo: bool) {
+        self.push(AudioCommand::SetBusSolo {
+            bus: bus.to_owned(),
+            solo,
         });
     }
 

@@ -5023,6 +5023,66 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
+    #[cfg(feature = "audio")]
+    #[test]
+    fn mute_and_solo_silence_buses_and_keep_their_volume() {
+        use crate::runtime::Sound;
+        let directory = tone_project(2.0);
+        let mut app = audio_game(&directory, |tick, scene| match tick {
+            1 => {
+                for (bus, pan) in [("music", -1.0), ("sfx", 1.0)] {
+                    let sound = Sound {
+                        pan,
+                        bus: bus.into(),
+                        ..Sound::default()
+                    };
+                    scene.play_sound_with("tone.wav", sound);
+                }
+                scene.set_bus_volume("music", 0.5, 0.0);
+            }
+            10 => scene.solo_bus("sfx", true),
+            20 => scene.mute_bus("sfx", true),
+            30 => scene.solo_bus("sfx", false),
+            40 => scene.mute_bus("sfx", false),
+            _ => {}
+        });
+        let level = |tick: u32, side: u32, loud: bool| {
+            let check = if loud { "greater_than" } else { "less_than" };
+            let bound = if loud { 0.05 } else { 0.001 };
+            json!({"tick": tick, "expect": {"entity": "audio:",
+                "path": format!("/level/{side}"), check: bound}})
+        };
+        let mut steps = vec![
+            // Both play; then solo leaves only sfx (right).
+            level(5, 0, true),
+            level(5, 1, true),
+            level(15, 0, false),
+            level(15, 1, true),
+            // Muting the soloed bus silences everything.
+            level(25, 0, false),
+            level(25, 1, false),
+            // Solo off: music returns at its own volume, sfx stays muted.
+            level(35, 0, true),
+            level(35, 1, false),
+            level(45, 0, true),
+            level(45, 1, true),
+        ];
+        for (path, value) in [("muted", true), ("solo", true)] {
+            steps.push(json!({"tick": 25, "expect": {"entity": "audio:",
+                "path": format!("/buses/sfx/{path}"), "equals": value}}));
+        }
+        // Music keeps its 0.5 volume: RMS 0.25, where full volume is 0.5.
+        for tick in [5, 35] {
+            steps.push(json!({"tick": tick, "expect": {"entity": "audio:",
+                "path": "/buses/music/level/0", "equals": 0.25,
+                "tolerance": 0.05}}));
+        }
+        let report =
+            run_scenario(&mut app, &scenario(45, json!(steps)), &directory);
+        assert!(report.passed, "{report:#?}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     /// A project folder holding `assets/tone.wav`: a 440 Hz sine at half
     /// scale, `seconds` long.
     #[cfg(feature = "audio")]
