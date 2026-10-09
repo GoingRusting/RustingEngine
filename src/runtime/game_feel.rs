@@ -654,6 +654,18 @@ pub struct Health {
     pub team: String,
 }
 
+/// Sent by `GameScene::damage` to the damaged object, so a handler
+/// connected with `App::connect` and registered as
+/// `In<Signal<Damaged>>` reacts to hits and heals.
+#[derive(bevy_ecs::event::EntityEvent, Clone, Debug, PartialEq, Eq)]
+pub struct Damaged {
+    pub entity: Entity,
+    /// The amount asked for; negative heals.
+    pub amount: i32,
+    /// Hit points after the change.
+    pub health: i32,
+}
+
 impl Default for Health {
     fn default() -> Self {
         Self {

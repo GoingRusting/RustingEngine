@@ -1315,14 +1315,21 @@ impl GameScene<'_> {
     /// Takes `amount` hit points from the named object's `rusting.health`
     /// (a negative amount heals, up to `max`) and returns what is left,
     /// never below 0. Check for 0 to defeat it. `None`, changing nothing,
-    /// when no object has that name or it has no health.
+    /// when no object has that name or it has no health. Each change
+    /// sends a [`crate::runtime::Damaged`] signal to the object.
     pub fn damage(&mut self, name: &str, amount: i32) -> Option<i32> {
         let entity = find_named_entity(self.world, name)?;
         let mut health =
             self.world.get_mut::<crate::runtime::Health>(entity)?;
         let max = health.max.max(health.value);
         health.value = health.value.saturating_sub(amount).clamp(0, max);
-        Some(health.value)
+        let health = health.value;
+        self.world.trigger(crate::runtime::Damaged {
+            entity,
+            amount,
+            health,
+        });
+        Some(health)
     }
 
     /// The named object's hit points, or `None` when it has no
@@ -7274,6 +7281,35 @@ mod tests {
         }
         assert!(before.iter().any(|(_, v)| v.contains("chase")));
         assert_eq!(apply_object_save(&mut loaded, r#"{"version": 1}"#), None);
+    }
+
+    #[test]
+    fn damage_sends_a_damaged_signal_to_connected_handlers() {
+        use crate::runtime::{Damaged, Health, Signal};
+        use bevy_ecs::prelude::ResMut;
+        use bevy_ecs::system::In;
+        #[derive(Resource, Default)]
+        struct Hits(Vec<(i32, i32)>);
+        let mut app = App::new();
+        app.insert_resource(Hits::default());
+        app.add_signal_handler(
+            "hurt",
+            |In(signal): In<Signal<Damaged>>, mut hits: ResMut<Hits>| {
+                hits.0.push((signal.event.amount, signal.event.health));
+            },
+        )
+        .unwrap();
+        let orc = app.spawn((Name("Orc".into()), Health::default()));
+        app.spawn((Name("Rock".into()), Health::default()));
+        app.connect(orc, "hurt", orc).unwrap();
+        let mut scene = GameScene {
+            world: app.world_mut(),
+        };
+        scene.damage("Orc", 2);
+        scene.damage("Rock", 1);
+        scene.damage("Orc", -5);
+        app.world_mut().flush();
+        assert_eq!(app.world().resource::<Hits>().0, [(2, 1), (-5, 3)]);
     }
 
     #[test]
