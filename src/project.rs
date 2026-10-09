@@ -2743,6 +2743,7 @@ pub fn built_executable(
 ) -> Result<PathBuf, String> {
     let metadata = std::process::Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
+        .args(crate::runtime::lease::offline().then_some("--offline"))
         .args(["--manifest-path"])
         .arg(manifest)
         .current_dir(project_root)

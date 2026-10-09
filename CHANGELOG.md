@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Any `rusting` command takes `--offline`, and `RUSTING_OFFLINE=1` sets it for a session: builds pass `--offline` to cargo, so they use only crates already downloaded and never reach the network.
 - `rusting scene split` turns a scene into folder form, a `.rscene` directory with `scene.json` and one `entities/<id>.json` per entity, so edits to different objects do not conflict in git; `rusting scene join` turns it back. The runtime, the editor and every scene command read and write both forms, and a patch rewrites only the entity files it changed.
 - `rusting lint` warns `LINT_MISSING_OBJECT` when game code names an object, as in `scene.flash("Stairz")`, that no scene or prefab has, and `LINT_MISSING_ACTION` when it reads an input action nothing defines, as in `scene.pressed("jmup")`; both list close names.
 - `rusting.sound_cue` takes a `caption`, such as `[glass breaks]`, shown for 2 s each time the cue fires.

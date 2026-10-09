@@ -359,6 +359,32 @@ fn confine_refuses_paths_outside_the_folder_after_resolving_links() {
 }
 
 #[test]
+fn offline_mode_keeps_cargo_off_the_network() {
+    let parent = temporary_parent();
+    let root = generated_project(&parent);
+    // An empty cargo home has no registry cache, so the build needs the
+    // network and offline mode must stop it.
+    let check = |flag: Option<&str>, env: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_rusting"))
+            .args(["check", root.to_str().unwrap(), "--json"])
+            .args(flag)
+            .env("CARGO_HOME", parent.join("cargo-home"))
+            .env("CARGO_TARGET_DIR", parent.join("target"))
+            .env("RUSTING_OFFLINE", env)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        (output.status.success(), text)
+    };
+    for (flag, env) in [(Some("--offline"), ""), (None, "1")] {
+        let (ok, text) = check(flag, env);
+        assert!(!ok, "{text}");
+        assert!(text.contains("offline"), "{text}");
+    }
+    std::fs::remove_dir_all(parent).unwrap();
+}
+
+#[test]
 fn malformed_and_missing_inputs_have_json_diagnostics_and_nonzero_exit() {
     let parent = temporary_parent();
     let root = generated_project(&parent);

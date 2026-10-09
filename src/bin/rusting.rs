@@ -156,7 +156,7 @@ fn execute(args: &[String]) -> CliResult {
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
-            "--json" | "--read-only" => {}
+            "--json" | "--read-only" | "--offline" => {}
             "--confine" => match rest.next() {
                 Some(dir) => confines.push(dir.clone()),
                 None => return usage("--confine takes a folder"),
@@ -203,6 +203,13 @@ fn execute(args: &[String]) -> CliResult {
         return refusal;
     }
     rusting_engine::runtime::lease::set_scope(read_only, confine);
+    // The engine opens no connection itself; this keeps cargo off the
+    // network too. Generator hooks are the project's own commands and may.
+    let truthy = |value: String| !value.is_empty() && value != "0";
+    rusting_engine::runtime::lease::set_offline(
+        args.iter().any(|arg| arg == "--offline")
+            || std::env::var(cli::OFFLINE_ENV).is_ok_and(truthy),
+    );
     match positional.as_slice() {
         ["--version" | "-V" | "version"] => cli::CliResult::success(
             serde_json::json!({"engine_version": env!("CARGO_PKG_VERSION")}),

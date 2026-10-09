@@ -1051,6 +1051,10 @@ pub fn read_only_refusal(command: &[&str]) -> Option<CliResult> {
 /// `--confine`.
 pub const CONFINE_ENV: &str = "RUSTING_CONFINE";
 
+/// Environment variable that keeps builds off the network like
+/// `--offline`.
+pub const OFFLINE_ENV: &str = "RUSTING_OFFLINE";
+
 /// `OUTSIDE_CONFINE` when the working folder or an argument that names a path is
 /// outside `dir` (a canonical folder). An argument counts as a path when
 /// it exists or holds a path separator; any other word is at most a path
@@ -3900,6 +3904,9 @@ fn cargo(
 ) -> Result<ProcessRun, CliResult> {
     let mut cargo = Command::new("cargo");
     cargo.arg(command);
+    if crate::runtime::lease::offline() {
+        cargo.arg("--offline");
+    }
     if release {
         cargo.arg("--release");
     }

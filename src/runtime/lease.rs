@@ -96,6 +96,20 @@ fn held_error(lease: &Lease) -> std::io::Error {
     )
 }
 
+/// `rusting --offline`: builds may not reach the network.
+static OFFLINE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Sets whether the running command's `cargo` runs get `--offline`.
+pub fn set_offline(offline: bool) {
+    OFFLINE.store(offline, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether `cargo` runs must stay off the network (see [`set_offline`]).
+pub fn offline() -> bool {
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the running command may write: `rusting --read-only` and
 /// `--confine`.
 static SCOPE: std::sync::Mutex<(bool, Option<PathBuf>)> =
