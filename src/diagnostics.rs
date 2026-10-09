@@ -145,6 +145,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting validate --json",
     ),
     code(
+        "CAPTURE_TEXT_CONTRAST",
+        "Plain HUD text in the captured frame is hard to read: its median contrast against the scene pixels behind it is below WCAG AA (4.5:1, or 3:1 from 24 px).",
+        "Change the HUD element's `color` so it stands out from what is behind it, or move it with `anchor` and `offset`.",
+        "rusting capture scenes/main.rscene build/frame.png --json",
+    ),
+    code(
         "CLI_OUTDATED",
         "The `rusting` CLI is older than the engine the game builds against, so its docs, schema and checks may miss new features. A version mismatch is reported on every check; engine source edited after the CLI was built is reported once a day per project (the marker is build/cli-outdated-shown).",
         "Reinstall the CLI from the engine the game uses, then run the command again.",

@@ -52,6 +52,89 @@ pub struct HeadlessCapture {
     /// over the window's UNORM swapchain.
     #[cfg(feature = "ui")]
     ui_target: Option<Arc<ImageView>>,
+    /// Text the UI painted over the last frame.
+    #[cfg(feature = "ui")]
+    texts: Vec<TextSpot>,
+}
+
+/// A run of UI text painted over a frame: its box in pixels as `[min x,
+/// min y, max x, max y]`, its sRGB colour with alpha, its font size, and
+/// whether a filled shape painted before it (a button, a caption box) lies
+/// under its centre.
+#[cfg(feature = "ui")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSpot {
+    pub text: String,
+    pub rect: [f32; 4],
+    pub color: [f32; 4],
+    pub size: f32,
+    pub backed: bool,
+}
+
+/// Every text shape in `shapes`, in paint order, scaled to pixels.
+#[cfg(feature = "ui")]
+fn text_spots(
+    shapes: &[egui::epaint::ClippedShape],
+    pixels_per_point: f32,
+) -> Vec<TextSpot> {
+    fn walk(
+        shape: &egui::Shape,
+        scale: f32,
+        fills: &mut Vec<egui::Rect>,
+        spots: &mut Vec<TextSpot>,
+    ) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    walk(shape, scale, fills, spots);
+                }
+            }
+            egui::Shape::Rect(rect) if rect.fill.a() > 0 => {
+                fills.push(rect.rect);
+            }
+            egui::Shape::Text(text)
+                if !text.galley.job.text.trim().is_empty() =>
+            {
+                let rect = text.galley.rect.translate(text.pos.to_vec2());
+                let format =
+                    text.galley.job.sections.first().map(|s| &s.format);
+                let color = text
+                    .override_text_color
+                    .or(format
+                        .map(|format| format.color)
+                        .filter(|color| *color != egui::Color32::PLACEHOLDER))
+                    .unwrap_or(text.fallback_color)
+                    .to_srgba_unmultiplied()
+                    .map(|c| f32::from(c) / 255.0);
+                spots.push(TextSpot {
+                    text: text.galley.job.text.clone(),
+                    rect: [
+                        rect.min.x * scale,
+                        rect.min.y * scale,
+                        rect.max.x * scale,
+                        rect.max.y * scale,
+                    ],
+                    color: [
+                        color[0],
+                        color[1],
+                        color[2],
+                        color[3] * text.opacity_factor,
+                    ],
+                    size: format.map_or(0.0, |format| format.font_id.size)
+                        * scale,
+                    backed: fills
+                        .iter()
+                        .any(|fill| fill.contains(rect.center())),
+                });
+            }
+            _ => {}
+        }
+    }
+    let (mut fills, mut spots) = (Vec::new(), Vec::new());
+    for clipped in shapes {
+        walk(&clipped.shape, pixels_per_point, &mut fills, &mut spots);
+    }
+    spots
 }
 
 impl HeadlessCapture {
@@ -85,6 +168,8 @@ impl HeadlessCapture {
             ui: None,
             #[cfg(feature = "ui")]
             ui_target: None,
+            #[cfg(feature = "ui")]
+            texts: Vec::new(),
         })
     }
 
@@ -290,6 +375,7 @@ impl HeadlessCapture {
         app: &mut App,
         frame: Box<dyn GpuFuture>,
     ) -> Result<Box<dyn GpuFuture>, String> {
+        self.texts.clear();
         let Some(output) = app
             .world_mut()
             .get_resource_mut::<crate::runtime::RuntimeUi>()
@@ -297,6 +383,7 @@ impl HeadlessCapture {
         else {
             return Ok(frame);
         };
+        self.texts = text_spots(&output.shapes, output.pixels_per_point);
         let primitives = app
             .world()
             .resource::<crate::runtime::RuntimeUi>()
@@ -341,6 +428,13 @@ impl HeadlessCapture {
                 &output.textures_delta,
             )
             .map_err(|error| format!("UI paint: {error}"))
+    }
+
+    /// Text the runtime UI painted over the last frame.
+    #[cfg(feature = "ui")]
+    #[must_use]
+    pub fn texts(&self) -> &[TextSpot] {
+        &self.texts
     }
 
     /// The last rendered frame as tightly packed RGBA8 sRGB rows.
@@ -707,6 +801,27 @@ mod tests {
         assert_eq!(names, ["Left", "Right", "Feed"]);
         assert_eq!(metadata["cameras"][2]["screen"], true);
         assert!(metadata["cameras"][2]["draws"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "ui")]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn hud_text_is_on_the_first_captured_frame() {
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        app.world_mut().spawn(crate::runtime::HudElement {
+            text: "Score".into(),
+            ..Default::default()
+        });
+        let mut capture = HeadlessCapture::new([64, 64]).unwrap();
+        capture.frame(&mut app, Duration::from_millis(16)).unwrap();
+        let texts = capture.texts();
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(!texts[0].backed);
     }
 
     #[test]

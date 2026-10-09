@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting capture` warns `CAPTURE_TEXT_CONTRAST` when plain HUD text is hard to read against the scene behind it (WCAG AA, judged on the rendered frame). Captures at tick 0 now include the HUD: plain HUD text is painted directly instead of in an egui area, which hid it for its first frame, and no longer blocks the pointer. The starter and racing templates use dark HUD text that passes the check.
 - `LINT_MISSING_FILE` also checks literal `spawn_prefab` paths.
 - `rusting lint` warns `LINT_MISSING_CLASS` on a literal `in_class` name nothing puts objects in, with close class names.
 - Agent benchmark task `arena-cooldown`: a feature request on the top-down template.

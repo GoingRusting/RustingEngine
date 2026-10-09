@@ -2466,6 +2466,32 @@ fn button_contrast(
     color: [f32; 4],
     font_size: f32,
 ) -> Option<(f32, f32)> {
+    let fill = egui::Visuals::dark()
+        .widgets
+        .inactive
+        .weak_bg_fill
+        .to_array()
+        .map(|c| f32::from(c) / 255.0);
+    let ratio = contrast(color, [fill[0], fill[1], fill[2]]);
+    let minimum = minimum_contrast(font_size);
+    (button && ratio < minimum).then_some((ratio, minimum))
+}
+
+/// The WCAG 2 minimum contrast for text of `font_size` px: 4.5, or 3 from
+/// 24 px.
+#[cfg(feature = "ui")]
+fn minimum_contrast(font_size: f32) -> f32 {
+    if font_size >= 24.0 {
+        3.0
+    } else {
+        4.5
+    }
+}
+
+/// The WCAG 2 contrast ratio of sRGB `color`, blended by its alpha, over
+/// the sRGB `back`.
+#[cfg(feature = "ui")]
+fn contrast(color: [f32; 4], back: [f32; 3]) -> f32 {
     let luminance = |c: [f32; 3]| {
         let linear = |v: f32| {
             if v <= 0.040_45 {
@@ -2476,20 +2502,60 @@ fn button_contrast(
         };
         0.2126 * linear(c[0]) + 0.7152 * linear(c[1]) + 0.0722 * linear(c[2])
     };
-    let fill = egui::Visuals::dark()
-        .widgets
-        .inactive
-        .weak_bg_fill
-        .to_array()
-        .map(|c| f32::from(c) / 255.0);
     let alpha = color[3].clamp(0.0, 1.0);
     let text: [f32; 3] = std::array::from_fn(|i| {
-        color[i].clamp(0.0, 1.0) * alpha + fill[i] * (1.0 - alpha)
+        color[i].clamp(0.0, 1.0) * alpha + back[i] * (1.0 - alpha)
     });
-    let (a, b) = (luminance(text), luminance([fill[0], fill[1], fill[2]]));
-    let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-    let minimum = if font_size >= 24.0 { 3.0 } else { 4.5 };
-    (button && ratio < minimum).then_some((ratio, minimum))
+    let (a, b) = (luminance(text), luminance(back));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// A `CAPTURE_TEXT_CONTRAST` warning per run of UI text with nothing
+/// painted under it whose median contrast against the scene pixels behind
+/// its box, in `background` (the frame without the UI), is below the WCAG
+/// minimum for its size. Text on a button or caption box is left to
+/// `LINT_TEXT_CONTRAST`.
+#[cfg(feature = "ui")]
+fn text_contrast_warnings(
+    texts: &[crate::rendering::capture::TextSpot],
+    background: &[u8],
+    [width, height]: [u32; 2],
+) -> Vec<Diagnostic> {
+    let mut warnings = Vec::new();
+    for spot in texts.iter().filter(|spot| !spot.backed) {
+        let clamp = |v: f32, max: u32| (v.max(0.0) as u32).min(max);
+        let (x0, x1) = (clamp(spot.rect[0], width), clamp(spot.rect[2], width));
+        let (y0, y1) =
+            (clamp(spot.rect[1], height), clamp(spot.rect[3], height));
+        let mut ratios: Vec<f32> = (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| ((y * width + x) * 4) as usize))
+            .filter_map(|at| background.get(at..at + 3))
+            .map(|rgb| {
+                contrast(
+                    spot.color,
+                    std::array::from_fn(|i| f32::from(rgb[i]) / 255.0),
+                )
+            })
+            .collect();
+        if ratios.is_empty() {
+            continue;
+        }
+        ratios.sort_by(f32::total_cmp);
+        let median = ratios[ratios.len() / 2];
+        let minimum = minimum_contrast(spot.size);
+        if median < minimum {
+            warnings.push(Diagnostic {
+                code: "CAPTURE_TEXT_CONTRAST",
+                severity: "warning",
+                message: format!(
+                    "HUD text `{}` at {:.0},{:.0} has a median contrast of {median:.1}:1 against the scene behind it, below {minimum}:1 for {:.0} px text",
+                    spot.text, spot.rect[0], spot.rect[1], spot.size
+                ),
+                ..Diagnostic::default()
+            });
+        }
+    }
+    warnings
 }
 
 #[cfg(not(feature = "ui"))]
@@ -5916,6 +5982,23 @@ pub fn capture_scene(scene: &Path, options: &CaptureOptions) -> CliResult {
             );
         }
     }
+    #[cfg(feature = "ui")]
+    let mut warnings = warnings;
+    #[cfg(feature = "ui")]
+    if let Some(capture) = capture.as_mut().filter(|_| options.hud) {
+        if capture.texts().iter().any(|spot| !spot.backed) {
+            match capture.view_rgba(app.world(), None) {
+                Ok(background) => warnings.extend(text_contrast_warnings(
+                    capture.texts(),
+                    &background,
+                    options.extent,
+                )),
+                Err(error) => {
+                    return CliResult::failure("CAPTURE_FAILED", error, None)
+                }
+            }
+        }
+    }
     let rgba = match capture.as_mut() {
         Some(capture) if !options.hud => {
             match capture.view_rgba(app.world(), None) {
@@ -6469,6 +6552,45 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
         )
         .unwrap();
         assert!(lint_no_ending(&empty, "").is_none());
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn captured_text_is_judged_against_the_scene_behind_it() {
+        use crate::rendering::capture::TextSpot;
+        // An 8 x 2 frame: white on the left half, black on the right.
+        let background: Vec<u8> = (0..16)
+            .flat_map(|i| if i % 8 < 4 { [255; 4] } else { [0, 0, 0, 255] })
+            .collect();
+        let spot = |text: &str, left: f32, color: [f32; 4], backed| TextSpot {
+            text: text.to_owned(),
+            rect: [left, 0.0, left + 4.0, 2.0],
+            color,
+            size: 16.0,
+            backed,
+        };
+        let white = [1.0; 4];
+        let texts = [
+            spot("On White", 0.0, white, false),
+            spot("On Black", 4.0, white, false),
+            spot("On Button", 0.0, white, true),
+            spot("Faint", 4.0, [1.0, 1.0, 1.0, 0.2], false),
+            // Half over white, half over black: the median pixel is over
+            // white, so black text passes.
+            spot("Across", 2.0, [0.0, 0.0, 0.0, 1.0], false),
+        ];
+        let warned: Vec<_> =
+            text_contrast_warnings(&texts, &background, [8, 2])
+                .into_iter()
+                .map(|warning| warning.message)
+                .collect();
+        assert_eq!(
+            warned,
+            [
+                "HUD text `On White` at 0,0 has a median contrast of 1.0:1 against the scene behind it, below 4.5:1 for 16 px text",
+                "HUD text `Faint` at 4,0 has a median contrast of 1.7:1 against the scene behind it, below 4.5:1 for 16 px text",
+            ]
+        );
     }
 
     #[cfg(feature = "ui")]

@@ -1512,22 +1512,26 @@ pub(super) fn draw_hud(
             egui::Vec2::ZERO
         };
         let position = align.anchor_size(point, galley.size() + padding).min;
+        let id = egui::Id::new(("rusting.hud", entity));
+        if !element.button {
+            // Painted straight onto a layer: a new egui area stays hidden
+            // for its first frame, which a tick-0 capture is. Like a Godot
+            // label, plain text lets the pointer through.
+            context
+                .layer_painter(egui::LayerId::new(egui::Order::Middle, id))
+                .galley(position, galley, egui::Color32::PLACEHOLDER);
+            continue;
+        }
         // Hover only: an area that senses clicks takes keyboard and gamepad
         // focus ahead of its button. No fade-in: an element shown for a few
         // ticks would stay faint.
-        egui::Area::new(egui::Id::new(("rusting.hud", entity)))
+        egui::Area::new(id)
             .sense(egui::Sense::hover())
             .fixed_pos(position)
             .fade_in(false)
             .show(context, |ui| {
-                if element.button {
-                    if ui.button(text).clicked() {
-                        pressed.send(HudButtonPressed { entity });
-                    }
-                } else {
-                    // Lines break only where the text says: an anchored
-                    // area would otherwise wrap text that grew this frame.
-                    ui.add(egui::Label::new(text).extend().selectable(false));
+                if ui.button(text).clicked() {
+                    pressed.send(HudButtonPressed { entity });
                 }
             });
     }

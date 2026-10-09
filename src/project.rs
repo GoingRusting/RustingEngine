@@ -1353,6 +1353,8 @@ fn starter_scene(name: &str) -> SceneDocument {
             text: "A/D or arrows run, Space jumps. Grab every coin, then the flag."
                 .into(),
             anchor: HudAnchor::BottomLeft,
+            // Dark: white text is unreadable on the pale sky.
+            color: [0.1, 0.12, 0.18, 1.0],
             ..HudElement::default()
         }),
     );
@@ -1420,7 +1422,7 @@ fn starter_scene(name: &str) -> SceneDocument {
         "id": Uuid::new_v4(), "parent": null, "name": "Score",
         "components": {
             "rusting.counter": counter("coins", STARTER_COINS),
-            "rusting.hud": hud(&format!("Coins {{coins}}/{STARTER_COINS}"), HudAnchor::TopLeft, 28.0, [1.0, 0.85, 0.2, 1.0], None),
+            "rusting.hud": hud(&format!("Coins {{coins}}/{STARTER_COINS}"), HudAnchor::TopLeft, 28.0, [0.45, 0.3, 0.0, 1.0], None),
         }
     }));
     extra.push(json!({
@@ -2471,7 +2473,14 @@ fn racing_scene(name: &str) -> SceneDocument {
         }),
         json!({
             "id": Uuid::new_v4(), "parent": null, "name": "Help",
-            "components": {"rusting.hud": hud_component("Up accelerates, down brakes, left and right steer. Pass the yellow checkpoints in order.", HudAnchor::BottomLeft, 20.0, None)}
+            // Dark: it sits on the light grass.
+            "components": {"rusting.hud": component(&crate::runtime::HudElement {
+                text: "Up accelerates, down brakes, left and right steer. Pass the yellow checkpoints in order.".into(),
+                anchor: HudAnchor::BottomLeft,
+                font_size: 20.0,
+                color: [0.1, 0.12, 0.18, 1.0],
+                ..Default::default()
+            })}
         }),
         json!({
             "id": Uuid::new_v4(), "parent": null, "name": "Restart",
