@@ -1312,6 +1312,60 @@ impl GameScene<'_> {
             .unwrap_or_default()
     }
 
+    /// Puts the named object's state machine in `state`, as a
+    /// `rusting.state` component scenarios can expect on. Returns `true`
+    /// when the state changed, so enter actions go in an `if`; setting the
+    /// current state again keeps its start tick and returns `false`.
+    /// Warns once and returns `false` when no object has that name.
+    pub fn set_state(&mut self, name: &str, state: &str) -> bool {
+        let tick = self.frame_time().fixed_tick;
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return false;
+        };
+        if self
+            .world
+            .get::<crate::runtime::ObjectState>(entity)
+            .is_some_and(|current| current.state == state)
+        {
+            return false;
+        }
+        self.world
+            .entity_mut(entity)
+            .insert(crate::runtime::ObjectState {
+                state: state.to_owned(),
+                since_tick: tick,
+            });
+        true
+    }
+
+    /// The named object's state from [`Self::set_state`] or its scene, or
+    /// `""` when it has none.
+    #[must_use]
+    pub fn state(&mut self, name: &str) -> String {
+        self.object_state(name)
+            .map(|state| state.state.clone())
+            .unwrap_or_default()
+    }
+
+    /// Seconds of game time since the named object entered its current
+    /// state, counted in fixed ticks; 0 when it has no state.
+    #[must_use]
+    pub fn state_seconds(&mut self, name: &str) -> f32 {
+        let time = self.frame_time();
+        self.object_state(name).map_or(0.0, |state| {
+            (time.fixed_tick.saturating_sub(state.since_tick) as f64
+                * time.fixed_delta.as_secs_f64()) as f32
+        })
+    }
+
+    fn object_state(
+        &mut self,
+        name: &str,
+    ) -> Option<&crate::runtime::ObjectState> {
+        let entity = find_named_entity(self.world, name)?;
+        self.world.get::<crate::runtime::ObjectState>(entity)
+    }
+
     /// The run's seed: a scenario's `seed`, `rusting run --seed`, or 0.
     /// Use it for things that must not change with the tick, such as a
     /// level layout generated once.
@@ -6950,6 +7004,31 @@ mod tests {
         );
         assert_eq!(scene.object("Bullet 1").position(), [3.0, 0.0, 0.0]);
         assert_eq!(scene.spawn_numbered("Missing", [0.0; 3], 2), None);
+    }
+
+    #[test]
+    fn set_state_records_the_entry_tick_and_reports_changes() {
+        let mut world = World::new();
+        world.insert_resource(FrameTime {
+            fixed_tick: 10,
+            ..FrameTime::default()
+        });
+        world.spawn((Name("Enemy".into()), Transform::new([0.0; 3])));
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.state("Enemy"), "");
+        assert!(scene.set_state("Enemy", "patrol"));
+        assert!(!scene.set_state("Enemy", "patrol"));
+        assert!(!scene.set_state("Missing", "patrol"));
+        world.resource_mut::<FrameTime>().fixed_tick = 40;
+        let mut scene = GameScene { world: &mut world };
+        assert_eq!(scene.state("Enemy"), "patrol");
+        assert!((scene.state_seconds("Enemy") - 0.5).abs() < 1e-6);
+        assert!(!scene.set_state("Enemy", "patrol"));
+        assert!(scene.set_state("Enemy", "chase"));
+        assert_eq!(scene.state_seconds("Enemy"), 0.0);
+        assert!(crate::runtime::SceneComponentRegistry::default()
+            .names()
+            .any(|name| name == crate::runtime::OBJECT_STATE_COMPONENT));
     }
 
     #[test]

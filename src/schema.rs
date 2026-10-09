@@ -981,6 +981,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"name": "coins", "value": 0, "target": 5}),
     },
     ComponentSection {
+        key: "rusting.state",
+        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here.",
+        gpu: NO_GPU,
+        example: || json!({"state": "patrol", "since_tick": 0}),
+    },
+    ComponentSection {
         key: "rusting.pickup",
         summary: "Collected once when a platformer or player body touches its collider (make it a sensor): adds value to the counter, hides the entity, and triggers its sound cue and burst emitter.",
         gpu: NO_GPU,

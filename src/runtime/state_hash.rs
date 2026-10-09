@@ -14,9 +14,9 @@ use uuid::Uuid;
 use super::{
     App, AppError, BurstEmitter, Collider, ColliderShape, CollisionLayers,
     Counter, FrameTime, GpuPhysicsCommands, GpuProxyOf, Joint, Name,
-    PhysicsBody, PhysicsIdRegistry, PhysicsSettings, PhysicsWorld, Pickup,
-    PlatformerController, PlayerController, RandomSeed, RigidBody, SceneId,
-    Sleeping, Tween,
+    ObjectState, PhysicsBody, PhysicsIdRegistry, PhysicsSettings, PhysicsWorld,
+    Pickup, PlatformerController, PlayerController, RandomSeed, RigidBody,
+    SceneId, Sleeping, Tween,
 };
 
 /// Ticks of history kept in [`StateHashes`] (about 17 seconds at 60 Hz).
@@ -166,6 +166,7 @@ fn entity_places(world: &mut World) -> HashMap<Entity, u64> {
             With<Pickup>,
             With<Counter>,
             With<BurstEmitter>,
+            With<ObjectState>,
         )>>()
         .iter(world)
         .collect();
@@ -238,6 +239,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         Option<&Pickup>,
         Option<&Counter>,
         Option<&BurstEmitter>,
+        Option<&ObjectState>,
     ), Or<(
         With<PlayerController>,
         With<PlatformerController>,
@@ -245,8 +247,9 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         With<Pickup>,
         With<Counter>,
         With<BurstEmitter>,
+        With<ObjectState>,
     )>>();
-    for (entity, player, platformer, tween, pickup, counter, emitter) in
+    for (entity, player, platformer, tween, pickup, counter, emitter, state) in
         gameplay.iter(world)
     {
         let hasher = hashers.entry(entity).or_default();
@@ -273,7 +276,7 @@ pub fn entity_state_hashes(world: &mut World) -> Vec<(Entity, u64)> {
         });
         let _ = write!(
             hasher,
-            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}"
+            "{player:?}{platformer:?}{tween:?}{pickup:?}{counter:?}{emitter:?}{state:?}"
         );
     }
     hashers

@@ -3569,6 +3569,9 @@ Depends on: Milestones 8 and 9.
 
 - [ ] Save games: versioned save files for selected components and resources, save slots, autosave, and migration of old saves across game versions, with a round-trip test per registered component.
 - [ ] State machines as data: states, transitions, guards on counters and events, and enter and exit actions, editable in the editor and checked by scenarios.
+  - [x] Object states: the registered component `rusting.state` (`state`, `since_tick`), set by `GameScene::set_state(name, state)`, which returns whether it changed so enter actions sit in an `if`, and read with `state` and `state_seconds`. It is in snapshots, the state hash and the editor's component help.
+    - Verified (2026-10-09): `set_state_records_the_entry_tick_and_reports_changes` (entry tick, repeated set keeps it, missing object, 0.5 s after 30 ticks); `scenarios_expect_an_object_state` passes an expect on `/components/rusting.state/state`.
+  - [ ] Transitions, guards and enter and exit actions as data in the scene, run by the engine, with an editor view.
 - [ ] Behaviour trees and utility AI as data assets, with a deterministic tick order and a debugger view of the active branch.
 - [ ] Health, damage, teams, and status effects as optional registered components, built on the typed event bridge.
 - [ ] Inventory, items, and loot tables as data resources with seeded rolls.

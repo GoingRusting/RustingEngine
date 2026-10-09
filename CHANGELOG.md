@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Object states: `GameScene::set_state`, `state` and `state_seconds` keep a state machine's state in the new registered component `rusting.state`, which scenarios can expect on and which snapshots and state hashes include.
 - `GameScene::spawn_numbered(template, position, limit)`: a capped spawner that names copies `"<template> <n>"` and counts refused spawns in the counter `"<template> refused"` instead of dropping them silently.
 - `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` for tick-based cooldowns, and `GameScene::set_time_scale` and `time_scale` for slow motion. The dash, turret and health recipes use the cooldowns and no longer take `time`; projects that already applied them keep their own copies.
 - `scene.object(name).look_at(target)` turns an object's forward axis (-Z) toward a point, like Godot's `look_at`.

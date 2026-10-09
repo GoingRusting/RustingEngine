@@ -12,12 +12,12 @@ use crate::runtime::{
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
     Connection, Connections, Counter, CullingMode, DeterminismMode, Easing,
     EnvironmentMap, Flash, FluidBlock, Fog, HudAnchor, HudElement, InputAction,
-    Joint, JointAxis, JointKind, JointMotor, JointSpring, PhysicsSettings,
-    PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
-    PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
-    RenderSettings, SceneBackground, SceneInstance, ShadowQuality, SkyLight,
-    SoundCue, SpawnGrid, Squash, TileKind, TileMap, ToneMapper, ToneMapping,
-    Tween, TweenProperty, TweenRepeat, WaterBody,
+    Joint, JointAxis, JointKind, JointMotor, JointSpring, ObjectState,
+    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
+    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
+    RenderBounds, RenderSettings, SceneBackground, SceneInstance,
+    ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash, TileKind, TileMap,
+    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -694,6 +694,13 @@ crate::reflect! {
         target: Option<i32> {
             doc: "null, or the value that completes the counter",
         },
+    }
+}
+
+crate::reflect! {
+    struct ObjectState {
+        state: String { doc: "game code changes it with scene.set_state" },
+        since_tick: u64 { doc: "the fixed tick the state was entered on" },
     }
 }
 

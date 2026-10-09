@@ -107,7 +107,8 @@ machine, and it must never feed back into simulation state.
 - Gameplay components that `FixedUpdate` systems update:
   `PlayerController`, `PlatformerController` (including `vertical_speed`,
   `grounded`, `jump_buffer`, `air_time`), `Tween` (including its played
-  time), `Pickup`, `Counter`, and `BurstEmitter` trigger flags.
+  time), `Pickup`, `Counter`, `BurstEmitter` trigger flags, and
+  `ObjectState`, which game code sets.
 - Resources: `PhysicsWorld` (warm-start impulses and sleep counters),
   `PhysicsSettings`, `FrameTime::fixed_tick` and `fixed_delta`,
   `RandomSeed`, `DeterminismMode`, `PhysicsIdRegistry`, and

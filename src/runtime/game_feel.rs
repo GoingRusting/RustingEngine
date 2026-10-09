@@ -642,6 +642,19 @@ impl Default for HudElement {
     }
 }
 
+/// The current state of an object's state machine, such as an enemy's
+/// `"patrol"` or `"chase"`, set by game code's `GameScene::set_state`.
+/// Scenarios can expect `/components/rusting.state/state`.
+#[derive(
+    Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+)]
+#[serde(default)]
+pub struct ObjectState {
+    pub state: String,
+    /// The fixed tick the state was entered on.
+    pub since_tick: u64,
+}
+
 /// A named integer shown by HUD `{name}` placeholders and raised by
 /// [`Pickup`]s.
 #[derive(Component, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

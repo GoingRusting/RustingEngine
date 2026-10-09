@@ -4801,6 +4801,26 @@ mod tests {
     }
 
     #[test]
+    fn scenarios_expect_an_object_state() {
+        let mut app = game();
+        app.world_mut().spawn((
+            SceneId(Uuid::new_v4()),
+            Name("Guard".into()),
+            crate::runtime::ObjectState {
+                state: "chase".into(),
+                since_tick: 0,
+            },
+        ));
+        let scenario = scenario(
+            1,
+            json!([{"tick": 1, "expect": {"entity": "Guard",
+                "path": "/components/rusting.state/state", "equals": "chase"}}]),
+        );
+        let report = run_scenario(&mut app, &scenario, Path::new("."));
+        assert!(report.passed, "{report:#?}");
+    }
+
+    #[test]
     fn counter_shorthand_sets_checks_and_logs_a_counter_by_name() {
         let mut app = game();
         app.world_mut().spawn((
