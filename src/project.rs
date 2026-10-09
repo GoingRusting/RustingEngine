@@ -460,11 +460,14 @@ pub enum ProjectTemplate {
     /// Outpost, a tower defense game with code: build towers on pads
     /// beside a path and stop a wave of enemies reaching the base.
     TowerDefense,
+    /// Crypt, a roguelike with code: step through three floors made from
+    /// the run's seed, defeating enemies on the way to the stairs.
+    Roguelike,
 }
 
 impl ProjectTemplate {
     /// Every template, in the order pickers list them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Basic3d,
         Self::FirstPerson3d,
         Self::ThirdPerson3d,
@@ -476,6 +479,7 @@ impl ProjectTemplate {
         Self::Racing,
         Self::TwinStick,
         Self::TowerDefense,
+        Self::Roguelike,
         Self::Empty,
     ];
 
@@ -495,6 +499,7 @@ impl ProjectTemplate {
             Self::Racing => "racing",
             Self::TwinStick => "twin-stick",
             Self::TowerDefense => "tower-defense",
+            Self::Roguelike => "roguelike",
         }
     }
 
@@ -514,6 +519,7 @@ impl ProjectTemplate {
             Self::Racing => "Circuit (racing)",
             Self::TwinStick => "Swarm (twin-stick shooter)",
             Self::TowerDefense => "Outpost (tower defense)",
+            Self::Roguelike => "Crypt (roguelike)",
         }
     }
 
@@ -743,6 +749,9 @@ fn write_project_template(
             ProjectTemplate::TowerDefense => {
                 include_str!("templates/tower_defense.rs")
             }
+            ProjectTemplate::Roguelike => {
+                include_str!("templates/roguelike.rs")
+            }
             _ => default_game_source(),
         },
     )?;
@@ -762,6 +771,10 @@ fn write_project_template(
         ProjectTemplate::TowerDefense => Some((
             "defend.json",
             include_str!("templates/tower_defense_defend.json"),
+        )),
+        ProjectTemplate::Roguelike => Some((
+            "descend.json",
+            include_str!("templates/roguelike_descend.json"),
         )),
         _ => None,
     };
@@ -799,6 +812,7 @@ fn write_project_template(
             ProjectTemplate::Racing => racing_scene(name),
             ProjectTemplate::TwinStick => twin_stick_scene(name),
             ProjectTemplate::TowerDefense => tower_defense_scene(name),
+            ProjectTemplate::Roguelike => roguelike_scene(name),
             ProjectTemplate::FirstPerson3d
             | ProjectTemplate::ThirdPerson3d
             | ProjectTemplate::PhysicsSandbox => scene_3d(name, template),
@@ -1796,6 +1810,136 @@ fn twin_stick_scene(name: &str) -> SceneDocument {
     json_scene(name, entities)
 }
 
+/// Crypt: a floor inside four walls, the player, the stairs, hidden
+/// rubble and enemy templates, and the `depth` and `wounds` counters. The
+/// game code, `src/templates/roguelike.rs`, lays out each floor.
+fn roguelike_scene(name: &str) -> SceneDocument {
+    use serde_json::json;
+
+    use crate::runtime::{Counter, HudAnchor};
+
+    // Cells run from 1 to 9 on X and 1 to 7 on Z.
+    let stone = [0.45, 0.47, 0.52];
+    let mut entities = vec![
+        mesh_object(
+            "Floor",
+            None,
+            "Cube",
+            [0.3, 0.32, 0.36],
+            [5.0, -0.1, 4.0],
+            [11.0, 0.2, 9.0],
+        ),
+        mesh_object(
+            "Wall North",
+            None,
+            "Cube",
+            stone,
+            [5.0, 0.5, 0.0],
+            [11.0, 1.0, 1.0],
+        ),
+        mesh_object(
+            "Wall South",
+            None,
+            "Cube",
+            stone,
+            [5.0, 0.5, 8.0],
+            [11.0, 1.0, 1.0],
+        ),
+        mesh_object(
+            "Wall West",
+            None,
+            "Cube",
+            stone,
+            [0.0, 0.5, 4.0],
+            [1.0, 1.0, 7.0],
+        ),
+        mesh_object(
+            "Wall East",
+            None,
+            "Cube",
+            stone,
+            [10.0, 0.5, 4.0],
+            [1.0, 1.0, 7.0],
+        ),
+        mesh_object(
+            "Player",
+            None,
+            "Sphere",
+            [0.25, 0.55, 0.95],
+            [1.0, 0.4, 1.0],
+            [0.8; 3],
+        ),
+        mesh_object(
+            "Stairs",
+            None,
+            "Cube",
+            [0.95, 0.8, 0.3],
+            [9.0, 0.02, 7.0],
+            [0.9, 0.04, 0.9],
+        ),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Sun",
+            "transform": {"position": [0.0, 10.0, 0.0], "rotation": [-0.9, 0.5, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "directional_light": {"color": [1.0, 0.96, 0.9], "illuminance": 100_000.0, "shadows": true}
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Game Camera",
+            "transform": {"position": [5.0, 11.0, 10.5], "rotation": [-1.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+            "camera": {
+                "projection": {"Perspective": {"vertical_fov_radians": std::f32::consts::FRAC_PI_3, "near": 0.1, "far": 1000.0}},
+                "active": true, "priority": 10
+            }
+        }),
+    ];
+    for (template, shape, color, scale) in [
+        ("Rubble Template", "Cube", stone, [1.0; 3]),
+        ("Enemy Template", "Sphere", [0.9, 0.3, 0.25], [0.8; 3]),
+    ] {
+        let mut object =
+            mesh_object(template, None, shape, color, [0.0, -20.0, 0.0], scale);
+        object["visible"] = json!(false);
+        entities.push(object);
+    }
+    let counter = |name: &str, target| {
+        component(&Counter {
+            name: name.into(),
+            value: 0,
+            target: Some(target),
+        })
+    };
+    let hud = |name: &str, text: &str, anchor, size, requires: Option<&str>| {
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": name,
+            "components": {"rusting.hud": hud_component(text, anchor, size, requires)}
+        })
+    };
+    entities.extend([
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Depth",
+            "components": {
+                "rusting.counter": counter("depth", 3),
+                "rusting.hud": hud_component("Depth {depth}/3", HudAnchor::TopLeft, 28.0, None),
+            }
+        }),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Wounds",
+            "components": {
+                "rusting.counter": counter("wounds", 5),
+                "rusting.hud": hud_component("Wounds {wounds}/5", HudAnchor::TopRight, 28.0, None),
+            }
+        }),
+        hud("Won", "You escaped! R plays again.", HudAnchor::Center, 48.0, Some("depth")),
+        hud("Lost", "Game over. R tries again.", HudAnchor::Center, 48.0, Some("wounds")),
+        hud("Help", "Arrows or WASD move. Walk into an enemy to defeat it. Reach the gold stairs.", HudAnchor::BottomLeft, 20.0, None),
+        json!({
+            "id": Uuid::new_v4(), "parent": null, "name": "Action restart",
+            "components": {"rusting.input_action": component(&json!({"action": "restart", "inputs": ["KeyR", "PadStart"]}))}
+        }),
+    ]);
+    entities.extend(move_actions());
+    json_scene(name, entities)
+}
+
 /// Outpost: grass, a path of road pieces through six waypoints to a base,
 /// four build pads, hidden enemy and tower templates, and the `gold`,
 /// `leaks` and `cleared` counters. The game code is
@@ -2373,6 +2517,10 @@ mod puzzle_template;
 #[allow(dead_code)]
 #[path = "templates/racing.rs"]
 mod racing_template;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "templates/roguelike.rs"]
+mod roguelike_template;
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "templates/tower_defense.rs"]
@@ -3061,6 +3209,34 @@ hot reload failed: failed to load `assets/crate.rtexture`: bad header
                 );
             }),
             project.root.join("tests/defend.json"),
+            Some(project.root.join("report.json")),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn the_roguelike_template_ships_code_whose_scenario_passes() {
+        let parent = std::env::temp_dir()
+            .join(format!("rusting-roguelike-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&parent).unwrap();
+        let project =
+            create_project_from(&parent, "Crypt", ProjectTemplate::Roguelike)
+                .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&project.code_path).unwrap(),
+            include_str!("templates/roguelike.rs")
+        );
+        crate::project_runner::run_project_scenario(
+            project.scene_path.clone(),
+            TemplateUpdate(|world| {
+                let time = *world.resource::<crate::runtime::FrameTime>();
+                super::roguelike_template::update(
+                    &mut crate::project_runner::GameScene { world },
+                    &time,
+                );
+            }),
+            project.root.join("tests/descend.json"),
             Some(project.root.join("report.json")),
         )
         .unwrap();
