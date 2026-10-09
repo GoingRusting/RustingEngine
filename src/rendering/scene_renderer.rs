@@ -92,7 +92,7 @@ use vulkano::DeviceSize;
 use crate::assets::{
     AlphaMode, AssetServer, Handle, LodGroupAsset, LodMetric, MaterialAsset,
     MaterialModel, MeshAsset, TextureAsset, TextureColorSpace, TextureFilter,
-    TextureSampler, TextureWrap,
+    TextureSampler, TextureWrap, MAX_LOD_LEVELS,
 };
 use crate::rendering::debug_overlay::{DebugLine, RenderDebugOverlay};
 use crate::rendering::frame_passes::{FramePass, FrameResource};
@@ -143,13 +143,36 @@ struct CullInstance {
     /// Local bounding sphere `(center, radius)`; a negative radius is never
     /// culled.
     sphere: [f32; 4],
-    /// x: draw command the instance counts into; y: first visible-list slot
-    /// of that command's group; z: 1 for alpha-blended instances, which
+    /// x: draw command of LOD level 0, level `n` counts into `x + n`; y:
+    /// first visible-list slot of that command's group, level `n` writes
+    /// `y + n * instance count`; z: 1 for alpha-blended instances, which
     /// only the late occlusion phase draws.
     slot: [u32; 4],
-    /// xy: `[start, end)` range of the LOD value this instance draws in,
-    /// `[0, inf)` outside LOD groups; z: 1 for the screen-size metric.
+    /// x: LOD value the first level starts at, 0 outside LOD groups; y: 1
+    /// for the screen-size metric.
     lod: [f32; 4],
+    /// Where each LOD level's range ends, finest first; `-inf` past the
+    /// group's last level. Outside LOD groups, `[inf, -inf, -inf, -inf]`.
+    lod_ends: [f32; 4],
+}
+
+/// `lod_ends` of an instance outside a LOD group: level 0 at any range.
+const NO_LOD_ENDS: [f32; 4] = [
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    f32::NEG_INFINITY,
+    f32::NEG_INFINITY,
+];
+
+/// LOD level an instance with `lod` and `lod_ends` draws at `value`, or
+/// `None` outside every level's range. Mirrors the cull shader.
+fn lod_level(value: f32, lod: [f32; 4], ends: [f32; 4]) -> Option<u32> {
+    if value < lod[0] {
+        return None;
+    }
+    ends.iter()
+        .position(|end| value < *end)
+        .map(|level| level as u32)
 }
 
 #[repr(C)]
@@ -863,10 +886,16 @@ struct PreparedMesh {
 /// Consecutive instances that share one mesh and material.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PreparedRenderBatch {
+    /// The mesh, or the finest level of its LOD group.
     mesh_key: u64,
     material: Handle<MaterialAsset>,
     first_instance: u32,
     instance_count: u32,
+    /// Draw of LOD level 0 in `PreparedRenderInstances::draw_meshes`; each
+    /// further level is the next draw.
+    first_draw: u32,
+    /// LOD levels the batch draws, 1 outside LOD groups.
+    levels: u32,
 }
 
 /// One alpha-blended instance, drawn alone so it can be sorted per frame.
@@ -896,6 +925,9 @@ struct PreparedRenderInstances {
     instances: Subbuffer<[RenderInstanceUpload]>,
     /// Opaque and masked batches.
     batches: Vec<PreparedRenderBatch>,
+    /// Mesh of each batch draw: one per LOD level of a batch, from its
+    /// `first_draw`.
+    draw_meshes: Vec<u64>,
     /// Blended instances, stored after every batched instance.
     blended: Vec<BlendedInstance>,
     /// Whether any blended instance transmits light, so the frame copies the
@@ -3633,53 +3665,66 @@ impl SceneRenderer {
                 .set_scissor(0, [scene_scissor].into_iter().collect())
                 .map_err(|error| SceneRenderError(error.to_string()))?;
             let mut bound_texture: Option<Arc<DescriptorSet>> = None;
+            let instance_total = render_instances.cull_source.len() as u32;
             for (group, batch) in render_instances.batches.iter().enumerate() {
                 if only.is_some_and(|only| !only.contains(&group)) {
                     continue;
                 }
-                // The GPU list reserves each batch's full range; the CPU list
-                // holds only the visible instances.
-                let (list, first, count) = match (cull, visibility) {
-                    (Some((list, ..)), _) => {
-                        (list, batch.first_instance, batch.instance_count)
+                for draw in batch.first_draw..batch.first_draw + batch.levels {
+                    let level = draw - batch.first_draw;
+                    // The GPU list reserves each batch's full range per level; the
+                    // CPU list holds only the visible instances.
+                    let (list, first, count) = match (cull, visibility) {
+                        (Some((list, ..)), _) => (
+                            list,
+                            batch.first_instance + level * instance_total,
+                            batch.instance_count,
+                        ),
+                        (None, Some(visibility)) => {
+                            let (first, count) =
+                                visibility.batches[draw as usize];
+                            (&visibility.list, first, count)
+                        }
+                        (None, None) => {
+                            unreachable!("every path prepares a list")
+                        }
+                    };
+                    if count == 0 {
+                        continue;
                     }
-                    (None, Some(visibility)) => {
-                        let (first, count) = visibility.batches[group];
-                        (&visibility.list, first, count)
+                    let Some(mesh) = self
+                        .prepared_meshes
+                        .get(&render_instances.draw_meshes[draw as usize])
+                    else {
+                        continue;
+                    };
+                    let set = texture_set(batch.material);
+                    if !bound_texture
+                        .as_ref()
+                        .is_some_and(|bound| Arc::ptr_eq(bound, &set))
+                    {
+                        commands
+                            .bind_descriptor_sets(
+                                PipelineBindPoint::Graphics,
+                                active.pipeline.layout().clone(),
+                                1,
+                                set.clone(),
+                            )
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?;
+                        bound_texture = Some(set);
                     }
-                    (None, None) => unreachable!("every path prepares a list"),
-                };
-                if count == 0 {
-                    continue;
+                    draw_instances(
+                        commands,
+                        mesh,
+                        list,
+                        first,
+                        count,
+                        indirect(cull, draw as usize),
+                        &recorded,
+                    )?;
                 }
-                let Some(mesh) = self.prepared_meshes.get(&batch.mesh_key)
-                else {
-                    continue;
-                };
-                let set = texture_set(batch.material);
-                if !bound_texture
-                    .as_ref()
-                    .is_some_and(|bound| Arc::ptr_eq(bound, &set))
-                {
-                    commands
-                        .bind_descriptor_sets(
-                            PipelineBindPoint::Graphics,
-                            active.pipeline.layout().clone(),
-                            1,
-                            set.clone(),
-                        )
-                        .map_err(|error| SceneRenderError(error.to_string()))?;
-                    bound_texture = Some(set);
-                }
-                draw_instances(
-                    commands,
-                    mesh,
-                    list,
-                    first,
-                    count,
-                    indirect(cull, group),
-                    &recorded,
-                )?;
             }
             Ok(bound_texture)
         };
@@ -3955,7 +4000,7 @@ impl SceneRenderer {
                     bound_texture = Some(set);
                 }
                 let group = gpu_cull.is_some().then(|| {
-                    render_instances.batches.len() + item.instance as usize
+                    render_instances.draw_meshes.len() + item.instance as usize
                         - blended_base
                 });
                 draw_instances(
@@ -4942,12 +4987,19 @@ impl SceneRenderer {
             })
             .collect();
 
-        // An object whose mesh starts a LOD group becomes one instance per
-        // level, each drawn only inside its level's range. Only the finest
-        // level casts shadows.
+        // An opaque object whose mesh starts a LOD group stays one instance
+        // of its batch, which picks the level per instance and frame. A
+        // blended object becomes one instance per level, each drawn only
+        // inside its level's range. Only the finest level casts shadows.
         // ponytail: the shadow pass draws that level at every range; pick
         // shadow LODs per light when distant casters cost too much.
         let groups = lod_groups(assets);
+        let is_blended = |material| {
+            assets.materials.get(material).is_some_and(|material| {
+                material.alpha_mode == AlphaMode::Blend
+                    || material.transmission > 0.0
+            })
+        };
         let mut renderables =
             Vec::with_capacity(render_world.renderables.len());
         let mut lod_ranges = Vec::with_capacity(render_world.renderables.len());
@@ -4962,41 +5014,46 @@ impl SceneRenderer {
                 expanded_sources.push(source);
                 continue;
             };
-            let screen_size = group.metric == LodMetric::ScreenSize;
-            for (level, (lod, range)) in
-                group.levels.iter().zip(group.ranges()).enumerate()
+            let screen =
+                f32::from(u8::from(group.metric == LodMetric::ScreenSize));
+            let ranges = group.ranges();
+            if !is_blended(renderable.material) {
+                let mut ends = [f32::NEG_INFINITY; MAX_LOD_LEVELS];
+                for (end, range) in ends.iter_mut().zip(&ranges) {
+                    *end = range[1];
+                }
+                renderables.push(*renderable);
+                lod_ranges.push(Some(([0.0, screen, 0.0, 0.0], ends)));
+                expanded_sources.push(source);
+                continue;
+            }
+            for (level, (lod, range)) in group
+                .levels
+                .iter()
+                .zip(ranges)
+                .take(MAX_LOD_LEVELS)
+                .enumerate()
             {
                 renderables.push(crate::runtime::ExtractedRenderable {
                     mesh: lod.mesh,
                     cast_shadows: renderable.cast_shadows && level == 0,
                     ..*renderable
                 });
-                lod_ranges.push(Some([
-                    range[0],
-                    range[1],
-                    f32::from(u8::from(screen_size)),
-                    0.0,
-                ]));
+                let mut ends = [f32::NEG_INFINITY; MAX_LOD_LEVELS];
+                ends[0] = range[1];
+                lod_ranges.push(Some(([range[0], screen, 0.0, 0.0], ends)));
                 expanded_sources.push(source);
             }
         }
-        let (order, batches, blended_start) = render_batch_order(
-            &renderables,
-            |material| {
-                assets.materials.get(material).is_some_and(|material| {
-                    material.alpha_mode == AlphaMode::Blend
-                        || material.transmission > 0.0
-                })
-            },
-            |material| {
+        let (order, mut batches, blended_start) =
+            render_batch_order(&renderables, is_blended, |material| {
                 let mut group = material_group(assets.materials.get(material));
                 // A screen binds its own feed, so it shares no batch.
                 if screens.binary_search(&material.key()).is_ok() {
                     group.0[0] = Some(!material.key());
                 }
                 group
-            },
-        );
+            });
         let mut instances = Vec::with_capacity(order.len().max(1));
         for &index in &order {
             let renderable = renderables[index];
@@ -5100,15 +5157,13 @@ impl SceneRenderer {
                 // if that overdraw ever shows up.
                 let sphere =
                     local.map_or([0.0, 0.0, 0.0, -1.0], bounding_sphere);
+                let (lod, lod_ends) =
+                    lod_ranges[index].unwrap_or(([0.0; 4], NO_LOD_ENDS));
                 cull_source.push(CullInstance {
                     sphere,
                     slot: [0; 4],
-                    lod: lod_ranges[index].unwrap_or([
-                        0.0,
-                        f32::INFINITY,
-                        0.0,
-                        0.0,
-                    ]),
+                    lod,
+                    lod_ends,
                 });
                 lod_spheres.push(lod_ranges[index].map(|_| {
                     world_sphere(&renderable.transform.matrix, sphere)
@@ -5125,19 +5180,34 @@ impl SceneRenderer {
             .collect();
         mesh_revisions.sort_unstable();
         mesh_revisions.dedup();
-        for (group, batch) in batches.iter().enumerate() {
+        // Each batch draws once per LOD level of its mesh; level draws sit
+        // in a row from the batch's `first_draw`.
+        let mut draw_meshes = Vec::with_capacity(batches.len());
+        for batch in &mut batches {
+            batch.first_draw = draw_meshes.len() as u32;
+            match groups.get(&batch.mesh_key) {
+                Some(group) => draw_meshes.extend(
+                    group
+                        .levels
+                        .iter()
+                        .take(MAX_LOD_LEVELS)
+                        .map(|level| level.mesh.key()),
+                ),
+                None => draw_meshes.push(batch.mesh_key),
+            }
+            batch.levels = draw_meshes.len() as u32 - batch.first_draw;
             let first = batch.first_instance as usize;
             for instance in
                 &mut cull_source[first..first + batch.instance_count as usize]
             {
-                instance.slot = [group as u32, batch.first_instance, 0, 0];
+                instance.slot = [batch.first_draw, batch.first_instance, 0, 0];
             }
         }
         for (offset, instance) in
             cull_source[blended_start..].iter_mut().enumerate()
         {
             let slot = (blended_start + offset) as u32;
-            instance.slot = [(batches.len() + offset) as u32, slot, 1, 0];
+            instance.slot = [(draw_meshes.len() + offset) as u32, slot, 1, 0];
         }
         let gpu_owned = instances
             .iter()
@@ -5213,6 +5283,7 @@ impl SceneRenderer {
             glossy_batches,
             instances,
             batches,
+            draw_meshes,
             blended,
             mesh_revisions,
             bounds,
@@ -5286,18 +5357,23 @@ impl SceneRenderer {
         let (list, batches, blended) =
             compact_visible(&prepared.batches, &prepared.blended, |instance| {
                 let index = instance as usize;
-                let lod = prepared.cull_source[index].lod;
-                let in_lod = prepared.lod_spheres[index].is_none_or(|sphere| {
-                    let value = lod_value(lod_camera, sphere, lod[2] != 0.0);
-                    lod[0] <= value && value < lod[1]
-                });
-                in_lod
-                    && match (&planes, prepared.bounds[index]) {
-                        (Some(planes), Some(bounds)) => {
-                            bounds_in_frustum(planes, &bounds)
-                        }
-                        _ => true,
+                let cull = &prepared.cull_source[index];
+                let level = match prepared.lod_spheres[index] {
+                    Some(sphere) => lod_level(
+                        lod_value(lod_camera, sphere, cull.lod[1] != 0.0),
+                        cull.lod,
+                        cull.lod_ends,
+                    )?,
+                    None => 0,
+                };
+                match (&planes, prepared.bounds[index]) {
+                    (Some(planes), Some(bounds))
+                        if !bounds_in_frustum(planes, &bounds) =>
+                    {
+                        None
                     }
+                    _ => Some(level),
+                }
             });
         let culled = prepared.bounds.len() - list.len();
         // A zero-length buffer is invalid; the padding entry is never drawn.
@@ -5960,6 +6036,8 @@ fn render_batch_order(
                 material: renderable.material,
                 first_instance: instance as u32,
                 instance_count: 0,
+                first_draw: batches.len() as u32,
+                levels: 1,
             });
             previous_key = Some(key);
         }
@@ -5968,31 +6046,35 @@ fn render_batch_order(
     (order, batches, blended_start)
 }
 
-/// Compacts the instances `in_view` keeps into one list: each batch's
-/// visible instances stay contiguous and get a `(first, count)` range, and
-/// each kept blended instance gets its own slot.
+/// Compacts the instances `in_view` keeps, with the LOD level it picks,
+/// into one list: each batch draw's visible instances stay contiguous and
+/// get a `(first, count)` range, in draw order, and each kept blended
+/// instance gets its own slot.
 fn compact_visible(
     batches: &[PreparedRenderBatch],
     blended: &[BlendedInstance],
-    in_view: impl Fn(u32) -> bool,
+    in_view: impl Fn(u32) -> Option<u32>,
 ) -> (Vec<VisibleInstance>, Vec<(u32, u32)>, Vec<BlendedInstance>) {
     let mut list = Vec::new();
-    let ranges = batches
-        .iter()
-        .map(|batch| {
+    let mut ranges = Vec::with_capacity(batches.len());
+    let mut picks = Vec::new();
+    for batch in batches {
+        picks.clear();
+        picks.extend(
+            (batch.first_instance..batch.first_instance + batch.instance_count)
+                .filter_map(|instance| Some((in_view(instance)?, instance))),
+        );
+        for level in 0..batch.levels {
             let first = list.len() as u32;
-            list.extend(
-                (batch.first_instance
-                    ..batch.first_instance + batch.instance_count)
-                    .filter(|instance| in_view(*instance))
-                    .map(|instance_index| VisibleInstance { instance_index }),
-            );
-            (first, list.len() as u32 - first)
-        })
-        .collect();
+            list.extend(picks.iter().filter(|(pick, _)| *pick == level).map(
+                |&(_, instance_index)| VisibleInstance { instance_index },
+            ));
+            ranges.push((first, list.len() as u32 - first));
+        }
+    }
     let blended = blended
         .iter()
-        .filter(|item| in_view(item.instance))
+        .filter(|item| in_view(item.instance).is_some())
         .map(|item| {
             list.push(VisibleInstance {
                 instance_index: item.instance,
@@ -6374,19 +6456,19 @@ type GpuCullSet = (
     Arc<DescriptorSet>,
 );
 
-/// Per-frame outputs of the GPU cull pass: the visible list, sized like the
-/// instance buffer so each group writes into its own instance range, and
-/// one draw command per opaque batch and per blended instance, in that
-/// order, with a zero instance count for the pass to count up.
+/// Per-frame outputs of the GPU cull pass: the visible list, one instance
+/// buffer's length per LOD level so each group and level writes into its
+/// own range, and one draw command per batch draw and per blended instance,
+/// in that order, with a zero instance count for the pass to count up.
 fn gpu_cull_buffers(
     allocator: &SubbufferAllocator,
     instances: &PreparedRenderInstances,
     meshes: &HashMap<u64, PreparedMesh>,
 ) -> Result<GpuCullBuffers, SceneRenderError> {
     let draws = instances
-        .batches
+        .draw_meshes
         .iter()
-        .map(|batch| batch.mesh_key)
+        .copied()
         .chain(instances.blended.iter().map(|item| item.mesh_key))
         .map(|mesh_key| DrawIndexedIndirectCommand {
             index_count: meshes
@@ -6411,7 +6493,14 @@ fn gpu_cull_buffers(
     }
     let list = allocator
         .allocate_slice::<VisibleInstance>(
-            instances.cull_source.len().max(1) as DeviceSize
+            (instances.cull_source.len()
+                * instances
+                    .batches
+                    .iter()
+                    .map(|batch| batch.levels)
+                    .max()
+                    .unwrap_or(1) as usize)
+                .max(1) as DeviceSize,
         )
         .map_err(|error| SceneRenderError(error.to_string()))?;
     Ok((list, draw_commands))
@@ -9404,6 +9493,7 @@ struct CullInstance {
     vec4 sphere;
     uvec4 slot;
     vec4 lod;
+    vec4 lod_ends;
 };
 layout(set = 0, binding = 2) readonly buffer CullInstances {
     CullInstance data[];
@@ -9526,11 +9616,22 @@ void main() {
         max(dot(model[0].xyz, model[0].xyz), dot(model[1].xyz, model[1].xyz)),
         dot(model[2].xyz, model[2].xyz)));
     float radius = instance.sphere.w * scale;
-    float lod = lod_value(center, radius, instance.lod.z != 0.0);
-    // `frustum` means in view before occlusion: in its LOD range and, with
-    // bounds and the test enabled, in the frustum.
+    float lod = lod_value(center, radius, instance.lod.y != 0.0);
+    // The first level whose range holds the value; 4 outside every range.
+    // Mirrors `lod_level` in Rust.
+    uint level = 4u;
+    if (lod >= instance.lod.x) {
+        for (uint i = 0u; i < 4u; ++i) {
+            if (lod < instance.lod_ends[i]) {
+                level = i;
+                break;
+            }
+        }
+    }
+    // `frustum` means in view before occlusion: in a LOD level's range and,
+    // with bounds and the test enabled, in the frustum.
     bool bounded = instance.sphere.w >= 0.0;
-    bool frustum = instance.lod.x <= lod && lod < instance.lod.y
+    bool frustum = level < 4u
         && (!bounded || cull.info.z != 0u || in_frustum(center, radius));
     bool shown = frustum && (phase != 2u || !bounded || !occluded(center, radius));
     // The early phase draws last frame's visible opaque instances; the late
@@ -9544,8 +9645,8 @@ void main() {
     if (!emit) {
         return;
     }
-    uint slot = atomicAdd(draw_commands.data[instance.slot.x].instance_count, 1u);
-    visible.data[instance.slot.y + slot] = index;
+    uint slot = atomicAdd(draw_commands.data[instance.slot.x + level].instance_count, 1u);
+    visible.data[instance.slot.y + level * cull.info.x + slot] = index;
 }
 "
             }
@@ -9844,34 +9945,61 @@ mod tests {
     #[test]
     fn compaction_keeps_batches_contiguous_and_slots_blended_instances() {
         let assets = AssetServer::default();
-        let batch = |first_instance, instance_count| PreparedRenderBatch {
-            mesh_key: 0,
-            material: assets.fallback_material,
-            first_instance,
-            instance_count,
-        };
+        let batch =
+            |first_instance, instance_count, levels| PreparedRenderBatch {
+                mesh_key: 0,
+                material: assets.fallback_material,
+                first_instance,
+                instance_count,
+                first_draw: 0,
+                levels,
+            };
         let blended = |instance| BlendedInstance {
             instance,
             mesh_key: 0,
             material: assets.fallback_material,
             position: [0.0; 3],
         };
-        let culled = [2, 4, 5, 8];
+        // Instance 3 picks the second LOD level of its batch.
+        let culled = [2, 5, 8];
         let (list, ranges, kept) = compact_visible(
-            &[batch(0, 3), batch(3, 3), batch(6, 1)],
+            &[batch(0, 3, 1), batch(3, 3, 2), batch(6, 1, 1)],
             &[blended(7), blended(8), blended(9)],
-            |instance| !culled.contains(&instance),
+            |instance| {
+                (!culled.contains(&instance))
+                    .then_some(u32::from(instance == 3))
+            },
         );
         let list = list
             .iter()
             .map(|entry| entry.instance_index)
             .collect::<Vec<_>>();
-        assert_eq!(list, [0, 1, 3, 6, 7, 9]);
-        assert_eq!(ranges, [(0, 2), (2, 1), (3, 1)]);
+        assert_eq!(list, [0, 1, 4, 3, 6, 7, 9]);
+        // One range per batch draw: the middle batch draws each level.
+        assert_eq!(ranges, [(0, 2), (2, 1), (3, 1), (4, 1)]);
         // Kept blended instances name their slot, which holds them.
         let slots = kept.iter().map(|item| item.instance).collect::<Vec<_>>();
-        assert_eq!(slots, [4, 5]);
-        assert_eq!([list[4], list[5]], [7, 9]);
+        assert_eq!(slots, [5, 6]);
+        assert_eq!([list[5], list[6]], [7, 9]);
+    }
+
+    #[test]
+    fn lod_level_picks_the_range_holding_the_value() {
+        let lod = [0.0; 4];
+        let ends = [5.0, 9.0, f32::INFINITY, f32::NEG_INFINITY];
+        assert_eq!(lod_level(0.0, lod, ends), Some(0));
+        assert_eq!(lod_level(5.0, lod, ends), Some(1));
+        assert_eq!(lod_level(1e9, lod, ends), Some(2));
+        let last = [10.0, 0.0, 0.0, 0.0];
+        let ends = [
+            20.0,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        assert_eq!(lod_level(9.0, last, ends), None, "before the start");
+        assert_eq!(lod_level(20.0, last, ends), None, "past the last end");
+        assert_eq!(lod_level(3.0, [0.0; 4], NO_LOD_ENDS), Some(0));
     }
 
     #[test]
@@ -11589,7 +11717,7 @@ mod tests {
 
     #[test]
     fn cull_gpu_layouts_match_shader_structs() {
-        assert_eq!(std::mem::size_of::<CullInstance>(), 48);
+        assert_eq!(std::mem::size_of::<CullInstance>(), 64);
         assert_eq!(std::mem::size_of::<DrawIndexedIndirectCommand>(), 20);
         // Clip matrix, viewport, LOD camera, and info: under the 128-byte
         // guaranteed push-constant range.
@@ -14234,14 +14362,14 @@ mod tests {
                 let visibility = prepared.visibility.as_ref().unwrap();
                 visibility.batches.iter().map(|(_, count)| *count).collect()
             };
-            let drawn = prepared
-                .batches
-                .iter()
-                .zip(counts)
+            let drawn = counts
+                .into_iter()
+                .enumerate()
                 .filter(|(_, count)| *count > 0)
-                .map(|(batch, count)| {
+                // Blended draw commands follow the batch draws.
+                .filter_map(|(draw, count)| {
                     assert_eq!(count, 1);
-                    batch.mesh_key
+                    prepared.draw_meshes.get(draw).copied()
                 })
                 .collect::<Vec<_>>();
             (drawn, scene.center_pixel()[1] == 255)
@@ -14274,23 +14402,33 @@ mod tests {
         let stats = scene.renderer.culling_stats();
         assert_eq!(
             (stats.submitted, stats.visible, stats.culled),
-            (2, 1, 1),
-            "one instance per level"
+            (1, 1, 0),
+            "one instance for every level"
         );
-        // Only the finest level casts shadows.
+        // One batch draws both levels; only the finest casts shadows.
         let prepared = scene.renderer.prepared_instances.as_ref().unwrap();
         let instances = prepared.instances.read().unwrap();
-        let casters = prepared
-            .batches
-            .iter()
-            .map(|batch| {
-                (
-                    batch.mesh_key,
-                    instances[batch.first_instance as usize].physics[3] & 1,
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        assert_eq!((casters[&base.key()], casters[&coarse.key()]), (1, 0));
+        assert_eq!(prepared.batches.len(), 1);
+        assert_eq!(prepared.batches[0].mesh_key, base.key());
+        assert_eq!(prepared.draw_meshes, [base.key(), coarse.key()]);
+        assert_eq!(instances[0].physics[3] & 1, 1);
+        drop(instances);
+        // A blended object keeps one instance per level, sorted alone.
+        let material = scene.render_world.renderables[0].material;
+        scene.assets.materials.get_mut(material).unwrap().alpha_mode =
+            AlphaMode::Blend;
+        for (mode, camera_z, green) in [
+            (CullingMode::Frustum, 5.0, true),
+            (CullingMode::Frustum, 9.0, false),
+            (CullingMode::FrustumAndOcclusion, 5.0, true),
+            (CullingMode::FrustumAndOcclusion, 9.0, false),
+            (CullingMode::FrustumAndOcclusion, 13.0, false),
+        ] {
+            scene.render_world.culling = mode;
+            assert_eq!(frame(&mut scene, camera_z).1, green, "{mode:?}");
+            let prepared = scene.renderer.prepared_instances.as_ref().unwrap();
+            assert_eq!(prepared.blended.len(), 2);
+        }
     }
 
     #[test]
@@ -16261,5 +16399,95 @@ mod tests {
                 [0.0, 0.0, 0.2, 0.0],
             ]
         );
+    }
+
+    /// CPU cost of a crowd with a two-level LOD group seen by four cameras
+    /// a frame, like forever-bear's CCTV feeds (F49). Prints milliseconds;
+    /// the numbers only mean something on real hardware.
+    #[test]
+    #[ignore = "timing on real hardware: cargo test --release --features gpu-tests lod_crowd_cpu_cost -- --ignored --nocapture"]
+    fn lod_crowd_cpu_cost() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            return;
+        }
+        let material = MaterialAsset {
+            model: MaterialModel::Unlit,
+            ..MaterialAsset::default()
+        };
+        for lod in [false, true] {
+            let mut scene = SlabScene::new(&[(0.0, material.clone())]);
+            let template = scene.render_world.renderables[0];
+            scene.render_world.renderables = (0..2085_u32)
+                .map(|index| crate::runtime::ExtractedRenderable {
+                    entity: bevy_ecs::entity::Entity::from_raw_u32(index + 1)
+                        .unwrap(),
+                    transform: crate::runtime::GlobalTransform {
+                        matrix: Matrix4::new_translation(&Vector3::new(
+                            (index % 50) as f32 - 25.0,
+                            0.0,
+                            -((index / 50) as f32),
+                        ))
+                        .into(),
+                    },
+                    ..template
+                })
+                .collect();
+            if lod {
+                let base = scene.assets.fallback_mesh;
+                let coarse = scene
+                    .assets
+                    .meshes
+                    .insert(scene.assets.meshes.get(base).unwrap().clone());
+                scene.assets.lod_groups.insert(LodGroupAsset {
+                    metric: LodMetric::Distance,
+                    levels: vec![
+                        crate::assets::LodLevel {
+                            mesh: base,
+                            until: 9.0,
+                        },
+                        crate::assets::LodLevel {
+                            mesh: coarse,
+                            until: f32::INFINITY,
+                        },
+                    ],
+                });
+            }
+            let mut total = Duration::ZERO;
+            let frames = 400;
+            for frame in 0..frames + 20 {
+                scene.render_world.active_camera.as_mut().unwrap().transform =
+                    crate::runtime::GlobalTransform {
+                        matrix: Matrix4::new_translation(&Vector3::new(
+                            (frame % 4) as f32 * 3.0,
+                            1.0,
+                            5.0,
+                        ))
+                        .into(),
+                    };
+                // Every object sways, so instances patch each frame.
+                let sway = (frame % 2) as f32 * 0.01;
+                for renderable in &mut scene.render_world.renderables {
+                    renderable.transform.matrix[3][1] = sway;
+                }
+                scene.render_world.renderables_revision += 1;
+                scene.render_world.renderables_layout_revision = 1;
+                let before = scene.now();
+                let start = std::time::Instant::now();
+                let future = scene.render(before);
+                if frame >= 20 {
+                    total += start.elapsed();
+                }
+                future
+                    .then_signal_fence_and_flush()
+                    .unwrap()
+                    .wait(None)
+                    .unwrap();
+            }
+            eprintln!(
+                "lod {lod}: {:.3} ms CPU per frame, {} instances",
+                total.as_secs_f64() * 1000.0 / f64::from(frames),
+                scene.renderer.culling_stats().submitted
+            );
+        }
     }
 }

@@ -961,6 +961,10 @@ pub struct LodLevel {
     pub until: f32,
 }
 
+/// Most levels a LOD group can have: one instanced batch picks between them
+/// per instance.
+pub const MAX_LOD_LEVELS: usize = 4;
+
 /// Coarser stand-ins for one mesh. Every renderer drawing `levels[0].mesh`
 /// picks one level per object and frame instead.
 #[derive(Clone, Debug, PartialEq)]
@@ -1355,6 +1359,12 @@ impl AssetServer {
                 .map_err(|value| error(value.to_string()))?;
         if file.levels.is_empty() {
             return Err(error("a LOD group needs at least one level".into()));
+        }
+        if file.levels.len() > MAX_LOD_LEVELS {
+            return Err(error(format!(
+                "a LOD group has at most {MAX_LOD_LEVELS} levels, not {}",
+                file.levels.len()
+            )));
         }
         let directory = path.parent().unwrap_or(Path::new(""));
         let levels = file
@@ -3769,6 +3779,14 @@ mod tests {
         assert!(server.load_lod_group(folder.join("bad.rlod")).is_err());
         std::fs::write(folder.join("empty.rlod"), r#"{"levels": []}"#).unwrap();
         assert!(server.load_lod_group(folder.join("empty.rlod")).is_err());
+        let level = r#"{"mesh": "rock.rmesh"}"#;
+        std::fs::write(
+            folder.join("many.rlod"),
+            format!(r#"{{"levels": [{}]}}"#, [level; 5].join(",")),
+        )
+        .unwrap();
+        let many = server.load_lod_group(folder.join("many.rlod"));
+        assert!(many.unwrap_err().to_string().contains("at most 4 levels"));
         std::fs::remove_dir_all(folder).unwrap();
     }
 

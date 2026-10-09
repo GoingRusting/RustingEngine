@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Performance
+
+- LOD groups no longer double CPU render cost: an opaque object in a `.rlod` group is one instance, and its batch picks the level per object (2085 moving objects with two levels: 0.298 ms to 0.174 ms of render CPU a frame; 0.127 ms without LOD)
+
+### Migration
+
+- A `.rlod` group may have at most 4 levels; loading one with more fails
+
 ## [2.3.0] - 2026-10-10
 
 Follow-up to 2.2.0 from Rusting Raft: animated copies, cheaper moving objects and passwords for networking.

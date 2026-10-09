@@ -314,9 +314,10 @@ and recording, without waits on the GPU), `gpu_p50_ms` (GPU pass time) and
 prints one `bench:` line. Check `bound` before cutting cost: fewer triangles,
 mesh LOD and smaller shadow maps only help a `"gpu"` frame. A `"cpu"` frame
 needs fewer objects, fewer distinct meshes and materials, or less game code
-per frame. Each LOD level is its own instanced batch, so a `.rlod` group adds
-CPU preparation and draws; on a CPU-bound crowd it can cost more than its
-triangles save.
+per frame. An opaque object in a `.rlod` group stays one instance: its batch
+picks the level per object and adds one draw per level, so LOD costs little
+CPU. Blended objects still become one instance per level. A group has at most
+4 levels; the loader refuses more.
 
 Without a window, `rusting test` gives GPU frame times. A scenario with
 `"gpu": true` and `"capture_size": [1920, 1080]` draws one offscreen frame
