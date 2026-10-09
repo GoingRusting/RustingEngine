@@ -2086,6 +2086,7 @@ pub fn lint_project(root: &Path) -> CliResult {
         .filter_map(|file| std::fs::read_to_string(file).ok())
         .collect();
     diagnostics.extend(lint_no_ending(&document, &code));
+    diagnostics.extend(lint_silent_goal(&document, &code));
     diagnostics.extend(lint_missing_names(&project.root));
     diagnostics.extend(lint_color_only_status(&project.root));
     CliResult {
@@ -2256,6 +2257,66 @@ fn lint_no_ending(document: &SceneDocument, code: &str) -> Option<Diagnostic> {
         entity: Some(EntityRef::of(entity)),
         ..Diagnostic::default()
     })
+}
+
+/// `LINT_SILENT_GOAL` on each counter with a target that nothing reacts
+/// to: no HUD element `requires` it or reads it out as `{name}`, no
+/// pickup `requires` it, and game code never names it in a string. The
+/// player reaches the goal and nothing shows or sounds.
+// ponytail: a text search of the code, so the name in a comment counts.
+fn lint_silent_goal(document: &SceneDocument, code: &str) -> Vec<Diagnostic> {
+    use crate::runtime::{
+        Counter, HudElement, Pickup, COUNTER_COMPONENT, HUD_ELEMENT_COMPONENT,
+        PICKUP_COMPONENT,
+    };
+    let parse = |e: &SceneEntity, key: &str| e.components.get(key).cloned();
+    let mut reacting = BTreeSet::new();
+    for entity in &document.entities {
+        if let Some(hud) = parse(entity, HUD_ELEMENT_COMPONENT)
+            .and_then(|text| serde_json::from_str::<HudElement>(&text).ok())
+        {
+            reacting.extend(hud.requires);
+            let mut rest = hud.text.as_str();
+            while let Some((_, after)) = rest.split_once('{') {
+                let Some((name, after)) = after.split_once('}') else {
+                    break;
+                };
+                reacting.insert(name.to_owned());
+                rest = after;
+            }
+        }
+        if let Some(pickup) = parse(entity, PICKUP_COMPONENT)
+            .and_then(|text| serde_json::from_str::<Pickup>(&text).ok())
+        {
+            reacting.extend(pickup.requires);
+        }
+    }
+    document
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entity)| {
+            let counter: Counter =
+                serde_json::from_str(&parse(entity, COUNTER_COMPONENT)?).ok()?;
+            let name = counter.name;
+            if counter.target.is_none()
+                || reacting.contains(&name)
+                || code.contains(&format!("\"{name}\""))
+            {
+                return None;
+            }
+            Some(Diagnostic {
+                code: "LINT_SILENT_GOAL",
+                severity: "warning",
+                message: format!(
+                    "counter `{name}` has a target but nothing reacts when it is reached: no HUD element requires or shows it, no pickup requires it, and game code never names it"
+                ),
+                scene_location: Some(format!("/entities/{index}")),
+                entity: Some(EntityRef::of(entity)),
+                ..Diagnostic::default()
+            })
+        })
+        .collect()
 }
 
 /// A `LINT_MISSING_OBJECT` per literal object name in game code, such as
@@ -6650,6 +6711,41 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
             .map(|d| (d.code, d.entity.unwrap().name.unwrap_or_default()))
             .collect();
         assert_eq!(found, [("LINT_LIGHT_BUDGET", "Spot".to_owned())]);
+    }
+
+    #[test]
+    fn lint_flags_goals_nothing_reacts_to() {
+        let entity = |name: &str, key: &str, value: serde_json::Value| {
+            json!({"id": uuid::Uuid::new_v4(), "name": name,
+                "components": {key: value.to_string()}})
+        };
+        let counter = |name: &str| {
+            entity(name, "rusting.counter", json!({"name": name, "target": 3}))
+        };
+        let scene = json!({"format_version": 7, "name": "Goals", "entities": [
+            counter("gems"), counter("keys"), counter("laps"), counter("coins"),
+            counter("kills"),
+            entity("Free", "rusting.counter", json!({"name": "score"})),
+            entity("Door", "rusting.pickup", json!({"counter": "x", "requires": "keys"})),
+            entity("Won", "rusting.hud", json!({"text": "Done", "requires": "laps"})),
+            entity("Coins", "rusting.hud", json!({"text": "Coins {coins}/3"}))]});
+        let document =
+            crate::runtime::parse_scene_document(scene.to_string().as_bytes())
+                .unwrap();
+        let found = lint_silent_goal(
+            &document,
+            "if scene.counter_complete(\"kills\") {}",
+        );
+        let names: Vec<_> = found
+            .iter()
+            .map(|d| d.entity.as_ref().unwrap().name.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["gems"],
+            "a pickup or HUD requiring it, a readout, code naming it and no target pass"
+        );
+        assert_eq!(found[0].code, "LINT_SILENT_GOAL");
     }
 
     #[test]

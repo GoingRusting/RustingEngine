@@ -337,6 +337,12 @@ pub const CODES: &[CodeInfo] = &[
         "rusting lint --json",
     ),
     code(
+        "LINT_SILENT_GOAL",
+        "A counter has a target, but nothing reacts when it is reached: no HUD element `requires` it or shows it as `{name}`, no pickup `requires` it, and game code never names it. The player reaches the goal and nothing shows or sounds.",
+        "Show the result: a HUD element with `requires` set to the counter (a win screen), a pickup or door that `requires` it, or game code that checks `counter_complete`.",
+        "rusting lint --json",
+    ),
+    code(
         "LINT_TEXT_CONTRAST",
         "HUD button text has a WCAG contrast ratio against the dark button fill below 4.5:1 (3:1 from 24 px), so it is hard to read. Plain HUD text is not judged: the scene behind it is only known from a rendered frame.",
         "Use light text on buttons (the default white gives about 11:1), or raise the color's alpha to 1.",
