@@ -1,0 +1,21 @@
+{
+ "name": "react: a false start restarts the wait, the first press after Go! records about 667 ms, and later presses change nothing",
+ "ticks": 300,
+ "steps": [
+  {"tick": 5, "expect": {"counter": "ready", "equals": 0}},
+  {"tick": 5, "expect": {"counter": "false_starts", "equals": 0}},
+  {"tick": 5, "expect": {"counter": "reaction_ms", "equals": 0}},
+  {"tick": 60, "tap": "react"},
+  {"tick": 62, "expect": {"counter": "false_starts", "equals": 1}},
+  {"tick": 150, "expect": {"counter": "ready", "equals": 0}},
+  {"tick": 170, "expect": {"counter": "ready", "equals": 0}},
+  {"tick": 190, "expect": {"counter": "ready", "equals": 1}},
+  {"tick": 190, "expect": {"counter": "reaction_ms", "equals": 0}},
+  {"tick": 220, "tap": "react"},
+  {"tick": 224, "expect": {"counter": "reaction_ms", "equals": 667, "tolerance": 60}},
+  {"tick": 224, "expect": {"counter": "false_starts", "equals": 1}},
+  {"tick": 260, "tap": "react"},
+  {"tick": 290, "expect": {"counter": "reaction_ms", "equals": 667, "tolerance": 60}},
+  {"tick": 290, "expect": {"counter": "false_starts", "equals": 1}}
+ ]
+}

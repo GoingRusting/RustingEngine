@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a reaction-time game in this empty project. The player waits for a signal: two seconds of game time (120 fixed ticks) after the game starts, a counter named `ready` goes from 0 to 1 and the screen says `Go!`. Pressing an input action named `react` (the space bar) before that is a false start: it adds 1 to a counter named `false_starts` and the two-second wait starts again from that press. The first `react` press after `Go!` sets a counter named `reaction_ms` to the milliseconds of game time since `Go!` appeared and shows that time on screen; presses after that change nothing. All three counters start at 0.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, time: &FrameTime) {\n    let tick = time.fixed_tick as i32;\n    if scene.counter_value(\"reacted\") == 1 {\n        return;\n    }\n    // `go_tick` is the tick the signal shows; a false start moves it.\n    let go = scene.counter_or(\"go_tick\", 120);\n    let pressed = scene.pressed(\"react\");\n    if tick < go {\n        if pressed {\n            scene.add_to_counter(\"false_starts\", 1);\n            scene.set_counter(\"go_tick\", tick + 120);\n        }\n        return;\n    }\n    scene.set_counter(\"ready\", 1);\n    scene.set_hud(\"Message\", |hud| hud.text = \"Go!\".into());\n    if pressed {\n        scene.set_counter(\"reacted\", 1);\n        scene.set_counter(\"reaction_ms\", (tick - go) * 1000 / 60);\n        scene.set_hud(\"Message\", |hud| hud.text = \"{reaction_ms} ms\".into());\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/react.json"
+  ]
+}

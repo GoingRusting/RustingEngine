@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `reaction-new-game`: a new-game task from the empty template, a reaction-time game with false starts.
 - Agent benchmark task `platformer-goal`: a feature task on the 2D platformer template, where touching the Goal clears the level once.
 - Agent benchmark task `crypt-diagonal`: a bug-fix task on the roguelike template, where diagonal enemies strike.
 - Agent benchmark task `swarm-bomb`: a fourth feature task, a once-a-round bomb in the twin-stick template.

@@ -1,0 +1,12 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "React Action",
+    "components": {"rusting.input_action": {"action": "react", "inputs": ["Space"]}}}},
+  {"op": "create", "entity": {"name": "Ready",
+    "components": {"rusting.counter": {"name": "ready"}}}},
+  {"op": "create", "entity": {"name": "False Starts",
+    "components": {"rusting.counter": {"name": "false_starts"}}}},
+  {"op": "create", "entity": {"name": "Reaction",
+    "components": {"rusting.counter": {"name": "reaction_ms"}}}},
+  {"op": "create", "entity": {"name": "Message",
+    "components": {"rusting.hud": {"text": "Wait for it..."}}}}
+]}
