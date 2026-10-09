@@ -504,6 +504,26 @@ impl GameScene<'_> {
         self.audio().set_bus_voice_limit(bus, limit);
     }
 
+    /// Multiplies the size of HUD text and captions by `scale`, clamped to
+    /// 0.5 to 3, for players who need larger text; 1 is as authored. Game
+    /// menus drawn with [`Self::ui`] read it from [`Self::text_scale`].
+    pub fn set_text_scale(&mut self, scale: f32) {
+        let scale = if scale.is_finite() {
+            scale.clamp(0.5, 3.0)
+        } else {
+            1.0
+        };
+        self.world.insert_resource(crate::runtime::TextScale(scale));
+    }
+
+    /// The text size multiplier from [`Self::set_text_scale`], 1 by default.
+    #[must_use]
+    pub fn text_scale(&self) -> f32 {
+        self.world
+            .get_resource::<crate::runtime::TextScale>()
+            .map_or(1.0, |scale| scale.0)
+    }
+
     /// Shows or hides sound captions on the HUD, at `size` logical pixels.
     pub fn set_captions(&mut self, enabled: bool, size: f32) {
         self.world
@@ -5727,6 +5747,19 @@ mod tests {
         assert_eq!(click(&mut world, &[next]), "ask", "Continue");
         assert_eq!(click(&mut world, &[second]), "", "an empty next ends");
         assert_eq!(GameScene { world: &mut world }.counter_value("asked"), 1);
+    }
+
+    #[test]
+    fn text_scale_is_clamped_and_read_back() {
+        let mut world = World::new();
+        let mut scene = GameScene { world: &mut world };
+        assert!((scene.text_scale() - 1.0).abs() < f32::EPSILON);
+        scene.set_text_scale(1.5);
+        assert!((scene.text_scale() - 1.5).abs() < f32::EPSILON);
+        scene.set_text_scale(9.0);
+        assert!((scene.text_scale() - 3.0).abs() < f32::EPSILON);
+        scene.set_text_scale(f32::NAN);
+        assert!((scene.text_scale() - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

@@ -886,6 +886,8 @@ const API_GROUPS: &[(&str, &[&str])] = &[
         "menus, saves",
         &[
             "ui",
+            "set_text_scale",
+            "text_scale",
             "set_paused",
             "paused",
             "set_time_scale",

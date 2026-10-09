@@ -2717,6 +2717,42 @@ fn hud_draws_scene_text_and_reports_button_clicks() {
 
 #[cfg(feature = "ui")]
 #[test]
+fn text_scale_enlarges_hud_text() {
+    let mut app = App::new();
+    app.spawn(HudElement {
+        text: "Score".into(),
+        anchor: HudAnchor::TopLeft,
+        offset: [0.0, 0.0],
+        font_size: 20.0,
+        ..HudElement::default()
+    });
+    let frame = |app: &mut App| {
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..egui::RawInput::default()
+            });
+        app.update(Duration::from_millis(16)).unwrap();
+        app.world()
+            .resource::<RuntimeUi>()
+            .find_text("Score")
+            .unwrap()
+    };
+    let [_, plain] = frame(&mut app);
+    app.insert_resource(TextScale(2.0));
+    let [_, doubled] = frame(&mut app);
+    assert!(
+        (doubled / plain - 2.0).abs() < 0.1,
+        "the text's centre moves down with its height: {plain} then {doubled}"
+    );
+}
+
+#[cfg(feature = "ui")]
+#[test]
 fn the_perf_overlay_draws_only_while_its_resource_exists() {
     let mut app = App::new();
     let frame = |app: &mut App| {

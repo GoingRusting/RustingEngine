@@ -955,6 +955,17 @@ pub(crate) fn find_counter<'a, C: std::ops::Deref<Target = Counter>>(
         .map(|(counter, _)| counter)
 }
 
+/// Multiplies the size of HUD text and captions, for players who need
+/// larger text; set by `GameScene::set_text_scale`. 1 is as authored.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct TextScale(pub f32);
+
+impl Default for TextScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 /// The current locale's strings, set by `GameScene::set_locale` from
 /// `assets/locales/<locale>.json`, a flat JSON object of key to text.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
@@ -1836,17 +1847,23 @@ pub(super) fn draw_hud(
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
-    (translations, dialogues, states): (
+    (translations, dialogues, states, text_scale): (
         Option<Res<Translations>>,
         Query<(&super::Name, &Dialogue)>,
         Query<(&super::Name, &ObjectState)>,
+        Option<Res<TextScale>>,
     ),
 ) {
+    let scale = text_scale.map_or(1.0, |scale| scale.0);
+    let captions = caption_settings.as_deref().cloned().unwrap_or_default();
     draw_perf_overlay(ui.context(), perf.as_deref());
     draw_captions(
         ui.context(),
         audio.as_deref(),
-        &caption_settings.as_deref().cloned().unwrap_or_default(),
+        &super::CaptionSettings {
+            size: captions.size * scale,
+            ..captions
+        },
     );
     // Hidden like a mesh: by itself or by any parent.
     let visible = |entity: Entity| {
@@ -1942,7 +1959,7 @@ pub(super) fn draw_hud(
             continue;
         }
         let text = egui::RichText::new(filled)
-            .size(element.font_size)
+            .size(element.font_size * scale)
             .color(egui::Color32::from_rgba_unmultiplied(r, g, b, a));
         // Measure this frame's text: an anchored egui area places itself by
         // last frame's size, so a value that grew ran past the edge.

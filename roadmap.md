@@ -2589,6 +2589,10 @@ Depends on: Milestones 1, 3, and 9.
   - [x] Extraction of translatable strings: a CLI command that lists `{tr:key}` and `tr("key")` uses missing from each locale file.
     Evidence: `rusting lint` warns `LINT_MISSING_TRANSLATION` per key; `cli::tests::lint_flags_translation_keys_a_locale_lacks` covers `tr`, both `tr_count` forms, a HUD `{tr:key}` and a `to_str("` look-alike.
 - [ ] Accessibility: screen-reader metadata, scalable text, and color-blind-safe defaults.
+  - [x] Scalable text. `GameScene::set_text_scale(scale)` (0.5 to 3, 1 as authored) multiplies HUD text and caption sizes; `text_scale()` reads it back for game menus.
+    - Verified (2026-10-09): `runtime::tests::text_scale_enlarges_hud_text` (a top-left label's centre moves down by 2x at scale 2) and `project_runner::tests::text_scale_is_clamped_and_read_back` (default 1, clamp to 3, NaN resets to 1).
+  - [ ] Screen-reader metadata. egui's AccessKit output needs the `accesskit` feature and a platform adapter, which are new dependencies; ask the owner first.
+  - [ ] Color-blind-safe defaults: a default HUD and debug palette that stays distinct under deuteranopia and protanopia, checked by a simulated-vision test.
 - [ ] Input remapping UI component built on the action map.
 - [ ] Decouple input sampling rate from the simulation tick without introducing nondeterminism.
 
