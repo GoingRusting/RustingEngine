@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "2d",
+  "request": "In this 2D platformer, the player falls straight through the brown brick platforms instead of landing on them, while the green ground works. The bricks should be as solid as the ground. Fix it.",
+  "seed": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"B\\\":{\\\"color\\\":[0.55,0.35,0.2,1.0],\\\"texture\\\":null,\\\"solid\\\":true}",
+      "replace": "\\\"B\\\":{\\\"color\\\":[0.55,0.35,0.2,1.0],\\\"texture\\\":null,\\\"solid\\\":false}"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"B\\\":{\\\"color\\\":[0.55,0.35,0.2,1.0],\\\"texture\\\":null,\\\"solid\\\":false}",
+      "replace": "\\\"B\\\":{\\\"color\\\":[0.55,0.35,0.2,1.0],\\\"texture\\\":null,\\\"solid\\\":true}"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/platformer_run.json",
+    "hidden/bricks.json"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "bricks: the player dropped over the middle brick ledge lands on it",
+  "ticks": 65,
+  "steps": [
+    {
+      "tick": 2,
+      "set": {
+        "entity": "Player",
+        "path": "/transform/position",
+        "value": [
+          -1.0,
+          5.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "tick": 60,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/1",
+        "greater_than": 2.5
+      }
+    },
+    {
+      "tick": 60,
+      "expect": {
+        "entity": "Player",
+        "path": "/transform/position/1",
+        "less_than": 4.5
+      }
+    }
+  ]
+}

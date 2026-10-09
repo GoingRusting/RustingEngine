@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- Agent benchmark task `platformer-bricks`: a bug-fix task on the 2D template whose bug is a tile marked not solid in the scene.
 - Agent benchmark task `crypt-wait`: a feature task on the roguelike template, a wait action that spends a turn.
 - `RUSTING_BENCH_TASK=<folder>` limits the agent benchmark's slow validation test to one task.
 - Agent benchmark task `lock-new-game`: a new-game task from the empty template, a four-digit code lock.
