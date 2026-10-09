@@ -988,7 +988,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.state",
-        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least moves it to `to`.",
+        summary: "The current state of an object's state machine, such as an enemy's patrol or chase. Game code changes it with scene.set_state(name, state), which records since_tick, the fixed tick it was entered on; set the starting state here. transitions run it with no code: each fixed tick the first edge whose from matches (empty matches any), whose after_seconds have passed in the state, and whose counter (empty for none) is at least at_least moves it to `to` and adds then_add to the counter then_counter (empty for none).",
         gpu: NO_GPU,
         example: || {
             json!({
@@ -1000,6 +1000,8 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
                     "after_seconds": 0.0,
                     "counter": "alarm",
                     "at_least": 1,
+                    "then_counter": "alerts",
+                    "then_add": 1,
                 }],
             })
         },

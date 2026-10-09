@@ -696,6 +696,8 @@ pub struct ObjectState {
 /// One edge of an [`ObjectState`] machine. It applies when the object is
 /// in `from` (or `from` is empty), has been there `after_seconds`, and the
 /// counter called `counter` (when not empty) is at least `at_least`.
+/// Taking it adds `then_add` to the counter `then_counter` (when not
+/// empty), creating the counter if needed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StateTransition {
@@ -704,15 +706,21 @@ pub struct StateTransition {
     pub after_seconds: f32,
     pub counter: String,
     pub at_least: i32,
+    pub then_counter: String,
+    pub then_add: i32,
 }
 
-/// Moves each [`ObjectState`] along its first applying transition. Every
-/// machine reads only counters, so the order of objects does not matter.
+/// Moves each [`ObjectState`] along its first applying transition. Guards
+/// read the counters from before this tick's transitions, and the counter
+/// additions apply after all of them, so the order of objects does not
+/// matter.
 pub fn run_state_machines(
+    mut commands: Commands,
     time: Res<FrameTime>,
     mut machines: Query<&mut ObjectState>,
-    counters: Query<(&Counter, Option<&SceneId>)>,
+    mut counters: Query<(&mut Counter, Option<&SceneId>)>,
 ) {
+    let mut adds = std::collections::BTreeMap::<String, i32>::new();
     let delta = time.fixed_delta.as_secs_f64();
     for mut machine in &mut machines {
         let elapsed =
@@ -726,9 +734,27 @@ pub fn run_state_machines(
                         .is_some_and(|counter| counter.value >= edge.at_least))
         });
         if let Some(edge) = next {
+            if !edge.then_counter.is_empty() {
+                let add = adds.entry(edge.then_counter.clone()).or_default();
+                *add = add.saturating_add(edge.then_add);
+            }
             let to = edge.to.clone();
             machine.state = to;
             machine.since_tick = time.fixed_tick;
+        }
+    }
+    for (name, add) in adds {
+        match find_counter(counters.iter_mut(), &name) {
+            Some(mut counter) => {
+                counter.value = counter.value.saturating_add(add);
+            }
+            None => {
+                commands.spawn(Counter {
+                    name,
+                    value: add,
+                    target: None,
+                });
+            }
         }
     }
 }

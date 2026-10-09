@@ -2294,6 +2294,8 @@ fn state_machines_follow_timed_and_counter_guarded_transitions() {
             StateTransition {
                 counter: "alarm".into(),
                 at_least: 1,
+                then_counter: "chases".into(),
+                then_add: 2,
                 ..edge("", "chase")
             },
         ],
@@ -2315,6 +2317,13 @@ fn state_machines_follow_timed_and_counter_guarded_transitions() {
     app.world_mut().get_mut::<Counter>(alarm).unwrap().value = 1;
     run_fixed_steps(&mut app, 1);
     assert_eq!(state(&app), "chase");
+    let chases = app
+        .world_mut()
+        .query::<&Counter>()
+        .iter(app.world())
+        .find(|counter| counter.name == "chases")
+        .map(|counter| counter.value);
+    assert_eq!(chases, Some(2));
     // `to` equal to the current state never re-enters it.
     let since = app.world().get::<ObjectState>(guard).unwrap().since_tick;
     run_fixed_steps(&mut app, 5);
