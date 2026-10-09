@@ -270,26 +270,85 @@ works too.
 
 `update` runs once per rendered frame. The main `GameScene` calls:
 
+<!-- api-table:start -->
 | Need | Call |
 | --- | --- |
-| find, move, turn, scale | `object(name)`, `try_object`, `set_position`, `move_by`, `set_rotation`, `set_scale`, `position`, `rotation`, `scale`, `reparent(name, Some(parent))` (keeps the local transform; `None` detaches) |
-| contacts | `touching(name)` (names of everything touching it, sensors included) |
-| counters | `counter_value`, `set_counter`, `add_to_counter`, `counter_complete` |
-| input | `pressed(action)` this frame, `held(action)`, `stick(Stick::Left)` (gamepad tilt; bind `PadSouth`, `PadDpadUp`, `PadLeftStickUp`... in `rusting.input_action`; the player controller already binds the left stick, d-pad, South to jump and the right stick to look) |
-| rays | `raycast(origin, dir, max)` (sensors included; a ray starting inside a collider passes it), `raycast_skipping(origin, dir, max, &["glass"])`, `raycast_visible` (through hidden objects and templates), `on_screen(point)` (view fractions or `None`), `aim`, `camera_ray`, `pointer_ray` (through the mouse) |
-| cameras | `set_active_camera(name)` (the only active one), `set_camera(name, active, Some([x, y, w, h]))` (split screen), `basis(name)` (world `[right, up, forward]`; forward is -Z, rotation applies X, then Y, then Z) |
-| physics | `set_body_kind` (to `Kinematic` or `Fixed` stops the body), `set_linear_velocity`, `linear_velocity`, `set_angular_velocity`, `angular_velocity`, `reset_body` (zero velocities, forget contacts and sleep, wake) |
-| player | `set_look(name, yaw, pitch)`, `set_player(name, |pc| ..)` (edit `walk_speed`, `sprint_multiplier`, `jump_speed` and other controller settings), `player(name)` (a copy of its controller: `grounded`, `floor`, `wall` it pushes against, `velocity` of the last step; its `Transform` rotation Y equals `yaw`, so or set `turn_speed` to face the rig along `velocity`) |
-| create, remove | `spawn_cube`, `spawn_sphere`, `spawn_cube_with_material`, `spawn_sphere_with_material`, `spawn_copy` (hidden template + children, under its parent), `spawn_copy_at_root(template, name, transform)` (no parent, full transform), `despawn` |
-| sound | `play_sound("sfx/hit.wav", volume)`, `play_sound_looped`, `play_sound_with(clip, Sound { pan, bus, at_tick, position, .. })`, `set_sound_volume(id, v, fade)`, `set_bus_volume(bus, v, fade)`, `stop_sound(id)`, `stop_all_sounds`, `set_master_volume`, `sounds_requested()`, `BeatClock`, `press_tick(action)` (fractional tick of a press); clip paths are under `assets/`; `sfx:coin 7` (jump, coin, hit, explosion, laser, powerup, blip, optional seed) plays a built-in sound with no file; see `guide/audio` |
-| files | `load_text("levels/1.txt")` reads a text file under `assets/`; `rusting validate` fails on a literal asset path in game code that is not a file |
-| look | `set_hud(name, \|hud\| ..)` (text, color, size of a `rusting.hud`, shown the same tick), `set_visible`, `color`, `set_color`, `set_emissive` (per object), `set_light(name, color, intensity, range)` (point or spot light; `None` keeps a value), `set_background_color`, `create_texture(TextureAsset)` then `edit_texture(handle, |texture| ..)` (draw pixels while running; re-uploads next frame), `hit_stop(seconds)` (freezes the picture on a heavy hit; ticks are unchanged) |
-| animation | `play_animation(name, clip)`, `crossfade(name, clip, secs)`, `stop_animation`, `is_playing(name, clip)`, `set_animation_speed`, `set_animation_parameter(name, param, value)` (state machine input), `animation_events()` (clip markers), `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `is_limp(name)`; see `guide/animation` |
-| rounds, levels | `restart`, `once(key, setup)`, `load_scene("scenes/level_2.rscene")`, `initial(name)` (starting transform, color, body kind), `snapshot()` / `restore(&snapshot)`, `state_hash(class)` |
-| menus, saves | `ui()` (egui), `set_paused`, `paused`, `window_focused()` (false after alt-tab), `quit`, `save_data(key, text)`, `load_data`, `delete_data`, `counters()`, `keys_pressed()`, `clicked()` (HUD buttons), `rebind(action, &[key])`, `cursor()`, `viewport_size()`; see `guide/menus-and-ui` |
-| video settings | `set_render_scale(0.25..=2.0)`, `render_scale`, `set_pixelated(true)` (nearest upscale for a chunky low scale), `set_vsync`, `set_max_fps(Option<u32>)`, `set_fullscreen`, `fullscreen`, `set_window_size([w, h])` |
-| other | `tile`, `set_tile`, `trigger`, `in_class`, `name_of(entity)`, `has_class(entity, class)`, `add_class(name, class)` (a spawned copy joins a class), `binding(action)` (keys of a scene `rusting.input_action`), `random(stream)`, `seed()` (the run seed, for a layout made once), `ui()` (egui), `world()` (raw ECS) |
-| GPU bodies | `apply_gpu_physics_to_class`, `watch_gpu_class`, `watch_gpu_object` (GPU condition rules), `count_gpu_bodies_in_box`, `gpu_state`, `gpu_command`; see `guide/gpu-condition-shaders` |
+| find, move, parent | `object(name)`, `try_object(name)`, `reparent(name, parent)`, `name_of(entity)`, `world()` |
+| contacts | `touching(name)` |
+| counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
+| input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
+| rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
+| cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |
+| physics | `set_body_kind(name, kind)`, `set_linear_velocity(name, velocity)`, `linear_velocity(name)`, `set_angular_velocity(name, velocity)`, `angular_velocity(name)`, `reset_body(name)` |
+| player | `set_look(name, yaw, pitch)`, `set_player(name, edit)`, `player(name)`, `dash(name, velocity, seconds)` |
+| create, remove | `spawn_cube(name, transform, template)`, `spawn_sphere(name, transform, template)`, `spawn_cube_with_material(name, transform, template, material)`, `spawn_sphere_with_material(name, transform, template, material)`, `spawn_copy(template, name, position)`, `spawn_copy_at_root(template, name, transform)`, `spawn_prefab(path, name, transform)`, `despawn(name)` |
+| classes | `in_class(class)`, `has_class(entity, class)`, `add_class(name, class)` |
+| sound | `play_sound(clip, volume)`, `play_sound_looped(clip, volume)`, `play_sound_with(clip, sound)`, `play_sound_on(name, clip, sound)`, `set_sound_rate(id, rate, fade)`, `set_sound_position(id, position)`, `set_sound_volume(id, volume, fade)`, `pause_sound(id)`, `resume_sound(id)`, `pause_sounds(bus)`, `resume_sounds(bus)`, `seek_sound(id, seconds)`, `stop_sound(id)`, `stop_all_sounds()`, `playing_sounds()`, `sounds_requested()`, `set_master_volume(volume)`, `set_bus_volume(bus, volume, fade)`, `set_bus_effect(bus, effect, fade)`, `set_bus_voice_limit(bus, limit)`, `set_listener(name)`, `set_captions(enabled, size)` |
+| look | `set_hud(name, edit)`, `set_visible(name, visible)`, `color(name)`, `set_color(name, color)`, `set_emissive(name, emissive)`, `create_material(material)`, `set_material(name, material)`, `set_text(name, text, style)`, `set_text_in_font(name, text, style, font)`, `set_light(name, color, intensity, range)`, `set_background_color(color)`, `set_reflections(enabled)`, `set_exposure(exposure)`, `create_texture(texture)`, `edit_texture(handle, edit)` |
+| game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)` |
+| animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
+| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)` |
+| menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `load_text(path)` |
+| video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
+| tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
+| GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |
+| on `object(name)` | `entity()`, `position()`, `set_position(position)`, `move_by(offset)`, `move_x(distance)`, `move_y(distance)`, `move_z(distance)`, `rotation()`, `scale()`, `set_rotation(rotation)`, `rotate_by(rotation)`, `rotate_x(rotation)`, `rotate_y(rotation)`, `rotate_z(rotation)`, `set_scale(scale)` |
+<!-- api-table:end -->
+
+The table is generated from the API index; `rusting docs show
+api/GameScene::<name>` prints one call's docs. Notes the signatures do not
+say:
+
+- `reparent(name, Some(parent))` keeps the local transform; `None` detaches.
+  `touching(name)` names everything touching it, sensors included.
+- `pressed` is true on the press frame only, `held` while down.
+  `stick(Stick::Left)` reads gamepad tilt; bind `PadSouth`, `PadDpadUp`,
+  `PadLeftStickUp`... in `rusting.input_action`. The player controller
+  already binds the left stick, the d-pad, South to jump and the right stick
+  to look.
+- Rays hit sensors, and a ray starting inside a collider passes it.
+  `raycast_skipping(origin, dir, max, &["glass"])` skips classes,
+  `raycast_visible` passes hidden objects and templates, `on_screen(point)`
+  gives view fractions or `None`, and `pointer_ray` goes through the mouse.
+- `set_active_camera(name)` makes it the only active camera;
+  `set_camera(name, active, Some([x, y, w, h]))` splits the screen.
+  `basis(name)` is world `[right, up, forward]`; forward is -Z, and rotation
+  applies X, then Y, then Z.
+- `set_body_kind` to `Kinematic` or `Fixed` stops the body. `reset_body`
+  zeroes velocities, forgets contacts and sleep, and wakes it.
+- `set_player(name, |pc| ..)` edits `walk_speed`, `sprint_multiplier`,
+  `jump_speed` and the other controller settings. `player(name)` is a copy
+  of its controller: `grounded`, `floor`, the `wall` it pushes against and
+  the last step's `velocity`. Its `Transform` rotation Y equals `yaw`, so
+  set `turn_speed` to face the rig along `velocity`.
+- `spawn_copy` copies a hidden template and its children under its parent;
+  `spawn_copy_at_root(template, name, transform)` takes no parent and a full
+  transform. `add_class(name, class)` puts a spawned copy in a class.
+- Sound clip paths are under `assets/`: `play_sound("sfx/hit.wav", volume)`,
+  `play_sound_with(clip, Sound { pan, bus, at_tick, position, .. })`.
+  `sfx:coin 7` (jump, coin, hit, explosion, laser, powerup, blip, optional
+  seed) plays a built-in sound with no file. `BeatClock` and `press_tick`
+  time music games; see `guide/audio`.
+- `load_text("levels/1.txt")` reads a text file under `assets/`;
+  `rusting validate` fails on a literal asset path in game code that is not
+  a file.
+- `set_hud(name, |hud| ..)` changes a `rusting.hud` text, color or size,
+  shown the same tick. `set_light` with `None` keeps a value.
+  `create_texture(TextureAsset)` then `edit_texture(handle, |texture| ..)`
+  draws pixels while running; the texture re-uploads next frame.
+  `hit_stop(seconds)` freezes the picture on a heavy hit; ticks go on.
+- `set_animation_parameter` is a state machine input, and
+  `animation_events()` returns clip markers; see `guide/animation`.
+- `load_scene("scenes/level_2.rscene")` switches level. `initial(name)` is
+  the starting transform, color and body kind. `seed()` is the run seed,
+  for a layout made once; `random(stream)` draws numbers that repeat for a
+  scenario's seed.
+- `window_focused()` is false after alt-tab, and `clicked()` lists HUD
+  buttons clicked; see `guide/menus-and-ui`.
+- `set_render_scale(0.25..=2.0)`; `set_pixelated(true)` upscales with
+  nearest filtering for a chunky low scale.
+- `watch_gpu_class` and `watch_gpu_object` are GPU condition rules; see
+  `guide/gpu-condition-shaders`.
 
 ### Rules that keep tests reliable
 

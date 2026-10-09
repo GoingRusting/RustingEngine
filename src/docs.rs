@@ -649,6 +649,320 @@ pub fn brief(budget: usize) -> (String, usize, usize) {
 
 const FOOTER_TOKENS: usize = 20;
 
+/// The `GameScene` methods in each row of the agent guides' API table, by
+/// need. A method in no row lands in the last row, so a new method still
+/// shows; [`api_table`] fails a test if a row names a missing method.
+const API_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "find, move, parent",
+        &["object", "try_object", "reparent", "name_of", "world"],
+    ),
+    ("contacts", &["touching"]),
+    (
+        "counters",
+        &[
+            "counter",
+            "counter_value",
+            "counter_or",
+            "set_counter",
+            "add_to_counter",
+            "counter_complete",
+            "counters",
+        ],
+    ),
+    (
+        "input",
+        &[
+            "pressed",
+            "held",
+            "press_tick",
+            "stick",
+            "clicked",
+            "cursor",
+            "keys_pressed",
+            "binding",
+            "rebind",
+            "window_focused",
+            "viewport_size",
+        ],
+    ),
+    (
+        "rays",
+        &[
+            "raycast",
+            "raycast_skipping",
+            "raycast_visible",
+            "aim",
+            "camera_ray",
+            "pointer_ray",
+            "on_screen",
+        ],
+    ),
+    (
+        "cameras",
+        &[
+            "set_active_camera",
+            "set_camera",
+            "set_camera_fov",
+            "camera_fov",
+            "basis",
+            "set_mouse_look",
+        ],
+    ),
+    (
+        "physics",
+        &[
+            "set_body_kind",
+            "set_linear_velocity",
+            "linear_velocity",
+            "set_angular_velocity",
+            "angular_velocity",
+            "reset_body",
+        ],
+    ),
+    ("player", &["set_look", "set_player", "player", "dash"]),
+    (
+        "create, remove",
+        &[
+            "spawn_cube",
+            "spawn_sphere",
+            "spawn_cube_with_material",
+            "spawn_sphere_with_material",
+            "spawn_copy",
+            "spawn_copy_at_root",
+            "spawn_prefab",
+            "despawn",
+        ],
+    ),
+    ("classes", &["in_class", "has_class", "add_class"]),
+    (
+        "sound",
+        &[
+            "play_sound",
+            "play_sound_looped",
+            "play_sound_with",
+            "play_sound_on",
+            "set_sound_rate",
+            "set_sound_position",
+            "set_sound_volume",
+            "pause_sound",
+            "resume_sound",
+            "pause_sounds",
+            "resume_sounds",
+            "seek_sound",
+            "stop_sound",
+            "stop_all_sounds",
+            "playing_sounds",
+            "sounds_requested",
+            "set_master_volume",
+            "set_bus_volume",
+            "set_bus_effect",
+            "set_bus_voice_limit",
+            "set_listener",
+            "set_captions",
+        ],
+    ),
+    (
+        "look",
+        &[
+            "set_hud",
+            "set_visible",
+            "color",
+            "set_color",
+            "set_emissive",
+            "create_material",
+            "set_material",
+            "set_text",
+            "set_text_in_font",
+            "set_light",
+            "set_background_color",
+            "set_reflections",
+            "set_exposure",
+            "create_texture",
+            "edit_texture",
+        ],
+    ),
+    (
+        "game feel",
+        &[
+            "flash",
+            "squash",
+            "add_trauma",
+            "hit_stop",
+            "particles",
+            "trigger",
+        ],
+    ),
+    (
+        "animation",
+        &[
+            "play_animation",
+            "crossfade",
+            "stop_animation",
+            "is_playing",
+            "set_animation_speed",
+            "set_animation_parameter",
+            "animation_events",
+            "take_root_motion",
+            "set_ragdoll",
+            "set_ragdoll_muscle",
+            "reset_ragdoll",
+            "is_limp",
+        ],
+    ),
+    (
+        "rounds, levels",
+        &[
+            "once",
+            "restart",
+            "load_scene",
+            "initial",
+            "snapshot",
+            "restore",
+            "state_hash",
+            "seed",
+            "random",
+        ],
+    ),
+    (
+        "menus, saves",
+        &[
+            "ui",
+            "set_paused",
+            "paused",
+            "quit",
+            "save_data",
+            "load_data",
+            "delete_data",
+            "load_text",
+        ],
+    ),
+    (
+        "video settings",
+        &[
+            "set_render_scale",
+            "render_scale",
+            "set_pixelated",
+            "set_vsync",
+            "set_max_fps",
+            "set_fullscreen",
+            "fullscreen",
+            "set_window_size",
+        ],
+    ),
+    ("tiles, fields", &["tile", "set_tile", "set_field"]),
+    (
+        "GPU bodies",
+        &[
+            "apply_gpu_physics_to_class",
+            "watch_gpu_class",
+            "watch_gpu_object",
+            "set_gpu_condition_shaders",
+            "gpu_events",
+            "gpu_state",
+            "count_gpu_bodies_in_box",
+            "gpu_command",
+        ],
+    ),
+    ("other", &[]),
+];
+
+/// `name(arg, ..)` for an API item: the parameter names of its signature,
+/// without `self`.
+fn api_call(item: &DocItem) -> String {
+    let (_, name) = item.title.split_once("::").unwrap_or(("", &item.title));
+    let signature = item.text.lines().next().unwrap_or_default();
+    let after = &signature[signature.find(name).unwrap_or(0) + name.len()..];
+    // Skip any generic parameters, then take the balanced argument list.
+    let (mut depth, mut args, mut list) = (0, Vec::new(), String::new());
+    let mut previous = ' ';
+    for c in after.chars() {
+        let arrow = previous == '-';
+        previous = c;
+        match c {
+            '<' | '[' => depth += 1,
+            '>' | ']' if !arrow => depth -= 1,
+            '(' if depth == 0 && list.is_empty() && args.is_empty() => {
+                depth = 100;
+                continue;
+            }
+            '(' => depth += 1,
+            ')' if depth == 100 => break,
+            ')' => depth -= 1,
+            ',' if depth == 100 => {
+                args.push(std::mem::take(&mut list));
+                continue;
+            }
+            _ => {}
+        }
+        if depth >= 100 {
+            list.push(c);
+        }
+    }
+    args.push(list);
+    let args: Vec<&str> = args
+        .iter()
+        .filter_map(|arg| arg.split(':').next())
+        .map(|arg| {
+            arg.trim()
+                .trim_start_matches("mut ")
+                .trim_start_matches('_')
+        })
+        .filter(|arg| !arg.is_empty() && !arg.ends_with("self"))
+        .collect();
+    format!("`{name}({})`", args.join(", "))
+}
+
+/// The agent guides' API table, built from the API index: one row per
+/// [`API_GROUPS`] need, then the methods of the object `object(name)`
+/// returns.
+#[must_use]
+pub fn api_table() -> String {
+    let api = api_items();
+    let scene: Vec<&DocItem> = api
+        .iter()
+        .filter(|item| item.title.starts_with("GameScene::"))
+        .collect();
+    let method = |item: &&DocItem| item.title["GameScene::".len()..].to_owned();
+    let mut table = String::from("| Need | Call |\n| --- | --- |\n");
+    for (need, names) in API_GROUPS {
+        let calls: Vec<String> = if names.is_empty() {
+            let grouped: Vec<&str> = API_GROUPS
+                .iter()
+                .flat_map(|(_, n)| n.iter().copied())
+                .collect();
+            scene
+                .iter()
+                .filter(|item| !grouped.contains(&method(item).as_str()))
+                .map(|item| api_call(item))
+                .collect()
+        } else {
+            names
+                .iter()
+                .map(|name| {
+                    let item = scene
+                        .iter()
+                        .find(|item| method(item) == *name)
+                        .unwrap_or_else(|| {
+                            panic!("`{name}` is not a GameScene method")
+                        });
+                    api_call(item)
+                })
+                .collect()
+        };
+        if !calls.is_empty() {
+            table += &format!("| {need} | {} |\n", calls.join(", "));
+        }
+    }
+    let object: Vec<String> = api
+        .iter()
+        .filter(|item| item.title.starts_with("GameObject::"))
+        .map(api_call)
+        .collect();
+    table += &format!("| on `object(name)` | {} |\n", object.join(", "));
+    table
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1177,6 +1491,34 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn agent_guides_hold_the_generated_api_table() {
+        let table = super::api_table();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (start, end) =
+            ("<!-- api-table:start -->\n", "<!-- api-table:end -->");
+        for file in ["skills/rusting-game/SKILL.md", "src/project_agents.md"] {
+            let text = std::fs::read_to_string(root.join(file)).unwrap();
+            let (head, rest) = text.split_once(start).expect(start);
+            let (old, tail) = rest.split_once(end).expect(end);
+            if old == table {
+                continue;
+            }
+            if std::env::var_os(crate::scenario::UPDATE_GOLDEN_ENV).is_some() {
+                std::fs::write(
+                    root.join(file),
+                    format!("{head}{start}{table}{end}{tail}"),
+                )
+                .unwrap();
+                continue;
+            }
+            panic!(
+                "{file}: the API table is stale; run with {}=1 to rewrite it",
+                crate::scenario::UPDATE_GOLDEN_ENV
+            );
         }
     }
 }

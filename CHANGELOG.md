@@ -44,6 +44,7 @@ Engine features for the horror game FOREVER BEAR.
 - `rusting new --template roguelike` creates Crypt, a turn-based roguelike with code: each of three floors is laid out from the run's seed, walking into an enemy defeats it, and enemies next to you strike. Its `tests/descend.json` plays a run on seed 1.
 - `rusting new --template card-game` creates Duel, a card battle with code: play Strike, Guard and Heal cards from a seeded deck with keys 1 to 3 or the card buttons, against a foe whose next attack shows in advance. Its `tests/duel.json` plays a duel on seed 1.
 - `rusting new --template rhythm` creates Beat, a rhythm game with code: hit notes in three lanes with D, F and J as they cross the line, scored PERFECT or GOOD by timing. Its `tests/song.json` plays the song.
+- The API table in the agent skill (`SKILL.md`) and in a new project's `AGENTS.md` is generated from the API index and lists every `GameScene` call with its parameters; a test fails when it goes stale, and `RUSTING_UPDATE_GOLDEN=1` rewrites it.
 - New 2d, first-person, third-person and sandbox projects ship a passing scenario (`tests/run.json`, `tests/walk.json` or `tests/drop.json`), so `rusting test` works on every template.
 - `GameScene::add_class(name, class)` puts an object, such as a copy spawned from a classless template, in a class.
 - `rusting new --template racing` creates Circuit, a racing game with game code: drive three laps through the checkpoints in order; off the road the car is slow. Its `tests/lap.json` drives a lap.

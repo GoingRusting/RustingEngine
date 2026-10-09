@@ -165,50 +165,45 @@ fn update(scene: &mut GameScene<'_>, time: &FrameTime) {
 rusting_game!(update);
 ```
 
-`GameScene` finds objects by name (`object`, `try_object`), moves them
-(`set_position`, `move_by`, `set_rotation`, `set_scale`; `position`,
-`rotation` and `scale` read them back), reports contacts (`touching`), reads
-and changes counters (`counter`, or the shorthands `counter_value`,
-`set_counter`, `add_to_counter` and `counter_complete`), reads input actions
-(`pressed` for this frame, `held`), casts rays (`raycast`, `raycast_visible` through hidden
-objects, and `aim` along the active camera; `on_screen` tells whether a point
-is in the view; `camera_ray` gives that camera's position and forward
-direction, `pointer_ray` the ray through the mouse cursor), launches bodies
-(`set_body_kind`, `set_linear_velocity`, `set_angular_velocity`; each wakes a
-sleeping body, and a body made `Kinematic` or `Fixed` stops) and reads their
-velocity (`linear_velocity`, `angular_velocity`), stops a body completely
-(`reset_body`), turns a player controller (`set_look`), dashes a player
-or platformer controller (`dash`) and reads its
-state (`player`: grounded, floor, wall, velocity), reparents objects
-(`reparent`), changes a light (`set_light`), removes objects
-(`despawn`), shows and
-hides them and their HUD text (`set_visible`), recolors one object without
-touching others that share its material (`color`, `set_color`,
-`set_emissive`), swaps its material (`create_material`, `set_material`),
-draws text onto it for signs, paper and monitor labels (`set_text`),
-reloads the starting scene for a new round (`restart`;
-physics after it repeats the first run exactly), reads an object's starting
-transform, color and body kind (`initial`), saves and puts back the whole
-scene mid-game (`snapshot`, `restore`), hashes the state of one class to
-compare rounds (`state_hash`), reads
-and writes `rusting.tile_map` cells under a world position (`tile`,
-`set_tile`), plays sounds (`play_sound`, `play_sound_looped`,
-`stop_sound`, `set_master_volume`; clips are WAV, Ogg, MP3 or FLAC paths under
-`assets/`; `rusting asset generate . sfx "coin 7" --to sounds` makes a
-placeholder sound from a preset and seed), fires sound cues and burst emitters (`trigger`), spawns shapes
-(`spawn_cube`, `spawn_sphere`), copies a hidden template object with its
-children (`spawn_copy`; a copied child is named `"<copy>/<child>"`), places a
-prefab scene file under `assets/` (`spawn_prefab(path, name, transform)`), lists the
-objects in a class (`in_class`; `add_class` puts a spawned copy in one), runs setup once per round (`once`; `restart`
-runs it again), draws random numbers that repeat for a scenario's seed
-(`random`), switches to another scene file such as a next level
-(`load_scene`, with a path relative to the project folder) and draws UI (`ui`,
-an egui context). `set_field(name, path, value)` sets any scene field by
-the JSON pointer scenario `set` steps use, for example
-`scene.set_field("Hall", "/components/rusting.fog/density",
-serde_json::json!(0.08))`; it reaches every registered component such as
-`rusting.color_grading` and `rusting.player_controller`. `world()` gives
-the ECS world for anything else.
+Every `GameScene` call by need, generated from the API index
+(`rusting docs show api/GameScene::<name>` prints one):
+
+<!-- api-table:start -->
+| Need | Call |
+| --- | --- |
+| find, move, parent | `object(name)`, `try_object(name)`, `reparent(name, parent)`, `name_of(entity)`, `world()` |
+| contacts | `touching(name)` |
+| counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
+| input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
+| rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
+| cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |
+| physics | `set_body_kind(name, kind)`, `set_linear_velocity(name, velocity)`, `linear_velocity(name)`, `set_angular_velocity(name, velocity)`, `angular_velocity(name)`, `reset_body(name)` |
+| player | `set_look(name, yaw, pitch)`, `set_player(name, edit)`, `player(name)`, `dash(name, velocity, seconds)` |
+| create, remove | `spawn_cube(name, transform, template)`, `spawn_sphere(name, transform, template)`, `spawn_cube_with_material(name, transform, template, material)`, `spawn_sphere_with_material(name, transform, template, material)`, `spawn_copy(template, name, position)`, `spawn_copy_at_root(template, name, transform)`, `spawn_prefab(path, name, transform)`, `despawn(name)` |
+| classes | `in_class(class)`, `has_class(entity, class)`, `add_class(name, class)` |
+| sound | `play_sound(clip, volume)`, `play_sound_looped(clip, volume)`, `play_sound_with(clip, sound)`, `play_sound_on(name, clip, sound)`, `set_sound_rate(id, rate, fade)`, `set_sound_position(id, position)`, `set_sound_volume(id, volume, fade)`, `pause_sound(id)`, `resume_sound(id)`, `pause_sounds(bus)`, `resume_sounds(bus)`, `seek_sound(id, seconds)`, `stop_sound(id)`, `stop_all_sounds()`, `playing_sounds()`, `sounds_requested()`, `set_master_volume(volume)`, `set_bus_volume(bus, volume, fade)`, `set_bus_effect(bus, effect, fade)`, `set_bus_voice_limit(bus, limit)`, `set_listener(name)`, `set_captions(enabled, size)` |
+| look | `set_hud(name, edit)`, `set_visible(name, visible)`, `color(name)`, `set_color(name, color)`, `set_emissive(name, emissive)`, `create_material(material)`, `set_material(name, material)`, `set_text(name, text, style)`, `set_text_in_font(name, text, style, font)`, `set_light(name, color, intensity, range)`, `set_background_color(color)`, `set_reflections(enabled)`, `set_exposure(exposure)`, `create_texture(texture)`, `edit_texture(handle, edit)` |
+| game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)` |
+| animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
+| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)` |
+| menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `load_text(path)` |
+| video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
+| tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
+| GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |
+| on `object(name)` | `entity()`, `position()`, `set_position(position)`, `move_by(offset)`, `move_x(distance)`, `move_y(distance)`, `move_z(distance)`, `rotation()`, `scale()`, `set_rotation(rotation)`, `rotate_by(rotation)`, `rotate_x(rotation)`, `rotate_y(rotation)`, `rotate_z(rotation)`, `set_scale(scale)` |
+<!-- api-table:end -->
+
+A copied child is named `"<copy>/<child>"`. `restart` reloads the starting
+scene, and physics after it repeats the first run exactly. Sound clips are
+WAV, Ogg, MP3 or FLAC paths under `assets/`; `rusting asset generate . sfx
+"coin 7" --to sounds` makes a placeholder sound from a preset and seed.
+`load_scene` takes a path relative to the project folder.
+`set_field(name, path, value)` sets any scene field by the JSON pointer
+scenario `set` steps use, for example `scene.set_field("Hall",
+"/components/rusting.fog/density", serde_json::json!(0.08))`; it reaches
+every registered component such as `rusting.color_grading` and
+`rusting.player_controller`. `world()` gives the ECS world for anything
+else.
 Keep game state in your own component, not only counters:
 `#[derive(Component, Clone, Default, Serialize, Deserialize)]` with
 `#[serde(crate = "rusting_engine::serde")]`, a `rusting_engine::reflect!`
