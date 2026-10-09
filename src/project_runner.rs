@@ -2963,6 +2963,21 @@ impl GameObject<'_> {
         self
     }
 
+    /// Turns the object so its forward axis (-Z) points at `target`, with
+    /// no roll, like Godot's `look_at`. `target` is in the same space as
+    /// `position()`, so siblings and root objects can face each other
+    /// directly. Nothing changes when `target` is the object's position.
+    pub fn look_at(&mut self, target: [f32; 3]) -> &mut Self {
+        let at = self.transform.position;
+        let [dx, dy, dz] = [0, 1, 2].map(|i| target[i] - at[i]);
+        let flat = dx.hypot(dz);
+        if flat == 0.0 && dy == 0.0 {
+            return self;
+        }
+        self.transform.rotation = [dy.atan2(flat), (-dx).atan2(-dz), 0.0];
+        self
+    }
+
     /// Adds rotation in radians to all three axes.
     pub fn rotate_by(&mut self, rotation: [f32; 3]) -> &mut Self {
         for (current, rotation) in
@@ -6787,6 +6802,31 @@ mod tests {
         assert_eq!(world.get::<crate::runtime::Parent>(copy).unwrap().0, pit);
         assert!(world.get::<crate::runtime::SpawnGrid>(copy).is_none());
         assert!(world.get::<crate::runtime::SpawnGrid>(ball).is_none());
+    }
+
+    #[test]
+    fn look_at_points_the_forward_axis_at_the_target() {
+        let mut world = World::new();
+        let turret = world
+            .spawn((Name("Turret".into()), Transform::new([1.0, 1.0, 1.0])))
+            .id();
+        let mut scene = GameScene { world: &mut world };
+        for target in [[4.0, 1.0, 1.0], [1.0, 3.0, -1.0], [-2.0, 0.0, 5.0]] {
+            scene.object("Turret").look_at(target);
+            let m = scene.world.get::<Transform>(turret).unwrap().to_matrix();
+            let forward = [-m[2][0], -m[2][1], -m[2][2]];
+            let to = [0, 1, 2].map(|i| target[i] - 1.0);
+            let length = to.iter().map(|v| v * v).sum::<f32>().sqrt();
+            for i in 0..3 {
+                assert!(
+                    (forward[i] - to[i] / length).abs() < 1e-5,
+                    "{target:?}"
+                );
+            }
+        }
+        let before = scene.object("Turret").rotation();
+        scene.object("Turret").look_at([1.0, 1.0, 1.0]);
+        assert_eq!(scene.object("Turret").rotation(), before);
     }
 
     #[test]

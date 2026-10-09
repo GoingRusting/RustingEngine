@@ -322,6 +322,14 @@ share one undoable command layer.
   does this; `TweenProperty` and `Easing` are in the prelude. Evidence:
   `project_runner::tests::tween_starts_from_the_current_value_and_restarts_on_a_new_call`
   (2026-10-09).
+- [x] Gap (Godot `look_at`): turning a turret, enemy or camera toward a
+  point took hand-written `atan2` with the engine's -Z forward and Euler
+  order. Acceptance: after the call the object's forward axis, read from
+  its transform matrix, points at the target for targets level, above and
+  below it, and a target on the object leaves it unchanged.
+  `GameObject::look_at(target)` does this. Evidence:
+  `project_runner::tests::look_at_points_the_forward_axis_at_the_target`
+  (2026-10-09).
 - [x] Gap: a patch that created a registered component with some fields
   missing failed with "missing field". Registered components now take
   defaults like built-in sections. Evidence:
