@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::roll_loot(table, stream)` picks a weighted loot entry from the run's seed, and `spend(name, amount)` takes from a counter only when it holds enough.
 - `GameScene::add_status(object, effect, seconds)`, `has_status`, `status_left` and `clear_status` give objects timed status effects such as poisoned or stunned. They count fixed ticks and live in counters, so snapshots and `save_counters` keep them.
 - `GameScene::damage` sends a `Damaged {entity, amount, health}` signal to the object, so connected `In<Signal<Damaged>>` handlers react to hits and heals.
 - `GameScene::save_objects(key, version, objects, components)` and `load_objects(key)` save and restore selected registered components, such as `rusting.health` and `rusting.state`, of named objects. Each value keeps its component version, so old saves run the component migrations.

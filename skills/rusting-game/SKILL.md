@@ -322,7 +322,7 @@ works too.
 | --- | --- |
 | find, move, parent | `object(name)`, `try_object(name)`, `reparent(name, parent)`, `name_of(entity)`, `world()` |
 | contacts | `touching(name)` |
-| counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
+| counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `spend(name, amount)`, `counter_complete(name)`, `counters()` |
 | cooldowns | `cooldown_ready(name)`, `start_cooldown(name, seconds)`, `cooldown_left(name)` |
 | state machines | `set_state(name, state)`, `state(name)`, `state_seconds(name)` |
 | health | `damage(name, amount)`, `health(name)`, `same_team(a, b)`, `add_status(object, effect, seconds)`, `has_status(object, effect)`, `status_left(object, effect)`, `clear_status(object, effect)` |
@@ -337,7 +337,7 @@ works too.
 | look | `set_hud(name, edit)`, `set_visible(name, visible)`, `color(name)`, `set_color(name, color)`, `set_emissive(name, emissive)`, `create_material(material)`, `set_material(name, material)`, `set_text(name, text, style)`, `set_text_in_font(name, text, style, font)`, `set_light(name, color, intensity, range)`, `set_background_color(color)`, `set_reflections(enabled)`, `set_exposure(exposure)`, `create_texture(texture)`, `edit_texture(handle, edit)` |
 | game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)`, `tween(name, property, to, seconds, easing)` |
 | animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
-| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)` |
+| rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)`, `roll_loot(table, stream)` |
 | menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `set_time_scale(scale)`, `time_scale()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `save_counters(key, version, names)`, `save_objects(key, version, objects, components)`, `load_objects(key)`, `load_counters(key)`, `load_text(path)` |
 | video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |

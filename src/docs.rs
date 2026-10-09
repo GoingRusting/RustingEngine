@@ -699,6 +699,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "counter_or",
             "set_counter",
             "add_to_counter",
+            "spend",
             "counter_complete",
             "counters",
         ],
@@ -877,6 +878,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "state_hash",
             "seed",
             "random",
+            "roll_loot",
         ],
     ),
     (

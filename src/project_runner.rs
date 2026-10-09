@@ -1469,6 +1469,30 @@ impl GameScene<'_> {
         seed.unit(tick, crate::runtime::RandomSeed::stream("game", stream))
     }
 
+    /// Picks one entry of a loot table of `(item, weight)` pairs, each with
+    /// a chance of its weight over the total, using [`Self::random`] with
+    /// `stream`, so the same seed rolls the same loot. `None` when every
+    /// weight is 0.
+    #[must_use]
+    pub fn roll_loot(
+        &self,
+        table: &[(&str, u32)],
+        stream: u64,
+    ) -> Option<String> {
+        weighted_pick(table, self.random(stream)).map(str::to_owned)
+    }
+
+    /// Takes `amount` from the counter `name` (such as an item count or
+    /// money) when it holds at least that much, and returns whether it
+    /// did; otherwise the counter is unchanged.
+    pub fn spend(&mut self, name: &str, amount: i32) -> bool {
+        let enough = self.counter_or(name, 0) >= amount;
+        if enough {
+            self.add_to_counter(name, -amount);
+        }
+        enough
+    }
+
     /// True when the counter called `name` has reached its target. A
     /// missing counter is false and warns once, as for
     /// [`Self::counter_value`].
@@ -3509,6 +3533,21 @@ fn name_taken(name: &str) -> ! {
          scene file declares it (templates ship names such as `Box 1` and \
          `Ball 1`), delete it there or spawn under another name"
     );
+}
+
+/// The entry of `table` that `unit`, in `[0, 1)`, falls in when each
+/// entry takes its weight's share of the line.
+fn weighted_pick<'a>(table: &[(&'a str, u32)], unit: f32) -> Option<&'a str> {
+    let total: u64 = table.iter().map(|&(_, weight)| u64::from(weight)).sum();
+    let mut left =
+        ((f64::from(unit) * total as f64) as u64).min(total.checked_sub(1)?);
+    table.iter().find_map(|&(item, weight)| {
+        if left < u64::from(weight) {
+            return Some(item);
+        }
+        left -= u64::from(weight);
+        None
+    })
 }
 
 /// The text [`GameScene::save_objects`] writes.
@@ -7334,6 +7373,31 @@ mod tests {
         world.resource_mut::<FrameTime>().fixed_tick = ticks;
         let scene = GameScene { world: &mut world };
         assert!(!scene.has_status("Orc", "poisoned"));
+    }
+
+    #[test]
+    fn loot_rolls_follow_weights_and_spend_needs_enough() {
+        let table = [("coin", 3), ("never", 0), ("gem", 1)];
+        assert_eq!(weighted_pick(&table, 0.0), Some("coin"));
+        assert_eq!(weighted_pick(&table, 0.74), Some("coin"));
+        assert_eq!(weighted_pick(&table, 0.75), Some("gem"));
+        assert_eq!(weighted_pick(&table, 0.999_999), Some("gem"));
+        assert_eq!(weighted_pick(&[("never", 0)], 0.5), None);
+        assert_eq!(weighted_pick(&[], 0.5), None);
+        let mut world = World::new();
+        let mut scene = GameScene { world: &mut world };
+        let rolls: Vec<_> =
+            (0..64).map(|i| scene.roll_loot(&table, i)).collect();
+        assert!(
+            rolls.contains(&Some("coin".into()))
+                && rolls.contains(&Some("gem".into()))
+        );
+        assert!(!rolls.contains(&Some("never".into())));
+        assert_eq!(scene.roll_loot(&table, 7), rolls[7]);
+        scene.set_counter("arrows", 2);
+        assert!(!scene.spend("arrows", 3));
+        assert!(scene.spend("arrows", 2));
+        assert_eq!(scene.counter_value("arrows"), 0);
     }
 
     #[test]
