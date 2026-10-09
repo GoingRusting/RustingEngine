@@ -5,7 +5,7 @@
 //! walls still stop it. A 3D player dashes the way the movement keys point,
 //! or forward when none is held; a platformer dashes the way it last ran.
 //! A new dash waits `COOLDOWN_SECONDS`. Wire it up with `mod dash;` in
-//! `src/main.rs` and `dash::dash(scene, time);` in `update`.
+//! `src/main.rs` and `dash::dash(scene);` in `update`.
 
 use rusting_engine::prelude::*;
 
@@ -14,10 +14,10 @@ pub const DASH_SPEED: f32 = 15.0;
 /// How long one dash lasts.
 pub const DASH_SECONDS: f32 = 0.2;
 /// Time from one dash to the next.
-pub const COOLDOWN_SECONDS: f64 = 0.6;
+pub const COOLDOWN_SECONDS: f32 = 0.6;
 
 /// Runs the dash recipe once a frame.
-pub fn dash(scene: &mut GameScene<'_>, time: &FrameTime) {
+pub fn dash(scene: &mut GameScene<'_>) {
     let axis = |scene: &GameScene<'_>, plus: &str, minus: &str| {
         f32::from(u8::from(scene.held(plus)))
             - f32::from(u8::from(scene.held(minus)))
@@ -26,8 +26,7 @@ pub fn dash(scene: &mut GameScene<'_>, time: &FrameTime) {
     if run != 0.0 {
         scene.set_counter("dash_facing", run as i32);
     }
-    let now_ms = i32::try_from(time.elapsed.as_millis()).unwrap_or(i32::MAX);
-    if !scene.pressed("dash") || now_ms < scene.counter_or("dash_ready_ms", 0) {
+    if !scene.pressed("dash") || !scene.cooldown_ready("dash_cooldown") {
         return;
     }
     let direction = if let Some(player) = scene.player("Player") {
@@ -48,7 +47,6 @@ pub fn dash(scene: &mut GameScene<'_>, time: &FrameTime) {
         direction.map(|value| value * DASH_SPEED),
         DASH_SECONDS,
     ) {
-        let cooldown_ms = (COOLDOWN_SECONDS * 1000.0) as i32;
-        scene.set_counter("dash_ready_ms", now_ms.saturating_add(cooldown_ms));
+        scene.start_cooldown("dash_cooldown", COOLDOWN_SECONDS);
     }
 }

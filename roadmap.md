@@ -3573,7 +3573,8 @@ Depends on: Milestones 8 and 9.
 - [ ] Health, damage, teams, and status effects as optional registered components, built on the typed event bridge.
 - [ ] Inventory, items, and loot tables as data resources with seeded rolls.
 - [ ] Dialogue and quest graphs as data assets, with localization keys and a runtime UI hookup.
-- [ ] Timers, cooldowns, and a game clock with pause and time scale that never affect the fixed simulation step's determinism.
+- [x] Timers, cooldowns, and a game clock with pause and time scale that never affect the fixed simulation step's determinism.
+  - Verified (2026-10-09): `GameScene::cooldown_ready`, `start_cooldown` and `cooldown_left` count fixed ticks in an inspectable counter, so pause (`set_paused`) and the new `set_time_scale` stop or slow them with the simulation; `cooldowns_count_fixed_ticks` checks a 0.5 s cooldown ends on exactly tick 130 from tick 100 and that negative scales clamp to 0. The dash, turret and health recipes now use them, and their recipe scenario tests still pass.
 - [ ] Spawners and object pools with capacity reporting (no silent drops).
 - [ ] Gamepad input with dead zones, rumble, and hot plug. Needs a gamepad backend dependency approved by the owner.
 

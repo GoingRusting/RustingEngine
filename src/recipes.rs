@@ -38,7 +38,7 @@ pub const RECIPES: &[Recipe] = &[Recipe {
     name: "health",
     summary: "The counter `health` starts at 3; touching an object in class `hazard` costs one point, flashes the player and makes it safe for a second, and at 0 the round restarts. Adds a sensor `Hazard 1` 2.5 units along +X from the player.",
     source: Some(include_str!("recipes/health.rs")),
-    call: Some("health::health(scene, time);"),
+    call: Some("health::health(scene);"),
     build: health_scene,
 }, Recipe {
     name: "double_jump",
@@ -74,13 +74,13 @@ pub const RECIPES: &[Recipe] = &[Recipe {
     name: "turret",
     summary: "`Turret` shoots the nearest object in class `enemy` within 12 m that it can see, every half second: the shot removes it and adds to the counter `turret_kills`. Adds `Turret` 3 units above the player and red enemies `Target 1`, `Target 2` and `Target Far` 4, 6 and 20 units along +X from it; delete the targets once real enemies exist.",
     source: Some(include_str!("recipes/turret.rs")),
-    call: Some("turret::turret(scene, time);"),
+    call: Some("turret::turret(scene);"),
     build: turret_scene,
 }, Recipe {
     name: "dash",
     summary: "The action `dash` (Q, gamepad West) sends the player 15 m/s for 0.2 s with no gravity, the way the movement keys point (forward when none is held; a platformer the way it last ran), at most once every 0.6 s; walls still stop it. Uses `GameScene::dash`. Adds the input action `Dash Action`.",
     source: Some(include_str!("recipes/dash.rs")),
-    call: Some("dash::dash(scene, time);"),
+    call: Some("dash::dash(scene);"),
     build: dash_scene,
 }];
 
@@ -536,8 +536,7 @@ mod tests {
     #[test]
     fn health_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
         applies_and_passes("health", |world| {
-            let time = *world.resource::<FrameTime>();
-            super::health::health(&mut GameScene { world }, &time);
+            super::health::health(&mut GameScene { world });
         });
     }
 
@@ -590,16 +589,14 @@ mod tests {
     #[test]
     fn turret_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
         applies_and_passes("turret", |world| {
-            let time = *world.resource::<FrameTime>();
-            super::turret::turret(&mut GameScene { world }, &time);
+            super::turret::turret(&mut GameScene { world });
         });
     }
 
     #[test]
     fn dash_recipe_applies_to_the_player_templates_and_its_scenario_passes() {
         applies_and_passes("dash", |world| {
-            let time = *world.resource::<FrameTime>();
-            super::dash::dash(&mut GameScene { world }, &time);
+            super::dash::dash(&mut GameScene { world });
         });
     }
 }

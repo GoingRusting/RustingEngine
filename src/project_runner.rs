@@ -1276,6 +1276,42 @@ impl GameScene<'_> {
         self.counter(name).expect("created above")
     }
 
+    /// Whether the cooldown called `name` has run out, or never started.
+    /// Cooldowns count fixed ticks, so pause and time scale stop and slow
+    /// them like the simulation and a scenario repeats them exactly. The
+    /// counter `name` holds the fixed tick the cooldown ends on.
+    #[must_use]
+    pub fn cooldown_ready(&self, name: &str) -> bool {
+        self.cooldown_left(name) == 0.0
+    }
+
+    /// Starts the cooldown called `name` for `seconds` of game time, from
+    /// this tick. See [`Self::cooldown_ready`].
+    pub fn start_cooldown(&mut self, name: &str, seconds: f32) {
+        let time = self.frame_time();
+        let ticks =
+            (f64::from(seconds) / time.fixed_delta.as_secs_f64()).ceil();
+        let end = time.fixed_tick as f64 + ticks.max(0.0);
+        self.set_counter(name, end.min(f64::from(i32::MAX)) as i32);
+    }
+
+    /// Seconds of game time left on the cooldown called `name`, 0 when it
+    /// is ready. Use it for a HUD meter.
+    #[must_use]
+    pub fn cooldown_left(&self, name: &str) -> f32 {
+        let time = self.frame_time();
+        let end = i64::from(self.counter_or(name, 0));
+        let left = (end - time.fixed_tick as i64).max(0);
+        (left as f64 * time.fixed_delta.as_secs_f64()) as f32
+    }
+
+    fn frame_time(&self) -> FrameTime {
+        self.world
+            .get_resource::<FrameTime>()
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// The run's seed: a scenario's `seed`, `rusting run --seed`, or 0.
     /// Use it for things that must not change with the tick, such as a
     /// level layout generated once.
@@ -1521,6 +1557,24 @@ impl GameScene<'_> {
     #[must_use]
     pub fn paused(&self) -> bool {
         self.world.resource::<crate::runtime::TimeControl>().paused
+    }
+
+    /// Runs game time at `scale` times real time: 0.5 is slow motion, 2
+    /// is double speed. Fixed ticks keep their length and only come more
+    /// or less often, so a scenario gives the same result at any scale.
+    /// Negative scales count as 0.
+    pub fn set_time_scale(&mut self, scale: f64) {
+        self.world
+            .resource_mut::<crate::runtime::TimeControl>()
+            .time_scale = scale.max(0.0);
+    }
+
+    /// The scale set by [`Self::set_time_scale`], 1 by default.
+    #[must_use]
+    pub fn time_scale(&self) -> f64 {
+        self.world
+            .resource::<crate::runtime::TimeControl>()
+            .time_scale
     }
 
     /// Every counter's name and value, sorted by name, for saving game
@@ -6827,6 +6881,31 @@ mod tests {
         let before = scene.object("Turret").rotation();
         scene.object("Turret").look_at([1.0, 1.0, 1.0]);
         assert_eq!(scene.object("Turret").rotation(), before);
+    }
+
+    #[test]
+    fn cooldowns_count_fixed_ticks() {
+        let mut world = World::new();
+        world.insert_resource(FrameTime {
+            fixed_tick: 100,
+            ..FrameTime::default()
+        });
+        let mut scene = GameScene { world: &mut world };
+        assert!(scene.cooldown_ready("dash"));
+        scene.start_cooldown("dash", 0.5);
+        assert!(!scene.cooldown_ready("dash"));
+        assert!((scene.cooldown_left("dash") - 0.5).abs() < 1e-6);
+        world.resource_mut::<FrameTime>().fixed_tick = 129;
+        let scene = GameScene { world: &mut world };
+        assert!(!scene.cooldown_ready("dash"));
+        world.resource_mut::<FrameTime>().fixed_tick = 130;
+        let scene = GameScene { world: &mut world };
+        assert!(scene.cooldown_ready("dash"));
+        assert_eq!(scene.counter_value("dash"), 130);
+        world.insert_resource(crate::runtime::TimeControl::default());
+        let mut scene = GameScene { world: &mut world };
+        scene.set_time_scale(-2.0);
+        assert_eq!(scene.time_scale(), 0.0);
     }
 
     #[test]

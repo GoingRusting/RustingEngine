@@ -321,6 +321,7 @@ works too.
 | find, move, parent | `object(name)`, `try_object(name)`, `reparent(name, parent)`, `name_of(entity)`, `world()` |
 | contacts | `touching(name)` |
 | counters | `counter(name)`, `counter_value(name)`, `counter_or(name, default)`, `set_counter(name, value)`, `add_to_counter(name, amount)`, `counter_complete(name)`, `counters()` |
+| cooldowns | `cooldown_ready(name)`, `start_cooldown(name, seconds)`, `cooldown_left(name)` |
 | input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
 | rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
 | cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |
@@ -333,7 +334,7 @@ works too.
 | game feel | `flash(name)`, `squash(name, amount)`, `add_trauma(name, amount)`, `hit_stop(seconds)`, `particles(name, command)`, `trigger(name)`, `tween(name, property, to, seconds, easing)` |
 | animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
 | rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)` |
-| menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `load_text(path)` |
+| menus, saves | `ui()`, `set_paused(paused)`, `paused()`, `set_time_scale(scale)`, `time_scale()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `load_text(path)` |
 | video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
 | GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |

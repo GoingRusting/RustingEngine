@@ -704,6 +704,10 @@ const API_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "cooldowns",
+        &["cooldown_ready", "start_cooldown", "cooldown_left"],
+    ),
+    (
         "input",
         &[
             "pressed",
@@ -867,6 +871,8 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "ui",
             "set_paused",
             "paused",
+            "set_time_scale",
+            "time_scale",
             "quit",
             "save_data",
             "load_data",
