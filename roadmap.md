@@ -2594,7 +2594,13 @@ Depends on: Milestones 1, 3, and 9.
 - [ ] Text shaping with Unicode, bidirectional text, font fallback, SDF font rendering, and rich text markup.
 - [ ] Themes and styles editable as data assets.
 - [ ] Focus navigation for keyboard and gamepad, and input routing between UI and gameplay.
-- [ ] Data-bound HUD elements and world-space indicators.
+- [x] Data-bound HUD elements and world-space indicators. Data binding is
+  the `{counter}`, `{state:}`, `{dialogue:}` and `{tr:}` placeholders
+  (`hud_text_fills_counter_placeholders`). `rusting.hud` `follow` and
+  `follow_offset` pin an element over a named object through the active or
+  named camera, hidden behind it; evidence
+  `runtime::tests::a_hud_element_follows_an_object_on_screen`
+  (mutation-checked against dropping `follow_offset`).
 - [ ] Scaling across resolutions, aspect ratios, and DPI settings.
 - [x] Localization: translation tables, pluralization, locale switching at runtime, and extraction of translatable strings.
   - [x] Translation tables, one/other plurals and runtime locale switching. `GameScene::set_locale(locale)` reads `assets/locales/<locale>.json` (key to text) into the `Translations` resource, keeping the old locale on a bad file; `tr(key)` and `tr_count(key, count)` read it, with the key as the fallback; HUD text's `{tr:key}` placeholders follow the locale each frame and may hold counter placeholders. Verified by `set_locale_switches_translations_and_keeps_them_on_a_bad_file` and `hud_text_fills_counter_placeholders` (translated HUD text with a counter, a missing key, plurals).

@@ -641,6 +641,12 @@ pub struct HudElement {
     /// Name of a camera: the element anchors to that camera's viewport and
     /// shows only while the camera is active.
     pub camera: Option<String>,
+    /// Name of an object: the element sits on that object's place on
+    /// screen (plus `follow_offset` in world space), aligned by `anchor`,
+    /// with `offset` in pixels (+y down). Hidden while the object is behind
+    /// the camera or missing.
+    pub follow: Option<String>,
+    pub follow_offset: [f32; 3],
 }
 
 impl Default for HudElement {
@@ -654,6 +660,8 @@ impl Default for HudElement {
             button: false,
             requires: None,
             camera: None,
+            follow: None,
+            follow_offset: [0.0; 3],
         }
     }
 }
@@ -1926,17 +1934,23 @@ pub(super) fn draw_hud(
     counters: Query<(&Counter, Option<&SceneId>)>,
     visibility: Query<&super::Visibility>,
     parents: Query<&super::Parent>,
-    cameras: Query<(&super::Name, &super::Camera)>,
+    cameras: Query<(
+        Entity,
+        &super::Name,
+        &super::Camera,
+        Option<&GlobalTransform>,
+    )>,
     audio: Option<Res<super::AudioQueue>>,
     caption_settings: Option<Res<super::CaptionSettings>>,
     perf: Option<Res<PerfOverlay>>,
-    (translations, dialogues, states, text_scale, actions, rebind): (
+    (translations, dialogues, states, text_scale, actions, rebind, named): (
         Option<Res<Translations>>,
         Query<(&super::Name, &Dialogue)>,
         Query<(&super::Name, &ObjectState)>,
         Option<Res<TextScale>>,
         Query<&super::InputAction>,
         Option<Res<RebindWait>>,
+        Query<(&super::Name, &GlobalTransform)>,
     ),
 ) {
     let scale = text_scale.map_or(1.0, |scale| scale.0);
@@ -1974,23 +1988,37 @@ pub(super) fn draw_hud(
             }
         }
         let screen = ui.context().screen_rect();
-        let area = match &element.camera {
-            None => screen,
+        // The named camera, else the one the window shows, as
+        // `audio::active_camera` picks it.
+        let camera = match &element.camera {
+            None => cameras
+                .iter()
+                .filter(|(.., camera, _)| camera.active)
+                .max_by_key(|(entity, _, camera, _)| {
+                    (
+                        camera.viewport.is_none(),
+                        camera.priority,
+                        std::cmp::Reverse(entity.to_bits()),
+                    )
+                }),
             Some(wanted) => {
-                let Some((_, camera)) = cameras
-                    .iter()
-                    .find(|(name, camera)| name.0 == *wanted && camera.active)
-                else {
+                let found = cameras.iter().find(|(_, name, camera, _)| {
+                    name.0 == *wanted && camera.active
+                });
+                if found.is_none() {
                     continue;
-                };
-                match camera.viewport {
-                    Some([x, y, w, h]) => egui::Rect::from_min_size(
-                        screen.min + egui::vec2(x, y) * screen.size(),
-                        egui::vec2(w, h) * screen.size(),
-                    ),
-                    None => screen,
                 }
+                found
             }
+        };
+        let area = match camera.and_then(|(.., camera, _)| camera.viewport) {
+            Some([x, y, w, h]) if element.camera.is_some() => {
+                egui::Rect::from_min_size(
+                    screen.min + egui::vec2(x, y) * screen.size(),
+                    egui::vec2(w, h) * screen.size(),
+                )
+            }
+            _ => screen,
         };
         let (align, inward) = match element.anchor {
             HudAnchor::TopLeft => (egui::Align2::LEFT_TOP, [1.0, 1.0]),
@@ -2007,12 +2035,30 @@ pub(super) fn draw_hud(
             element.offset[0] * inward[0],
             element.offset[1] * inward[1],
         );
-        placed.push((
-            entity,
-            element,
-            align,
-            align.pos_in_rect(&area) + offset,
-        ));
+        let point = match &element.follow {
+            None => align.pos_in_rect(&area) + offset,
+            Some(target) => {
+                let Some(on_screen) = camera.and_then(|(.., camera, view)| {
+                    let (_, at) =
+                        named.iter().find(|(name, _)| name.0 == *target)?;
+                    let at = at.matrix[3];
+                    let point = [0, 1, 2]
+                        .map(|axis| at[axis] + element.follow_offset[axis]);
+                    super::picking::project_point(
+                        point.into(),
+                        *camera,
+                        *view?,
+                        area.min.into(),
+                        area.size().into(),
+                    )
+                }) else {
+                    continue;
+                };
+                egui::pos2(on_screen[0], on_screen[1])
+                    + egui::vec2(element.offset[0], element.offset[1])
+            }
+        };
+        placed.push((entity, element, align, point));
     }
     // Drawn in reading order, top to bottom then left to right, because
     // egui moves keyboard and gamepad focus in drawing order.

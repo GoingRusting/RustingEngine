@@ -702,6 +702,11 @@ crate::reflect! {
             unit: "camera name",
             doc: "null anchors to the window; a name anchors to that camera's viewport and shows only while it is active",
         },
+        follow: Option<String> {
+            unit: "object name",
+            doc: "null, or the element sits on that object's place on screen, aligned by anchor, with offset in pixels (+y down); hidden while the object is behind the camera",
+        },
+        follow_offset: [f32; 3] { unit: "m", doc: "world-space offset from the followed object, such as [0, 2, 0] above a head" },
     }
 }
 

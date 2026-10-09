@@ -6,6 +6,8 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.hud` `follow` and `follow_offset` pin a HUD element over a named
+  object on screen, for name tags and world-space prompts.
 - `rusting.slide_sound` loops a scrape or roll sound while a body slides or rolls.
 - `BusEffect::Compressor` compresses or limits a bus.
 - `BusEffect::Eq` sets a bus's low, mid and high band gains.

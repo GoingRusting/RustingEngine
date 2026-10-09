@@ -307,8 +307,12 @@ impl Default for App {
         app.insert_resource(AudioQueue::default());
         app.add_event::<HudButtonPressed>();
         #[cfg(feature = "ui")]
-        // After game code, so the HUD shows this frame's counters.
-        app.add_system(ScheduleStage::PostUpdate, game_feel::draw_hud);
+        // After game code, so the HUD shows this frame's counters, and
+        // after propagation, so followed objects are where they are now.
+        app.add_system(
+            ScheduleStage::PostUpdate,
+            game_feel::draw_hud.after(propagate_transforms),
+        );
         app.add_system(ScheduleStage::Update, two_d::build_tile_maps);
         app.add_system(
             ScheduleStage::Update,

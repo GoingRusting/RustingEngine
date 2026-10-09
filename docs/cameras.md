@@ -145,6 +145,13 @@ frame, so the view never shows past them. `yaw_limits` is absolute yaw;
 that camera's viewport. The element shows only while that camera is
 active.
 
+`"follow": "Enemy"` pins the element over the object named `Enemy`, for
+name tags, health bars and "press E" prompts. `follow_offset` lifts the
+point in world units (`[0, 2, 0]` sits above the head), and `offset` then
+moves it in pixels. The element hides while the object is behind the
+camera or missing. It projects through `camera` when set, else the active
+camera.
+
 ## Testing cameras in scenarios
 
 - `expect_screen` with `"camera": "P2 Camera"` projects through that

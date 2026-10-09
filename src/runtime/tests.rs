@@ -2909,6 +2909,58 @@ fn the_perf_overlay_draws_only_while_its_resource_exists() {
 
 #[cfg(feature = "ui")]
 #[test]
+fn a_hud_element_follows_an_object_on_screen() {
+    let mut app = App::new();
+    app.spawn((
+        Name("Eye".into()),
+        Camera {
+            active: true,
+            ..Camera::default()
+        },
+        Transform::new([0.0, 0.0, 10.0]),
+    ));
+    let enemy = app.spawn((Name("Enemy".into()), Transform::new([0.0; 3])));
+    app.spawn(HudElement {
+        text: "Grunt".into(),
+        anchor: HudAnchor::Center,
+        offset: [0.0, 0.0],
+        follow: Some("Enemy".into()),
+        follow_offset: [0.0, 1.0, 0.0],
+        ..HudElement::default()
+    });
+    let tag = |app: &mut App| {
+        app.world_mut()
+            .resource_mut::<RuntimeUi>()
+            .set_input(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..egui::RawInput::default()
+            });
+        app.update(Duration::from_millis(16)).unwrap();
+        app.world().resource::<RuntimeUi>().find_text("Grunt")
+    };
+    // Straight ahead, lifted 1 m: centred across, above the middle.
+    let [x, y] = tag(&mut app).unwrap();
+    assert!((x - 400.0).abs() < 1.0 && y < 290.0, "{x} {y}");
+    // It moves with the object.
+    app.world_mut()
+        .get_mut::<Transform>(enemy)
+        .unwrap()
+        .position = [3.0, 0.0, 0.0];
+    let [right, _] = tag(&mut app).unwrap();
+    assert!(right > x + 50.0, "{x} then {right}");
+    // Behind the camera it hides.
+    app.world_mut()
+        .get_mut::<Transform>(enemy)
+        .unwrap()
+        .position = [0.0, 0.0, 20.0];
+    assert!(tag(&mut app).is_err());
+}
+
+#[cfg(feature = "ui")]
+#[test]
 fn hud_elements_follow_their_camera_viewport() {
     let mut app = App::new();
     let camera = app.spawn((
