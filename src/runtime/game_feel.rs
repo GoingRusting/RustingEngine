@@ -696,6 +696,7 @@ pub struct ObjectState {
 /// One edge of an [`ObjectState`] machine. It applies when the object is
 /// in `from` (or `from` is empty), has been there `after_seconds`, and the
 /// counter called `counter` (when not empty) is at least `at_least`.
+/// When `held` is not empty, its input action must be held too.
 /// Taking it adds `then_add` to the counter `then_counter` (when not
 /// empty), creating the counter if needed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -706,6 +707,7 @@ pub struct StateTransition {
     pub after_seconds: f32,
     pub counter: String,
     pub at_least: i32,
+    pub held: String,
     pub then_counter: String,
     pub then_add: i32,
 }
@@ -719,7 +721,16 @@ pub fn run_state_machines(
     time: Res<FrameTime>,
     mut machines: Query<&mut ObjectState>,
     mut counters: Query<(&mut Counter, Option<&SceneId>)>,
+    actions: Option<Res<super::ActionMap>>,
+    input: Option<Res<super::RuntimeInput>>,
 ) {
+    let held = |action: &str| {
+        action.is_empty()
+            || actions
+                .as_ref()
+                .zip(input.as_ref())
+                .is_some_and(|(actions, input)| actions.held(input, action))
+    };
     let mut adds = std::collections::BTreeMap::<String, i32>::new();
     let delta = time.fixed_delta.as_secs_f64();
     for mut machine in &mut machines {
@@ -729,6 +740,7 @@ pub fn run_state_machines(
             (edge.from.is_empty() || edge.from == machine.state)
                 && edge.to != machine.state
                 && elapsed + 1e-9 >= f64::from(edge.after_seconds)
+                && held(&edge.held)
                 && (edge.counter.is_empty()
                     || find_counter(counters.iter(), &edge.counter)
                         .is_some_and(|counter| counter.value >= edge.at_least))

@@ -2334,6 +2334,29 @@ fn state_machines_follow_timed_and_counter_guarded_transitions() {
 }
 
 #[test]
+fn state_transitions_can_wait_for_a_held_input_action() {
+    let mut app = App::new();
+    let door = app.spawn(ObjectState {
+        state: "shut".into(),
+        transitions: vec![StateTransition {
+            to: "open".into(),
+            held: PLAYER_JUMP.into(),
+            ..StateTransition::default()
+        }],
+        ..ObjectState::default()
+    });
+    let state =
+        |app: &App| app.world().get::<ObjectState>(door).unwrap().state.clone();
+    run_fixed_steps(&mut app, 3);
+    assert_eq!(state(&app), "shut");
+    app.world_mut()
+        .resource_mut::<RuntimeInput>()
+        .record_key(KeyCode::Space, true);
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(state(&app), "open");
+}
+
+#[test]
 fn tweens_play_once_loop_and_ping_pong_on_the_fixed_step() {
     let mut app = App::new();
     let tween = |repeat| Tween {

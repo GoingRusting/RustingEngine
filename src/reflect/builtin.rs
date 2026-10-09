@@ -723,6 +723,7 @@ crate::reflect! {
         after_seconds: f32 { unit: "s", min: 0.0, doc: "time in the current state" },
         counter: String { unit: "counter name", doc: "empty means no counter guard" },
         at_least: i32 { doc: "the counter's value must reach this" },
+        held: String { unit: "input action", doc: "must be held; empty for none" },
         then_counter: String { unit: "counter name", doc: "taking the transition adds to it; empty for none" },
         then_add: i32 { doc: "added to then_counter" },
     }

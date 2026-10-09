@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `rusting.state` transitions take `held`, an input action that must be held for the edge to be taken.
 - `rusting.state` takes `transitions` (`from`, `to`, `after_seconds`, `counter`, `at_least`), which the engine runs each fixed tick, so a state machine needs no game code. A transition's `then_counter` and `then_add` add to a counter when it is taken.
 - `GameScene::roll_loot(table, stream)` picks a weighted loot entry from the run's seed, and `spend(name, amount)` takes from a counter only when it holds enough.
 - `GameScene::add_status(object, effect, seconds)`, `has_status`, `status_left` and `clear_status` give objects timed status effects such as poisoned or stunned. They count fixed ticks and live in counters, so snapshots and `save_counters` keep them.
