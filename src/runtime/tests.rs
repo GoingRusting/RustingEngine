@@ -2277,6 +2277,54 @@ fn animations_run_on_the_fixed_step_and_send_marker_events() {
 }
 
 #[test]
+fn state_machines_follow_timed_and_counter_guarded_transitions() {
+    let mut app = App::new();
+    let edge = |from: &str, to: &str| StateTransition {
+        from: from.into(),
+        to: to.into(),
+        ..StateTransition::default()
+    };
+    let guard = app.spawn(ObjectState {
+        state: "idle".into(),
+        transitions: vec![
+            StateTransition {
+                after_seconds: 0.5,
+                ..edge("idle", "patrol")
+            },
+            StateTransition {
+                counter: "alarm".into(),
+                at_least: 1,
+                ..edge("", "chase")
+            },
+        ],
+        ..ObjectState::default()
+    });
+    let alarm = app.spawn(Counter {
+        name: "alarm".into(),
+        value: 0,
+        target: None,
+    });
+    let state = |app: &App| {
+        app.world().get::<ObjectState>(guard).unwrap().state.clone()
+    };
+    // Fixed ticks count from 0, so tick 30 (0.5 s) is the 31st step.
+    run_fixed_steps(&mut app, 30);
+    assert_eq!(state(&app), "idle");
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(state(&app), "patrol");
+    app.world_mut().get_mut::<Counter>(alarm).unwrap().value = 1;
+    run_fixed_steps(&mut app, 1);
+    assert_eq!(state(&app), "chase");
+    // `to` equal to the current state never re-enters it.
+    let since = app.world().get::<ObjectState>(guard).unwrap().since_tick;
+    run_fixed_steps(&mut app, 5);
+    assert_eq!(
+        app.world().get::<ObjectState>(guard).unwrap().since_tick,
+        since
+    );
+}
+
+#[test]
 fn tweens_play_once_loop_and_ping_pong_on_the_fixed_step() {
     let mut app = App::new();
     let tween = |repeat| Tween {

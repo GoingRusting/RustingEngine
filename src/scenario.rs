@@ -4808,7 +4808,7 @@ mod tests {
             Name("Guard".into()),
             crate::runtime::ObjectState {
                 state: "chase".into(),
-                since_tick: 0,
+                ..Default::default()
             },
         ));
         let scenario = scenario(

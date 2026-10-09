@@ -679,14 +679,58 @@ impl Default for Health {
 /// The current state of an object's state machine, such as an enemy's
 /// `"patrol"` or `"chase"`, set by game code's `GameScene::set_state`.
 /// Scenarios can expect `/components/rusting.state/state`.
+///
+/// `transitions` make it a state machine the engine runs: each fixed tick
+/// the first transition that applies moves the object to its `to` state.
 #[derive(
-    Component, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
+    Component, Clone, Debug, Default, PartialEq, Serialize, Deserialize,
 )]
 #[serde(default)]
 pub struct ObjectState {
     pub state: String,
     /// The fixed tick the state was entered on.
     pub since_tick: u64,
+    pub transitions: Vec<StateTransition>,
+}
+
+/// One edge of an [`ObjectState`] machine. It applies when the object is
+/// in `from` (or `from` is empty), has been there `after_seconds`, and the
+/// counter called `counter` (when not empty) is at least `at_least`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StateTransition {
+    pub from: String,
+    pub to: String,
+    pub after_seconds: f32,
+    pub counter: String,
+    pub at_least: i32,
+}
+
+/// Moves each [`ObjectState`] along its first applying transition. Every
+/// machine reads only counters, so the order of objects does not matter.
+pub fn run_state_machines(
+    time: Res<FrameTime>,
+    mut machines: Query<&mut ObjectState>,
+    counters: Query<(&Counter, Option<&SceneId>)>,
+) {
+    let delta = time.fixed_delta.as_secs_f64();
+    for mut machine in &mut machines {
+        let elapsed =
+            time.fixed_tick.saturating_sub(machine.since_tick) as f64 * delta;
+        let next = machine.transitions.iter().find(|edge| {
+            (edge.from.is_empty() || edge.from == machine.state)
+                && edge.to != machine.state
+                && elapsed + 1e-9 >= f64::from(edge.after_seconds)
+                && (edge.counter.is_empty()
+                    || find_counter(counters.iter(), &edge.counter)
+                        .is_some_and(|counter| counter.value >= edge.at_least))
+        });
+        if let Some(edge) = next {
+            let to = edge.to.clone();
+            machine.state = to;
+            machine.since_tick = time.fixed_tick;
+        }
+    }
 }
 
 /// A named integer shown by HUD `{name}` placeholders and raised by

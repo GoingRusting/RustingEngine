@@ -17,8 +17,8 @@ use crate::runtime::{
     PlatformerController, PlayerController, PostVolume, QualityProfile,
     RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, SceneBackground,
     SceneInstance, ShadowQuality, SkyLight, SoundCue, SpawnGrid, Squash,
-    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
-    TweenRepeat, WaterBody,
+    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
+    TweenProperty, TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -710,6 +710,19 @@ crate::reflect! {
     struct ObjectState {
         state: String { doc: "game code changes it with scene.set_state" },
         since_tick: u64 { doc: "the fixed tick the state was entered on" },
+        transitions: Vec<StateTransition> {
+            doc: "checked each fixed tick; the first that applies changes the state",
+        },
+    }
+}
+
+crate::reflect! {
+    struct StateTransition {
+        from: String { doc: "empty matches any state" },
+        to: String,
+        after_seconds: f32 { unit: "s", min: 0.0, doc: "time in the current state" },
+        counter: String { unit: "counter name", doc: "empty means no counter guard" },
+        at_least: i32 { doc: "the counter's value must reach this" },
     }
 }
 

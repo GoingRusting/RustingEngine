@@ -241,7 +241,7 @@ pub(in crate::editor) fn component_help(
             "Player lives, enemy health, breakable crates.",
         ),
         OBJECT_STATE_COMPONENT => (
-            "The current state of this object's state machine, set by game code.",
+            "The current state of this object's state machine, set by game code or by its transitions.",
             "Enemy patrol or chase, door open or closed.",
         ),
         PICKUP_COMPONENT => (

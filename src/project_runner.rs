@@ -1405,12 +1405,14 @@ impl GameScene<'_> {
         {
             return false;
         }
-        self.world
-            .entity_mut(entity)
-            .insert(crate::runtime::ObjectState {
-                state: state.to_owned(),
-                since_tick: tick,
-            });
+        // Keeps the scene's transitions.
+        let mut object = self.world.entity_mut(entity);
+        let mut current = object
+            .entry::<crate::runtime::ObjectState>()
+            .or_default()
+            .into_mut();
+        current.state = state.to_owned();
+        current.since_tick = tick;
         true
     }
 
