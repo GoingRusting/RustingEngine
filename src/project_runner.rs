@@ -1698,8 +1698,9 @@ impl GameScene<'_> {
     }
 
     /// True on the frame `action` was pressed; inside a tick function (see
-    /// [`run_game_with_tick`]), true on the first tick after the press, even
-    /// when frames without a tick came between. Actions come from
+    /// [`run_game_with_tick`]), true on the tick the press happened in by
+    /// its recorded time (see [`Self::press_tick`]), even when frames
+    /// without a tick came between or one frame ran several ticks. Actions come from
     /// `rusting.input_action` components, the built-in `player.*` actions,
     /// or [`crate::runtime::ActionMap`] bindings made in code.
     #[must_use]
@@ -3966,12 +3967,13 @@ struct GameUpdateFunction(GameUpdate);
 #[derive(Resource, Clone, Copy)]
 struct GameTickFunction(GameUpdate);
 
-/// Input edges from frames that ran no fixed tick, held for the next tick
-/// so [`GameScene::pressed`] inside a tick function misses no press.
+/// Input edges not yet given to a tick: from frames that ran no fixed tick,
+/// or presses timed after the ticks a frame ran, held for the next tick so
+/// [`GameScene::pressed`] inside a tick function misses no press.
 #[derive(Resource, Clone, Default)]
 struct TickInput {
     pending: RuntimeInput,
-    /// A tick already ran this frame and took the pending edges.
+    /// A tick already ran this frame and took the frame's edges.
     ticked: bool,
 }
 
@@ -4139,9 +4141,11 @@ fn run_hud_buttons(scene: &mut GameScene) {
     }
 }
 
-/// Runs the game's tick function with this tick's input: the first tick of
-/// a frame sees every press since the last tick, later ticks of the same
-/// frame see none.
+/// Runs the game's tick function with this tick's input. A press goes to
+/// the tick it happened in by its recorded time: when a frame runs several
+/// ticks each sees its own presses, and a press timed after the frame's
+/// last tick waits for the next one. Untimed presses and releases go to the
+/// frame's first tick.
 fn run_simple_game_tick(world: &mut World) {
     let time = *world.resource::<FrameTime>();
     let tick = world.resource::<GameTickFunction>().0;
@@ -4149,10 +4153,12 @@ fn run_simple_game_tick(world: &mut World) {
     let mut state = world.resource_mut::<TickInput>();
     if state.ticked {
         input.clear_frame_edges();
-    } else {
-        input.merge_frame_edges(&std::mem::take(&mut state.pending));
-        state.ticked = true;
     }
+    state.ticked = true;
+    input.merge_frame_edges(&std::mem::take(&mut state.pending));
+    // During a step `fixed_tick` counts the ticks before it, so this step
+    // covers presses timed before `fixed_tick + 1`.
+    state.pending = input.take_presses_after(time.fixed_tick as f64 + 1.0);
     let mut frame =
         std::mem::replace(&mut *world.resource_mut::<RuntimeInput>(), input);
     tick(&mut GameScene { world }, &time);
@@ -6018,6 +6024,51 @@ mod tests {
         assert_eq!(after_hit_stop(&mut world, ms(16)), ms(16));
         GameScene { world: &mut world }.hit_stop(9.0);
         assert_eq!(world.resource::<HitStop>().remaining, ms(1000));
+    }
+
+    #[test]
+    fn a_timed_press_reaches_the_tick_it_happened_in() {
+        use crate::runtime::{InputBinding, KeyCode};
+        use std::sync::Mutex;
+        static SEEN: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+        fn idle(_: &mut GameScene<'_>, _: &FrameTime) {}
+        fn tick(scene: &mut GameScene<'_>, time: &FrameTime) {
+            if scene.pressed("fire") {
+                SEEN.lock().unwrap().push(time.fixed_tick);
+            }
+        }
+        let mut app = App::new();
+        app.add_plugin(SimpleGamePlugin {
+            update: idle,
+            tick: Some(tick),
+            components: None,
+        })
+        .unwrap();
+        app.world_mut()
+            .resource_mut::<crate::runtime::ActionMap>()
+            .bind("fire", InputBinding::Key(KeyCode::KeyF));
+        app.world_mut()
+            .resource_mut::<crate::runtime::ActionMap>()
+            .bind("fire", InputBinding::Key(KeyCode::KeyG));
+        let step = app
+            .world()
+            .resource::<crate::runtime::TimeControl>()
+            .fixed_delta;
+        // One frame runs ticks 0, 1 and 2. A press at 1.5 belongs to tick
+        // 1; one at 3.2 happened after them and waits for tick 3.
+        let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+        input.record_key(KeyCode::KeyF, true);
+        input.record_press_tick(InputBinding::Key(KeyCode::KeyF), 1.5);
+        input.record_key(KeyCode::KeyF, false);
+        input.record_key(KeyCode::KeyG, true);
+        input.record_press_tick(InputBinding::Key(KeyCode::KeyG), 3.2);
+        app.update_exact(step * 3).unwrap();
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
+        assert_eq!(*SEEN.lock().unwrap(), [1]);
+        app.update_exact(step * 2).unwrap();
+        assert_eq!(*SEEN.lock().unwrap(), [1, 3]);
     }
 
     #[test]

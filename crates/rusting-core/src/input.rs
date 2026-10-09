@@ -335,6 +335,44 @@ impl RuntimeInput {
             .map(|(_, tick)| *tick)
     }
 
+    /// Moves the presses recorded at or after `end`, in fractional fixed
+    /// ticks, out of this input and returns them as an input holding only
+    /// those presses, so a frame that runs several ticks gives each press to
+    /// the tick it happened in. Untimed presses and releases stay.
+    pub fn take_presses_after(&mut self, end: f64) -> Self {
+        let mut later = Self::default();
+        let (taken, kept) = std::mem::take(&mut self.press_ticks)
+            .into_iter()
+            .partition(|&(_, tick)| tick >= end);
+        self.press_ticks = kept;
+        later.press_ticks = taken;
+        for &(binding, _) in &later.press_ticks {
+            // An earlier press of the same input stays with this tick too.
+            let stays = self.press_tick(binding).is_some();
+            match binding {
+                InputBinding::Key(key) => {
+                    if !stays {
+                        self.keys_just_pressed.remove(&key);
+                    }
+                    later.keys_just_pressed.insert(key);
+                }
+                InputBinding::Mouse(button) => {
+                    if !stays {
+                        self.mouse_just_pressed.remove(&button);
+                    }
+                    later.mouse_just_pressed.insert(button);
+                }
+                InputBinding::Pad(button) => {
+                    if !stays {
+                        self.pad_just_pressed.remove(&button);
+                    }
+                    later.pad_just_pressed.insert(button);
+                }
+            }
+        }
+        later
+    }
+
     /// Clears this frame's edge sets. Runtime integrations call this once per
     /// rendered frame after gameplay systems have read them, so the next frame
     /// starts empty.
