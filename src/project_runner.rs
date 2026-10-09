@@ -1669,6 +1669,40 @@ impl GameScene<'_> {
         Some(version)
     }
 
+    /// Saves the registered `components` (such as `rusting.health` or
+    /// `rusting.state`) of the objects called `objects` under `key`, with
+    /// the game's save `version`, as JSON through [`Self::save_data`].
+    /// Objects that do not exist and components an object lacks are left
+    /// out. Each value keeps its component version, so loading an old
+    /// save runs the component's migrations.
+    ///
+    /// # Errors
+    /// Returns the error from [`Self::save_data`].
+    pub fn save_objects(
+        &mut self,
+        key: &str,
+        version: u32,
+        objects: &[&str],
+        components: &[&str],
+    ) -> std::io::Result<()> {
+        let text = object_save(self.world, version, objects, components);
+        self.save_data(key, &text)
+    }
+
+    /// Restores every component saved under `key` by
+    /// [`Self::save_objects`] onto the objects with the saved names and
+    /// returns the save's version. `None` when there is no such save; a
+    /// file that is not an object save warns, and so does each saved
+    /// object that is missing or component that does not load.
+    pub fn load_objects(&mut self, key: &str) -> Option<u32> {
+        let text = self.load_data(key)?;
+        let version = apply_object_save(self.world, &text);
+        if version.is_none() {
+            eprintln!("warning: `{key}` is not a save from save_objects");
+        }
+        version
+    }
+
     /// The text [`Self::save_data`] stored under `key`, or `None` when
     /// there is no such file.
     #[must_use]
@@ -3437,6 +3471,60 @@ fn name_taken(name: &str) -> ! {
          scene file declares it (templates ship names such as `Box 1` and \
          `Ball 1`), delete it there or spawn under another name"
     );
+}
+
+/// The text [`GameScene::save_objects`] writes.
+fn object_save(
+    world: &mut World,
+    version: u32,
+    objects: &[&str],
+    components: &[&str],
+) -> String {
+    let mut saved = serde_json::Map::new();
+    for &object in objects {
+        let Some(entity) = find_named_entity(world, object) else {
+            continue;
+        };
+        let values = crate::runtime::registered_component_values(world, entity)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(name, _)| components.contains(&name.as_str()))
+            .filter_map(|(name, text)| {
+                Some((
+                    name,
+                    serde_json::from_str::<serde_json::Value>(&text).ok()?,
+                ))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        saved.insert(object.to_owned(), values.into());
+    }
+    let save = serde_json::json!({"version": version, "objects": saved});
+    format!("{save:#}\n")
+}
+
+/// Restores the components in `text` from [`object_save`] and returns its
+/// version; `None`, restoring nothing, when it is not such a save.
+fn apply_object_save(world: &mut World, text: &str) -> Option<u32> {
+    let save: serde_json::Value = serde_json::from_str(text).ok()?;
+    let version = u32::try_from(save["version"].as_u64()?).ok()?;
+    let objects = save["objects"].as_object()?;
+    if objects.values().any(|values| !values.is_object()) {
+        return None;
+    }
+    for (object, values) in objects {
+        let Some(entity) = find_or_warn(world, object) else {
+            continue;
+        };
+        for (name, value) in values.as_object().into_iter().flatten() {
+            let text = value.to_string();
+            if let Err(error) = crate::runtime::set_registered_component(
+                world, entity, name, &text,
+            ) {
+                eprintln!("warning: `{object}` {name} did not load: {error}");
+            }
+        }
+    }
+    Some(version)
 }
 
 fn find_named_entity(world: &mut World, name: &str) -> Option<Entity> {
@@ -7146,6 +7234,46 @@ mod tests {
         assert_eq!(scene.apply_counter_save(bad), None);
         assert_eq!(scene.counter_or("a", -1), -1);
         assert_eq!(scene.apply_counter_save("night=3"), None);
+    }
+
+    #[test]
+    fn every_registered_component_round_trips_through_an_object_save() {
+        let world_with = |names: &[&str]| {
+            let mut world = World::new();
+            world.insert_resource(
+                crate::runtime::SceneComponentRegistry::default(),
+            );
+            for name in names {
+                world.spawn(Name((*name).into()));
+            }
+            world
+        };
+        let mut world = world_with(&["Hero"]);
+        let components = crate::runtime::registered_component_names(&world);
+        let hero = find_named_entity(&mut world, "Hero").unwrap();
+        for name in &components {
+            crate::runtime::add_registered_component(&mut world, hero, name)
+                .unwrap();
+        }
+        let mut scene = GameScene { world: &mut world };
+        scene.damage("Hero", 1);
+        scene.set_state("Hero", "chase");
+        let names: Vec<&str> = components.iter().map(String::as_str).collect();
+        let before =
+            crate::runtime::registered_component_values(&world, hero).unwrap();
+        let save = object_save(&mut world, 4, &["Hero", "Ghost"], &names);
+        assert!(!save.contains("Ghost"));
+        let mut loaded = world_with(&["Hero"]);
+        assert_eq!(apply_object_save(&mut loaded, &save), Some(4));
+        let hero = find_named_entity(&mut loaded, "Hero").unwrap();
+        let after =
+            crate::runtime::registered_component_values(&loaded, hero).unwrap();
+        for (name, value) in &before {
+            let restored = after.iter().find(|(other, _)| other == name);
+            assert_eq!(restored.map(|(_, v)| v), Some(value), "{name}");
+        }
+        assert!(before.iter().any(|(_, v)| v.contains("chase")));
+        assert_eq!(apply_object_save(&mut loaded, r#"{"version": 1}"#), None);
     }
 
     #[test]

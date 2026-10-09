@@ -6,6 +6,7 @@ Engine features for the horror game FOREVER BEAR.
 
 ### Added
 
+- `GameScene::save_objects(key, version, objects, components)` and `load_objects(key)` save and restore selected registered components, such as `rusting.health` and `rusting.state`, of named objects. Each value keeps its component version, so old saves run the component migrations.
 - The registered component `rusting.health` (`value`, `max`, `team`) with `GameScene::damage`, `health` and `same_team`.
 - `GameScene::save_counters(key, version, names)` and `load_counters(key)`: versioned save slots for counters; `load_counters` returns the save's version for migrating old saves.
 - Object states: `GameScene::set_state`, `state` and `state_seconds` keep a state machine's state in the new registered component `rusting.state`, which scenarios can expect on and which snapshots and state hashes include.
