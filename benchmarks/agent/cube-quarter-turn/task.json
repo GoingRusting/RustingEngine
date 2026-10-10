@@ -1,0 +1,20 @@
+{
+  "kind": "feature",
+  "template": "3d",
+  "request": "Make the cube turn on a key press. Add an input action `turn` on key T. Each press starts a quarter turn of the `Cube` about the Y axis: its Y rotation grows by 90 degrees (pi/2 radians) at a constant speed over 0.25 s and stops exactly there, without wrapping the angle. A press while a turn is still running does nothing and is not queued. A counter named `turns` starts at 0 and adds 1 each time a turn starts.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, time: &FrameTime) {\n    let target =\n        scene.counter_or(\"turns\", 0) as f32 * std::f32::consts::FRAC_PI_2;\n    let [x, y, z] = scene.object(\"Cube\").rotation();\n    if y < target {\n        let y = (y + std::f32::consts::TAU * time.delta_seconds()).min(target);\n        scene.object(\"Cube\").set_rotation([x, y, z]);\n    } else if scene.pressed(\"turn\") {\n        scene.add_to_counter(\"turns\", 1);\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/turn.json"
+  ]
+}

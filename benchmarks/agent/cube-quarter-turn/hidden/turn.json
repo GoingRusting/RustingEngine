@@ -1,0 +1,18 @@
+{
+  "name": "turn: a press turns the cube a quarter turn over 0.25 s, and a press mid-turn is ignored",
+  "ticks": 110,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "turns", "equals": 0}},
+    {"tick": 10, "tap": "turn"},
+    {"tick": 14, "expect": {"entity": "Cube", "path": "/transform/rotation/1", "greater_than": 0.1}},
+    {"tick": 14, "expect": {"entity": "Cube", "path": "/transform/rotation/1", "less_than": 1.4}},
+    {"tick": 15, "tap": "turn"},
+    {"tick": 35, "expect": {"entity": "Cube", "path": "/transform/rotation/1", "equals": 1.5708, "tolerance": 0.01}},
+    {"tick": 35, "expect": {"counter": "turns", "equals": 1}},
+    {"tick": 60, "expect": {"entity": "Cube", "path": "/transform/rotation/1", "equals": 1.5708, "tolerance": 0.01}},
+    {"tick": 60, "expect": {"counter": "turns", "equals": 1}},
+    {"tick": 70, "tap": "turn"},
+    {"tick": 100, "expect": {"entity": "Cube", "path": "/transform/rotation/1", "equals": 3.1416, "tolerance": 0.01}},
+    {"tick": 100, "expect": {"counter": "turns", "equals": 2}}
+  ]
+}
