@@ -3399,7 +3399,7 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
 
 ### Transport and protocol
 
-- [ ] Reuse the Milestone 19 transport and versioned protocol; do not fork a second networking stack.
+- [x] Reuse the Milestone 19 transport and versioned protocol; do not fork a second networking stack. Evidence 2026-10-10: the server work so far (dedicated server, `net::lobby`, `net::limit`, `net::predict`) sits on `NetSession` and its `PROTOCOL_VERSION` handshake; lobby, RPC and replication messages share the one session, told apart by a 4-byte prefix (`\0lob`, `\0rpc`, `\0rep`). Keep later Milestone 24 work on the same session.
 - [ ] Clock synchronization and per-client tick-offset estimation.
 - [ ] Input buffering with configurable delay and jitter absorption.
 
