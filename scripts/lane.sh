@@ -6,6 +6,10 @@
 #   scripts/lane.sh claims          list claims
 set -euo pipefail
 
+# Run from outside the repository, use the one this script lives in.
+git rev-parse --git-dir >/dev/null 2>&1 ||
+    cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
 # Shared by every worktree of this repository, and never committed.
 claims="$(git rev-parse --path-format=absolute --git-common-dir)/lane-claims"
 lane="$(git branch --show-current)"
