@@ -431,7 +431,7 @@ fn triangle_area(positions: &[[f32; 3]], triangle: [u32; 3]) -> f32 {
 }
 
 /// Cloth on an entity, stepped once per fixed tick after rigid physics by
-/// [`super::soft_body::step_soft_bodies`]. Runtime state, kept in snapshots
+/// `step_soft_bodies`. Runtime state, kept in snapshots
 /// but not in scene files; a scene saves a [`ClothSheet`].
 #[derive(Component, Clone, Debug)]
 pub struct ClothVolume {
@@ -522,7 +522,7 @@ impl Default for ClothSheet {
 impl ClothSheet {
     /// The cloth this sheet starts as on `transform`, and how many
     /// particles its top row (the first ones) has. Pins are not applied yet
-    /// (see [`spawn_cloths`]).
+    /// (see `spawn_cloths`).
     pub fn volume(
         &self,
         transform: &crate::Transform,
