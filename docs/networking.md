@@ -214,6 +214,38 @@ match replica.apply(world, from, &bytes) {
   copied as saved in a scene; its references are not remapped on the
   client yet. The messages are JSON.
 
+## Predicting the player's own object
+
+Waiting a round trip for the host makes a player's own raft feel slow.
+`net::predict::Prediction` lets the client move it at once and fix it
+when the host disagrees:
+
+```rust
+use rusting_engine::net::predict::Prediction;
+
+// Shared by host and client: one tick of input.
+fn steer(position: &mut [f32; 3], input: &Steer) { /* ... */ }
+
+// Client, each tick:
+prediction.push(tick, input);
+steer(&mut position, &input);
+session.send_unreliable(HOST, &encode(tick, &input))?;
+
+// Host: apply each input with `steer`, then send back the state and the
+// tick of the last input it applied.
+
+// Client, on the host's reply:
+position = prediction.reconcile(acked_tick, host_position, steer);
+```
+
+- `reconcile` forgets inputs up to `acked_tick` and replays the rest on
+  the host's state, so a right guess changes nothing.
+- `steer` must be the same code on both sides, with the same fixed step.
+- It keeps at most `MAX_PENDING` (240) inputs. Inputs over UDP can be
+  lost: send the last few ticks' inputs in each message.
+- A correction snaps. Ease the drawn position toward the result for a
+  few frames if it shows.
+
 ## Testing a bad connection
 
 `simulate` makes one end act as if its connection were slow or lossy, so a
@@ -287,8 +319,8 @@ for event in host.poll() {
 
 - Reliable messages ride TCP, so a lost packet delays the messages behind
   it. Send per-tick state with `send_unreliable` instead.
-- No prediction or rollback is built in. Replicated objects show the
-  host's state one trip late.
+- No rollback is built in. Replicated objects other than the player's
+  own predicted one show the host's state one trip late.
 - No encryption. The password and relay token travel in plain text, so
   they keep strangers out but do not hide traffic from someone on the
   path. Do not send other secrets.

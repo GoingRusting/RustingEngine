@@ -170,5 +170,5 @@ assets" in [Core concepts](concepts.md).
 
 Some Godot features have no counterpart today: a navmesh, editor plugins
 and `@tool` scripts, and a visual shader graph.
-[Networking](networking.md) has messages, RPCs and replicated objects
-but no prediction or rollback. The [roadmap](../roadmap.md) tracks each of them.
+[Networking](networking.md) has messages, RPCs, replicated objects and
+client-side prediction, but no rollback. The [roadmap](../roadmap.md) tracks each of them.
