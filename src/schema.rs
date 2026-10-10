@@ -985,6 +985,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
     },
     ComponentSection {
+        key: "rusting.mesh_surfaces",
+        summary: "Per-triangle surfaces for a collider with shape \"TriangleMesh\" on the same object. triangles[i] picks an entry of surfaces for the mesh's triangle i (in index buffer order), a patch such as ice or mud with its own friction, restitution and material name (sound_cue with_material matches it); missing entries and indices past the end use the collider's own values and physics_material. A glTF file's primitives already import as separate meshes, each with its own collider; use this when one mesh needs several surfaces.",
+        gpu: NO_GPU,
+        example: || json!({"triangles": [0, 0, 255, 255], "surfaces": [{"name": "ice", "friction": 0.02, "restitution": 0.0}]}),
+    },
+    ComponentSection {
         key: "rusting.polygon",
         summary: "A 2D outline for a collider with shape \"Polygon\" or \"Chain\" on the same object. points are in the object's XY plane in metres, extruded depth metres along Z, centred on the object and scaled by its transform. Polygon uses the convex hull of the points (dynamic bodies may use it; list the points counterclockwise). Chain makes each segment a thin static wall, closed joins the last point back to the first. Pair dynamic bodies with rusting.axis_lock for 2D. Game code can draw the same shape with Polygon2d::mesh().",
         gpu: NO_GPU,

@@ -4973,6 +4973,88 @@ fn heightfield_cells_with_their_own_surface_change_friction_and_sound() {
 }
 
 #[test]
+fn mesh_triangles_with_their_own_surface_change_friction_and_sound() {
+    use crate::assets::{MeshAsset, MeshVertex};
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let (floor, material) = {
+        let mut assets =
+            app.world_mut().resource_mut::<crate::assets::AssetServer>();
+        let floor = assets.meshes.insert(MeshAsset {
+            vertices: [
+                [-8.0, -8.0],
+                [0.0, -8.0],
+                [0.0, 8.0],
+                [-8.0, 8.0],
+                [8.0, -8.0],
+                [8.0, 8.0],
+            ]
+            .map(|[x, z]| MeshVertex {
+                position: [x, 0.0, z],
+                ..MeshVertex::default()
+            })
+            .to_vec(),
+            // Two left triangles, then two right ones.
+            indices: vec![0, 2, 1, 0, 3, 2, 1, 5, 4, 1, 2, 5],
+        });
+        (floor, assets.fallback_material)
+    };
+    let world = app.world_mut();
+    let ground = cpu_body(
+        world,
+        [0.0; 3],
+        ColliderShape::TriangleMesh,
+        RigidBodyKind::Fixed,
+    );
+    // Ice on the left half; the right triangles have no entry, so they
+    // keep the collider's own friction.
+    world.entity_mut(ground).insert((
+        MeshRenderer {
+            mesh: floor,
+            material,
+            cast_shadows: true,
+            receive_shadows: true,
+        },
+        MeshSurfaces {
+            triangles: vec![0, 0],
+            surfaces: vec![GroundSurface {
+                name: "ice".into(),
+                friction: 0.0,
+                restitution: 0.0,
+            }],
+        },
+    ));
+    let slide = |app: &mut App, x: f32| {
+        let world = app.world_mut();
+        let crate_ = cpu_body(
+            world,
+            [x, 0.25, -3.0],
+            ColliderShape::Box {
+                half_extents: [0.25; 3],
+            },
+            RigidBodyKind::Dynamic,
+        );
+        world.get_mut::<RigidBody>(crate_).unwrap().linear_velocity =
+            [0.0, 0.0, 3.0];
+        world.entity_mut(crate_).insert(SoundCue {
+            clip: "sfx/creak.wav".into(),
+            with_material: "ice".into(),
+            ..SoundCue::default()
+        });
+        crate_
+    };
+    let on_ice = slide(&mut app, -4.0);
+    let on_ground = slide(&mut app, 4.0);
+    run_fixed_steps(&mut app, 60);
+    let world = app.world();
+    let z = |entity| world.get::<Transform>(entity).unwrap().position[2];
+    assert!(z(on_ice) > -0.3, "ice {}", z(on_ice));
+    assert!(z(on_ground) < -1.8, "ground {}", z(on_ground));
+    assert!(world.get::<SoundCue>(on_ice).unwrap().touching);
+    assert!(!world.get::<SoundCue>(on_ground).unwrap().touching);
+}
+
+#[test]
 fn collider_children_move_with_their_dynamic_parent_as_one_body() {
     let mut app = App::new();
     let world = app.world_mut();

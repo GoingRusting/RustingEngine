@@ -1158,6 +1158,7 @@ pub const FORCE_FIELD_COMPONENT: &str = "rusting.force_field";
 pub const AXIS_LOCK_COMPONENT: &str = "rusting.axis_lock";
 pub const HEIGHTFIELD_COMPONENT: &str = "rusting.heightfield";
 pub const POLYGON_COMPONENT: &str = "rusting.polygon";
+pub const MESH_SURFACES_COMPONENT: &str = "rusting.mesh_surfaces";
 pub const PHYSICS_MATERIAL_COMPONENT: &str = "rusting.physics_material";
 /// Registry name of the built-in HUD text or button.
 pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
@@ -1297,6 +1298,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Polygon2d>(POLYGON_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::MeshSurfaces>(MESH_SURFACES_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::PhysicsMaterial>(PHYSICS_MATERIAL_COMPONENT)

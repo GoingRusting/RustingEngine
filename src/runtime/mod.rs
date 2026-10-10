@@ -67,8 +67,8 @@ pub use cpu_physics::{
     Contact, FellOut, FieldFunction, FieldKind, FieldSample, ForceField,
     ForceFieldFunctions, GpuCollider, GpuForceField, GravityVolume,
     GroundSurface, Heightfield, Joint, JointAxis, JointBroken, JointKind,
-    JointMotor, JointSpring, NextSpawnOrder, PhysicsMaterial, PhysicsWorld,
-    Polygon2d, RayHit, Sleeping, SpawnOrder, SLEEP_STEPS,
+    JointMotor, JointSpring, MeshSurfaces, NextSpawnOrder, PhysicsMaterial,
+    PhysicsWorld, Polygon2d, RayHit, Sleeping, SpawnOrder, SLEEP_STEPS,
 };
 pub use determinism::*;
 pub use effect_presets::*;

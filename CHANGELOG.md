@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.mesh_surfaces` gives each triangle of a TriangleMesh collider its own friction, restitution and sound material, like heightfield cells.
 - `GameScene::set_gpu_axis_lock` (`PhysicsSettings::gpu_locks`) locks every GPU body to chosen axes, so a 2D game's GPU bodies stay in its plane.
 - 2D joints and queries are covered by a test: a ball socket on an axis-locked body acts as a 2D pin joint, and rays and overlaps hit `Polygon` and `Chain` colliders.
 - `ColliderShape::Polygon` and `ColliderShape::Chain` collide with a `rusting.polygon` 2D outline extruded along Z: a convex polygon any body may use, or a static segment chain for 2D ground.

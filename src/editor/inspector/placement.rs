@@ -25,8 +25,8 @@ use crate::runtime::{
     COUNTER_COMPONENT, DIALOGUE_COMPONENT, FLUID_BLOCK_COMPONENT,
     FORCE_FIELD_COMPONENT, GRAVITY_VOLUME_COMPONENT, HEALTH_COMPONENT,
     HEIGHTFIELD_COMPONENT, IK_COMPONENT, INPUT_ACTION_COMPONENT,
-    JOINT_COMPONENT, LOOT_TABLE_COMPONENT, MORPH_COMPONENT,
-    OBJECT_STATE_COMPONENT, PARTICLE_EMITTER_COMPONENT,
+    JOINT_COMPONENT, LOOT_TABLE_COMPONENT, MESH_SURFACES_COMPONENT,
+    MORPH_COMPONENT, OBJECT_STATE_COMPONENT, PARTICLE_EMITTER_COMPONENT,
     PHYSICS_MATERIAL_COMPONENT, PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT,
     PLATFORMER_CONTROLLER_COMPONENT, PLAYER_CONTROLLER_COMPONENT,
     POLYGON_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
@@ -247,6 +247,10 @@ pub(in crate::editor) fn component_help(
         HEIGHTFIELD_COMPONENT => (
             "A grid of ground heights that a Heightfield collider stands on.",
             "Hills, valleys and uneven terrain under CPU bodies and the player.",
+        ),
+        MESH_SURFACES_COMPONENT => (
+            "Gives each triangle of this Triangle Mesh collider its own surface.",
+            "Ice patches, mud and metal grates inside one level mesh.",
         ),
         POLYGON_COMPONENT => (
             "A 2D outline that a Polygon or Chain collider on this object uses.",

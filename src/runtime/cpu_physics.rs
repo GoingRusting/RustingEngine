@@ -132,6 +132,52 @@ pub struct GroundSurface {
     pub restitution: f32,
 }
 
+impl GroundSurface {
+    /// Friction and restitution of each surface, clamped to their ranges.
+    fn values(surfaces: &[Self]) -> Vec<[f32; 2]> {
+        surfaces
+            .iter()
+            .map(|surface| {
+                [
+                    surface.friction.max(0.0),
+                    surface.restitution.clamp(0.0, 1.0),
+                ]
+            })
+            .collect()
+    }
+}
+
+/// Per-triangle surfaces for a `TriangleMesh` collider on the same entity:
+/// `triangles[i]` indexes `surfaces` for the mesh's triangle `i`, in index
+/// buffer order. A missing entry, or an index past the end, uses the
+/// collider's own friction, restitution and [`PhysicsMaterial`].
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct MeshSurfaces {
+    pub triangles: Vec<u8>,
+    pub surfaces: Vec<GroundSurface>,
+}
+
+impl MeshSurfaces {
+    fn triangle_surfaces(&self, count: usize) -> Vec<Option<u8>> {
+        (0..count)
+            .map(|index| {
+                self.triangles.get(index).copied().filter(|&surface| {
+                    usize::from(surface) < self.surfaces.len()
+                })
+            })
+            .collect()
+    }
+}
+
 impl Heightfield {
     /// Surface of each triangle of [`Self::mesh`], in its order.
     fn triangle_surfaces(&self) -> Vec<Option<u8>> {
@@ -2142,16 +2188,9 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                             Some(mesh) => mesh.clone(),
                             None => Arc::new(MeshData {
                                 surfaces: field.triangle_surfaces(),
-                                surface_values: field
-                                    .surfaces
-                                    .iter()
-                                    .map(|surface| {
-                                        [
-                                            surface.friction.max(0.0),
-                                            surface.restitution.clamp(0.0, 1.0),
-                                        ]
-                                    })
-                                    .collect(),
+                                surface_values: GroundSurface::values(
+                                    &field.surfaces,
+                                ),
                                 ..MeshData::new(
                                     &field.mesh(),
                                     pose.scale,
@@ -2196,19 +2235,45 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         let assets = assets?;
                         let convex =
                             collider.shape == ColliderShape::ConvexMesh;
-                        let key = (
-                            handle.key(),
-                            assets.meshes.revision(handle)?,
-                            pose.scale.map(f32::to_bits),
-                            convex,
-                        );
+                        let revision = assets.meshes.revision(handle)?;
+                        let tags = world
+                            .entity(entity)
+                            .get_ref::<MeshSurfaces>()
+                            .filter(|_| !convex);
+                        // Tagged meshes are cached per entity, since two
+                        // entities can tag one mesh differently.
+                        let key = match &tags {
+                            Some(tags) => (
+                                entity.to_bits(),
+                                revision << 32
+                                    | u64::from(tags.last_changed().get()),
+                                pose.scale.map(f32::to_bits),
+                                false,
+                            ),
+                            None => (
+                                handle.key(),
+                                revision,
+                                pose.scale.map(f32::to_bits),
+                                convex,
+                            ),
+                        };
                         let mesh = match meshes.get(&key) {
                             Some(mesh) => mesh.clone(),
-                            None => Arc::new(MeshData::new(
-                                assets.meshes.get(handle)?,
-                                pose.scale,
-                                convex,
-                            )),
+                            None => {
+                                let mut mesh = MeshData::new(
+                                    assets.meshes.get(handle)?,
+                                    pose.scale,
+                                    convex,
+                                );
+                                if let Some(tags) = &tags {
+                                    mesh.surfaces = tags.triangle_surfaces(
+                                        mesh.triangles.len(),
+                                    );
+                                    mesh.surface_values =
+                                        GroundSurface::values(&tags.surfaces);
+                                }
+                                Arc::new(mesh)
+                            }
                         };
                         used.insert(key, mesh.clone());
                         if convex {
@@ -2892,8 +2957,8 @@ fn solve_free_islands(
     serial
 }
 
-/// Friction and restitution of the heightfield cell `contact` touched on
-/// `body`, when that cell has a surface of its own.
+/// Friction and restitution of the heightfield cell or tagged triangle
+/// `contact` touched on `body`, when it has a surface of its own.
 fn surface_values(body: &Body, contact: &Contact) -> Option<[f32; 2]> {
     let Shape::Triangles(ref mesh) = body.shape else {
         return None;

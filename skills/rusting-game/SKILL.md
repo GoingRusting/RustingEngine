@@ -249,6 +249,7 @@ each one's fields, defaults and an example:
 - `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
 - `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.
 - `rusting.gravity_volume`: Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored).
+- `rusting.mesh_surfaces`: Per-triangle surfaces for a collider with shape "TriangleMesh" on the same object.
 - `rusting.polygon`: A 2D outline for a collider with shape "Polygon" or "Chain" on the same object.
 - `rusting.heightfield`: A grid of ground heights for a collider with shape "Heightfield" on the same object (static only, like TriangleMesh).
 - `rusting.axis_lock`: Freezes a dynamic CPU body's movement along world axes (linear) and its turning around them (angular), like Godot's axis locks.

@@ -15,13 +15,14 @@ use crate::runtime::{
     EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
     GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
     InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    LootEntry, LootTable, ObjectState, PhysicsMaterial, PhysicsSettings,
-    PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
-    PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
-    RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
-    SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
-    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
-    TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
+    LootEntry, LootTable, MeshSurfaces, ObjectState, PhysicsMaterial,
+    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
+    PlayerController, Polygon2d, PostVolume, QualityProfile, RandomSeed,
+    ReflectionProbe, RenderBounds, RenderSettings, ReverbZone, SceneBackground,
+    SceneInstance, ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId,
+    SpawnGrid, Squash, StateAction, StateTransition, TileKind, TileMap,
+    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, Vehicle,
+    WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -709,6 +710,13 @@ crate::reflect! {
         spacing: f32 { unit: "m", min: 0.001, doc: "distance between neighbouring samples" },
         cells: Vec<Vec<u8>> { doc: "cells[row][column]: index into surfaces; missing cells use the collider's own" },
         surfaces: Vec<GroundSurface> { doc: "ground patches with their own friction, restitution and sound material" },
+    }
+}
+
+crate::reflect! {
+    struct MeshSurfaces {
+        triangles: Vec<u8> { doc: "triangles[i]: index into surfaces for the mesh's triangle i; missing entries use the collider's own" },
+        surfaces: Vec<GroundSurface> { doc: "patches with their own friction, restitution and sound material" },
     }
 }
 
