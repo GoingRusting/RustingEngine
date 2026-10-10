@@ -1,0 +1,11 @@
+{
+  "name": "air: a jump press in mid-air does not jump again",
+  "ticks": 110,
+  "steps": [
+    {"tick": 30, "tap": "player.jump"},
+    {"tick": 50, "expect": {"entity": "Player", "path": "/transform/position/1", "greater_than": 1.8}},
+    {"tick": 55, "tap": "player.jump"},
+    {"tick": 70, "expect": {"entity": "Player", "path": "/transform/position/1", "less_than": 2.4}},
+    {"tick": 105, "expect": {"entity": "Player", "path": "/transform/position/1", "less_than": 1.1}}
+  ]
+}

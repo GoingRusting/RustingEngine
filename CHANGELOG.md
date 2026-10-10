@@ -12,6 +12,7 @@
 - Agent benchmark task `jump-new-game`: a new-game task with a ball that jumps only while it rests on the floor
 - Agent benchmark task `sandbox-reset`: a feature task that puts the physics sandbox's pile back at its start without reloading
 - Agent benchmark task `sandbox-hail`: a performance task where over-detailed spheres break a `max_triangles` budget
+- Agent benchmark task `fps-double-jump`: a bug-fix task where the first-person player can jump again in mid-air
 
 ### Fixed
 

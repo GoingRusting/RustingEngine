@@ -1,0 +1,24 @@
+{
+  "kind": "bug-fix",
+  "template": "first-person",
+  "request": "Players report that in this first-person game they can jump a second time while already in the air, which lets them reach places they should not. A jump should only start from the ground. Find the cause and fix it, keeping the normal jump and walking as they are.",
+  "seed": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"jump_speed\\\":5.0,\\\"air_jumps\\\":0,",
+      "replace": "\\\"jump_speed\\\":5.0,\\\"air_jumps\\\":1,"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"jump_speed\\\":5.0,\\\"air_jumps\\\":1,",
+      "replace": "\\\"jump_speed\\\":5.0,\\\"air_jumps\\\":0,"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/walk_forward.json",
+    "hidden/air.json"
+  ]
+}
