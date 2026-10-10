@@ -20,10 +20,10 @@ use crate::runtime::{
     PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
     PlayerController, Polygon2d, PostVolume, QualityProfile, RandomSeed,
     ReflectionProbe, RenderBounds, RenderSettings, ReverbZone, SceneBackground,
-    SceneInstance, ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId,
-    SpawnGrid, Squash, StateAction, StateTransition, TileKind, TileMap,
-    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, Vehicle,
-    WaterBody, Wheel,
+    SceneInstance, ShadowQuality, SkyLight, SlideSound, SoftBlock, SoundCue,
+    SoundId, SpawnGrid, Squash, StateAction, StateTransition, TileKind,
+    TileMap, ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat,
+    Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -687,6 +687,21 @@ crate::reflect! {
         viscosity: f32 { unit: "factor", min: 0.0, max: 1.0 },
         visible: bool { doc: "draw the fluid as a water surface" },
         show_particles: bool { doc: "also draw one sphere per particle" },
+    }
+}
+
+crate::reflect! {
+    struct SoftBlock {
+        spacing: f32 { unit: "m", min: 0.01, doc: "side of one cube of six tetrahedra" },
+        count_x: u32 { unit: "cubes" },
+        count_y: u32 { unit: "cubes" },
+        count_z: u32 { unit: "cubes" },
+        density: f32 { unit: "kg/m³", min: 1.0 },
+        softness: f32 { unit: "compliance", min: 0.0, doc: "edge compliance; 0 is rigid, 1e-3 a wobbly jelly" },
+        squash: f32 { unit: "compliance", min: 0.0, doc: "volume compliance; 0 keeps the volume" },
+        damping: f32 { unit: "1/s", min: 0.0, doc: "fraction of velocity lost per second" },
+        tear_strain: f32 { unit: "factor", min: 0.0, doc: "edges stretched past rest times 1 + this tear; 0 never" },
+        substeps: u32 { unit: "substeps", min: 1.0, max: 64.0 },
     }
 }
 

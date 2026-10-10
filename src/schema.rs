@@ -985,6 +985,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"spacing": 0.1, "count_x": 6, "count_y": 6, "count_z": 6, "container_half_extents": [0.5, 0.5, 0.5], "iterations": 4, "viscosity": 0.01, "visible": true, "show_particles": false}),
     },
     ComponentSection {
+        key: "rusting.soft_block",
+        summary: "XPBD soft body: a block of count_x by count_y by count_z cubes of spacing metres centered on the entity, each cut into six tetrahedra that keep their edge lengths and volumes. softness (edge compliance) 0 is rigid and 1e-3 a wobbly jelly; squash lets the volume change; tear_strain above 0 tears edges stretched past rest times 1 + tear_strain. It falls under gravity every fixed tick, keeps out of sphere, box and capsule colliders and pushes dynamic bodies back. CPU only, deterministic; at most 4096 particles.",
+        gpu: NO_GPU,
+        example: || json!({"spacing": 0.1, "count_x": 4, "count_y": 4, "count_z": 4, "density": 1000.0, "softness": 0.0001, "squash": 0.0, "damping": 1.0, "tear_strain": 0.0, "substeps": 10}),
+    },
+    ComponentSection {
         key: "rusting.gravity_volume",
         summary: "Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored). Where volumes overlap the highest priority wins. gravity_scale still applies. GPU bodies and the player controller are not affected.",
         gpu: NO_GPU,

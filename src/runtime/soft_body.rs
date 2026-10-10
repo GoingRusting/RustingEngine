@@ -611,8 +611,8 @@ pub struct SoftAttachment {
 }
 
 /// A soft body on an entity, stepped once per fixed tick after rigid
-/// physics. It is runtime state made by game code: not reflected or saved
-/// in scene files yet, but kept in snapshots.
+/// physics. It is runtime state, kept in snapshots but not in scene files;
+/// a scene saves a [`SoftBlock`], which makes one on its first tick.
 #[derive(bevy_ecs::prelude::Component, Clone, Debug)]
 pub struct SoftBodyVolume {
     pub settings: SoftBodySettings,
@@ -659,6 +659,108 @@ impl SoftBodyVolume {
 fn body_rotation(transform: &crate::Transform) -> nalgebra::Rotation3<f32> {
     let [roll, pitch, yaw] = transform.rotation;
     super::sim_math::rotation_from_euler(roll, pitch, yaw)
+}
+
+/// Most particles one [`SoftBlock`] spawns; more would stall the tick.
+pub const MAX_SOFT_BLOCK_PARTICLES: u64 = 4_096;
+
+/// A scene's soft body: a box of `count_x` by `count_y` by `count_z` cubes
+/// of `spacing` meters centered on the entity, each cut into six
+/// tetrahedra. The first fixed tick gives the entity its
+/// [`SoftBodyVolume`]. It falls, keeps out of sphere, box and capsule
+/// colliders and pushes dynamic bodies back.
+#[derive(
+    bevy_ecs::prelude::Component,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct SoftBlock {
+    pub spacing: f32,
+    pub count_x: u32,
+    pub count_y: u32,
+    pub count_z: u32,
+    /// kg/m³.
+    pub density: f32,
+    /// Edge compliance; 0 is rigid, 1e-3 is a wobbly jelly.
+    pub softness: f32,
+    /// Volume compliance; 0 keeps every tetrahedron's volume.
+    pub squash: f32,
+    /// Fraction of velocity lost per second.
+    pub damping: f32,
+    /// Strain past which edges tear; 0 never tears.
+    pub tear_strain: f32,
+    pub substeps: u32,
+}
+
+impl Default for SoftBlock {
+    fn default() -> Self {
+        Self {
+            spacing: 0.1,
+            count_x: 4,
+            count_y: 4,
+            count_z: 4,
+            density: 1000.0,
+            softness: 1e-4,
+            squash: 0.0,
+            damping: 1.0,
+            tear_strain: 0.0,
+            substeps: 10,
+        }
+    }
+}
+
+impl SoftBlock {
+    /// The volume this block starts as, centered on `center`.
+    pub fn volume(&self, center: [f32; 3]) -> Result<SoftBodyVolume, String> {
+        let mut counts = [self.count_x, self.count_y, self.count_z]
+            .map(|count| count.max(1));
+        while counts.iter().map(|&c| u64::from(c) + 1).product::<u64>()
+            > MAX_SOFT_BLOCK_PARTICLES
+        {
+            let axis = (0..3).max_by_key(|&axis| counts[axis]).unwrap_or(0);
+            counts[axis] = (counts[axis] / 2).max(1);
+        }
+        let spacing = self.spacing.max(0.01);
+        let min = std::array::from_fn(|axis| {
+            center[axis] - counts[axis] as f32 * spacing / 2.0
+        });
+        let body =
+            SoftBody::block(min, counts, spacing, self.density.max(1.0))?;
+        let settings = SoftBodySettings {
+            substeps: self.substeps,
+            edge_compliance: self.softness.max(0.0),
+            volume_compliance: self.squash.max(0.0),
+            floor: None,
+            damping: self.damping.max(0.0),
+            tear_strain: (self.tear_strain > 0.0).then_some(self.tear_strain),
+            ..SoftBodySettings::default()
+        };
+        Ok(SoftBodyVolume::new(settings, body))
+    }
+}
+
+/// Per fixed step, before [`step_soft_bodies`]: gives every [`SoftBlock`]
+/// without a volume its [`SoftBodyVolume`].
+pub(super) fn spawn_soft_bodies(
+    mut commands: bevy_ecs::prelude::Commands,
+    blocks: bevy_ecs::prelude::Query<
+        (bevy_ecs::prelude::Entity, &SoftBlock, &crate::Transform),
+        bevy_ecs::prelude::Without<SoftBodyVolume>,
+    >,
+) {
+    for (entity, block, transform) in &blocks {
+        match block.volume(transform.position) {
+            Ok(volume) => {
+                commands.entity(entity).insert(volume);
+            }
+            Err(error) => eprintln!("soft block {entity}: {error}"),
+        }
+    }
 }
 
 /// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`] in

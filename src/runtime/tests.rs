@@ -6104,6 +6104,69 @@ fn fluid_blocks_round_trip_through_scenes_and_become_volumes() {
 }
 
 #[test]
+fn soft_blocks_round_trip_through_scenes_and_land_on_a_box() {
+    let block = SoftBlock {
+        count_x: 2,
+        count_y: 1,
+        count_z: 3,
+        softness: 1e-3,
+        tear_strain: 0.5,
+        ..SoftBlock::default()
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.spawn((Transform::new([0.0, 1.0, 0.0]), block));
+    app.spawn((
+        Transform::new([0.0, -0.5, 0.0]),
+        PhysicsBody::default(),
+        RigidBody {
+            kind: RigidBodyKind::Fixed,
+            ..RigidBody::default()
+        },
+        Collider {
+            shape: ColliderShape::Box {
+                half_extents: [2.0, 0.5, 2.0],
+            },
+            ..Collider::default()
+        },
+    ));
+    let document = scene_document(app.world_mut(), "soft").unwrap();
+    let mut loaded = App::new();
+    loaded.add_plugin(crate::assets::AssetPlugin).unwrap();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut query = loaded.world_mut().query::<&SoftBlock>();
+    assert_eq!(query.single(loaded.world()).unwrap(), &block);
+    run_fixed_steps(&mut loaded, 120);
+    let mut query = loaded.world_mut().query::<&SoftBodyVolume>();
+    let volume = query.single(loaded.world()).unwrap();
+    assert_eq!(volume.body.positions.len(), 3 * 2 * 4);
+    assert_eq!(volume.body.tetrahedra.len(), 6 * 6);
+    assert_eq!(volume.settings.tear_strain, Some(0.5));
+    let bottom = volume
+        .body
+        .positions
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::MAX, f32::min);
+    assert!((-0.01..0.03).contains(&bottom), "rests at {bottom}");
+}
+
+#[test]
+fn huge_soft_blocks_are_shrunk_to_the_cap() {
+    let block = SoftBlock {
+        count_x: 1000,
+        count_y: 1000,
+        count_z: 2,
+        ..SoftBlock::default()
+    };
+    let volume = block.volume([0.0; 3]).unwrap();
+    let particles = volume.body.positions.len() as u64;
+    assert!(particles <= crate::runtime::soft_body::MAX_SOFT_BLOCK_PARTICLES);
+    assert!(particles > 1000, "shrunk too far to {particles}");
+}
+
+#[test]
 fn a_fluid_surface_is_one_entity_whose_mesh_follows_the_particles() {
     let mut app = App::new();
     app.add_plugin(crate::assets::AssetPlugin).unwrap();

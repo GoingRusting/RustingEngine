@@ -32,7 +32,8 @@ use crate::runtime::{
     POLYGON_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
     RENDER_BOUNDS_COMPONENT, REVERB_ZONE_COMPONENT, ROPE_COMPONENT,
     SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT, SLIDE_SOUND_COMPONENT,
-    SOUND_CUE_COMPONENT, TWEEN_COMPONENT, VEHICLE_COMPONENT, WATER_COMPONENT,
+    SOFT_BLOCK_COMPONENT, SOUND_CUE_COMPONENT, TWEEN_COMPONENT,
+    VEHICLE_COMPONENT, WATER_COMPONENT,
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
@@ -243,6 +244,10 @@ pub(in crate::editor) fn component_help(
         FLUID_BLOCK_COMPONENT => (
             "Fills the object's box with fluid particles that splash and settle.",
             "Small splashing volumes such as a bucket. For seas and rivers use Water.",
+        ),
+        SOFT_BLOCK_COMPONENT => (
+            "A block of jelly that wobbles, keeps its volume, lands on colliders and can tear.",
+            "Jelly cubes, squishy cushions, soft obstacles that push bodies back.",
         ),
         GRAVITY_VOLUME_COMPONENT => (
             "Replaces gravity for bodies inside this sensor: zero-g, sideways, or toward its centre.",
