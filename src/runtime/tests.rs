@@ -6562,3 +6562,35 @@ fn tall_box_stacks_settle_and_sleep_with_cached_contacts() {
         );
     }
 }
+
+#[test]
+fn a_hit_on_the_bottom_of_a_sleeping_stack_wakes_and_topples_it() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let boxes: Vec<_> = (0..5)
+        .map(|level| {
+            let y = 0.5 + level as f32;
+            cpu_body(world, [0.0, y, 0.0], UNIT_BOX, RigidBodyKind::Dynamic)
+        })
+        .collect();
+    run_fixed_steps(&mut app, 120);
+    assert!(boxes
+        .iter()
+        .all(|&entity| app.world().get::<Sleeping>(entity).is_some()));
+
+    // A heavy ball knocks the bottom box out from under the stack.
+    let world = app.world_mut();
+    let ball = cpu_body(
+        world,
+        [-3.0, 0.5, 0.0],
+        ColliderShape::Sphere { radius: 0.4 },
+        RigidBodyKind::Dynamic,
+    );
+    let mut body = world.get_mut::<RigidBody>(ball).unwrap();
+    body.linear_velocity = [15.0, 0.0, 0.0];
+    body.mass = 50.0;
+    run_fixed_steps(&mut app, 120);
+    let top = app.world().get::<Transform>(boxes[4]).unwrap().position;
+    assert!(top[1] < 4.0, "top box stayed up at {top:?}");
+}
