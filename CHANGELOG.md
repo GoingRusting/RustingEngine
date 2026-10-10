@@ -2,13 +2,34 @@
 
 ## [Unreleased]
 
-### Performance
+## [2.4.0] - 2026-10-10
 
-- Measured static props: 40,000 static entities cost 0.58 ms of CPU a tick in release (ignored test `static_props_cost_little_per_tick`), so no static flag is needed
-- LOD groups no longer double CPU render cost: an opaque object in a `.rlod` group is one instance, and its batch picks the level per object (2085 moving objects with two levels: 0.298 ms to 0.174 ms of render CPU a frame; 0.127 ms without LOD)
+Rendering, deformable physics and multiplayer building blocks for larger games: modern shadows and post effects, soft bodies and cloth on the CPU and GPU, and replication, prediction and dedicated servers.
 
 ### Added
 
+- Rendering: cascaded shadow maps for the directional light, so shadows stay sharp near the camera and still reach far away
+- Rendering: point lights can cast shadows (`PointLight::shadows`), and point and spot lights take a `radius` for softer, wider highlights from a glowing sphere
+- Rendering: clustered lighting for point and spot lights; a frame can now light up to 1024 local lights instead of 64
+- Rendering: `rusting.light_cookie` projects an image through a spot light's cone
+- Rendering: `rusting.auto_exposure` adapts exposure to the scene's measured brightness, like an eye adjusting
+- Rendering: `rusting.color_lut` applies a color grading lookup strip, `rusting.depth_of_field` adds lens blur and `rusting.motion_blur` adds camera motion blur
+- Rendering: `Antialiasing::Fxaa` and `Antialiasing::Taa` (temporal anti-aliasing with a jittered camera)
+- Rendering: `RenderSettings::upscale_sharpness` gives a `render_scale` below 1 an edge-preserving, sharpened upscale like FSR 1
+- Rendering: meshes carry vertex colors that tint the material; glTF `COLOR_0` is imported
+- Physics: XPBD soft bodies (`rusting.soft_block`) that keep their volume, push out of colliders, attach to rigid bodies both ways, tear when overstretched and draw with a skin of their outer faces
+- Physics: XPBD cloth (`rusting.cloth`) with wind, self-collision, pinning and tearing, drawn two-sided
+- Physics: `GpuCloth` and `GpuSoftBody` step cloth and soft bodies on the GPU with the same results bit for bit as the CPU reference; cloth floor contacts arrive as physics events
+- Physics: raycasts walk bounding-volume trees instead of testing every collider and triangle, with the same hits as before; `scene.raycast_only` hits only the named classes
+- Networking: `send_unreliable` and `broadcast_unreliable` send per-tick state over UDP beside the TCP connection, falling back to reliable sends where UDP cannot get through
+- Networking: remote procedure calls on scene objects (`net::rpc`), with a host, owner or anyone authority checked on the host
+- Networking: replicated spawning and component sync (`net::replicate`): marked objects send compact per-component changes against the last snapshot each client acknowledged, with chosen fields quantized
+- Networking: client-side prediction and reconciliation, clock synchronization, input tick offsets and a host-side input buffer that absorbs jitter and late inputs
+- Networking: a player lobby with ready checks and reconnects within a grace time
+- Networking: dedicated servers: `rusting run --server` (or `RUSTING_SERVER`) runs a game with no window or renderer and reports tick load
+- Networking: `NetSession::simulate` adds latency, jitter and loss for testing, `NetSession::stats` counts traffic, and loopback sessions run in one process for tests
+- Networking: per-peer rate limits (`RateLimit`) for client messages
+- Docs & tools: a migration guide for Godot users, a plugin authoring guide, generated reference pages for every reflected type, and a release notes process in `RELEASE.md`
 - `rusting.rope` hangs a rope of small bodies between two bodies, or a body and a world point; it goes slack, never stretches past its length, and tows what it is tied to.
 - `rusting.mesh_surfaces` gives each triangle of a TriangleMesh collider its own friction, restitution and sound material, like heightfield cells.
 - `GameScene::set_gpu_axis_lock` (`PhysicsSettings::gpu_locks`) locks every GPU body to chosen axes, so a 2D game's GPU bodies stay in its plane.
@@ -45,16 +66,38 @@
 - Agent benchmark task `tps-coins`: a feature task that adds three collectable coins to the third-person template
 - `GameScene::rebind_device` rebinds an action on one device (keyboard and mouse, or gamepad) and keeps its other inputs; the `{binding:action}` HUD button now keeps the gamepad button when the player picks a new key
 
-### Fixed
+### Changed
 
-- A CPU body asleep on the floor no longer drops out of `PhysicsWorld::contacts` and `GameScene::touching`; sleepers keep the contacts they fell asleep with
-
-### Migration
-
+- The network protocol version is 3. 2.3.0 games cannot join 2.4.0 hosts or relays, or the other way round
+- `.rmesh` files have a version header; older files still load, with white vertex colors
+- `PointLight` gains `shadows` and `radius`, `SpotLight` gains `radius`, and `RenderSettings` gains `upscale_sharpness`; struct literals need the new fields (or `..Default::default()`)
+- `Antialiasing` has two new variants, `Fxaa` and `Taa`; an exhaustive `match` on it needs arms for them
 - `AxisLock` moved to `rusting_core::components`; `rusting_engine::runtime::AxisLock` still works. A struct literal of `PhysicsSettings` needs the new `gpu_locks` field (or `..PhysicsSettings::default()`).
 - `ColliderShape` has two new variants, `Polygon` and `Chain`; an exhaustive `match` on it needs arms for them.
 - `ForceField` is no longer `Copy` (it gained `function: String`); write `..field.clone()` where you spread one field into another
 - A `.rlod` group may have at most 4 levels; loading one with more fails
+
+### Fixed
+
+- A CPU body asleep on the floor no longer drops out of `PhysicsWorld::contacts` and `GameScene::touching`; sleepers keep the contacts they fell asleep with
+- The over-the-shoulder camera stops at walls beside the shoulder instead of looking through them
+- Flat shading no longer breaks on alpha-tested materials or on degenerate triangles
+- Network handshakes have a deadline and a size cap, so a silent or oversized hello cannot hold up a host
+- The relay limits connections per address (per IPv6 /64), connection rate, total connections and read rate, keeps running after accept errors, and handles each handshake on its own thread
+- The host accepts a client's UDP datagrams only from the IP address of its TCP connection
+- Replication refuses messages from anyone but the host, for objects or components it does not replicate, or naming one object twice
+
+### Performance
+
+- Measured static props: 40,000 static entities cost 0.58 ms of CPU a tick in release (ignored test `static_props_cost_little_per_tick`), so no static flag is needed
+- LOD groups no longer double CPU render cost: an opaque object in a `.rlod` group is one instance, and its batch picks the level per object (2085 moving objects with two levels: 0.298 ms to 0.174 ms of render CPU a frame; 0.127 ms without LOD)
+
+### Known limits
+
+- Point lights cast shadows only in frames where no directional or spot light casts shadows
+- A rope has at most 256 beads
+
+---
 
 ## [2.3.0] - 2026-10-10
 
