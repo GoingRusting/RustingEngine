@@ -1155,6 +1155,8 @@ pub const MORPH_COMPONENT: &str = "rusting.morph";
 pub const FLUID_BLOCK_COMPONENT: &str = "rusting.fluid_block";
 /// Registry name of the built-in soft-body block.
 pub const SOFT_BLOCK_COMPONENT: &str = "rusting.soft_block";
+/// Registry name of the built-in cloth sheet.
+pub const CLOTH_COMPONENT: &str = "rusting.cloth";
 pub const WATER_COMPONENT: &str = "rusting.water";
 pub const GRAVITY_VOLUME_COMPONENT: &str = "rusting.gravity_volume";
 pub const VEHICLE_COMPONENT: &str = "rusting.vehicle";
@@ -1287,6 +1289,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::SoftBlock>(SOFT_BLOCK_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::ClothSheet>(CLOTH_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::WaterBody>(WATER_COMPONENT)

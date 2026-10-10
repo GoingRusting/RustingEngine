@@ -8,7 +8,8 @@
 //! order. It shares the substep loop, rigid-body anchors and collider
 //! obstacles of [`super::soft_body`], so the same determinism holds: no
 //! atomics, no randomness, constraints in index order. Overstretched edges
-//! tear by removing the triangles around them.
+//! tear by removing the triangles around them. [`ClothSheet`] is the scene
+//! form and [`ClothVolume`] the runtime state on an entity.
 
 // The particle loops index several parallel arrays at once.
 #![allow(clippy::needless_range_loop)]
@@ -17,9 +18,12 @@ use std::collections::BTreeMap;
 
 use nalgebra::Vector3;
 
+use bevy_ecs::prelude::{Commands, Component, Entity, Query, ResMut, Without};
+
 use super::soft_body::{
-    advance_bodies, finish_substep, predict, solve_distances, solve_holds,
-    vector, Anchor, AnchorBody, Obstacle, MAX_SOFT_BODY_SUBSTEPS,
+    advance_bodies, body_rotation, finish_substep, named_material, predict,
+    solve_distances, solve_holds, vector, Anchor, AnchorBody, Obstacle,
+    SoftAttachment, SoftSkin, MAX_SOFT_BODY_SUBSTEPS,
 };
 
 /// Solver settings. Lengths are meters and times seconds.
@@ -405,6 +409,224 @@ fn sorted([a, b]: [u32; 2]) -> [u32; 2] {
 fn triangle_area(positions: &[[f32; 3]], triangle: [u32; 3]) -> f32 {
     let [a, b, c] = triangle.map(|i| vector(positions[i as usize]));
     (b - a).cross(&(c - a)).norm() / 2.0
+}
+
+/// Cloth on an entity, stepped once per fixed tick after rigid physics by
+/// [`super::soft_body::step_soft_bodies`]. Runtime state, kept in snapshots
+/// but not in scene files; a scene saves a [`ClothSheet`].
+#[derive(Component, Clone, Debug)]
+pub struct ClothVolume {
+    pub settings: ClothSettings,
+    pub cloth: Cloth,
+    pub attachments: Vec<SoftAttachment>,
+    /// Draws both sides of the triangles; `None` draws nothing.
+    pub skin: Option<SoftSkin>,
+}
+
+impl ClothVolume {
+    pub fn new(settings: ClothSettings, cloth: Cloth) -> Self {
+        Self {
+            settings,
+            cloth,
+            attachments: Vec::new(),
+            skin: None,
+        }
+    }
+}
+
+/// Most particles one [`ClothSheet`] spawns.
+pub const MAX_CLOTH_PARTICLES: u64 = 4_096;
+
+/// A scene's cloth: a sheet of `count_x` by `count_y` squares of `spacing`
+/// meters in the entity's XY plane, centered on it. With `pin_top` its top
+/// edge hangs on `holder` (a body, carried along and pulled on) or, when
+/// `holder` is null, stays where it starts. The first fixed tick gives the
+/// entity its [`ClothVolume`].
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct ClothSheet {
+    pub spacing: f32,
+    pub count_x: u32,
+    pub count_y: u32,
+    /// kg/m².
+    pub density: f32,
+    /// Edge compliance; 0 does not stretch.
+    pub stretch: f32,
+    /// Bend compliance; larger folds more easily.
+    pub bend: f32,
+    pub damping: f32,
+    pub wind: [f32; 3],
+    pub drag: f32,
+    pub thickness: f32,
+    pub self_collision: bool,
+    /// Strain past which edges tear; 0 never tears.
+    pub tear_strain: f32,
+    pub substeps: u32,
+    pub pin_top: bool,
+    pub holder: Entity,
+    /// Draw both sides of the sheet.
+    pub visible: bool,
+}
+
+impl Default for ClothSheet {
+    fn default() -> Self {
+        let settings = ClothSettings::default();
+        Self {
+            spacing: 0.1,
+            count_x: 10,
+            count_y: 10,
+            density: 0.3,
+            stretch: settings.stretch_compliance,
+            bend: settings.bend_compliance,
+            damping: settings.damping,
+            wind: settings.wind,
+            drag: settings.drag,
+            thickness: settings.thickness,
+            self_collision: settings.self_collision,
+            tear_strain: 0.0,
+            substeps: settings.substeps,
+            pin_top: true,
+            holder: Entity::PLACEHOLDER,
+            visible: true,
+        }
+    }
+}
+
+impl ClothSheet {
+    /// The cloth this sheet starts as on `transform`, and how many
+    /// particles its top row (the first ones) has. Pins are not applied yet
+    /// (see [`spawn_cloths`]).
+    pub fn volume(
+        &self,
+        transform: &crate::Transform,
+    ) -> Result<(ClothVolume, usize), String> {
+        let mut counts = [self.count_x, self.count_y].map(|count| count.max(1));
+        while counts.iter().map(|&c| u64::from(c) + 1).product::<u64>()
+            > MAX_CLOTH_PARTICLES
+        {
+            let axis = usize::from(counts[1] > counts[0]);
+            counts[axis] = (counts[axis] / 2).max(1);
+        }
+        let spacing = self.spacing.max(0.01);
+        let rotation = body_rotation(transform);
+        let right = rotation * Vector3::x();
+        let down = rotation * -Vector3::y();
+        let origin = vector(transform.position)
+            - right * (counts[0] as f32 * spacing / 2.0)
+            - down * (counts[1] as f32 * spacing / 2.0);
+        let cloth = Cloth::grid(
+            origin.into(),
+            right.into(),
+            down.into(),
+            counts,
+            spacing,
+            self.density.max(1e-3),
+        )?;
+        let settings = ClothSettings {
+            substeps: self.substeps,
+            stretch_compliance: self.stretch.max(0.0),
+            bend_compliance: self.bend.max(0.0),
+            damping: self.damping.max(0.0),
+            wind: self.wind,
+            drag: self.drag.max(0.0),
+            thickness: self.thickness.max(0.0),
+            self_collision: self.self_collision,
+            floor: None,
+            tear_strain: (self.tear_strain > 0.0).then_some(self.tear_strain),
+            ..ClothSettings::default()
+        };
+        Ok((ClothVolume::new(settings, cloth), counts[0] as usize + 1))
+    }
+}
+
+/// Per fixed step, before [`super::soft_body::step_soft_bodies`]: gives
+/// every [`ClothSheet`] without a volume its [`ClothVolume`].
+pub(super) fn spawn_cloths(
+    mut commands: Commands,
+    mut assets: Option<ResMut<crate::assets::AssetServer>>,
+    sheets: Query<
+        (Entity, &ClothSheet, &crate::Transform),
+        Without<ClothVolume>,
+    >,
+    holders: Query<&crate::Transform>,
+) {
+    for (entity, sheet, transform) in &sheets {
+        let (mut volume, top) = match sheet.volume(transform) {
+            Ok((volume, top)) => (volume, if sheet.pin_top { top } else { 0 }),
+            Err(error) => {
+                eprintln!("cloth {entity}: {error}");
+                continue;
+            }
+        };
+        match holders.get(sheet.holder) {
+            Ok(holder) => {
+                let rotation = body_rotation(holder);
+                for particle in 0..top {
+                    let offset = vector(volume.cloth.positions[particle])
+                        - vector(holder.position);
+                    volume.attachments.push(SoftAttachment {
+                        particle,
+                        body: sheet.holder,
+                        local: (rotation.inverse() * offset).into(),
+                    });
+                }
+            }
+            Err(_) => (0..top).for_each(|particle| volume.cloth.pin(particle)),
+        }
+        if let Some(assets) = assets.as_deref_mut().filter(|_| sheet.visible) {
+            volume.skin = Some(SoftSkin::new(named_material(
+                assets,
+                "Cloth",
+                [0.75, 0.2, 0.2, 1.0],
+                0.8,
+            )));
+        }
+        commands.entity(entity).insert(volume);
+    }
+}
+
+/// Both sides of a cloth's triangles, each side with its own smooth
+/// normals: the first half of the vertices faces the way the triangles
+/// wind, the second half the other way.
+pub fn cloth_mesh(cloth: &Cloth) -> crate::assets::MeshAsset {
+    let count = cloth.positions.len();
+    let mut normals = vec![Vector3::zeros(); count];
+    for &triangle in &cloth.triangles {
+        let [a, b, c] = triangle.map(|i| vector(cloth.positions[i as usize]));
+        let face = (b - a).cross(&(c - a));
+        for i in triangle {
+            normals[i as usize] += face;
+        }
+    }
+    let mut vertices = Vec::with_capacity(2 * count);
+    for side in [1.0, -1.0] {
+        for (&position, normal) in cloth.positions.iter().zip(&normals) {
+            vertices.push(crate::assets::MeshVertex {
+                position,
+                normal: (normal.try_normalize(1e-12).unwrap_or(Vector3::z())
+                    * side)
+                    .into(),
+                ..crate::assets::MeshVertex::default()
+            });
+        }
+    }
+    let mut indices = Vec::with_capacity(6 * cloth.triangles.len());
+    for &[a, b, c] in &cloth.triangles {
+        indices.extend([a, b, c]);
+    }
+    let back = count as u32;
+    for &[a, b, c] in &cloth.triangles {
+        indices.extend([a + back, c + back, b + back]);
+    }
+    crate::assets::MeshAsset { vertices, indices }
 }
 
 #[cfg(test)]

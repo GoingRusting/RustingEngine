@@ -6206,6 +6206,105 @@ fn a_visible_soft_block_draws_one_skin_that_goes_with_it() {
 }
 
 #[test]
+fn cloth_round_trips_through_scenes_hangs_on_its_holder_and_drapes() {
+    let fixed_box = |position: [f32; 3], half_extents: [f32; 3]| {
+        (
+            Transform::new(position),
+            PhysicsBody::default(),
+            RigidBody {
+                kind: RigidBodyKind::Fixed,
+                ..RigidBody::default()
+            },
+            Collider {
+                shape: ColliderShape::Box { half_extents },
+                ..Collider::default()
+            },
+        )
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let pole = app.spawn(fixed_box([0.0, 2.05, 3.0], [0.5, 0.05, 0.05]));
+    let flag = ClothSheet {
+        count_x: 6,
+        count_y: 6,
+        holder: pole,
+        wind: [0.0, 0.0, 2.0],
+        ..ClothSheet::default()
+    };
+    // The flag's top edge sits on the pole's bottom face.
+    app.spawn((Transform::new([0.0, 1.7, 3.0]), flag));
+    app.spawn(fixed_box([0.0, -0.5, 0.0], [2.0, 0.5, 2.0]));
+    let tarp = ClothSheet {
+        count_x: 6,
+        count_y: 6,
+        pin_top: false,
+        visible: false,
+        ..ClothSheet::default()
+    };
+    app.spawn((Transform::new([0.0, 1.0, 0.0]), tarp));
+    let document = scene_document(app.world_mut(), "cloth").unwrap();
+    let mut loaded = App::new();
+    loaded.add_plugin(crate::assets::AssetPlugin).unwrap();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut sheets = loaded
+        .world_mut()
+        .query::<(bevy_ecs::entity::Entity, &ClothSheet)>();
+    let sheets: Vec<_> = sheets
+        .iter(loaded.world())
+        .map(|(entity, sheet)| (entity, *sheet))
+        .collect();
+    assert_eq!(sheets.len(), 2);
+    let (flag_entity, loaded_flag) =
+        *sheets.iter().find(|(_, sheet)| sheet.pin_top).unwrap();
+    let (tarp_entity, _) =
+        *sheets.iter().find(|(_, sheet)| !sheet.pin_top).unwrap();
+    let pole_position = loaded
+        .world()
+        .get::<Transform>(loaded_flag.holder)
+        .expect("the holder is remapped to the loaded pole")
+        .position;
+    assert_eq!(pole_position, [0.0, 2.05, 3.0]);
+    assert_eq!(
+        loaded_flag,
+        ClothSheet {
+            holder: loaded_flag.holder,
+            ..flag
+        }
+    );
+    run_fixed_steps(&mut loaded, 90);
+    let world = loaded.world();
+    let flag = world.get::<ClothVolume>(flag_entity).unwrap();
+    assert_eq!(flag.attachments.len(), 7);
+    for particle in 0..7 {
+        let top = flag.cloth.positions[particle];
+        assert!((top[1] - 2.0).abs() < 0.01, "top row moved to {top:?}");
+    }
+    let blown = flag.cloth.positions.iter().map(|p| p[2]).sum::<f32>()
+        / flag.cloth.positions.len() as f32;
+    assert!(blown > 3.02, "the wind did not blow the flag: {blown}");
+    let tarp = world.get::<ClothVolume>(tarp_entity).unwrap();
+    assert!(tarp.skin.is_none());
+    for p in &tarp.cloth.positions {
+        assert!(p[1] > -0.02, "the tarp fell through the box: {p:?}");
+    }
+    // Only the flag draws: one two-sided mesh.
+    let mut drawn = loaded
+        .world_mut()
+        .query::<(&crate::runtime::FluidParticle, &MeshRenderer)>();
+    let drawn: Vec<_> = drawn
+        .iter(loaded.world())
+        .map(|(owner, renderer)| (owner.0, renderer.mesh))
+        .collect();
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].0, flag_entity);
+    let assets = loaded.world().resource::<crate::assets::AssetServer>();
+    let mesh = assets.meshes.get(drawn[0].1).unwrap();
+    assert_eq!(mesh.vertices.len(), 2 * 49);
+    assert_eq!(mesh.indices.len(), 2 * 3 * 72);
+}
+
+#[test]
 fn huge_soft_blocks_are_shrunk_to_the_cap() {
     let block = SoftBlock {
         count_x: 1000,

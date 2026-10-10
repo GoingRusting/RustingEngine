@@ -762,7 +762,9 @@ impl SoftBodyVolume {
     }
 }
 
-fn body_rotation(transform: &crate::Transform) -> nalgebra::Rotation3<f32> {
+pub(super) fn body_rotation(
+    transform: &crate::Transform,
+) -> nalgebra::Rotation3<f32> {
     let [roll, pitch, yaw] = transform.rotation;
     super::sim_math::rotation_from_euler(roll, pitch, yaw)
 }
@@ -878,23 +880,31 @@ pub(super) fn spawn_soft_bodies(
     }
 }
 
-fn jelly_material(
+pub(super) fn named_material(
     assets: &mut crate::assets::AssetServer,
+    name: &str,
+    base_color: [f32; 4],
+    roughness: f32,
 ) -> crate::assets::Handle<crate::assets::MaterialAsset> {
-    const NAME: &str = "Soft Block Jelly";
     if let Some((handle, _)) = assets
         .materials
         .iter()
-        .find(|(_, material)| material.name == NAME)
+        .find(|(_, material)| material.name == name)
     {
         return handle;
     }
     assets.materials.insert(crate::assets::MaterialAsset {
-        name: NAME.into(),
-        base_color: [0.35, 0.8, 0.3, 1.0],
-        roughness: 0.25,
+        name: name.into(),
+        base_color,
+        roughness,
         ..crate::assets::MaterialAsset::default()
     })
+}
+
+fn jelly_material(
+    assets: &mut crate::assets::AssetServer,
+) -> crate::assets::Handle<crate::assets::MaterialAsset> {
+    named_material(assets, "Soft Block Jelly", [0.35, 0.8, 0.3, 1.0], 0.25)
 }
 
 /// The faces of a body's tetrahedra that no other tetrahedron shares, each
@@ -944,15 +954,20 @@ pub fn skin_mesh(body: &SoftBody) -> crate::assets::MeshAsset {
 }
 
 /// Per fixed step, after [`step_soft_bodies`]: rebuilds the skin mesh of
-/// every visible volume that moved, spawning its entity the first time. The
-/// entity carries the fluid surface markers, so the editor hides it and
-/// [`super::fluid::reap_surfaces`] frees it once the volume is gone.
+/// every visible soft body and cloth that moved, spawning its entity the
+/// first time. The entity carries the fluid surface markers, so the editor
+/// hides it and [`super::fluid::reap_surfaces`] frees it once the volume is
+/// gone.
 pub(super) fn sync_soft_skins(
     mut commands: bevy_ecs::prelude::Commands,
     assets: Option<bevy_ecs::prelude::ResMut<crate::assets::AssetServer>>,
     mut volumes: bevy_ecs::prelude::Query<(
         bevy_ecs::prelude::Entity,
         &mut SoftBodyVolume,
+    )>,
+    mut cloths: bevy_ecs::prelude::Query<(
+        bevy_ecs::prelude::Entity,
+        &mut super::ClothVolume,
     )>,
     markers: bevy_ecs::prelude::Query<&super::FluidParticle>,
 ) {
@@ -964,57 +979,119 @@ pub(super) fn sync_soft_skins(
         let Some(skin) = volume.skin.as_mut() else {
             continue;
         };
-        let owned = skin.entity.is_some_and(|entity| {
-            markers.get(entity).is_ok_and(|marker| marker.0 == owner)
-        });
-        if !owned {
-            skin.mesh = None;
-            skin.entity = None;
-        }
         let hash =
             volume.body.state_hash() ^ volume.body.tetrahedra.len() as u64;
-        let live = skin
-            .mesh
-            .is_some_and(|handle| assets.meshes.get(handle).is_some());
-        if live && skin.built_from == hash {
+        sync_skin(
+            &mut commands,
+            &mut assets,
+            &markers,
+            owner,
+            skin,
+            hash,
+            || skin_mesh(&volume.body),
+        );
+    }
+    for (owner, mut cloth) in &mut cloths {
+        let cloth = &mut *cloth;
+        let Some(skin) = cloth.skin.as_mut() else {
             continue;
-        }
-        skin.built_from = hash;
-        let mesh = skin_mesh(&volume.body);
-        match skin.mesh.and_then(|handle| assets.meshes.get_mut(handle)) {
-            Some(slot) => *slot = mesh,
-            None => {
-                let handle = assets.meshes.insert(mesh);
-                skin.mesh = Some(handle);
-                skin.entity = Some(
-                    commands
-                        .spawn((
-                            crate::Transform::default(),
-                            super::MeshRenderer {
-                                mesh: handle,
-                                material: skin.material,
-                                cast_shadows: true,
-                                receive_shadows: true,
-                            },
-                            super::FluidParticle(owner),
-                            super::fluid::OwnedSurface {
-                                mesh: handle,
-                                material: None,
-                            },
-                        ))
-                        .id(),
-                );
-            }
+        };
+        let hash =
+            cloth.cloth.state_hash() ^ cloth.cloth.triangles.len() as u64;
+        sync_skin(
+            &mut commands,
+            &mut assets,
+            &markers,
+            owner,
+            skin,
+            hash,
+            || super::cloth::cloth_mesh(&cloth.cloth),
+        );
+    }
+}
+
+/// Rebuilds one skin's mesh with `build` unless it was built from `hash`.
+fn sync_skin(
+    commands: &mut bevy_ecs::prelude::Commands,
+    assets: &mut crate::assets::AssetServer,
+    markers: &bevy_ecs::prelude::Query<&super::FluidParticle>,
+    owner: bevy_ecs::prelude::Entity,
+    skin: &mut SoftSkin,
+    hash: u64,
+    build: impl FnOnce() -> crate::assets::MeshAsset,
+) {
+    let owned = skin.entity.is_some_and(|entity| {
+        markers.get(entity).is_ok_and(|marker| marker.0 == owner)
+    });
+    if !owned {
+        skin.mesh = None;
+        skin.entity = None;
+    }
+    let live = skin
+        .mesh
+        .is_some_and(|handle| assets.meshes.get(handle).is_some());
+    if live && skin.built_from == hash {
+        return;
+    }
+    skin.built_from = hash;
+    let mesh = build();
+    match skin.mesh.and_then(|handle| assets.meshes.get_mut(handle)) {
+        Some(slot) => *slot = mesh,
+        None => {
+            let handle = assets.meshes.insert(mesh);
+            skin.mesh = Some(handle);
+            skin.entity = Some(
+                commands
+                    .spawn((
+                        crate::Transform::default(),
+                        super::MeshRenderer {
+                            mesh: handle,
+                            material: skin.material,
+                            cast_shadows: true,
+                            receive_shadows: true,
+                        },
+                        super::FluidParticle(owner),
+                        super::fluid::OwnedSurface {
+                            mesh: handle,
+                            material: None,
+                        },
+                    ))
+                    .id(),
+            );
         }
     }
 }
 
-/// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`] in
-/// spawn order with its attached particles held on their bodies and its
-/// particles kept out of nearby sphere, box and capsule colliders, then
-/// writes back the pose and velocities of the dynamic bodies it moved.
-/// Attachments to a missing or parented body hold nothing; a volume does
-/// not collide with the bodies it is attached to.
+/// The bodies soft bodies and cloth hang on and collide with.
+pub(super) type CoupledBodies<'w, 's> = bevy_ecs::prelude::Query<
+    'w,
+    's,
+    (
+        bevy_ecs::prelude::Entity,
+        Option<&'static super::SpawnOrder>,
+        &'static mut crate::Transform,
+        Option<&'static mut super::RigidBody>,
+        Option<&'static super::Collider>,
+        bevy_ecs::prelude::Has<super::PhysicsBody>,
+    ),
+    bevy_ecs::prelude::Without<super::Parent>,
+>;
+
+/// A collider soft bodies and cloth keep out of, with its visit key.
+type ColliderEntry = (
+    (bool, u64, bevy_ecs::prelude::Entity),
+    bevy_ecs::prelude::Entity,
+    [f32; 3],
+    ObstacleShape,
+);
+
+/// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`],
+/// then every [`super::ClothVolume`], each in spawn order, with attached
+/// particles held on their bodies and particles kept out of nearby sphere,
+/// box and capsule colliders, then writes back the pose and velocities of
+/// the dynamic bodies it moved. Attachments to a missing or parented body
+/// hold nothing; a volume does not collide with the bodies it is attached
+/// to.
 // ponytail: every collider is checked against every volume each tick (a
 // bounding-sphere test); use the broad phase if scenes get many of both.
 #[allow(clippy::type_complexity)]
@@ -1025,24 +1102,15 @@ pub(super) fn step_soft_bodies(
         Option<&super::SpawnOrder>,
         &mut SoftBodyVolume,
     )>,
-    mut bodies: bevy_ecs::prelude::Query<
-        (
-            bevy_ecs::prelude::Entity,
-            Option<&super::SpawnOrder>,
-            &mut crate::Transform,
-            Option<&mut super::RigidBody>,
-            Option<&super::Collider>,
-            bevy_ecs::prelude::Has<super::PhysicsBody>,
-        ),
-        bevy_ecs::prelude::Without<super::Parent>,
-    >,
+    mut cloths: bevy_ecs::prelude::Query<(
+        bevy_ecs::prelude::Entity,
+        Option<&super::SpawnOrder>,
+        &mut super::ClothVolume,
+    )>,
+    mut bodies: CoupledBodies,
 ) {
     let dt = time.fixed_delta.as_secs_f32();
-    let mut volumes: Vec<_> = volumes.iter_mut().collect();
-    volumes.sort_by_key(|(entity, order, _)| {
-        super::fluid::visit_key(*order, *entity)
-    });
-    let mut colliders: Vec<_> = bodies
+    let mut colliders: Vec<ColliderEntry> = bodies
         .iter()
         .filter_map(|(entity, order, transform, _, collider, physics)| {
             let shape = ObstacleShape::from_collider(
@@ -1058,74 +1126,128 @@ pub(super) fn step_soft_bodies(
         })
         .collect();
     colliders.sort_by_key(|&(key, ..)| key);
+    let mut volumes: Vec<_> = volumes.iter_mut().collect();
+    volumes.sort_by_key(|(entity, order, _)| {
+        super::fluid::visit_key(*order, *entity)
+    });
     for (_, _, mut volume) in volumes {
         let volume = &mut *volume;
-        let mut entities = Vec::new();
-        let mut held = Vec::new();
-        let mut slot = |entity| {
-            if let Some(index) = entities.iter().position(|&e| e == entity) {
-                return Some(index);
-            }
-            let (_, _, transform, rigid, collider, _) =
-                bodies.get(entity).ok()?;
-            entities.push(entity);
-            held.push(anchor_body(transform, rigid, collider, dt));
-            Some(held.len() - 1)
-        };
-        let mut anchors = Vec::new();
-        for attachment in &volume.attachments {
-            if attachment.particle >= volume.body.positions.len() {
-                continue;
-            }
-            if let Some(body) = slot(attachment.body) {
-                anchors.push(Anchor {
-                    particle: attachment.particle,
-                    body,
-                    local: attachment.local,
-                });
-            }
-        }
-        let (low, high) = bounds(&volume.body.positions);
-        let center = (low + high) / 2.0;
-        let reach = (high - low).norm() / 2.0;
-        let mut obstacles = Vec::new();
-        for &(_, entity, position, shape) in &colliders {
-            if volume.attachments.iter().any(|a| a.body == entity) {
-                continue;
-            }
-            // Room for a tick of travel at up to 60 m/s either way.
-            let margin = 2.0 * 60.0 * dt;
-            if (vector(position) - center).norm()
-                > reach + shape.bounding_radius() + margin
-            {
-                continue;
-            }
-            if let Some(body) = slot(entity) {
-                obstacles.push(Obstacle { body, shape });
-            }
-        }
-        volume.body.step_coupled(
-            &volume.settings,
+        let bounds = bounds(&volume.body.positions);
+        let particles = volume.body.positions.len();
+        couple(
+            &mut bodies,
+            &colliders,
+            &volume.attachments,
+            particles,
+            bounds,
             dt,
-            &mut held,
-            &anchors,
-            &obstacles,
+            |held, anchors, obstacles| {
+                volume.body.step_coupled(
+                    &volume.settings,
+                    dt,
+                    held,
+                    anchors,
+                    obstacles,
+                )
+            },
         );
-        for (entity, state) in entities.into_iter().zip(held) {
-            if state.inverse_mass == 0.0 {
-                continue;
-            }
-            let Ok((_, _, mut transform, Some(mut rigid), ..)) =
-                bodies.get_mut(entity)
-            else {
-                continue;
-            };
-            let (roll, pitch, yaw) = state.rotation.euler_angles();
-            transform.position = state.position;
-            transform.rotation = [roll, pitch, yaw];
-            rigid.linear_velocity = state.velocity;
-            rigid.angular_velocity = state.angular_velocity;
+    }
+    let mut cloths: Vec<_> = cloths.iter_mut().collect();
+    cloths.sort_by_key(|(entity, order, _)| {
+        super::fluid::visit_key(*order, *entity)
+    });
+    for (_, _, mut cloth) in cloths {
+        let cloth = &mut *cloth;
+        let bounds = bounds(&cloth.cloth.positions);
+        let particles = cloth.cloth.positions.len();
+        couple(
+            &mut bodies,
+            &colliders,
+            &cloth.attachments,
+            particles,
+            bounds,
+            dt,
+            |held, anchors, obstacles| {
+                cloth.cloth.step_coupled(
+                    &cloth.settings,
+                    dt,
+                    held,
+                    anchors,
+                    obstacles,
+                )
+            },
+        );
+    }
+}
+
+/// Gathers the bodies one volume hangs on and the colliders near its
+/// `bounds`, runs `step` with them and writes back the dynamic ones.
+fn couple(
+    bodies: &mut CoupledBodies,
+    colliders: &[ColliderEntry],
+    attachments: &[SoftAttachment],
+    particles: usize,
+    (low, high): (Vector3<f32>, Vector3<f32>),
+    dt: f32,
+    step: impl FnOnce(&mut [AnchorBody], &[Anchor], &[Obstacle]),
+) {
+    let mut entities = Vec::new();
+    let mut held = Vec::new();
+    let mut slot = |entity| {
+        if let Some(index) = entities.iter().position(|&e| e == entity) {
+            return Some(index);
         }
+        let (_, _, transform, rigid, collider, _) = bodies.get(entity).ok()?;
+        entities.push(entity);
+        held.push(anchor_body(transform, rigid, collider, dt));
+        Some(held.len() - 1)
+    };
+    let mut anchors = Vec::new();
+    for attachment in attachments {
+        if attachment.particle >= particles {
+            continue;
+        }
+        if let Some(body) = slot(attachment.body) {
+            anchors.push(Anchor {
+                particle: attachment.particle,
+                body,
+                local: attachment.local,
+            });
+        }
+    }
+    let center = (low + high) / 2.0;
+    let reach = (high - low).norm() / 2.0;
+    let mut obstacles = Vec::new();
+    for &(_, entity, position, shape) in colliders {
+        if attachments.iter().any(|a| a.body == entity) {
+            continue;
+        }
+        // Room for a tick of travel at up to 60 m/s either way.
+        let margin = 2.0 * 60.0 * dt;
+        if (vector(position) - center).norm()
+            > reach + shape.bounding_radius() + margin
+        {
+            continue;
+        }
+        if let Some(body) = slot(entity) {
+            obstacles.push(Obstacle { body, shape });
+        }
+    }
+    step(&mut held, &anchors, &obstacles);
+    for (entity, state) in entities.into_iter().zip(held) {
+        if state.inverse_mass == 0.0 {
+            continue;
+        }
+        let Ok((_, _, mut transform, Some(mut rigid), ..)) =
+            bodies.get_mut(entity)
+        else {
+            continue;
+        };
+        let (roll, pitch, yaw) = state.rotation.euler_angles();
+        transform.position = state.position;
+        transform.rotation = [roll, pitch, yaw];
+        rigid.linear_velocity = state.velocity;
+        rigid.angular_velocity = state.angular_velocity;
     }
 }
 

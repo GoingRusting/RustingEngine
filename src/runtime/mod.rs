@@ -63,7 +63,7 @@ pub use audio::{
     MAX_VOICE_LIMIT, QUEUE_LIMIT,
 };
 pub use classes::ClassIndex;
-pub use cloth::{Cloth, ClothSettings};
+pub use cloth::{Cloth, ClothSettings, ClothSheet, ClothVolume};
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
@@ -308,7 +308,11 @@ impl Default for App {
                 )
                     .chain(),
                 animation::advance_animations,
-                (fluid::spawn_fluid_volumes, soft_body::spawn_soft_bodies)
+                (
+                    fluid::spawn_fluid_volumes,
+                    soft_body::spawn_soft_bodies,
+                    cloth::spawn_cloths,
+                )
                     .chain(),
                 fluid::couple_fluids,
                 (
