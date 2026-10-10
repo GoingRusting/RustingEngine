@@ -1455,6 +1455,25 @@ impl Default for DepthOfField {
     }
 }
 
+/// Camera motion blur: the image smears along the screen motion of each
+/// pixel since the last frame, from the camera moving or turning. Objects
+/// moving on their own do not blur. A jump of more than about a sixth of
+/// the screen in one frame counts as a cut and does not blur. The one on
+/// the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MotionBlur {
+    /// Fraction of the last frame's motion the smear covers, like a
+    /// camera's shutter: 0.5 is a 180-degree shutter, 1 the whole frame.
+    pub intensity: f32,
+}
+
+impl Default for MotionBlur {
+    fn default() -> Self {
+        Self { intensity: 0.5 }
+    }
+}
+
 /// Shows what a camera sees on this object's mesh, like a CCTV monitor. The
 /// camera's image replaces the base color and emissive maps of the object's
 /// material, so a material with black base color and emissive `[1, 1, 1]`

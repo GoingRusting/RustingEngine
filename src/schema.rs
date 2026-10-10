@@ -874,6 +874,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"focus_distance": 10.0, "blur": 0.01}),
     },
     ComponentSection {
+        key: "rusting.motion_blur",
+        summary: "Camera motion blur: each pixel smears along its screen motion since the last frame, scaled by intensity (0.5 is a 180-degree shutter). Only camera movement blurs; a jump of more than a sixth of the screen counts as a cut. The first one found is used.",
+        gpu: "a copy of the HDR image and depth, and 16 taps per moving pixel in tone mapping",
+        example: || json!({"intensity": 0.5}),
+    },
+    ComponentSection {
         key: "rusting.ambient_occlusion",
         summary: "Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres. Off on the Eco quality profile. The first one found is used.",
         gpu: "a depth prepass plus two full-screen compute passes",

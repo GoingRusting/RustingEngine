@@ -1764,6 +1764,8 @@ pub struct SceneRenderer {
     depth_pyramid_reduce_pipeline: Arc<ComputePipeline>,
     /// Rebuilt with `depth`.
     depth_pyramid: DepthPyramid,
+    /// Last frame's view projection, while motion blur is on.
+    previous_clip: Option<Matrix4<f32>>,
     /// Last GPU-culled frame's draw commands, early set first on occlusion
     /// frames, for readback in tests.
     #[cfg(test)]
@@ -2048,6 +2050,7 @@ impl SceneRenderer {
             depth_pyramid_copy_pipeline,
             depth_pyramid_reduce_pipeline,
             depth_pyramid,
+            previous_clip: None,
             shadow_pipeline,
             shadow_framebuffer,
             shadow_map,
@@ -2964,10 +2967,33 @@ impl SceneRenderer {
         let depth_of_field = render_world
             .depth_of_field
             .filter(|lens| lit && lens.blur > 0.0 && lens.focus_distance > 0.0);
+        let motion_blur = render_world
+            .motion_blur
+            .filter(|blur| lit && blur.intensity > 0.0);
+        // Maps this frame's clip space to last frame's; without a last
+        // frame nothing moved.
+        let reproject = self
+            .previous_clip
+            .filter(|_| motion_blur.is_some())
+            .and_then(|previous| Some(previous * clip.try_inverse()?))
+            .unwrap_or_else(Matrix4::identity);
+        self.previous_clip = motion_blur.map(|_| clip);
+        let motion = self
+            .instance_allocator
+            .allocate_sized::<tonemap_fragment_shader::Motion>()
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+        *motion
+            .write()
+            .map_err(|error| SceneRenderError(error.to_string()))? =
+            tonemap_fragment_shader::Motion {
+                reproject: reproject.into(),
+                strength: motion_blur.map_or(0.0, |blur| blur.intensity),
+            };
         let sampled = grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
             || grade.distortion > 0.0
-            || depth_of_field.is_some();
+            || depth_of_field.is_some()
+            || motion_blur.is_some();
         // Bloom, the copy and auto exposure read the finished HDR outside
         // the render pass.
         let post = bloom.is_some() || sampled || auto_exposure.is_some();
@@ -4516,8 +4542,9 @@ impl SceneRenderer {
                         self.scene_color.image().clone(),
                     ))
                     .map_err(|error| SceneRenderError(error.to_string()))?;
-                if depth_of_field.is_some() {
-                    // Mip 0 of the pyramid is the depth the lens blur reads.
+                if depth_of_field.is_some() || motion_blur.is_some() {
+                    // Mip 0 of the pyramid is the depth the lens and motion
+                    // blur read.
                     let (set, size) = &self.depth_pyramid.mips[0];
                     let pipeline = &self.depth_pyramid_copy_pipeline;
                     commands
@@ -4594,6 +4621,7 @@ impl SceneRenderer {
                             self.depth_pyramid.view.clone(),
                             self.depth_pyramid.sampler.clone(),
                         ),
+                        WriteDescriptorSet::buffer(2, motion),
                     ],
                     [],
                 )
@@ -4886,6 +4914,8 @@ impl SceneRenderer {
         world.bloom = None;
         world.auto_exposure = None;
         world.ambient_occlusion = None;
+        world.depth_of_field = None;
+        world.motion_blur = None;
         // Occlusion would test each face against the previous face's depth.
         world.culling = CullingMode::Frustum;
         let device = self.queue.device().clone();
@@ -9980,8 +10010,14 @@ layout(set = 0, binding = 3) readonly buffer Exposure { float value; } adapted;
 // The ColorLut strip, lut_size squares of lut_size x lut_size texels; read
 // only when lut > 0, its intensity.
 layout(set = 1, binding = 0) uniform sampler2D lut_strip;
-// Opaque depth, up to date only when blur > 0.
+// Opaque depth, up to date only when blur or motion strength is above 0.
 layout(set = 1, binding = 1) uniform sampler2D scene_depth;
+// MotionBlur: reproject takes this frame's clip space to last frame's;
+// strength is the intensity, 0 when off.
+layout(set = 1, binding = 2) readonly buffer Motion {
+    mat4 reproject;
+    float strength;
+} motion;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
 // band, distortion, seconds and frame number from the fixed tick. flags bit
 // 0 is set when scene_image may be read, bit 1 for auto exposure. focus and
@@ -10076,6 +10112,21 @@ void main() {
                 * sin(uv.y * 60.0 + tone.tape.z * 5.0);
         }
         hdr.rgb = tone.blur > 0.0 ? defocus(uv) : hdr_at(uv);
+        if (motion.strength > 0.0) {
+            // Screen motion since last frame, in uv, centered on the pixel.
+            float d = textureLod(scene_depth, uv, 0.0).r;
+            vec4 last = motion.reproject * vec4(uv * 2.0 - 1.0, d, 1.0);
+            vec2 moved = (uv - (last.xy / last.w * 0.5 + 0.5)) * motion.strength;
+            float pixels = length(moved / tone.inv_extent);
+            // Longer than a sixth of the height is a cut, not motion.
+            if (pixels > 0.5 && pixels * tone.inv_extent.y < 0.17) {
+                vec3 sum = vec3(0.0);
+                for (int i = 0; i < 16; i++) {
+                    sum += hdr_at(uv + moved * (float(i) / 15.0 - 0.5));
+                }
+                hdr.rgb = sum / 16.0;
+            }
+        }
         if (tone.film.y > 0.0) {
             vec2 split = (uv - 0.5) * tone.film.y * 0.02;
             hdr.r = hdr_at(uv + split).r;
@@ -12265,6 +12316,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn motion_blur_smears_only_while_the_camera_moves() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The black and white edge of an unlit slab stays sharp while the
+        // camera holds still and softens on the frame it slides sideways.
+        let extent = [64, 64];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        let edge = scene.assets.textures.insert(TextureAsset {
+            size: [128, 4],
+            rgba8: (0..4)
+                .flat_map(|_| {
+                    (0..128).flat_map(|x| {
+                        if x < 64 {
+                            [255; 4]
+                        } else {
+                            [0, 0, 0, 255]
+                        }
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.renderables[0].material =
+            scene.assets.materials.insert(MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color_texture: Some(edge),
+                ..MaterialAsset::default()
+            });
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        let soft = |pixels: &[u8]| {
+            (0..extent[0])
+                .filter(|x| {
+                    let green = pixels[((32 * extent[0] + x) * 4 + 1) as usize];
+                    (30..=225).contains(&green)
+                })
+                .count()
+        };
+        let slide = |scene: &mut SlabScene, x: f32| {
+            scene.render_world.active_camera.as_mut().unwrap().transform =
+                crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        x, 0.0, 5.0,
+                    ))
+                    .into(),
+                };
+        };
+        let sharp = frame(&mut scene);
+        assert!(soft(&sharp) <= 3, "{}", soft(&sharp));
+        scene.render_world.motion_blur =
+            Some(crate::runtime::MotionBlur { intensity: 1.0 });
+        // The first frame has no last frame to move from.
+        assert_eq!(frame(&mut scene), sharp, "first frame");
+        assert_eq!(frame(&mut scene), sharp, "still camera");
+        slide(&mut scene, 0.2);
+        let moving = soft(&frame(&mut scene));
+        assert!(moving >= 4, "sliding camera: {moving}");
+        let held = frame(&mut scene);
+        assert!(soft(&held) <= 3, "held again: {}", soft(&held));
+        // A jump of half the screen is a cut.
+        slide(&mut scene, -0.8);
+        let cut = soft(&frame(&mut scene));
+        assert!(cut <= 3, "cut: {cut}");
     }
 
     #[test]

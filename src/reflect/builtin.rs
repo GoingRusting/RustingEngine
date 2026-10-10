@@ -17,7 +17,7 @@ use crate::runtime::{
     FluidBlock, Fog, ForceField, GravityVolume, GroundSurface, Health,
     Heightfield, HudAnchor, HudElement, InputAction, Joint, JointAxis,
     JointKind, JointMotor, JointSpring, LightCookie, LootEntry, LootTable,
-    MeshSurfaces, ObjectState, PhysicsMaterial, PhysicsSettings,
+    MeshSurfaces, MotionBlur, ObjectState, PhysicsMaterial, PhysicsSettings,
     PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
     PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
     RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
@@ -1185,6 +1185,15 @@ crate::reflect! {
         blur: f32 {
             unit: "fraction", min: 0.0, max: 0.05,
             doc: "largest blur radius as a fraction of the screen height",
+        },
+    }
+}
+
+crate::reflect! {
+    struct MotionBlur {
+        intensity: f32 {
+            unit: "fraction", min: 0.0, max: 1.0,
+            doc: "fraction of the last frame's camera motion the smear covers",
         },
     }
 }

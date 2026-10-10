@@ -2423,7 +2423,7 @@ Depends on: Milestones 3 and 4.
   occlusion culling, MSAA off and 4x, opaque and glossy); pass table
   `transitions_list_every_layout_change_between_passes`. Screen-space
   indirect lighting is not started.
-- [ ] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
+- [x] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
   Partial (bloom): `rusting.bloom` (intensity, threshold, spread). After the
   transparent pass, the `Bloom` compute pass prefilters the HDR target to
   half resolution (13-tap with Karis weights against fireflies, soft knee
@@ -2487,6 +2487,24 @@ Depends on: Milestones 3 and 4.
   lane's `a_handshake_must_arrive_whole_in_time_and_stay_small` failed once
   under load and passes alone) and GPU tests (930 passed). Motion blur is
   not started.
+  Done (motion blur): `rusting.motion_blur` (intensity, the shutter
+  share). The renderer keeps last frame's view projection while it is on;
+  tone mapping reprojects each pixel's opaque depth through `previous *
+  inverse(current)` (a small storage buffer at set 1, binding 2) and
+  averages 16 taps along the screen motion times intensity, centered on the
+  pixel. No last frame means no blur; motion longer than a sixth of the
+  screen height is a cut. Off in probe captures and non-Lit views. Limits:
+  camera motion only (no per-object velocity buffer); where motion blur
+  applies it replaces depth of field for that pixel. Evidence: GPU test
+  `motion_blur_smears_only_while_the_camera_moves` (sharp on the first and
+  still frames, soft edge on a 0.2-unit slide, sharp again when held, sharp
+  on a 1-unit jump); it fails when the cut limit is lifted, the gather is
+  skipped, or the last frame stops updating. Full check: fmt, clippy three
+  ways, `cargo test --workspace` (821 passed, 113 ignored; the tools lane's
+  flaky handshake test failed once under load and passes alone) and GPU
+  tests (931 passed). With bloom, auto exposure, LUTs, depth of field and
+  motion blur in, and vignette and chromatic aberration in `ColorGrading`,
+  the item is done.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,

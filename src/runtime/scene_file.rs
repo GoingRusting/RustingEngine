@@ -1181,6 +1181,8 @@ pub const COLOR_GRADING_COMPONENT: &str = "rusting.color_grading";
 pub const COLOR_LUT_COMPONENT: &str = "rusting.color_lut";
 /// Registry name of the built-in lens blur.
 pub const DEPTH_OF_FIELD_COMPONENT: &str = "rusting.depth_of_field";
+/// Registry name of the built-in camera motion blur.
+pub const MOTION_BLUR_COMPONENT: &str = "rusting.motion_blur";
 /// Registry name of the built-in fog and grading area.
 pub const POST_VOLUME_COMPONENT: &str = "rusting.post_volume";
 pub const CAMERA_SCREEN_COMPONENT: &str = "rusting.camera_screen";
@@ -1350,6 +1352,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::DepthOfField>(DEPTH_OF_FIELD_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::MotionBlur>(MOTION_BLUR_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::PostVolume>(POST_VOLUME_COMPONENT)

@@ -39,7 +39,7 @@ use crate::runtime::{
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
     COLOR_LUT_COMPONENT, DEPTH_OF_FIELD_COMPONENT, FLASH_COMPONENT,
-    SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
+    MOTION_BLUR_COMPONENT, SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
 };
 
 /// Components that together make a World Environment object.
@@ -70,6 +70,7 @@ fn kind(name: &str) -> Kind {
         | COLOR_GRADING_COMPONENT
         | COLOR_LUT_COMPONENT
         | DEPTH_OF_FIELD_COMPONENT
+        | MOTION_BLUR_COMPONENT
         | POST_VOLUME_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
@@ -138,6 +139,9 @@ pub(in crate::editor) fn placement(
         COLOR_LUT_COMPONENT => first_with::<crate::runtime::ColorLut>(world),
         DEPTH_OF_FIELD_COMPONENT => {
             first_with::<crate::runtime::DepthOfField>(world)
+        }
+        MOTION_BLUR_COMPONENT => {
+            first_with::<crate::runtime::MotionBlur>(world)
         }
         AMBIENT_OCCLUSION_COMPONENT => first_with::<AmbientOcclusion>(world),
         _ => None,
@@ -362,6 +366,10 @@ pub(in crate::editor) fn component_help(
         ENVIRONMENT_MAP_COMPONENT => (
             "Uses an image of the surroundings for reflections and sky light.",
             "Shiny materials that need realistic reflections.",
+        ),
+        MOTION_BLUR_COMPONENT => (
+            "Smears the image while the camera moves or turns.",
+            "Fast vehicles, quick camera turns, a sense of speed.",
         ),
         DEPTH_OF_FIELD_COMPONENT => (
             "Blurs what is nearer or farther than the focus distance.",

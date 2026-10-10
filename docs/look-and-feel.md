@@ -124,6 +124,16 @@ Move `focus_distance` from a script for focus pulls in cutscenes:
 A blurred object in front of a sharp one keeps a hard outline; it does not
 spread over the sharp one.
 
+`rusting.motion_blur` smears the image while the camera moves or turns.
+`intensity` is the share of the last frame's motion the smear covers, like
+a camera shutter: 0.5 is the film look, 1 is heavy. Objects moving on their
+own do not blur, and a camera jump of more than a sixth of the screen counts
+as a cut, so teleports stay sharp:
+
+```json
+"rusting.motion_blur": {"intensity": 0.5}
+```
+
 ### Film and CRT/VHS effects
 
 The same component carries film and old-screen effects. Each one is 0..1

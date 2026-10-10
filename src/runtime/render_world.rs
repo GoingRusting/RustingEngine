@@ -149,6 +149,7 @@ pub struct RenderWorld {
     pub bloom: Option<super::Bloom>,
     pub auto_exposure: Option<super::AutoExposure>,
     pub depth_of_field: Option<super::DepthOfField>,
+    pub motion_blur: Option<super::MotionBlur>,
     pub color_grading: Option<super::ColorGrading>,
     /// Loaded image and intensity of the first loaded
     /// [`ColorLut`](super::ColorLut).
@@ -323,6 +324,7 @@ pub fn extract_render_world(world: &mut World) {
     let bloom = collect_first::<super::Bloom>(world);
     let auto_exposure = collect_first::<super::AutoExposure>(world);
     let depth_of_field = collect_first::<super::DepthOfField>(world);
+    let motion_blur = collect_first::<super::MotionBlur>(world);
     let color_grading = collect_blended(
         world,
         eye,
@@ -485,6 +487,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.bloom = bloom;
     render_world.auto_exposure = auto_exposure;
     render_world.depth_of_field = depth_of_field;
+    render_world.motion_blur = motion_blur;
     render_world.color_grading = color_grading;
     render_world.color_lut = color_lut;
     render_world.screens = screens;
