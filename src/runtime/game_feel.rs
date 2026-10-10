@@ -1596,13 +1596,42 @@ pub struct LightCookie {
     pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
 }
 
-/// Loads the image of each added or changed [`EnvironmentMap`] and
-/// [`LightCookie`]. An image whose load failed (file missing or not written
+/// Color lookup table applied after tone mapping and [`ColorGrading`]: an
+/// image strip of N squares of N x N pixels side by side (for example
+/// 256 x 16 or 1024 x 32). Red runs across each square, green down it, and
+/// blue from square to square; an identity strip changes nothing. Grade a
+/// screenshot with an identity strip pasted in, in any image editor, then
+/// save the strip. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorLut {
+    /// Image path relative to the project's `assets` folder.
+    pub texture: std::path::PathBuf,
+    /// 0 leaves the image as is, 1 applies the table fully.
+    pub intensity: f32,
+    /// The loaded `texture`, set by the engine.
+    #[serde(skip)]
+    pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+}
+
+impl Default for ColorLut {
+    fn default() -> Self {
+        Self {
+            texture: std::path::PathBuf::new(),
+            intensity: 1.0,
+            handle: None,
+        }
+    }
+}
+
+/// Loads the image of each added or changed [`EnvironmentMap`],
+/// [`LightCookie`] and [`ColorLut`]. An image whose load failed (file missing or not written
 /// yet) is tried again about every two seconds.
 pub(super) fn load_environment_maps(
     assets: Option<ResMut<crate::assets::AssetServer>>,
     mut maps: Query<&mut EnvironmentMap>,
     mut cookies: Query<&mut LightCookie>,
+    mut luts: Query<&mut ColorLut>,
     mut frame: bevy_ecs::prelude::Local<u32>,
 ) {
     let Some(mut assets) = assets else {
@@ -1644,6 +1673,12 @@ pub(super) fn load_environment_maps(
             bevy_ecs::change_detection::DetectChanges::is_changed(&cookie);
         let cookie = cookie.bypass_change_detection();
         load(changed, &cookie.texture, &mut cookie.handle, "light cookie");
+    }
+    for mut lut in &mut luts {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&lut);
+        let lut = lut.bypass_change_detection();
+        load(changed, &lut.texture, &mut lut.handle, "color lut");
     }
 }
 

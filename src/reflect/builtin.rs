@@ -11,12 +11,12 @@ use crate::runtime::Rope;
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoExposure,
     AutoSimulation, AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen,
-    CameraShake, ColorGrading, CombineMode, Connection, Connections, Counter,
-    CullingMode, DeterminismMode, Dialogue, DialogueChoice, DialogueLine,
-    Easing, EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
-    GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
-    InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    LightCookie, LootEntry, LootTable, MeshSurfaces, ObjectState,
+    CameraShake, ColorGrading, ColorLut, CombineMode, Connection, Connections,
+    Counter, CullingMode, DeterminismMode, Dialogue, DialogueChoice,
+    DialogueLine, Easing, EnvironmentMap, FieldKind, Flash, FluidBlock, Fog,
+    ForceField, GravityVolume, GroundSurface, Health, Heightfield, HudAnchor,
+    HudElement, InputAction, Joint, JointAxis, JointKind, JointMotor,
+    JointSpring, LightCookie, LootEntry, LootTable, MeshSurfaces, ObjectState,
     PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
     PlatformerController, PlayerController, Polygon2d, PostVolume,
     QualityProfile, RandomSeed, ReflectionProbe, RenderBounds, RenderSettings,
@@ -1006,6 +1006,17 @@ crate::reflect! {
             doc: "equirectangular (2:1) image that surfaces reflect",
         },
         intensity: f32 { unit: "factor", min: 0.0 },
+        #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+    }
+}
+
+crate::reflect! {
+    struct ColorLut {
+        texture: PathBuf {
+            unit: "asset path",
+            doc: "strip of N squares of N x N pixels; blue picks the square",
+        },
+        intensity: f32 { unit: "factor", min: 0.0, max: 1.0 },
         #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
     }
 }

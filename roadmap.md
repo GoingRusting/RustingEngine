@@ -2454,6 +2454,19 @@ Depends on: Milestones 3 and 4.
   fmt, clippy three ways, `cargo test --workspace` (820 passed, 105
   ignored) and GPU tests (922 passed). Depth of field, motion blur and
   color grading LUTs are not started.
+  Partial (color grading LUTs): `rusting.color_lut` (texture, intensity).
+  The texture is a strip of N squares of N x N texels (256x16, 1024x32);
+  the lowest entity with a loaded strip wins. Tone mapping, after
+  `ColorGrading` and before the film effects, sRGB-encodes the color, reads
+  two neighboring squares and blends them by blue, then mixes by
+  intensity. Lit view only; a camera screen's own grading skips it; a strip
+  whose width is not its height squared is ignored. Docs in
+  `docs/look-and-feel.md`. Evidence: GPU test
+  `color_lut_remaps_the_final_image` (a red-blue swap strip turns a red
+  unlit slab blue at intensity 1 and shows both at 0.5), which fails when
+  the shader drops the lookup. Full check: fmt, clippy three ways,
+  `cargo test --workspace` (821 passed, 111 ignored) and GPU tests (929
+  passed). Depth of field and motion blur are not started.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,

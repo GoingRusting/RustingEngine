@@ -2662,6 +2662,7 @@ impl SceneRenderer {
                 .map(|(texture, _)| texture)
                 .into_iter()
                 .chain(light_cookies(render_world))
+                .chain(render_world.color_lut.map(|(texture, _)| texture))
                 .collect(),
         )?;
 
@@ -2933,6 +2934,23 @@ impl SceneRenderer {
         } else {
             crate::runtime::ColorGrading::default()
         };
+        // A camera screen's own grading replaces the scene's look, LUT
+        // included. A strip that is not N squares of N x N is skipped.
+        let color_lut = render_world
+            .color_lut
+            .filter(|(_, intensity)| {
+                lit && options.grading.is_none() && *intensity > 0.0
+            })
+            .and_then(|(handle, intensity)| {
+                let view =
+                    self.prepared_textures.get(&handle.key())?.view.clone()?;
+                let [width, height, _] = view.image().extent();
+                (height >= 2 && width == height * height).then_some((
+                    view,
+                    intensity.min(1.0),
+                    height,
+                ))
+            });
         // Effects that read neighboring pixels sample a copy of the HDR
         // image, made after the render pass is split as for bloom.
         let sampled = grade.chromatic_aberration > 0.0
@@ -4516,6 +4534,26 @@ impl SceneRenderer {
                 self.tonemap_set.clone(),
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                active.tonemap_pipeline.layout().clone(),
+                1,
+                DescriptorSet::new(
+                    self.descriptor_allocator.clone(),
+                    active.tonemap_pipeline.layout().set_layouts()[1].clone(),
+                    [WriteDescriptorSet::image_view_sampler(
+                        0,
+                        color_lut.as_ref().map_or_else(
+                            || self.white_texture.0.clone(),
+                            |(view, ..)| view.clone(),
+                        ),
+                        self.scene_color_sampler.clone(),
+                    )],
+                    [],
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?,
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?
             .push_constants(
                 active.tonemap_pipeline.layout().clone(),
                 0,
@@ -4559,6 +4597,12 @@ impl SceneRenderer {
                     ],
                     sampled: u32::from(sampled),
                     auto_exposure: u32::from(auto_exposure.is_some()),
+                    lut: color_lut
+                        .as_ref()
+                        .map_or(0.0, |(_, intensity, _)| *intensity),
+                    lut_size: color_lut
+                        .as_ref()
+                        .map_or(0.0, |(.., size)| *size as f32),
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -9886,6 +9930,9 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 layout(set = 0, binding = 2) uniform sampler2D scene_image;
 // Factor auto exposure adapted to; read only when auto_exposure is 1.
 layout(set = 0, binding = 3) readonly buffer Exposure { float value; } adapted;
+// The ColorLut strip, lut_size squares of lut_size x lut_size texels; read
+// only when lut > 0, its intensity.
+layout(set = 1, binding = 0) uniform sampler2D lut_strip;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
 // band, distortion, seconds and frame number from the fixed tick. sampled is
 // 1 when scene_image may be read.
@@ -9903,6 +9950,8 @@ layout(push_constant) uniform ToneMap {
     vec4 tape;
     uint sampled;
     uint auto_exposure;
+    float lut;
+    float lut_size;
 } tone;
 layout(location = 0) out vec4 f_color;
 // Uniform 0..1 from a pixel and a frame number, the same on every GPU.
@@ -9978,6 +10027,23 @@ void main() {
     if (tone.vignette > 0.0) {
         vec2 centered = gl_FragCoord.xy * tone.inv_extent - 0.5;
         c *= 1.0 - tone.vignette * smoothstep(0.25, 0.75, length(centered));
+    }
+    if (tone.lut > 0.0) {
+        // Look up in sRGB, as the strip was authored; the texture decodes
+        // back to linear. Blue blends two neighboring squares.
+        float n = tone.lut_size;
+        vec3 encoded = mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
+            step(0.0031308, c));
+        vec3 at = clamp(encoded, 0.0, 1.0) * (n - 1.0);
+        float square = min(floor(at.b), n - 2.0);
+        vec2 texel = 1.0 / vec2(n * n, n);
+        vec2 uv = (vec2(at.r + square * n, at.g) + 0.5) * texel;
+        vec3 graded = mix(
+            textureLod(lut_strip, uv, 0.0).rgb,
+            textureLod(lut_strip, uv + vec2(n * texel.x, 0.0), 0.0).rgb,
+            at.b - square
+        );
+        c = mix(c, graded, tone.lut);
     }
     uint frame = uint(tone.tape.w);
     if (tone.film.z > 0.0) {
@@ -11954,6 +12020,69 @@ mod tests {
         assert_eq!(lit(11, 4), [false, true, false], "top right is green");
         assert_eq!(lit(4, 11), [false, false, true], "bottom left is blue");
         assert_eq!(lit(11, 11), [true, true, true], "bottom right is white");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn color_lut_remaps_the_final_image() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A 4-square strip that swaps red and blue turns a red slab blue;
+        // at half intensity it shows both.
+        let extent = [16, 16];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0, 0.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        let level = |i: u32| (i * 255 / 3) as u8;
+        let strip = scene.assets.textures.insert(TextureAsset {
+            size: [16, 4],
+            rgba8: (0..4)
+                .flat_map(|g| {
+                    (0..16).flat_map(move |x| {
+                        [level(x / 4), level(g), level(x % 4), 255]
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        let center = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            let at = ((8 * extent[0] + 8) * 4) as usize;
+            // [r, b] from the [b, g, r, a] readback.
+            [pixels[at + 2], pixels[at]]
+        };
+        let [red, blue] = center(&mut scene);
+        assert!(red > 150 && blue < 30, "plain slab is red: {red}, {blue}");
+        scene.render_world.color_lut = Some((strip, 1.0));
+        let [red, blue] = center(&mut scene);
+        assert!(
+            red < 30 && blue > 150,
+            "full lut turns it blue: {red}, {blue}"
+        );
+        scene.render_world.color_lut = Some((strip, 0.5));
+        let [red, blue] = center(&mut scene);
+        assert!(red > 60 && blue > 60, "half lut mixes both: {red}, {blue}");
     }
 
     #[test]

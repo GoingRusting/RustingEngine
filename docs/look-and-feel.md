@@ -99,6 +99,18 @@ everything.
   with warm highlights is the classic film look.
 - `vignette` 0..1 darkens the corners and leads the eye to the center.
 
+For a look made in a paint or grading program, use `rusting.color_lut`. Its
+`texture` is a strip of N squares of N x N pixels, 256x16 or 1024x32: red
+goes across a square, green goes down, and blue steps from square to square.
+Grade a neutral strip like that in the program, save it, and point the
+component at it. `intensity` 0..1 blends from the plain image to the graded
+one. The lookup runs after `rusting.color_grading` and does not follow
+`rusting.post_volume`:
+
+```json
+"rusting.color_lut": {"texture": "looks/warm_film.png", "intensity": 0.8}
+```
+
 ### Film and CRT/VHS effects
 
 The same component carries film and old-screen effects. Each one is 0..1

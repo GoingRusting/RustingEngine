@@ -149,6 +149,10 @@ pub struct RenderWorld {
     pub bloom: Option<super::Bloom>,
     pub auto_exposure: Option<super::AutoExposure>,
     pub color_grading: Option<super::ColorGrading>,
+    /// Loaded image and intensity of the first loaded
+    /// [`ColorLut`](super::ColorLut).
+    pub color_lut:
+        Option<(crate::assets::Handle<crate::assets::TextureAsset>, f32)>,
     /// Meshes that show a camera's image, in entity order.
     pub screens: Vec<ExtractedScreen>,
     pub ambient_occlusion: Option<super::AmbientOcclusion>,
@@ -323,6 +327,16 @@ pub fn extract_render_world(world: &mut World) {
         super::ColorGrading::DEFAULT,
         super::ColorGrading::lerp,
     );
+    let color_lut = {
+        let mut query = world.query::<(Entity, &super::ColorLut)>();
+        query
+            .iter(world)
+            .filter_map(|(entity, lut)| {
+                Some((entity.index(), lut.handle?, lut.intensity))
+            })
+            .min_by_key(|(entity, ..)| *entity)
+            .map(|(_, handle, intensity)| (handle, intensity))
+    };
     let screens = collect_screens(world);
     let ambient_occlusion = collect_first::<super::AmbientOcclusion>(world);
     let particles = collect_particles(world);
@@ -469,6 +483,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.bloom = bloom;
     render_world.auto_exposure = auto_exposure;
     render_world.color_grading = color_grading;
+    render_world.color_lut = color_lut;
     render_world.screens = screens;
     render_world.ambient_occlusion = ambient_occlusion;
     render_world.particles = particles;

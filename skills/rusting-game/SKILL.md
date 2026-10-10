@@ -222,6 +222,7 @@ each one's fields, defaults and an example:
 - `rusting.color_grading`: Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, vignette (0..1) darkening the corners, and film/CRT effects (0..1, off at 0): grain, chromatic_aberration, scanlines, color_bleed, noise_band, distortion.
 - `rusting.camera_screen`: On an object with a mesh: shows what the camera entity named camera sees, at size [w, h] pixels, in place of the material's base color and emissive maps.
 - `rusting.environment_map`: Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere.
+- `rusting.color_lut`: Color lookup table under assets/, applied after tone mapping and rusting.color_grading: an image strip of N squares of N x N pixels side by side (256 x 16 or 1024 x 32).
 - `rusting.light_cookie`: On an object with a spot_light: projects an image under assets/ through the light's outer cone, like a slide in a projector (window frames, leaves, a logo).
 - `rusting.reflection_probe`: Box of half size extents around the object's position.
 - `rusting.fog`: Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre.

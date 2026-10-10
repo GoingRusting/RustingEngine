@@ -38,7 +38,8 @@ use crate::runtime::{
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
-    FLASH_COMPONENT, SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
+    COLOR_LUT_COMPONENT, FLASH_COMPONENT, SPAWN_GRID_COMPONENT,
+    SQUASH_COMPONENT,
 };
 
 /// Components that together make a World Environment object.
@@ -67,6 +68,7 @@ fn kind(name: &str) -> Kind {
         | BLOOM_COMPONENT
         | AUTO_EXPOSURE_COMPONENT
         | COLOR_GRADING_COMPONENT
+        | COLOR_LUT_COMPONENT
         | POST_VOLUME_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
@@ -132,6 +134,7 @@ pub(in crate::editor) fn placement(
         COLOR_GRADING_COMPONENT => {
             first_with::<crate::runtime::ColorGrading>(world)
         }
+        COLOR_LUT_COMPONENT => first_with::<crate::runtime::ColorLut>(world),
         AMBIENT_OCCLUSION_COMPONENT => first_with::<AmbientOcclusion>(world),
         _ => None,
     };
@@ -355,6 +358,10 @@ pub(in crate::editor) fn component_help(
         ENVIRONMENT_MAP_COMPONENT => (
             "Uses an image of the surroundings for reflections and sky light.",
             "Shiny materials that need realistic reflections.",
+        ),
+        COLOR_LUT_COMPONENT => (
+            "Recolors the final image through a lookup table image.",
+            "A film look graded in an image editor.",
         ),
         LIGHT_COOKIE_COMPONENT => (
             "Projects an image through this object's spot light.",

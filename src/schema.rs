@@ -826,6 +826,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"texture": "sky.png", "intensity": 1.0}),
     },
     ComponentSection {
+        key: "rusting.color_lut",
+        summary: "Color lookup table under assets/, applied after tone mapping and rusting.color_grading: an image strip of N squares of N x N pixels side by side (256 x 16 or 1024 x 32). Red runs across each square, green down it, blue from square to square; an identity strip changes nothing, so paste one into a screenshot, grade it in any image editor and save the strip. intensity 0..1 blends it in. The first one found is used.",
+        gpu: "one texture sample per pixel in tone mapping",
+        example: || json!({"texture": "grades/teal_orange.png", "intensity": 1.0}),
+    },
+    ComponentSection {
         key: "rusting.light_cookie",
         summary: "On an object with a spot_light: projects an image under assets/ through the light's outer cone, like a slide in a projector (window frames, leaves, a logo). The light's color is multiplied by the image; its top points along the light's up (+Y). At most four cookie spot lights per frame, the first in entity order; others light without their image.",
         gpu: "one texture sample per lit pixel for each cookie light that reaches it",
