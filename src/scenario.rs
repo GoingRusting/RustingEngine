@@ -994,6 +994,14 @@ pub struct PerfReport {
     /// copies, counters and other game entities, not engine resources.
     #[serde(default)]
     pub entities_max: u64,
+    /// Resident memory of the game process in MiB at the end of the run
+    /// (`rss_mb`) and its peak since the process started (`rss_mb_peak`),
+    /// so a soak run can show the game does not grow. Linux only; null
+    /// elsewhere.
+    #[serde(default)]
+    pub rss_mb: Option<f64>,
+    #[serde(default)]
+    pub rss_mb_peak: Option<f64>,
     /// Draws, triangles, visible instances and GPU milliseconds (`gpu_ms`)
     /// of the last rendered frame; `gpu_ms_p50`, `gpu_ms_p95` and
     /// `gpu_ms_max` over all `gpu_frames` frames drawn (every tick with a render
@@ -2598,6 +2606,8 @@ pub fn run_scenario(
         .zip(process_cpu_ms())
         .map(|(start, end)| (end - start) / tick_ms.len().max(1) as f64);
     report.perf.entities_max = entities_max;
+    report.perf.rss_mb = process_memory_mb("VmRSS:");
+    report.perf.rss_mb_peak = process_memory_mb("VmHWM:");
     let mean = stages.map(|sum| sum / tick_ms.len().max(1) as f64);
     report.perf.stages_ms_mean = json!({"fixed": mean[0], "update": mean[1],
         "post_update": mean[2], "extract": mean[3]});
@@ -2789,6 +2799,8 @@ fn perf_report(tick_ms: &[f64], render: Option<Value>) -> PerfReport {
         cpu_ms_mean: None,
         stages_ms_mean: Value::Null,
         entities_max: 0,
+        rss_mb: None,
+        rss_mb_peak: None,
         render: counters,
     }
 }
@@ -2802,6 +2814,19 @@ fn process_cpu_ms() -> Option<f64> {
     let user: u64 = fields.next()?.parse().ok()?;
     let system: u64 = fields.next()?.parse().ok()?;
     Some((user + system) as f64 * 10.0)
+}
+
+/// A `/proc/self/status` memory line such as `VmRSS:` in MiB, on Linux.
+fn process_memory_mb(field: &str) -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib: f64 = status
+        .lines()
+        .find_map(|line| line.strip_prefix(field))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kib / 1024.0)
 }
 
 /// The one-minute load average on Linux, `None` elsewhere.
@@ -4446,6 +4471,8 @@ mod tests {
         assert!(over_budget(&limit, &busy)[0].ends_with("ms limit"));
         if cfg!(target_os = "linux") {
             assert!(report.perf.cpu_ms_mean.is_some_and(|ms| ms >= 0.0));
+            let rss = report.perf.rss_mb.unwrap();
+            assert!(rss > 1.0 && report.perf.rss_mb_peak >= Some(rss));
         }
         let cpu = Budgets {
             mean_cpu_ms: Some(1.0),

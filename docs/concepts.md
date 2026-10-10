@@ -429,6 +429,10 @@ With thousands of bodies, a few per-body costs decide the frame rate:
   not engine resources. A `"budgets": {"max_entities": 3000}` limit fails
   the run when a scenario goes over it. Through `scene.world()`,
   `entities().len()` counts allocated slots, not live entities.
+- Memory. `perf.rss_mb` is the game process's resident memory in MiB at
+  the end of the scenario and `perf.rss_mb_peak` its peak since start
+  (Linux only, null elsewhere). Run a long scenario twice at different
+  lengths: a game that does not leak ends near the same `rss_mb`.
 
 A `rusting.joint` component joins a CPU body to another CPU body, its
 `target`, or to the world when `target` is null. `anchor` and `frame` place
