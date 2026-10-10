@@ -7,7 +7,8 @@
 //! kept between passes. Constraints are solved Gauss-Seidel in ascending
 //! index order, nothing is accumulated through atomics and no randomness is
 //! used: the same mesh and settings give the same bits. It is independent of
-//! the ECS; a component, rigid-body attachment and tearing come later.
+//! the ECS; [`SoftBodyVolume`] puts it on an entity and attaches it to rigid
+//! bodies. Overstretched edges tear by removing the tetrahedra around them.
 
 // The particle loops index several parallel arrays at once.
 #![allow(clippy::needless_range_loop)]
@@ -33,6 +34,10 @@ pub struct SoftBodySettings {
     pub floor: Option<f32>,
     /// Fraction of velocity lost per second, so wobbles die out.
     pub damping: f32,
+    /// Strain past which an edge tears: an edge stretched beyond
+    /// `rest * (1 + tear_strain)` at the end of a step removes every
+    /// tetrahedron that holds it. `None` never tears.
+    pub tear_strain: Option<f32>,
 }
 
 impl Default for SoftBodySettings {
@@ -44,6 +49,7 @@ impl Default for SoftBodySettings {
             volume_compliance: 0.0,
             floor: Some(0.0),
             damping: 1.0,
+            tear_strain: None,
         }
     }
 }
@@ -95,6 +101,12 @@ fn tetrahedron_volume(positions: &[[f32; 3]], tet: [u32; 4]) -> f32 {
     (b - a).cross(&(c - a)).dot(&(d - a)) / 6.0
 }
 
+/// The six edges of a tetrahedron, each with its smaller index first.
+fn tet_edges(tet: [u32; 4]) -> [[u32; 2]; 6] {
+    [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+        .map(|(a, b)| [tet[a].min(tet[b]), tet[a].max(tet[b])])
+}
+
 impl SoftBody {
     /// Builds a body from particle positions and tetrahedra. Each
     /// tetrahedron's mass (`density` times its volume) is shared equally by
@@ -126,9 +138,7 @@ impl SoftBody {
             for &particle in tet.iter() {
                 masses[particle as usize] += density * volume / 4.0;
             }
-            for (a, b) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
-                edges.push([tet[a].min(tet[b]), tet[a].max(tet[b])]);
-            }
+            edges.extend(tet_edges(*tet));
         }
         // Shared edges appear once, in a fixed (sorted) order.
         edges.sort_unstable();
@@ -225,6 +235,61 @@ impl SoftBody {
         self.rest_volumes.iter().sum()
     }
 
+    /// Removes every tetrahedron holding an edge stretched past
+    /// `rest * (1 + strain)`, then the edges no tetrahedron holds any more.
+    /// Particles keep their mass, so loose ones fly on as free points.
+    /// Returns how many tetrahedra were removed.
+    pub fn tear(&mut self, strain: f32) -> usize {
+        let torn: Vec<[u32; 2]> = self
+            .edges
+            .iter()
+            .zip(&self.rest_lengths)
+            .filter(|&(&[a, b], &rest)| {
+                let length = (vector(self.positions[a as usize])
+                    - vector(self.positions[b as usize]))
+                .norm();
+                length > rest * (1.0 + strain)
+            })
+            .map(|(&edge, _)| edge)
+            .collect();
+        if torn.is_empty() {
+            return 0;
+        }
+        let before = self.tetrahedra.len();
+        let mut kept = 0;
+        for index in 0..before {
+            let tet = self.tetrahedra[index];
+            let holds_torn = tet_edges(tet)
+                .iter()
+                .any(|edge| torn.binary_search(edge).is_ok());
+            if !holds_torn {
+                self.tetrahedra[kept] = tet;
+                self.rest_volumes[kept] = self.rest_volumes[index];
+                kept += 1;
+            }
+        }
+        self.tetrahedra.truncate(kept);
+        self.rest_volumes.truncate(kept);
+        let mut held: Vec<[u32; 2]> = self
+            .tetrahedra
+            .iter()
+            .flat_map(|&tet| tet_edges(tet))
+            .collect();
+        held.sort_unstable();
+        held.dedup();
+        let mut kept = 0;
+        for index in 0..self.edges.len() {
+            if held.binary_search(&self.edges[index]).is_ok() {
+                self.edges[kept] = self.edges[index];
+                self.rest_lengths[kept] = self.rest_lengths[index];
+                kept += 1;
+            }
+        }
+        self.edges.truncate(kept);
+        self.rest_lengths.truncate(kept);
+        before - self.tetrahedra.len()
+    }
+
     /// Advances the body by `dt` seconds.
     pub fn step(&mut self, settings: &SoftBodySettings, dt: f32) {
         self.step_coupled(settings, dt, &mut [], &[]);
@@ -236,8 +301,10 @@ impl SoftBody {
     /// al. 2020, "Detailed rigid body simulation with extended position
     /// based dynamics"), so the body is pulled and turned by the soft body
     /// as well as carrying it. Bodies move with their velocities through
-    /// the step and come back with the pose and velocities they end it with. Anchors on pinned particles or missing bodies hold
-    /// nothing.
+    /// the step and come back with the pose and velocities they end it
+    /// with. Anchors on pinned particles or missing bodies hold nothing.
+    /// With [`SoftBodySettings::tear_strain`] set, the step ends with
+    /// [`SoftBody::tear`].
     pub fn step_coupled(
         &mut self,
         settings: &SoftBodySettings,
@@ -324,6 +391,9 @@ impl SoftBody {
                     ((vector(self.positions[i]) - vector(previous[i])) / h)
                         .into();
             }
+        }
+        if let Some(strain) = settings.tear_strain {
+            self.tear(strain);
         }
     }
 
@@ -672,5 +742,60 @@ mod tests {
         run(&mut b, &settings, 60);
         assert_eq!(a.state_hash(), b.state_hash());
         assert!(a.positions.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn an_overstretched_column_tears_and_drops_its_lower_half() {
+        let pulled = |tear_strain: Option<f32>| {
+            let settings = SoftBodySettings {
+                edge_compliance: 1e-3,
+                floor: None,
+                tear_strain,
+                ..SoftBodySettings::default()
+            };
+            let mut column =
+                SoftBody::block([0.0, 0.0, 0.0], [1, 2, 1], 0.1, 500.0)
+                    .unwrap();
+            for i in 0..column.positions.len() {
+                if column.positions[i][1] > 0.15 {
+                    column.pin(i);
+                } else if column.positions[i][1] < 0.05 {
+                    column.velocities[i] = [0.0, -20.0, 0.0];
+                }
+            }
+            let tetrahedra = column.tetrahedra.len();
+            run(&mut column, &settings, 60);
+            let lowest = column
+                .positions
+                .iter()
+                .map(|p| p[1])
+                .fold(f32::MAX, f32::min);
+            (tetrahedra - column.tetrahedra.len(), lowest)
+        };
+        let (kept, held_at) = pulled(None);
+        assert_eq!(kept, 0);
+        assert!(held_at > -0.5, "the untearable column fell to {held_at}");
+        let (removed, fell_to) = pulled(Some(0.5));
+        assert!(removed >= 6, "only {removed} tetrahedra tore");
+        assert!(fell_to < -2.0, "the torn half only fell to {fell_to}");
+    }
+
+    #[test]
+    fn tearing_keeps_only_edges_of_remaining_tetrahedra() {
+        let mut body =
+            SoftBody::block([0.0, 0.0, 0.0], [2, 1, 1], 1.0, 1.0).unwrap();
+        body.positions[0][0] -= 5.0;
+        let removed = body.tear(0.5);
+        assert!(removed > 0 && removed < 12, "removed {removed}");
+        assert_eq!(body.tetrahedra.len() + removed, 12);
+        assert!(body.tetrahedra.iter().all(|t| !t.contains(&0)));
+        for edge in &body.edges {
+            assert!(body
+                .tetrahedra
+                .iter()
+                .any(|&t| tet_edges(t).contains(edge)));
+        }
+        assert_eq!(body.edges.len(), body.rest_lengths.len());
+        assert_eq!(body.tear(0.5), 0);
     }
 }
