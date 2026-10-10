@@ -40,6 +40,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub mod lobby;
 pub mod predict;
 pub mod replicate;
 pub mod rpc;
@@ -353,7 +354,7 @@ impl Datagrams {
     }
 }
 
-fn token() -> u64 {
+pub(crate) fn token() -> u64 {
     u64::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap())
 }
 

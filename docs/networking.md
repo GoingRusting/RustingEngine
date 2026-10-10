@@ -125,6 +125,47 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 - GPU physics bodies stay still without a renderer, as in `--ticks` runs;
   use CPU bodies for server-side simulation.
 
+## Players, ready checks and reconnects
+
+A `PeerId` belongs to one connection. `net::lobby::Lobby` gives the host
+players that outlive it, so a player who loses the connection can come
+back to the same place in the match:
+
+```rust
+use rusting_engine::net::lobby::{self, Lobby, LobbyEvent, Rejoin};
+use std::time::{Duration, Instant};
+
+// Host: keep a dropped player's place for 60 seconds.
+let mut players = Lobby::new(Duration::from_secs(60));
+for event in session.poll() {
+    match players.handle(&session, &event) {
+        Some(Ok(LobbyEvent::Joined(player))) => { /* add a raft */ }
+        Some(Ok(LobbyEvent::Rejoined(player))) => { /* send it the world */ }
+        Some(Ok(LobbyEvent::Ready(_))) => { /* start when all are ready */ }
+        Some(Ok(LobbyEvent::Dropped(player))) => { /* pause its raft */ }
+        Some(Ok(LobbyEvent::Left(_))) | None => { /* game messages: event */ }
+        Some(Err(reason)) => eprintln!("lobby: {reason}"),
+    }
+}
+for left in players.expire(Instant::now()) { /* remove its raft */ }
+let playing = players.start_match(); // every connected ready player
+
+// Client: after joining, and again after reconnecting.
+lobby::hello(&session, saved_rejoin)?;          // None the first time
+// on each message from the host:
+if let Some(rejoin) = lobby::welcome_from(from, &bytes) {
+    saved_rejoin = Some(rejoin);                // keep it to come back
+}
+lobby::ready(&session)?;
+```
+
+- Stages are `Joined`, `Ready` and `InMatch` (`stage(player)`); a
+  rejoined player gets its stage back. `peer(player)` and
+  `player(peer)` map between players and connections.
+- The host answers each hello with a player id and a secret token, and
+  a new token on every rejoin. Only a dropped player can be taken over,
+  so a token seen on the wire cannot steal a connected player.
+
 ## Remote procedure calls
 
 `net::rpc::Rpcs` calls a named method on a scene object across the
