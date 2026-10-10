@@ -4,6 +4,7 @@
 
 ### Performance
 
+- Measured static props: 40,000 static entities cost 0.58 ms of CPU a tick in release (ignored test `static_props_cost_little_per_tick`), so no static flag is needed
 - LOD groups no longer double CPU render cost: an opaque object in a `.rlod` group is one instance, and its batch picks the level per object (2085 moving objects with two levels: 0.298 ms to 0.174 ms of render CPU a frame; 0.127 ms without LOD)
 
 ### Added

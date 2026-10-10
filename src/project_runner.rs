@@ -8595,4 +8595,72 @@ mod tests {
             .unwrap()
             .contains("gravity"));
     }
+
+    /// Unclaimed F8: 20,000 static meshes with a child each must not cost
+    /// the tick much (about 0.6 ms in release on the dev machine).
+    #[test]
+    #[ignore = "timing: run with --release on real hardware"]
+    fn static_props_cost_little_per_tick() {
+        use crate::assets::PrimitiveShape;
+        fn noop(_: &mut GameScene, _: &FrameTime) {}
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(HybridPhysicsPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        app.add_plugin(SimpleGamePlugin {
+            update: noop,
+            tick: None,
+            components: None,
+        })
+        .unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<crate::assets::AssetServer>();
+            (
+                assets.builtin_primitives[&PrimitiveShape::Cube],
+                assets.fallback_material,
+            )
+        };
+        for i in 0..20_000 {
+            let world = app.world_mut();
+            let parent = world
+                .spawn((
+                    crate::runtime::SceneId::new(),
+                    Name(format!("Item{i}")),
+                    Transform::new([i as f32 * 0.1, 0.0, 0.0]),
+                    MeshRenderer {
+                        mesh,
+                        material,
+                        cast_shadows: true,
+                        receive_shadows: true,
+                    },
+                ))
+                .id();
+            let child = world
+                .spawn((
+                    crate::runtime::SceneId::new(),
+                    Name(format!("Tag{i}")),
+                    Transform::new([0.0, 1.0, 0.0]),
+                ))
+                .id();
+            rusting_core::hierarchy::set_parent(world, child, parent).unwrap();
+        }
+        for _ in 0..10 {
+            app.update(std::time::Duration::from_millis(16)).unwrap();
+        }
+        let mut sum = [0.0f64; 4];
+        for _ in 0..100 {
+            app.update(std::time::Duration::from_millis(16)).unwrap();
+            let t = *app.world().resource::<crate::runtime::CpuFrameTimings>();
+            for (s, d) in sum.iter_mut().zip([
+                t.physics,
+                t.update,
+                t.post_update,
+                t.extraction,
+            ]) {
+                *s += d.as_secs_f64() * 10.0;
+            }
+        }
+        eprintln!("ms per tick (fixed, update, post_update, extract): {sum:?}");
+        assert!(sum.iter().sum::<f64>() < 5.0, "{sum:?}");
+    }
 }
