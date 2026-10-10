@@ -63,9 +63,9 @@ pub use classes::ClassIndex;
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
-    Articulation, AxisMotion, CharacterMove, CollisionEvent, CombineMode,
-    Contact, FellOut, FieldFunction, FieldKind, FieldSample, ForceField,
-    ForceFieldFunctions, GpuCollider, GpuForceField, GravityVolume,
+    Articulation, AxisLock, AxisMotion, CharacterMove, CollisionEvent,
+    CombineMode, Contact, FellOut, FieldFunction, FieldKind, FieldSample,
+    ForceField, ForceFieldFunctions, GpuCollider, GpuForceField, GravityVolume,
     GroundSurface, Heightfield, Joint, JointAxis, JointBroken, JointKind,
     JointMotor, JointSpring, NextSpawnOrder, PhysicsMaterial, PhysicsWorld,
     RayHit, Sleeping, SpawnOrder, SLEEP_STEPS,

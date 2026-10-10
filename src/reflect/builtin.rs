@@ -9,8 +9,8 @@ use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
-    AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
-    CombineMode, Connection, Connections, Counter, CullingMode,
+    AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake,
+    ColorGrading, CombineMode, Connection, Connections, Counter, CullingMode,
     DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
     EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
     GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
@@ -732,6 +732,13 @@ crate::reflect! {
         falloff_distance: f32 { unit: "m", min: 0.0, doc: "above 0, the push fades to nothing this far from the centre" },
         turbulence: f32 { min: 0.0, doc: "Wind gusts as a share of strength; 0 is steady" },
         function: String { doc: "Custom: the name a game registered with App::add_force_field_function" },
+    }
+}
+
+crate::reflect! {
+    struct AxisLock {
+        linear: [bool; 3] { doc: "no movement along world x, y, z; [false, false, true] keeps a 2D body in the XY plane" },
+        angular: [bool; 3] { doc: "no turning around world x, y, z; [true, true, false] lets a 2D body turn only in its plane" },
     }
 }
 

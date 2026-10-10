@@ -7160,3 +7160,62 @@ fn physics_materials_combine_friction_and_bounce_and_name_hit_sounds() {
     assert!(metal_sounds > 0, "a metal hit sounds");
     assert_eq!(wood_sounds, 0, "a wood hit stays silent");
 }
+
+#[test]
+fn axis_locks_keep_a_2d_body_in_its_plane_on_a_sideways_slope() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let slick = |world: &mut bevy_ecs::world::World, entity| {
+        world.get_mut::<Collider>(entity).unwrap().friction = 0.0;
+    };
+    // Two ramps that fall away toward z, and a box resting on each.
+    let on_ramp = |world: &mut bevy_ecs::world::World, x: f32| {
+        let ramp = cpu_body(
+            world,
+            [x, 0.0, 0.0],
+            ColliderShape::Box {
+                half_extents: [2.0, 0.25, 4.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        let crate_ =
+            cpu_body(world, [x, 0.76, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+        for entity in [ramp, crate_] {
+            world.get_mut::<Transform>(entity).unwrap().rotation =
+                [0.4, 0.0, 0.0];
+            slick(world, entity);
+        }
+        crate_
+    };
+    let locked = on_ramp(world, 0.0);
+    world.entity_mut(locked).insert(AxisLock::PLANE_XY);
+    let free = on_ramp(world, 10.0);
+    cpu_body(
+        world,
+        [20.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [10.0, 0.5, 10.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let ball = cpu_body(
+        world,
+        [20.0, 0.5, 0.0],
+        ColliderShape::Sphere { radius: 0.5 },
+        RigidBodyKind::Dynamic,
+    );
+    world.entity_mut(ball).insert(AxisLock::PLANE_XY);
+    world.get_mut::<RigidBody>(ball).unwrap().linear_velocity = [2.0, 0.0, 3.0];
+    run_fixed_steps(&mut app, 60);
+    let pose = |entity| *app.world().get::<Transform>(entity).unwrap();
+    assert!(pose(free).position[2].abs() > 0.5, "{:?}", pose(free));
+    let held = pose(locked);
+    assert_eq!(held.position[2], 0.0, "{held:?}");
+    assert!((held.rotation[0] - 0.4).abs() < 1e-3, "{held:?}");
+    assert!(held.position[1] > 0.5, "still on its ramp {held:?}");
+    let rolled = pose(ball);
+    assert_eq!(rolled.position[2], 0.0, "{rolled:?}");
+    assert!(rolled.position[0] > 21.0, "{rolled:?}");
+    let spin = app.world().get::<RigidBody>(ball).unwrap().angular_velocity;
+    assert_eq!([spin[0], spin[1]], [0.0, 0.0], "turns only about z");
+}

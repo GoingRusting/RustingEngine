@@ -991,6 +991,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"heights": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.5, 0.0]], "spacing": 2.0, "cells": [[0, 255], [255, 255]], "surfaces": [{"name": "ice", "friction": 0.02, "restitution": 0.0}]}),
     },
     ComponentSection {
+        key: "rusting.axis_lock",
+        summary: "Freezes a dynamic CPU body's movement along world axes (linear) and its turning around them (angular), like Godot's axis locks. A 2D game in the XY plane locks linear z and angular x and y: Sphere bodies act as circles, Box as rectangles and Capsule as 2D capsules, as long as everything they touch shares the plane. Contacts, joints, gravity and force fields never move a locked axis.",
+        gpu: NO_GPU,
+        example: || json!({"linear": [false, false, true], "angular": [true, true, false]}),
+    },
+    ComponentSection {
         key: "rusting.force_field",
         summary: "Pushes dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true) with an acceleration of strength m/s², the same for any mass: Directional along direction, Radial out from the object's centre (negative strength pulls in), Vortex around the direction axis through the centre, Wind along direction in gusts of turbulence times strength, Custom with the Rust function the game registered under the name in function (App::add_force_field_function; CPU bodies only), scaled by strength. falloff_distance above 0 fades the push to nothing that far from the centre. Fields add up where they overlap and add to gravity. GPU bodies whose centre comes within their collider's bounding radius of the sensor are pushed the same way; the player controller is not affected.",
         gpu: NO_GPU,

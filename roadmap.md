@@ -2220,7 +2220,9 @@ Depends on: Milestones 5 and 8 (all new solver work follows the determinism rule
 
 ### 2D physics
 
-- [ ] 2D rigid bodies, shapes (circle, capsule, box, convex polygon, segment chain), joints, and queries, sharing the solver architecture and determinism rules with 3D.
+- [x] 2D rigid bodies, part 1: Godot-style axis locks keep circle (sphere), capsule and box bodies in a plane on the shared 3D solver. Evidence: `rusting.axis_lock` (`AxisLock { linear, angular }`, `AxisLock::PLANE_XY`) zeroes locked rows of the world inverse inertia, clears locked velocity components after the velocity solve and restores locked coordinates after position correction. `axis_locks_keep_a_2d_body_in_its_plane_on_a_sideways_slope` puts a locked and a free box on frictionless ramps that fall toward z: the free box slides off in z, the locked one keeps z exactly 0 and its tilt; a locked ball launched at [2, 0, 3] rolls past x 21 with z exactly 0 and spins only about z. Full check 2026-10-10: fmt and clippy x3 clean; lib 806 tests, 904 with gpu-tests.
+- [ ] 2D rigid bodies, part 2: convex polygon and segment chain shapes.
+- [ ] 2D rigid bodies, part 3: 2D joints and queries (point, ray and shape casts in the plane).
 - [ ] Hybrid 2D GPU bodies with the same condition/event/command bridge as 3D.
 
 ### Exit gate

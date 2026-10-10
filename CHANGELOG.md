@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.axis_lock` locks a CPU body's movement along or rotation around chosen world axes, Godot style; `AxisLock::PLANE_XY` keeps a 2D body in the XY plane exactly.
 - `FieldKind::Custom` force fields call a plain Rust function the game registers by name with `App::add_force_field_function`; it gets a `FieldSample` (offset, velocity, time, direction) and returns the push per unit strength
 - `rusting.force_field` now pushes GPU bodies too: the CPU step's field sensors upload each frame and `physics.comp` adds their push next to gravity, with wind gusts from a new bit-exact `sim_sin_cos`
 - The CPU contact solver solves independent islands on all cores, bit-identical to one worker

@@ -348,6 +348,43 @@ impl ForceField {
     }
 }
 
+/// Freezes a dynamic CPU body's motion along world axes, like Godot's axis
+/// locks. A 2D body in the XY plane locks linear z and angular x and y.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct AxisLock {
+    /// No movement along world x, y, z.
+    pub linear: [bool; 3],
+    /// No turning around world x, y, z.
+    pub angular: [bool; 3],
+}
+
+impl AxisLock {
+    /// The XY-plane lock of a 2D body.
+    pub const PLANE_XY: Self = Self {
+        linear: [false, false, true],
+        angular: [true, true, false],
+    };
+
+    fn clear(mask: [bool; 3], vector: &mut Vector3<f32>) {
+        for (value, locked) in vector.iter_mut().zip(mask) {
+            if locked {
+                *value = 0.0;
+            }
+        }
+    }
+}
+
 /// How two touching colliders' friction or restitution become the pair's.
 /// Where the two sides differ, the later variant in this list wins.
 #[derive(
@@ -695,6 +732,7 @@ struct Body {
     articulated: bool,
     velocity: Vector3<f32>,
     angular_velocity: Vector3<f32>,
+    locks: AxisLock,
 }
 
 impl Shape {
@@ -890,6 +928,7 @@ impl Body {
             inverse_inertia: Vector3::zeros(),
             asleep: false,
             articulated: false,
+            locks: AxisLock::default(),
             velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
         }
@@ -897,9 +936,17 @@ impl Body {
 
     fn world_inverse_inertia(&self) -> Matrix3<f32> {
         let rotation = self.rotation.matrix();
-        rotation
+        let mut inertia = rotation
             * Matrix3::from_diagonal(&self.inverse_inertia)
-            * rotation.transpose()
+            * rotation.transpose();
+        // A locked axis takes no turn from any torque.
+        for (axis, locked) in self.locks.angular.into_iter().enumerate() {
+            if locked {
+                inertia.row_mut(axis).fill(0.0);
+                inertia.column_mut(axis).fill(0.0);
+            }
+        }
+        inertia
     }
 
     fn segment(&self) -> (Vector3<f32>, Vector3<f32>, f32) {
@@ -1644,6 +1691,12 @@ fn substep(
         let mut warm = std::mem::take(&mut physics.warm);
         let mut joint_warm = std::mem::take(&mut physics.joint_warm);
         articulations.free_motion(&mut bodies, gravity, dt);
+        let locked_at: Vec<_> = bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| body.locks != AxisLock::default())
+            .map(|(index, body)| (index, body.position))
+            .collect();
         let held: Vec<_> = bodies
             .iter_mut()
             .enumerate()
@@ -1661,6 +1714,11 @@ fn substep(
         );
         for (index, velocity) in held {
             bodies[index].velocity = velocity;
+        }
+        for &(index, _) in &locked_at {
+            let body = &mut bodies[index];
+            AxisLock::clear(body.locks.linear, &mut body.velocity);
+            AxisLock::clear(body.locks.angular, &mut body.angular_velocity);
         }
         let mut physics = world.resource_mut::<PhysicsWorld>();
         physics.warm = warm;
@@ -1702,6 +1760,16 @@ fn substep(
             .cloned()
             .collect();
         correct_positions(&mut bodies, &pushed_out, dt);
+        // Overlap push-out and CCD move along contact normals; put locked
+        // coordinates back.
+        for (index, start) in locked_at {
+            let body = &mut bodies[index];
+            for axis in 0..3 {
+                if body.locks.linear[axis] {
+                    body.position[axis] = start[axis];
+                }
+            }
+        }
         write_back(world, &bodies);
         if last {
             fall_asleep(world, &bodies, &mut rest);
@@ -1944,6 +2012,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
         Option<&SpawnOrder>,
         Has<super::PlayerController>,
         Option<&PhysicsMaterial>,
+        Option<&AxisLock>,
     )>();
     let assets = world.get_resource::<AssetServer>();
     let mut used = MeshCache::new();
@@ -1980,6 +2049,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 order,
                 player,
                 material,
+                locks,
             )| {
                 let movable = parent.is_none();
                 // ponytail: children read the pose propagated last frame, and
@@ -2108,6 +2178,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         shape,
                         asleep: sleeping.is_some() && inverse_mass > 0.0,
                         articulated: false,
+                        locks: locks.copied().unwrap_or_default(),
                         velocity: if moving {
                             rigid.linear_velocity.into()
                         } else {
@@ -3888,6 +3959,7 @@ mod tests {
             inverse_inertia: Vector3::repeat(1.0),
             asleep: false,
             articulated: false,
+            locks: AxisLock::default(),
             velocity: Vector3::zeros(),
             angular_velocity: Vector3::zeros(),
         }
