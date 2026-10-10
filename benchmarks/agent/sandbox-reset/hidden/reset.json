@@ -1,0 +1,15 @@
+{
+  "name": "reset: every box and ball goes back to its start, at rest, without reloading the scene",
+  "ticks": 300,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "resets", "equals": 0}},
+    {"tick": 100, "set": {"entity": "Box 9", "path": "/transform/position", "value": [6.0, 0.5, 6.0]}},
+    {"tick": 103, "expect": {"entity": "Box 9", "path": "/transform/position/0", "greater_than": 5.0}},
+    {"tick": 110, "tap": "reset"},
+    {"tick": 112, "expect": {"entity": "Box 9", "path": "/transform/position", "equals": [1.1, 2.6, 0.0], "tolerance": 0.1}},
+    {"tick": 112, "expect": {"entity": "Ball 2", "path": "/transform/position/1", "greater_than": 7.0}},
+    {"tick": 112, "expect": {"counter": "resets", "equals": 1}},
+    {"tick": 290, "expect": {"entity": "Box 9", "path": "/transform/position/0", "less_than": 3.0}},
+    {"tick": 290, "expect": {"counter": "resets", "equals": 1}}
+  ]
+}

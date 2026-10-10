@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "sandbox",
+  "request": "Add a reset to this physics sandbox. A new input action `reset` (key R) puts every box and ball back where it started, at rest, without reloading the scene, so the pile falls and settles again. A counter named `resets` starts at 0 and adds 1 for each reset. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if !scene.pressed(\"reset\") {\n        return;\n    }\n    let names = (1..=9)\n        .map(|index| format!(\"Box {index}\"))\n        .chain((1..=2).map(|index| format!(\"Ball {index}\")));\n    for name in names {\n        let Some(start) = scene.initial(&name) else {\n            continue;\n        };\n        scene\n            .object(&name)\n            .set_position(start.transform.position)\n            .set_rotation(start.transform.rotation);\n        scene.reset_body(&name);\n    }\n    scene.add_to_counter(\"resets\", 1);\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/sandbox_drop.json",
+    "hidden/reset.json"
+  ]
+}

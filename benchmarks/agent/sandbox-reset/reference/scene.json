@@ -1,0 +1,6 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Reset Action",
+    "components": {"rusting.input_action": {"action": "reset", "inputs": ["KeyR"]}}}},
+  {"op": "create", "entity": {"name": "Resets",
+    "components": {"rusting.counter": {"name": "resets"}}}}
+]}
