@@ -212,6 +212,87 @@ impl Heightfield {
     }
 }
 
+/// A 2D outline for a `Polygon` or `Chain` collider: `points` in the
+/// entity's XY plane, extruded `depth` metres along Z and centred on the
+/// entity. [`Polygon2d::mesh`] gives the same shape to draw.
+#[derive(
+    Component, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct Polygon2d {
+    pub points: Vec<[f32; 2]>,
+    pub depth: f32,
+    /// The chain joins its last point back to the first, and the drawn
+    /// mesh gets front and back caps.
+    pub closed: bool,
+}
+
+impl Default for Polygon2d {
+    fn default() -> Self {
+        Self {
+            points: vec![[-0.5, -0.5], [0.5, -0.5], [0.0, 0.5]],
+            depth: 1.0,
+            closed: true,
+        }
+    }
+}
+
+impl Polygon2d {
+    /// One quad per segment, plus caps fanned from the first point when
+    /// `closed` (so a closed outline should be convex). Flat normals point
+    /// outward for counterclockwise points.
+    pub fn mesh(&self) -> crate::assets::MeshAsset {
+        self.mesh_with(self.closed)
+    }
+
+    fn mesh_with(&self, closed: bool) -> crate::assets::MeshAsset {
+        let mut mesh = crate::assets::MeshAsset::default();
+        let half = 0.5 * self.depth;
+        let mut face = |corners: &[[f32; 3]], normal: [f32; 3]| {
+            let first = mesh.vertices.len() as u32;
+            mesh.vertices.extend(corners.iter().map(|&position| {
+                crate::assets::MeshVertex {
+                    position,
+                    normal,
+                    uv: [position[0], position[1]],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
+                }
+            }));
+            for k in 1..corners.len().saturating_sub(1) as u32 {
+                mesh.indices.extend([first, first + k, first + k + 1]);
+            }
+        };
+        let count = self.points.len();
+        let segments = if closed && count > 2 {
+            count
+        } else {
+            count.saturating_sub(1)
+        };
+        for i in 0..segments {
+            let [ax, ay] = self.points[i];
+            let [bx, by] = self.points[(i + 1) % count];
+            let normal = Vector3::new(by - ay, ax - bx, 0.0)
+                .try_normalize(1e-12)
+                .unwrap_or_default();
+            face(
+                &[
+                    [ax, ay, -half],
+                    [bx, by, -half],
+                    [bx, by, half],
+                    [ax, ay, half],
+                ],
+                normal.into(),
+            );
+        }
+        if closed && count > 2 {
+            let cap = |z: f32| self.points.iter().map(move |&[x, y]| [x, y, z]);
+            face(&cap(half).collect::<Vec<_>>(), [0.0, 0.0, 1.0]);
+            face(&cap(-half).rev().collect::<Vec<_>>(), [0.0, 0.0, -1.0]);
+        }
+        mesh
+    }
+}
+
 /// Shape of a [`ForceField`]'s push.
 #[derive(
     Clone,
@@ -756,7 +837,9 @@ impl Shape {
             },
             ColliderShape::ConvexMesh
             | ColliderShape::TriangleMesh
-            | ColliderShape::Heightfield => {
+            | ColliderShape::Heightfield
+            | ColliderShape::Polygon
+            | ColliderShape::Chain => {
                 return None;
             }
         })
@@ -2105,6 +2188,35 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         };
                         used.insert(key, mesh.clone());
                         Shape::Triangles(mesh)
+                    }
+                    None if matches!(
+                        collider.shape,
+                        ColliderShape::Polygon | ColliderShape::Chain
+                    ) =>
+                    {
+                        let outline =
+                            world.entity(entity).get_ref::<Polygon2d>()?;
+                        let convex = collider.shape == ColliderShape::Polygon;
+                        let key = (
+                            entity.to_bits(),
+                            u64::from(outline.last_changed().get()),
+                            pose.scale.map(f32::to_bits),
+                            convex,
+                        );
+                        let mesh = match meshes.get(&key) {
+                            Some(mesh) => mesh.clone(),
+                            None => Arc::new(MeshData::new(
+                                &outline.mesh_with(convex),
+                                pose.scale,
+                                convex,
+                            )),
+                        };
+                        used.insert(key, mesh.clone());
+                        if convex {
+                            Shape::Hull(mesh)
+                        } else {
+                            Shape::Triangles(mesh)
+                        }
                     }
                     None => {
                         let handle = renderer?.mesh;

@@ -623,6 +623,12 @@ pub enum ColliderShape {
     /// The entity's `rusting.heightfield` height grid, scaled by its
     /// transform. Static only, like `TriangleMesh`.
     Heightfield,
+    /// The convex hull of the entity's `rusting.polygon` outline, extruded
+    /// along Z. Dynamic bodies may use it; the 2D convex polygon.
+    Polygon,
+    /// The segments of the entity's `rusting.polygon` outline as thin
+    /// walls, extruded along Z. Static only; the 2D segment chain.
+    Chain,
 }
 
 #[derive(Component, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]

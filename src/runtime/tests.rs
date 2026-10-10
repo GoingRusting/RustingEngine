@@ -7219,3 +7219,53 @@ fn axis_locks_keep_a_2d_body_in_its_plane_on_a_sideways_slope() {
     let spin = app.world().get::<RigidBody>(ball).unwrap().angular_velocity;
     assert_eq!([spin[0], spin[1]], [0.0, 0.0], "turns only about z");
 }
+
+#[test]
+fn polygon_bodies_slide_down_a_chain_valley_and_settle_at_its_bottom() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let outline = |points: &[[f32; 2]], closed| Polygon2d {
+        points: points.to_vec(),
+        depth: 1.0,
+        closed,
+    };
+    let valley = cpu_body(
+        world,
+        [0.0, 0.0, 0.0],
+        ColliderShape::Chain,
+        RigidBodyKind::Fixed,
+    );
+    world
+        .entity_mut(valley)
+        .insert(outline(&[[-6.0, 6.0], [0.0, 0.0], [6.0, 6.0]], false));
+    // A chain on a dynamic body never moves: it is static only.
+    let ledge = cpu_body(
+        world,
+        [20.0, 3.0, 0.0],
+        ColliderShape::Chain,
+        RigidBodyKind::Dynamic,
+    );
+    world
+        .entity_mut(ledge)
+        .insert(outline(&[[-1.0, 0.0], [1.0, 0.0]], false));
+    let crate_ = cpu_body(
+        world,
+        [-3.0, 4.5, 0.0],
+        ColliderShape::Polygon,
+        RigidBodyKind::Dynamic,
+    );
+    let square = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
+    world
+        .entity_mut(crate_)
+        .insert((outline(&square, true), AxisLock::PLANE_XY));
+    run_fixed_steps(&mut app, 300);
+    let pose = |entity| *app.world().get::<Transform>(entity).unwrap();
+    let settled = pose(crate_);
+    assert!(settled.position[0].abs() < 1.0, "{settled:?}");
+    assert!(
+        (0.5..1.3).contains(&settled.position[1]),
+        "rests in the valley, not through it {settled:?}"
+    );
+    assert_eq!(settled.position[2], 0.0, "{settled:?}");
+    assert_eq!(pose(ledge).position, [20.0, 3.0, 0.0]);
+}

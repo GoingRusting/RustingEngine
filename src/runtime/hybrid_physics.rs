@@ -1122,6 +1122,8 @@ fn required_class(
                 super::ColliderShape::ConvexMesh
                     | super::ColliderShape::TriangleMesh
                     | super::ColliderShape::Heightfield
+                    | super::ColliderShape::Polygon
+                    | super::ColliderShape::Chain
             )
     }) {
         return decide(Cpu, AllocationReason::CpuOnlyCollider);

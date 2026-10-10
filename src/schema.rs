@@ -724,7 +724,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         gpu: NO_GPU,
         example: || json!({"shape": {"Box": {"half_extents": [0.5, 0.5, 0.5]}}, "friction": 0.6, "restitution": 0.2, "sensor": false}),
         fields: &[
-            field("/shape/Box/half_extents", METRES, "> 0", "other variants: {\"Sphere\": {\"radius\"}}, {\"Capsule\": {\"half_height\", \"radius\"}}, \"ConvexMesh\", \"TriangleMesh\" (static only), \"Heightfield\" (static only, reads rusting.heightfield)"),
+            field("/shape/Box/half_extents", METRES, "> 0", "other variants: {\"Sphere\": {\"radius\"}}, {\"Capsule\": {\"half_height\", \"radius\"}}, \"ConvexMesh\", \"TriangleMesh\" (static only), \"Heightfield\" (static only, reads rusting.heightfield), \"Polygon\" (convex hull of rusting.polygon), \"Chain\" (static only, segments of rusting.polygon)"),
             field("/friction", "", ">= 0", ""),
             field("/restitution", "", "0..1", "bounciness"),
             field("/sensor", "", "", "reports overlaps without pushing"),
@@ -983,6 +983,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored). Where volumes overlap the highest priority wins. gravity_scale still applies. GPU bodies and the player controller are not affected.",
         gpu: NO_GPU,
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
+    },
+    ComponentSection {
+        key: "rusting.polygon",
+        summary: "A 2D outline for a collider with shape \"Polygon\" or \"Chain\" on the same object. points are in the object's XY plane in metres, extruded depth metres along Z, centred on the object and scaled by its transform. Polygon uses the convex hull of the points (dynamic bodies may use it; list the points counterclockwise). Chain makes each segment a thin static wall, closed joins the last point back to the first. Pair dynamic bodies with rusting.axis_lock for 2D. Game code can draw the same shape with Polygon2d::mesh().",
+        gpu: NO_GPU,
+        example: || json!({"points": [[-1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], "depth": 1.0, "closed": true}),
     },
     ComponentSection {
         key: "rusting.heightfield",

@@ -16,7 +16,7 @@ use crate::runtime::{
     GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
     InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
     LootEntry, LootTable, ObjectState, PhysicsMaterial, PhysicsSettings,
-    PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
+    PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
     PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
     RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
     SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
@@ -709,6 +709,14 @@ crate::reflect! {
         spacing: f32 { unit: "m", min: 0.001, doc: "distance between neighbouring samples" },
         cells: Vec<Vec<u8>> { doc: "cells[row][column]: index into surfaces; missing cells use the collider's own" },
         surfaces: Vec<GroundSurface> { doc: "ground patches with their own friction, restitution and sound material" },
+    }
+}
+
+crate::reflect! {
+    struct Polygon2d {
+        points: Vec<[f32; 2]> { unit: "m", doc: "outline in the object's XY plane; counterclockwise, convex for a Polygon collider" },
+        depth: f32 { unit: "m", min: 0.001, doc: "thickness along Z, centred on the object" },
+        closed: bool { doc: "the chain joins its last point back to the first" },
     }
 }
 

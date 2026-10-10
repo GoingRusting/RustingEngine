@@ -9,6 +9,7 @@
 
 ### Added
 
+- `ColliderShape::Polygon` and `ColliderShape::Chain` collide with a `rusting.polygon` 2D outline extruded along Z: a convex polygon any body may use, or a static segment chain for 2D ground.
 - `rusting.axis_lock` locks a CPU body's movement along or rotation around chosen world axes, Godot style; `AxisLock::PLANE_XY` keeps a 2D body in the XY plane exactly.
 - `FieldKind::Custom` force fields call a plain Rust function the game registers by name with `App::add_force_field_function`; it gets a `FieldSample` (offset, velocity, time, direction) and returns the push per unit strength
 - `rusting.force_field` now pushes GPU bodies too: the CPU step's field sensors upload each frame and `physics.comp` adds their push next to gravity, with wind gusts from a new bit-exact `sim_sin_cos`
@@ -46,6 +47,7 @@
 
 ### Migration
 
+- `ColliderShape` has two new variants, `Polygon` and `Chain`; an exhaustive `match` on it needs arms for them.
 - `ForceField` is no longer `Copy` (it gained `function: String`); write `..field.clone()` where you spread one field into another
 - A `.rlod` group may have at most 4 levels; loading one with more fails
 

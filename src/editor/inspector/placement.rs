@@ -29,10 +29,10 @@ use crate::runtime::{
     OBJECT_STATE_COMPONENT, PARTICLE_EMITTER_COMPONENT,
     PHYSICS_MATERIAL_COMPONENT, PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT,
     PLATFORMER_CONTROLLER_COMPONENT, PLAYER_CONTROLLER_COMPONENT,
-    RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT, RENDER_BOUNDS_COMPONENT,
-    REVERB_ZONE_COMPONENT, SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT,
-    SLIDE_SOUND_COMPONENT, SOUND_CUE_COMPONENT, TWEEN_COMPONENT,
-    VEHICLE_COMPONENT, WATER_COMPONENT,
+    POLYGON_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
+    RENDER_BOUNDS_COMPONENT, REVERB_ZONE_COMPONENT, SCENE_INSTANCE_COMPONENT,
+    SKIN_COMPONENT, SLIDE_SOUND_COMPONENT, SOUND_CUE_COMPONENT,
+    TWEEN_COMPONENT, VEHICLE_COMPONENT, WATER_COMPONENT,
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
@@ -247,6 +247,10 @@ pub(in crate::editor) fn component_help(
         HEIGHTFIELD_COMPONENT => (
             "A grid of ground heights that a Heightfield collider stands on.",
             "Hills, valleys and uneven terrain under CPU bodies and the player.",
+        ),
+        POLYGON_COMPONENT => (
+            "A 2D outline that a Polygon or Chain collider on this object uses.",
+            "2D platforms, slopes, wedges and curved ground in a 2D game.",
         ),
         AXIS_LOCK_COMPONENT => (
             "Stops this body moving along or turning around chosen world axes.",
