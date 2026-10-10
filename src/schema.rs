@@ -961,6 +961,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"kind": "TwoBone", "target": null, "pole": null, "weight": 1.0, "forward": [0.0, 0.0, -1.0], "reach": 0.5, "joints": 3}),
     },
     ComponentSection {
+        key: "rusting.rope",
+        summary: "A rope of `segments` small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point). Adjacent beads are joined by distance joints, so the rope goes slack but never stretches past length metres, and pulls on both ends. The beads spawn on the straight line between the ends the first fixed step of play; game code can read their transforms from RopeState to draw the rope. This object's body gets the joint to the last bead, so it cannot carry a rusting.joint of its own.",
+        gpu: NO_GPU,
+        example: || json!({"target": null, "anchor": [0.0, 0.5, 0.0], "target_anchor": [0.0, 5.0, 0.0], "length": 4.0, "segments": 8, "radius": 0.0625, "mass": 0.125}),
+    },
+    ComponentSection {
         key: "rusting.ragdoll",
         summary: "Hands a character's bones from animation to CPU physics and back. Going limp (game code `set_ragdoll(name, true)`, or a CPU body closing on the character's colliders at hit_speed m/s or faster; 0 only on command) spawns a capsule body per entry of bones (path from this object, length and radius in metres along the bone's local +Y, mass in kg) moving as the animation moved it, jointed to the nearest ancestor bone's body with `joint` (a rusting joint kind; X axis along the bone by default, set by frame). The character's own collider is taken off while limp. After recover_after seconds (0 waits for `set_ragdoll(name, false)`) the character moves under its hips, the bodies are removed, and bones blend back to the animation over blend_time seconds. Bones without an entry keep their animated local pose. muscle (Hz, 0 = passive) makes it an active ragdoll: the bodies exist from the start, each is turned toward its bone's animated pose relative to its parent body by a critically damped spring at that frequency, and the top body is held to the animated hips; hits push it and it springs back, a hit at hit_speed drops the muscles until recovery, after which they regain strength over blend_time. Set muscle to 0 to go limp and return to plain animation.",
         gpu: NO_GPU,

@@ -31,6 +31,7 @@ mod render_benchmark;
 mod render_world;
 mod replay;
 mod retarget;
+mod rope;
 mod scene_file;
 mod scene_instance;
 mod scene_tree;
@@ -94,6 +95,7 @@ pub use render_benchmark::*;
 pub use render_world::*;
 pub use replay::*;
 pub use retarget::*;
+pub use rope::{Rope, RopeBead, RopeState};
 pub use rusting_core::app::AppError;
 pub use rusting_core::input::ClickEvent;
 pub use rusting_core::schedule::{CpuFrameTimings, FrameReport, ScheduleStage};
@@ -269,7 +271,11 @@ impl Default for App {
         app.add_systems(
             ScheduleStage::FixedUpdate,
             (
-                (vehicle::drive_vehicles, cpu_physics::step_cpu_physics)
+                (
+                    vehicle::drive_vehicles,
+                    rope::build_ropes,
+                    cpu_physics::step_cpu_physics,
+                )
                     .chain(),
                 player::player_move,
                 player::player_face,

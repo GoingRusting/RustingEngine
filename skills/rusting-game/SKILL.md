@@ -245,6 +245,7 @@ each one's fields, defaults and an example:
 - `rusting.animation`: Keyframe animation: named clips of tracks keyed over time.
 - `rusting.skin`: Skinned mesh: joint paths from this object (child names joined by /, .. for the parent) and one column-major inverse bind matrix per joint.
 - `rusting.ik`: Inverse kinematics on the end of a joint chain, solved each fixed step after the animation pose.
+- `rusting.rope`: A rope of `segments` small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point).
 - `rusting.ragdoll`: Hands a character's bones from animation to CPU physics and back.
 - `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
 - `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.

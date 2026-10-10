@@ -1145,6 +1145,8 @@ pub const ANIMATION_COMPONENT: &str = "rusting.animation";
 pub const SKIN_COMPONENT: &str = "rusting.skin";
 /// Registry name of the built-in inverse kinematics.
 pub const IK_COMPONENT: &str = "rusting.ik";
+/// Registry name of the built-in rope.
+pub const ROPE_COMPONENT: &str = "rusting.rope";
 /// Registry name of the built-in ragdoll.
 pub const RAGDOLL_COMPONENT: &str = "rusting.ragdoll";
 /// Registry name of the built-in blend shape weights.
@@ -1274,6 +1276,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Ragdoll>(RAGDOLL_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::Rope>(ROPE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::FluidBlock>(FLUID_BLOCK_COMPONENT)

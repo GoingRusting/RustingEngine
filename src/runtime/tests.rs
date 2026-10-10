@@ -7353,6 +7353,71 @@ fn polygon_bodies_slide_down_a_chain_valley_and_settle_at_its_bottom() {
 }
 
 #[test]
+fn ropes_hold_weights_go_slack_and_tow_bodies() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let cube = ColliderShape::Box {
+        half_extents: [0.25; 3],
+    };
+    // A 5 kg weight on a 3 m rope from a world point.
+    let weight = cpu_body(world, [0.0, 4.0, 0.0], cube, RigidBodyKind::Dynamic);
+    world.get_mut::<RigidBody>(weight).unwrap().mass = 5.0;
+    world.entity_mut(weight).insert(Rope {
+        target_anchor: [0.0, 6.0, 0.0],
+        length: 3.0,
+        ..Rope::default()
+    });
+    // A tug drives off at 2 m/s with a crate on a 2 m rope behind it.
+    cpu_body(
+        world,
+        [20.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [20.0, 0.5, 5.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let tug =
+        cpu_body(world, [12.0, 0.25, 0.0], cube, RigidBodyKind::Kinematic);
+    world.get_mut::<RigidBody>(tug).unwrap().linear_velocity = [2.0, 0.0, 0.0];
+    let towed =
+        cpu_body(world, [11.0, 0.25, 0.0], cube, RigidBodyKind::Dynamic);
+    world.entity_mut(towed).insert(Rope {
+        target: tug,
+        length: 2.0,
+        ..Rope::default()
+    });
+    run_fixed_steps(&mut app, 180);
+    let at = |app: &App, entity| {
+        app.world().get::<Transform>(entity).unwrap().position
+    };
+    let hanging = at(&app, weight);
+    assert!(
+        (2.7..3.1).contains(&hanging[1]) && hanging[0].abs() < 0.05,
+        "hangs at the rope's length below the hook {hanging:?}"
+    );
+    let beads = &app.world().get::<RopeState>(weight).unwrap().beads;
+    assert_eq!(beads.len(), 8);
+    assert!(app.world().get::<RopeBead>(beads[0]).is_some());
+    let (tug_at, crate_at) = (at(&app, tug), at(&app, towed));
+    assert!(crate_at[0] > 13.0, "towed {crate_at:?}");
+    assert!(
+        (1.7..2.1).contains(&(tug_at[0] - crate_at[0])),
+        "follows at the rope's length {tug_at:?} {crate_at:?}"
+    );
+    // A rope never pushes: kicked up, the weight rises past the slack.
+    app.world_mut()
+        .get_mut::<RigidBody>(weight)
+        .unwrap()
+        .linear_velocity = [0.0, 4.0, 0.0];
+    run_fixed_steps(&mut app, 12);
+    assert!(
+        at(&app, weight)[1] > hanging[1] + 0.5,
+        "{:?}",
+        at(&app, weight)
+    );
+}
+
+#[test]
 fn a_2d_pin_joint_swings_in_plane_and_rays_hit_polygons_and_chains() {
     let mut app = App::new();
     let world = app.world_mut();

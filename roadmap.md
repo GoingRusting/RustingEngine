@@ -2242,7 +2242,7 @@ Depends on: Milestones 5, 8, and 10.
 
 - [ ] XPBD soft bodies from tetrahedral meshes with volume preservation, attachment to rigid bodies, and tearing.
 - [ ] Cloth with self-collision, wind interaction, attachment/pinning, and tearing.
-- [ ] Ropes and cables with rigid-body attachment and correct tension transfer.
+- [x] Ropes and cables with rigid-body attachment and correct tension transfer. `rusting.rope` (`Rope`) spawns a chain of sphere beads between a body and a target body or world point, joined by `Distance { min: 0 }` joints, so the rope goes slack but never stretches past its length and pulls on both ends; `RopeState` lists the beads for drawing. Built from CPU rigid bodies, not an XPBD deformable; the GPU deformable path is its own item. Evidence: unit test `ropes_hold_weights_go_slack_and_tow_bodies` (a 5 kg weight hangs at the rope's length below a world hook, a kinematic tug tows a crate at the rope's length behind it, and a weight kicked upward rises past the slack instead of being pushed back). Full check 2026-10-10: fmt and clippy x3 clean; lib 810 tests, 909 with gpu-tests.
 - [ ] GPU execution path for deformables with the same event and readback bridge as rigid GPU bodies.
 
 ### Fluids and granular media

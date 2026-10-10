@@ -7,6 +7,7 @@ use bevy_ecs::entity::Entity;
 
 use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
+use crate::runtime::Rope;
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
     AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake,
@@ -622,6 +623,18 @@ crate::reflect! {
         mass: f32 { unit: "kg", min: 0.0 },
         joint: JointKind { doc: "joint to the nearest ancestor bone's body" },
         frame: [f32; 3] { unit: "rad", doc: "joint axes in the bone's frame; the default turns X along the bone" },
+    }
+}
+
+crate::reflect! {
+    struct Rope {
+        target: Entity { doc: "body at the far end; null ties it to the world" },
+        anchor: [f32; 3] { unit: "m", doc: "rope end in this body's local space" },
+        target_anchor: [f32; 3] { unit: "m", doc: "rope end in the target's local space, or world space" },
+        length: f32 { unit: "m", min: 0.0, doc: "longest the rope stretches" },
+        segments: u32 { doc: "bead count; more bend smoother and cost more" },
+        radius: f32 { unit: "m", min: 0.0, doc: "bead radius; keep it under half of length / (segments + 1)" },
+        mass: f32 { unit: "kg", min: 0.0, doc: "per bead" },
     }
 }
 
