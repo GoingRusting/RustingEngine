@@ -1366,7 +1366,8 @@ impl PhysicsWorld {
     /// collider the shape already overlaps is hit at distance 0 only when
     /// the motion goes deeper into it, so a shape can always move out.
     /// `distance` is where the shape stops just before touching; `normal`
-    /// points from the collider toward the shape.
+    /// points from the collider toward the shape. Only Box, Sphere and
+    /// Capsule cast; shapes that read a mesh or a component give `None`.
     // ponytail: marches in steps of the shape's inner radius, then bisects;
     // a collider thinner than that gap can be skipped, and cost grows with
     // `max_distance`. Use exact swept tests if casts get long or hot.

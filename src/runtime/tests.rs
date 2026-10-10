@@ -7269,3 +7269,82 @@ fn polygon_bodies_slide_down_a_chain_valley_and_settle_at_its_bottom() {
     assert_eq!(settled.position[2], 0.0, "{settled:?}");
     assert_eq!(pose(ledge).position, [20.0, 3.0, 0.0]);
 }
+
+#[test]
+fn a_2d_pin_joint_swings_in_plane_and_rays_hit_polygons_and_chains() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let floor = cpu_body(
+        world,
+        [0.0, 0.0, 0.0],
+        ColliderShape::Chain,
+        RigidBodyKind::Fixed,
+    );
+    world.entity_mut(floor).insert(Polygon2d {
+        points: vec![[-5.0, -3.0], [5.0, -3.0]],
+        depth: 1.0,
+        closed: false,
+    });
+    let wedge = cpu_body(
+        world,
+        [4.0, -1.0, 0.0],
+        ColliderShape::Polygon,
+        RigidBodyKind::Fixed,
+    );
+    world.entity_mut(wedge).insert(Polygon2d::default());
+    // A plank pinned at its left end: a ball socket on a body whose
+    // angular x and y are locked is Godot's PinJoint2D.
+    let plank = cpu_body(
+        world,
+        [1.0, 3.0, 0.0],
+        ColliderShape::Polygon,
+        RigidBodyKind::Dynamic,
+    );
+    world.entity_mut(plank).insert((
+        Polygon2d {
+            points: vec![[-1.0, -0.1], [1.0, -0.1], [1.0, 0.1], [-1.0, 0.1]],
+            ..Polygon2d::default()
+        },
+        AxisLock::PLANE_XY,
+        Joint::new(
+            JointKind::BallSocket,
+            bevy_ecs::entity::Entity::PLACEHOLDER,
+            [-1.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0],
+        ),
+    ));
+    let mut lowest = f32::MAX;
+    for _ in 0..90 {
+        run_fixed_steps(&mut app, 1);
+        let pose = *app.world().get::<Transform>(plank).unwrap();
+        let arm = [pose.position[0], pose.position[1] - 3.0];
+        assert!((arm[0].hypot(arm[1]) - 1.0).abs() < 0.05, "{pose:?}");
+        assert_eq!(pose.position[2], 0.0, "{pose:?}");
+        lowest = lowest.min(pose.position[1]);
+    }
+    assert!(lowest < 2.1, "swung down: {lowest}");
+    let spin = app
+        .world()
+        .get::<RigidBody>(plank)
+        .unwrap()
+        .angular_velocity;
+    assert_eq!([spin[0], spin[1]], [0.0, 0.0]);
+
+    let physics = app.world().resource::<PhysicsWorld>();
+    let down = physics
+        .raycast([3.0, 5.0, 0.0], [0.0, -1.0, 0.0], 20.0, u32::MAX)
+        .unwrap();
+    assert_eq!(down.entity, floor);
+    assert!((down.distance - 8.0).abs() < 1e-4, "{down:?}");
+    assert!((down.normal[1].abs() - 1.0).abs() < 1e-4, "{down:?}");
+    let side = physics
+        .raycast([8.0, -1.0, 0.0], [-1.0, 0.0, 0.0], 20.0, u32::MAX)
+        .unwrap();
+    assert_eq!(side.entity, wedge);
+    assert!((side.distance - 3.75).abs() < 1e-4, "{side:?}");
+    assert!(side.normal[0] > 0.5, "{side:?}");
+    assert_eq!(
+        physics.overlap_sphere([4.0, -1.0, 0.0], 0.01, u32::MAX),
+        [wedge]
+    );
+}

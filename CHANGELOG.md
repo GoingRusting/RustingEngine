@@ -9,6 +9,7 @@
 
 ### Added
 
+- 2D joints and queries are covered by a test: a ball socket on an axis-locked body acts as a 2D pin joint, and rays and overlaps hit `Polygon` and `Chain` colliders.
 - `ColliderShape::Polygon` and `ColliderShape::Chain` collide with a `rusting.polygon` 2D outline extruded along Z: a convex polygon any body may use, or a static segment chain for 2D ground.
 - `rusting.axis_lock` locks a CPU body's movement along or rotation around chosen world axes, Godot style; `AxisLock::PLANE_XY` keeps a 2D body in the XY plane exactly.
 - `FieldKind::Custom` force fields call a plain Rust function the game registers by name with `App::add_force_field_function`; it gets a `FieldSample` (offset, velocity, time, direction) and returns the push per unit strength
