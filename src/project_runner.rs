@@ -1875,6 +1875,32 @@ impl GameScene<'_> {
         Ok(())
     }
 
+    /// Like [`Self::rebind`], but replaces only the inputs on the same
+    /// device as `inputs` (keyboard and mouse, or gamepad) and keeps the
+    /// rest, in their place: rebinding `jump` from `Space` to `KeyJ` keeps
+    /// `PadSouth`.
+    ///
+    /// # Errors
+    /// Returns an error naming the first unknown input; nothing changes.
+    pub fn rebind_device(
+        &mut self,
+        action: &str,
+        inputs: &[&str],
+    ) -> Result<(), String> {
+        let pad = |name: &str| name.starts_with("Pad");
+        let old = self.binding(action);
+        let same = |name: &str| inputs.iter().any(|&new| pad(new) == pad(name));
+        let at = old.iter().position(|name| same(name)).unwrap_or(old.len());
+        let mut all: Vec<&str> = old
+            .iter()
+            .map(String::as_str)
+            .filter(|&name| !same(name))
+            .collect();
+        let at = at.min(all.len());
+        all.splice(at..at, inputs.iter().copied());
+        self.rebind(action, &all)
+    }
+
     /// Writes `text` to the file `key` in the game's user data folder,
     /// creating folders as needed. The folder is `RUSTING_USER_DATA` when
     /// set, else `~/.local/share/<game>` on Linux,
@@ -4116,8 +4142,8 @@ fn run_simple_game_update(world: &mut World) {
 /// Runs HUD buttons that need no game code. A clicked button whose text
 /// is `{dialogue:Object/n}` picks choice `n` of that object's dialogue, or
 /// moves past a line with no choices. A clicked `{binding:action}` button
-/// waits for a key: the next one pressed becomes the action's only input,
-/// Escape cancels.
+/// waits for a key: the next one pressed replaces the action's inputs on
+/// its device (keyboard and mouse, or gamepad), Escape cancels.
 fn run_hud_buttons(scene: &mut GameScene) {
     let waiting = scene
         .world
@@ -4126,7 +4152,7 @@ fn run_hud_buttons(scene: &mut GameScene) {
     if let Some(action) = waiting {
         if let Some(key) = scene.keys_pressed().into_iter().next() {
             if key != "Escape" {
-                let _ = scene.rebind(&action, &[&key]);
+                let _ = scene.rebind_device(&action, &[&key]);
             }
             scene
                 .world
@@ -5933,21 +5959,28 @@ mod tests {
             run_hud_buttons(&mut GameScene { world });
             GameScene { world }.binding("jump")
         };
-        assert!(frame(&mut world, true, None).is_empty());
+        GameScene { world: &mut world }
+            .rebind("jump", &["Space", "PadSouth"])
+            .unwrap();
+        assert_eq!(frame(&mut world, true, None), ["Space", "PadSouth"]);
         assert_eq!(
             world.resource::<crate::runtime::RebindWait>().0.as_deref(),
             Some("jump")
         );
-        assert_eq!(frame(&mut world, false, Some(KeyCode::KeyJ)), ["KeyJ"]);
+        assert_eq!(
+            frame(&mut world, false, Some(KeyCode::KeyJ)),
+            ["KeyJ", "PadSouth"],
+            "a key replaces the key and keeps the pad button"
+        );
         assert_eq!(
             frame(&mut world, false, Some(KeyCode::KeyK)),
-            ["KeyJ"],
+            ["KeyJ", "PadSouth"],
             "only the key after a click rebinds"
         );
         frame(&mut world, true, None);
         assert_eq!(
             frame(&mut world, false, Some(KeyCode::Escape)),
-            ["KeyJ"],
+            ["KeyJ", "PadSouth"],
             "Escape cancels"
         );
         assert_eq!(world.resource::<crate::runtime::RebindWait>().0, None);
@@ -8311,6 +8344,12 @@ mod tests {
         assert!(scene.binding("jump").is_empty());
         scene.rebind("jump", &["Space", "PadSouth"]).unwrap();
         assert_eq!(scene.binding("jump"), ["Space", "PadSouth"]);
+        scene.rebind_device("jump", &["KeyJ"]).unwrap();
+        assert_eq!(scene.binding("jump"), ["KeyJ", "PadSouth"]);
+        scene.rebind_device("jump", &["PadEast"]).unwrap();
+        assert_eq!(scene.binding("jump"), ["KeyJ", "PadEast"]);
+        assert!(scene.rebind_device("jump", &["PadNope"]).is_err());
+        assert_eq!(scene.binding("jump"), ["KeyJ", "PadEast"]);
         assert_eq!(scene.object("Ember 1").position(), [3.0, 0.5, 0.0]);
         assert_eq!(scene.object("Ember").position(), [0.0, -50.0, 0.0]);
         let world = app.world();

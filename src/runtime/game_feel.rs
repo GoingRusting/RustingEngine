@@ -991,7 +991,7 @@ impl Default for TextScale {
 }
 
 /// The action a `{binding:action}` HUD button waits to rebind: the next
-/// key pressed becomes its only input, Escape cancels.
+/// key pressed replaces its inputs on that device, Escape cancels.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct RebindWait(pub Option<String>);
 

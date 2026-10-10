@@ -99,8 +99,10 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 - `scene.counters()` lists every counter's name and value, so a save can
   hold them all.
 - To rebind an action, read `scene.keys_pressed()` while a "press a key"
-  prompt shows, then call `scene.rebind("serve", &[key])`. Gamepad
-  buttons appear there too, as `PadSouth` and so on.
+  prompt shows, then call `scene.rebind_device("serve", &[key])`. It
+  replaces only the inputs on the key's device, so a new keyboard key
+  keeps the gamepad button. Gamepad buttons appear there too, as
+  `PadSouth` and so on. `scene.rebind` replaces every input.
 - A rebinding is not saved. Save it yourself, and call `rebind` again when
   the game starts.
 - For UI that game code paints itself, `scene.cursor()` gives the cursor in

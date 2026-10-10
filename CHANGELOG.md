@@ -14,6 +14,7 @@
 - Agent benchmark task `sandbox-hail`: a performance task where over-detailed spheres break a `max_triangles` budget
 - Agent benchmark task `fps-double-jump`: a bug-fix task where the first-person player can jump again in mid-air
 - Agent benchmark task `tps-coins`: a feature task that adds three collectable coins to the third-person template
+- `GameScene::rebind_device` rebinds an action on one device (keyboard and mouse, or gamepad) and keeps its other inputs; the `{binding:action}` HUD button now keeps the gamepad button when the player picks a new key
 
 ### Fixed
 
