@@ -1,0 +1,24 @@
+{
+  "kind": "performance",
+  "template": "sandbox",
+  "request": "This physics sandbox now rings the pile with thirty hailstones, one every quarter second. Since they were added, the GPU time per frame climbs with every stone, far more than thirty small spheres should cost. Find the cause and fix it, keeping all thirty stones where they are.",
+  "seed": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "const SUBDIVISIONS: u32 = 96;\n\n/// Drops a hailstone beside the pile every quarter second, thirty in all.\nfn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    let tick = scene.add_to_counter(\"ticks\", 1);\n    if tick % 15 != 0 || scene.counter_or(\"hail\", 0) >= 30 {\n        return;\n    }\n    let count = scene.add_to_counter(\"hail\", 1);\n    let angle = count as f32 * 0.7;\n    let transform = Transform::new([6.0 * angle.cos(), 0.3, 6.0 * angle.sin()])\n        .with_scale(0.6, 0.6, 0.6);\n    let stone = SphereSpawn::new().subdivisions(SUBDIVISIONS);\n    scene.spawn_sphere(format!(\"Hail {count}\"), transform, &stone);\n}"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "const SUBDIVISIONS: u32 = 96;",
+      "replace": "const SUBDIVISIONS: u32 = 8;"
+    }
+  ],
+  "hidden": [
+    "../../../src/templates/sandbox_drop.json",
+    "hidden/hail.json"
+  ]
+}

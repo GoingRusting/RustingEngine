@@ -1,0 +1,11 @@
+{
+  "name": "hail: thirty hailstones ring the pile without drawing a heavy mesh each",
+  "ticks": 480,
+  "budgets": {
+    "max_triangles": 100000
+  },
+  "steps": [
+    {"tick": 470, "expect": {"counter": "hail", "equals": 30}},
+    {"tick": 470, "expect": {"entity": "Hail 30", "exists": true}}
+  ]
+}
