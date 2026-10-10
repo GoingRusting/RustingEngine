@@ -1,0 +1,15 @@
+{
+  "name": "plate: holding push slides the crate onto the plate, which opens the door once",
+  "ticks": 220,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "opened", "equals": 0}},
+    {"tick": 5, "expect": {"entity": "Door", "exists": true}},
+    {"tick": 10, "press": "push"},
+    {"tick": 40, "expect": {"entity": "Crate", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.15}},
+    {"tick": 40, "expect": {"entity": "Door", "exists": true}},
+    {"tick": 135, "release": "push"},
+    {"tick": 136, "within": 170, "expect": {"entity": "Door", "exists": false}},
+    {"tick": 200, "expect": {"counter": "opened", "equals": 1}},
+    {"tick": 200, "expect": {"entity": "Crate", "path": "/transform/position/0", "less_than": 4.5}}
+  ]
+}

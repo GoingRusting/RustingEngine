@@ -8,6 +8,7 @@
 
 ### Added
 
+- Agent benchmark task `crate-plate-new-game`: a new-game task where pushing a crate onto a pressure plate opens a door
 - Agent benchmark task `starter-flag-gate`: a bug-fix task on the starter template where the flag wins before the coins are collected
 - Agent benchmark task `cube-quarter-turn`: a feature task on the 3d template where a key press turns the cube a quarter turn over 0.25 s
 - Kill plane: `scene.set_kill_y(Some(y))` despawns loose dynamic CPU bodies that fall below `y`, with their children, and `scene.fell_out()` names them

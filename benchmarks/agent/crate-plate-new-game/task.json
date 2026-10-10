@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a small push-the-crate puzzle in this empty project. A fixed floor named `Floor` has its top at y = 0. A dynamic box named `Crate` (a 1 m cube) rests on it at x = -1, z = 0. A flat sensor named `Plate` (1.5 m square, top at about y = 0.1) lies on the floor centred at x = 3, z = 0, and a fixed box named `Door` stands on the floor at x = 6. While the input action `push` (key P) is held, the crate slides toward +x at 2 m/s; after release, physics takes over. When the crate touches the plate, the door is removed and a counter named `opened` (starting at 0) becomes 1.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.held(\"push\") {\n        if let Some([_, y, z]) = scene.linear_velocity(\"Crate\") {\n            scene.set_linear_velocity(\"Crate\", [2.0, y, z]);\n        }\n    }\n    if scene.touching(\"Crate\").iter().any(|name| name == \"Plate\")\n        && scene.despawn(\"Door\")\n    {\n        scene.set_counter(\"opened\", 1);\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/plate.json"
+  ]
+}
