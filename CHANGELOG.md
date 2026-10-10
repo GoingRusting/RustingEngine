@@ -9,6 +9,11 @@
 ### Added
 
 - Agent benchmark task `swarm-glass-enemies`: a performance task where a blended enemy material makes every enemy its own draw call, held to a `max_draws` budget
+- Agent benchmark task `jump-new-game`: a new-game task with a ball that jumps only while it rests on the floor
+
+### Fixed
+
+- A CPU body asleep on the floor no longer drops out of `PhysicsWorld::contacts` and `GameScene::touching`; sleepers keep the contacts they fell asleep with
 
 ### Migration
 

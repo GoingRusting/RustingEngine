@@ -1312,7 +1312,7 @@ fn cpu_collision_layers_filter_pairs_and_queries() {
 fn cpu_bodies_sleep_when_still_and_wake_on_touch_or_edit() {
     let mut app = App::new();
     let world = app.world_mut();
-    cpu_body(
+    let ground = cpu_body(
         world,
         [0.0, -0.5, 0.0],
         ColliderShape::Box {
@@ -1332,6 +1332,19 @@ fn cpu_bodies_sleep_when_still_and_wake_on_touch_or_edit() {
     let before = *app.world().get::<Transform>(resting).unwrap();
     run_fixed_steps(&mut app, 10);
     assert_eq!(*app.world().get::<Transform>(resting).unwrap(), before);
+    // Sleepers are not tested against the ground, yet still touch it.
+    let touches = |app: &App, body| {
+        app.world()
+            .resource::<PhysicsWorld>()
+            .contacts()
+            .iter()
+            .any(|contact| {
+                (contact.a, contact.b) == (body, ground)
+                    || (contact.a, contact.b) == (ground, body)
+            })
+    };
+    assert!(touches(&app, resting));
+    assert!(touches(&app, pushed));
 
     // Gameplay velocity wakes a body.
     app.world_mut()
@@ -1341,6 +1354,11 @@ fn cpu_bodies_sleep_when_still_and_wake_on_touch_or_edit() {
     run_fixed_steps(&mut app, 1);
     assert!(app.world().get::<Sleeping>(pushed).is_none());
     assert!(app.world().get::<Transform>(pushed).unwrap().position[1] > 0.5);
+    run_fixed_steps(&mut app, 2);
+    assert!(
+        !touches(&app, pushed),
+        "a body that left the ground lets go"
+    );
 
     // A falling box wakes the sleeper it lands on.
     let dropped = cpu_body(

@@ -18,7 +18,8 @@
 //! stops integrating until an awake moving body touches it, gameplay moves
 //! it or sets its velocity, or gameplay removes the marker. Two sleeping
 //! bodies (or a sleeping and a fixed one) are not tested against each
-//! other, so resting sleepers send no `CollisionEvent`.
+//! other, so resting sleepers send no `CollisionEvent`; they keep the
+//! contacts they fell asleep with in [`PhysicsWorld::contacts`].
 //!
 //! A [`Joint`] ties a body to another body or to the world; see `joints.rs`.
 //! Joint rows are solved with the contacts, and a moving or motor-driven
@@ -1165,9 +1166,30 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             sensor: contact.sensor,
         });
     }
+    // Pairs of inert bodies are not tested, so a sleeper keeps the contacts
+    // it fell asleep with: a ball resting on the floor still touches it.
+    let inert: HashSet<Entity> = bodies
+        .iter()
+        .filter(|body| body.asleep || body.kind == RigidBodyKind::Fixed)
+        .map(|body| body.entity)
+        .collect();
     let mut physics = world.resource_mut::<PhysicsWorld>();
-    physics.contacts =
-        contacts.into_iter().map(|(.., contact)| contact).collect();
+    let resting: Vec<Contact> = physics
+        .contacts
+        .iter()
+        .filter(|contact| {
+            inert.contains(&contact.a) && inert.contains(&contact.b)
+        })
+        .map(|contact| Contact {
+            speed: 0.0,
+            ..*contact
+        })
+        .collect();
+    physics.contacts = contacts
+        .into_iter()
+        .map(|(.., contact)| contact)
+        .chain(resting)
+        .collect();
     physics.impacts = impacts;
     physics.bodies = bodies;
     physics.rest = rest;

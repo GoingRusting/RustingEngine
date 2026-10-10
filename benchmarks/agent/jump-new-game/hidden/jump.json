@@ -1,0 +1,15 @@
+{
+  "name": "jump: the ball lands, jumps only from the floor, and counts each jump",
+  "ticks": 260,
+  "steps": [
+    {"tick": 120, "expect": {"entity": "Ball", "path": "/transform/position/1", "equals": 0.5, "tolerance": 0.05}},
+    {"tick": 120, "expect": {"counter": "jumps", "equals": 0}},
+    {"tick": 150, "tap": "jump"},
+    {"tick": 165, "expect": {"entity": "Ball", "path": "/transform/position/1", "greater_than": 1.0}},
+    {"tick": 165, "expect": {"counter": "jumps", "equals": 1}},
+    {"tick": 170, "tap": "jump"},
+    {"tick": 172, "expect": {"counter": "jumps", "equals": 1}},
+    {"tick": 250, "expect": {"entity": "Ball", "path": "/transform/position/1", "equals": 0.5, "tolerance": 0.05}},
+    {"tick": 250, "expect": {"counter": "jumps", "equals": 1}}
+  ]
+}

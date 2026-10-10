@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a small jumping game in this empty project. A dynamic sphere named `Ball` (radius 0.5) starts above a fixed floor named `Floor` whose top is at y = 0 and falls onto it under gravity. An input action `jump` (key Space) sets the ball's upward velocity to 5 m/s, but only while the ball rests on the floor; a press in mid-air changes nothing. A counter named `jumps` starts at 0 and adds 1 for each jump.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if !scene.pressed(\"jump\") || !scene.touching(\"Ball\").iter().any(|name| name == \"Floor\") {\n        return;\n    }\n    let Some([x, _, z]) = scene.linear_velocity(\"Ball\") else {\n        return;\n    };\n    scene.set_linear_velocity(\"Ball\", [x, 5.0, z]);\n    scene.add_to_counter(\"jumps\", 1);\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/jump.json"
+  ]
+}
