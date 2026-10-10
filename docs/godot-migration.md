@@ -117,6 +117,7 @@ rusting_game!(update, tick: tick);
 | `randi()`, `randf()` | `scene.random(stream)`: it repeats for a scenario's seed |
 | `tr()` | `scene.tr(key)` with `assets/locales/<locale>.json` |
 | `@export var` | A component described with `reflect!`; the Inspector, scenes and the schema read it |
+| `MultiplayerSynchronizer`, `MultiplayerSpawner` | `net::replicate`: `Replication` on the host, `Replica` on clients; see [Networking](networking.md) |
 | `@rpc` functions, `rpc()` | `net::rpc::Rpcs`: `register`, `call`, `accept`; see [Networking](networking.md) |
 | A script's member variables | Your own component, or a `rusting.counter` for a number the HUD shows |
 | `@tool` scripts, editor plugins | Not yet |
@@ -169,5 +170,5 @@ assets" in [Core concepts](concepts.md).
 
 Some Godot features have no counterpart today: a navmesh, editor plugins
 and `@tool` scripts, and a visual shader graph.
-[Networking](networking.md) has messages and RPCs on objects but no
-replication. The [roadmap](../roadmap.md) tracks each of them.
+[Networking](networking.md) has messages, RPCs and replicated objects
+but no prediction or rollback. The [roadmap](../roadmap.md) tracks each of them.

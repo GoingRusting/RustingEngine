@@ -1,0 +1,428 @@
+//! Replicated spawning and component synchronization.
+//!
+//! The host marks objects with [`Replicated`] and lists, by registry name,
+//! which components to copy. [`Replication::delta`] reads them through
+//! reflection (their scene form), rounds the fields given a quantization
+//! step, and returns only what changed since the last call: new objects,
+//! changed components, removed components and despawns. Clients feed every
+//! such message to [`Replica::apply`], which matches objects by
+//! [`SceneId`], so objects both sides loaded from the same scene file are
+//! updated in place and new ones are spawned.
+
+use super::invalid;
+use crate::runtime::{
+    registered_component_values, remove_registered_component,
+    set_registered_component, Name, SceneId,
+};
+use crate::Transform;
+use bevy_ecs::prelude::*;
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+use std::io;
+use uuid::Uuid;
+
+/// Marks a replication message, so game messages pass by.
+const MAGIC: &[u8; 4] = b"\0rep";
+/// Pseudo-components for the parts of an object that are not registered
+/// scene components.
+pub const TRANSFORM: &str = "transform";
+pub const NAME: &str = "name";
+
+/// Marks an object the host replicates to clients.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Replicated;
+
+/// Replicated state of one object: component name to scene form.
+type Object = Map<String, Value>;
+
+/// The host's side: what to send, and what it already sent.
+#[derive(Clone, Debug, Default)]
+pub struct Replication {
+    components: Vec<String>,
+    steps: Vec<(String, f64)>,
+    sent: BTreeMap<Uuid, Object>,
+}
+
+impl Replication {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replicates a component: a registry name such as `rusting.health`,
+    /// or [`TRANSFORM`] or [`NAME`].
+    pub fn component(&mut self, name: &str) -> &mut Self {
+        self.components.push(name.to_owned());
+        self
+    }
+
+    /// Rounds every number at `pointer` (a component name and a field
+    /// path, such as `/transform/position`) to a multiple of `step`, so
+    /// tiny changes send nothing and clients see the same rounded values.
+    pub fn quantize(&mut self, pointer: &str, step: f64) -> &mut Self {
+        self.steps.push((pointer.to_owned(), step));
+        self
+    }
+
+    /// What changed since the last call, as one message for
+    /// [`NetSession::broadcast`](super::NetSession::broadcast), or `None`
+    /// when nothing did. Send it reliably: each message builds on the one
+    /// before.
+    pub fn delta(&mut self, world: &mut World) -> io::Result<Option<Vec<u8>>> {
+        let now = self.capture(world)?;
+        let mut patch = Map::new();
+        for (id, object) in &now {
+            let key = id.to_string();
+            match self.sent.get(id) {
+                None => {
+                    patch.insert(key, Value::Object(object.clone()));
+                }
+                Some(before) => {
+                    let mut changes = Map::new();
+                    for (name, value) in object {
+                        if before.get(name) != Some(value) {
+                            changes.insert(name.clone(), value.clone());
+                        }
+                    }
+                    for name in before.keys() {
+                        if !object.contains_key(name) {
+                            changes.insert(name.clone(), Value::Null);
+                        }
+                    }
+                    if !changes.is_empty() {
+                        patch.insert(key, Value::Object(changes));
+                    }
+                }
+            }
+        }
+        for id in self.sent.keys() {
+            if !now.contains_key(id) {
+                patch.insert(id.to_string(), Value::Null);
+            }
+        }
+        self.sent = now;
+        Ok((!patch.is_empty()).then(|| encode(&patch)))
+    }
+
+    /// Everything sent so far as one message, for a client that just
+    /// joined. Send it to that client before the next delta.
+    pub fn full(&self) -> Vec<u8> {
+        let all = self
+            .sent
+            .iter()
+            .map(|(id, object)| (id.to_string(), Value::Object(object.clone())))
+            .collect();
+        encode(&all)
+    }
+
+    fn capture(&self, world: &mut World) -> io::Result<BTreeMap<Uuid, Object>> {
+        let mut query = world.query_filtered::<(
+            Entity,
+            &SceneId,
+            Option<&Transform>,
+            Option<&Name>,
+        ), With<Replicated>>();
+        let found: Vec<_> = query
+            .iter(world)
+            .map(|(entity, id, transform, name)| {
+                (
+                    entity,
+                    id.0,
+                    transform.copied(),
+                    name.map(|name| name.0.clone()),
+                )
+            })
+            .collect();
+        let mut objects = BTreeMap::new();
+        for (entity, id, transform, name) in found {
+            let mut object = Object::new();
+            let values = registered_component_values(world, entity)
+                .map_err(|error| invalid(&error.to_string()))?;
+            for (key, text) in values {
+                if self.components.contains(&key) {
+                    let value = serde_json::from_str(&text)?;
+                    object.insert(key, value);
+                }
+            }
+            if let Some(transform) = transform.filter(|_| self.wants(TRANSFORM))
+            {
+                object.insert(TRANSFORM.into(), transform_value(&transform));
+            }
+            if let Some(name) = name.filter(|_| self.wants(NAME)) {
+                object.insert(NAME.into(), Value::String(name));
+            }
+            let mut value = Value::Object(object);
+            for (pointer, step) in &self.steps {
+                if let Some(field) = value.pointer_mut(pointer) {
+                    round(field, *step);
+                }
+            }
+            let Value::Object(object) = value else {
+                unreachable!()
+            };
+            objects.insert(id, object);
+        }
+        Ok(objects)
+    }
+
+    fn wants(&self, name: &str) -> bool {
+        self.components.iter().any(|wanted| wanted == name)
+    }
+}
+
+/// A client's side: applies the host's messages to its world.
+#[derive(Clone, Debug, Default)]
+pub struct Replica {
+    entities: BTreeMap<Uuid, Entity>,
+}
+
+impl Replica {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Applies a message from [`Replication::delta`] or
+    /// [`Replication::full`]. Returns `None` for a message that is not a
+    /// replication message, and an error for a bad one.
+    pub fn apply(
+        &mut self,
+        world: &mut World,
+        bytes: &[u8],
+    ) -> Option<Result<(), String>> {
+        let body = bytes.strip_prefix(MAGIC)?;
+        Some(self.apply_patch(world, body))
+    }
+
+    fn apply_patch(
+        &mut self,
+        world: &mut World,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let patch: Map<String, Value> =
+            serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        for (key, change) in patch {
+            let id =
+                Uuid::parse_str(&key).map_err(|error| error.to_string())?;
+            let Value::Object(changes) = change else {
+                if let Some(entity) = self.find(world, id) {
+                    world.despawn(entity);
+                }
+                self.entities.remove(&id);
+                continue;
+            };
+            let entity = match self.find(world, id) {
+                Some(entity) => entity,
+                None => world.spawn((SceneId(id), Transform::default())).id(),
+            };
+            self.entities.insert(id, entity);
+            for (name, value) in changes {
+                apply_component(world, entity, &name, value)
+                    .map_err(|error| format!("{name} on {id}: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The entity for `id`: one this replica spawned, or one already in
+    /// the world (loaded from the same scene).
+    fn find(&mut self, world: &mut World, id: Uuid) -> Option<Entity> {
+        if let Some(entity) = self.entities.get(&id) {
+            return world.get_entity(*entity).is_ok().then_some(*entity);
+        }
+        // ponytail: scans every SceneId once per new object; keep an
+        // index if replicated scenes get large.
+        world
+            .query::<(Entity, &SceneId)>()
+            .iter(world)
+            .find(|(_, scene_id)| scene_id.0 == id)
+            .map(|(entity, _)| entity)
+    }
+}
+
+fn apply_component(
+    world: &mut World,
+    entity: Entity,
+    name: &str,
+    value: Value,
+) -> Result<(), String> {
+    match (name, value) {
+        (TRANSFORM, Value::Null) => {}
+        (TRANSFORM, value) => {
+            let mut transform = Transform::default();
+            let read = |field: &str, into: &mut [f32; 3]| {
+                if let Some(Value::Array(items)) = value.get(field) {
+                    for (slot, item) in into.iter_mut().zip(items) {
+                        *slot = item.as_f64().unwrap_or_default() as f32;
+                    }
+                }
+            };
+            read("position", &mut transform.position);
+            read("rotation", &mut transform.rotation);
+            read("scale", &mut transform.scale);
+            world.entity_mut(entity).insert(transform);
+        }
+        (NAME, Value::String(name)) => {
+            world.entity_mut(entity).insert(Name(name));
+        }
+        (NAME, _) => {
+            world.entity_mut(entity).remove::<Name>();
+        }
+        (name, Value::Null) => {
+            remove_registered_component(world, entity, name)
+                .map_err(|error| error.to_string())?;
+        }
+        (name, value) => {
+            set_registered_component(world, entity, name, &value.to_string())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn transform_value(transform: &Transform) -> Value {
+    json!({
+        "position": transform.position,
+        "rotation": transform.rotation,
+        "scale": transform.scale,
+    })
+}
+
+fn round(value: &mut Value, step: f64) {
+    match value {
+        Value::Number(number) => {
+            if let Some(x) = number.as_f64() {
+                *value = json!((x / step).round() * step);
+            }
+        }
+        Value::Array(items) => {
+            items.iter_mut().for_each(|item| round(item, step))
+        }
+        Value::Object(fields) => {
+            fields.values_mut().for_each(|item| round(item, step))
+        }
+        _ => {}
+    }
+}
+
+fn encode(patch: &Map<String, Value>) -> Vec<u8> {
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(serde_json::to_vec(patch).expect("JSON values serialize"));
+    bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{Health, SceneComponentRegistry};
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.insert_resource(SceneComponentRegistry::default());
+        world
+    }
+
+    fn health(world: &World, entity: Entity) -> Option<i32> {
+        world.get::<Health>(entity).map(|health| health.value)
+    }
+
+    #[test]
+    fn deltas_spawn_update_and_despawn_quantized_objects() {
+        let (mut host, mut client) = (world(), world());
+        let mut replication = Replication::new();
+        replication
+            .component(TRANSFORM)
+            .component(NAME)
+            .component("rusting.health")
+            .quantize("/transform/position", 0.01);
+        let raft = host
+            .spawn((
+                Replicated,
+                SceneId::new(),
+                Name("Raft".into()),
+                Transform::new([1.004, 2.0, 3.0]),
+                Health {
+                    value: 5,
+                    max: 10,
+                    team: String::new(),
+                },
+            ))
+            .id();
+        host.spawn((SceneId::new(), Name("Local only".into())));
+        let mut replica = Replica::new();
+
+        let spawn = replication.delta(&mut host).unwrap().unwrap();
+        replica.apply(&mut client, &spawn).unwrap().unwrap();
+        let mut names = client.query::<(Entity, &Name, &Transform)>();
+        let found: Vec<_> = names
+            .iter(&client)
+            .map(|(e, n, t)| (e, n.0.clone(), *t))
+            .collect();
+        assert_eq!(found.len(), 1, "only replicated objects travel");
+        let (copy, name, transform) = found[0].clone();
+        assert_eq!(name, "Raft");
+        assert_eq!(transform.position, [1.0, 2.0, 3.0], "rounded to 0.01");
+        assert_eq!(health(&client, copy), Some(5));
+
+        // Nothing changed, or less than the step: nothing to send.
+        assert_eq!(replication.delta(&mut host).unwrap(), None);
+        host.get_mut::<Transform>(raft).unwrap().position[0] = 1.001;
+        assert_eq!(replication.delta(&mut host).unwrap(), None);
+
+        // Only the changed component travels.
+        host.get_mut::<Health>(raft).unwrap().value = 3;
+        let update = replication.delta(&mut host).unwrap().unwrap();
+        let text = String::from_utf8_lossy(&update[4..]).into_owned();
+        assert!(
+            text.contains("rusting.health") && !text.contains("transform"),
+            "{text}"
+        );
+        replica.apply(&mut client, &update).unwrap().unwrap();
+        assert_eq!(health(&client, copy), Some(3));
+
+        // A late joiner gets everything in one message.
+        let (mut late, mut late_replica) = (world(), Replica::new());
+        late_replica
+            .apply(&mut late, &replication.full())
+            .unwrap()
+            .unwrap();
+        let mut healths = late.query::<&Health>();
+        assert_eq!(
+            healths.iter(&late).map(|h| h.value).collect::<Vec<_>>(),
+            [3]
+        );
+
+        host.entity_mut(raft).remove::<Health>();
+        let removed = replication.delta(&mut host).unwrap().unwrap();
+        replica.apply(&mut client, &removed).unwrap().unwrap();
+        assert_eq!(health(&client, copy), None);
+
+        host.despawn(raft);
+        let gone = replication.delta(&mut host).unwrap().unwrap();
+        replica.apply(&mut client, &gone).unwrap().unwrap();
+        assert!(client.get_entity(copy).is_err());
+        assert_eq!(replica.apply(&mut client, b"game bytes"), None);
+        assert!(replica
+            .apply(&mut client, b"\0repnot json")
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn objects_from_the_same_scene_update_in_place() {
+        let (mut host, mut client) = (world(), world());
+        let id = SceneId::new();
+        host.spawn((Replicated, id, Transform::new([5.0, 0.0, 0.0])));
+        let on_client = client.spawn((id, Transform::default())).id();
+        let mut replication = Replication::new();
+        replication.component(TRANSFORM);
+        let message = replication.delta(&mut host).unwrap().unwrap();
+        Replica::new()
+            .apply(&mut client, &message)
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
+        assert_eq!(
+            client.get::<Transform>(on_client).unwrap().position[0],
+            5.0
+        );
+    }
+}

@@ -124,6 +124,54 @@ for event in session.poll() {
 - `Reliability::Unreliable` sends with `send_unreliable`, so its
   arguments must fit in 1200 bytes with the names.
 
+## Replicated objects
+
+`net::replicate` copies objects from the host to its clients. The host
+marks objects with `Replicated` and lists the components to copy, by the
+names `rusting schema` shows; `transform` and `name` cover the object's
+transform and name:
+
+```rust
+use rusting_engine::net::replicate::{Replica, Replicated, Replication, NAME, TRANSFORM};
+
+// Host, once:
+let mut replication = Replication::new();
+replication
+    .component(TRANSFORM)
+    .component(NAME)
+    .component("rusting.health")
+    .quantize("/transform/position", 0.01)  // centimetres
+    .quantize("/transform/rotation", 0.001);
+
+// Host, every tick (or a few times a second):
+if let Some(delta) = replication.delta(world)? {
+    session.broadcast(&delta)?;
+}
+// Host, on NetEvent::Connected(peer):
+session.send(peer, &replication.full())?;
+
+// Client, for each NetEvent::Message from the host:
+match replica.apply(world, &bytes) {
+    Some(Ok(())) => {}
+    Some(Err(reason)) => eprintln!("bad replication message: {reason}"),
+    None => { /* a plain game message or an RPC */ }
+}
+```
+
+- A delta holds only what changed since the last one: new objects whole,
+  changed components, removed components and despawned objects. Nothing
+  changed means no message.
+- `quantize` rounds every number at a field path to a step on the host, so
+  changes smaller than the step send nothing.
+- Objects are matched by their scene id. An object both sides loaded from
+  the same scene is updated in place; others are spawned on the client.
+- Send deltas with `broadcast`, not `broadcast_unreliable`: each builds on
+  the one before. Send `full()` to a client that joins later, before the
+  next delta.
+- A component that refers to other objects or to assets by handle is
+  copied as saved in a scene; its references are not remapped on the
+  client yet. The messages are JSON.
+
 ## Testing a bad connection
 
 `simulate` makes one end act as if its connection were slow or lossy, so a
@@ -197,8 +245,8 @@ for event in host.poll() {
 
 - Reliable messages ride TCP, so a lost packet delays the messages behind
   it. Send per-tick state with `send_unreliable` instead.
-- No replication, prediction or rollback is built in. Send what changed
-  (positions, counters) and apply it on the other side.
+- No prediction or rollback is built in. Replicated objects show the
+  host's state one trip late.
 - No encryption. The password and relay token travel in plain text, so
   they keep strangers out but do not hide traffic from someone on the
   path. Do not send other secrets.

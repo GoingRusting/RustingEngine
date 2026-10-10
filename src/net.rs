@@ -40,6 +40,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub mod replicate;
 pub mod rpc;
 
 /// A peer in a session. The host is [`HOST`]; clients count up from 1.
