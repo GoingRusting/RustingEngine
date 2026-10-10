@@ -166,6 +166,33 @@ lobby::ready(&session)?;
   a new token on every rejoin. Only a dropped player can be taken over,
   so a token seen on the wire cannot steal a connected player.
 
+## Agreeing on the tick
+
+Predicted inputs carry a tick, and the host should get each one before
+it runs that tick. `net::clock` gives the client the host's tick:
+
+```rust
+use rusting_engine::net::clock::{self, ClockSync, TickOffsets};
+
+// Client: once, then ping every second or so.
+let mut clock = ClockSync::new(time.fixed_delta);
+clock.ping(&session)?;
+// on each message from the host (local_tick as f64 with any fraction):
+if clock.accept(from, &bytes, local_tick) { continue; }
+// stamp inputs so they arrive 2 ticks early:
+let tick = clock.input_tick(local_tick, 2.0);
+
+// Host: answer pings, and measure how early inputs arrive.
+if clock::answer(&session, from, &bytes, host_tick) { continue; }
+offsets.observe(from, input.tick, host_tick); // lead(peer) in ticks
+```
+
+- `host_tick(local_tick)` and `round_trip()` are `None` until the first
+  answer. Of the last 8 samples, the one with the shortest round trip
+  counts, so one delayed packet does not move the estimate.
+- A client whose `TickOffsets::lead` falls below zero sends too late;
+  tell it to raise its margin.
+
 ## Trusting nothing a client sends
 
 On a public server, assume some clients are modified. Keep the host the
