@@ -466,8 +466,8 @@ positions. They arrive as the same `NetEvent::Message`.
   some carrier NATs) gets no unreliable messages through.
 - The host listens for UDP on its TCP port: open both in the firewall.
 - They go reliably where there is no UDP route: through a relay, in a
-  loopback session, and to a client whose first datagram has not reached
-  the host yet.
+  loopback session, to a client whose first datagram has not reached
+  the host yet, and from a host whose UDP port was already taken.
 - `simulate` drops them at the loss rate instead of resending them.
 
 ## Tests without sockets

@@ -382,9 +382,13 @@ impl NetSession {
     /// free port.
     pub fn host_on(listener: TcpListener, password: &str) -> io::Result<Self> {
         let address = listener.local_addr()?;
-        let datagrams =
-            Datagrams::open(UdpSocket::bind(address)?, BTreeMap::new())?;
-        let tokens = Arc::clone(&datagrams.peers);
+        // A free TCP port can have its UDP twin taken. Then the host runs
+        // without UDP and unreliable sends go reliably, as over a relay.
+        let datagrams = match UdpSocket::bind(address) {
+            Ok(socket) => Some(Datagrams::open(socket, BTreeMap::new())?),
+            Err(_) => None,
+        };
+        let tokens = datagrams.as_ref().map(|d| Arc::clone(&d.peers));
         let (sender, events) = channel();
         let peers = Arc::new(Mutex::new(BTreeMap::new()));
         let accepted = Arc::clone(&peers);
@@ -407,7 +411,7 @@ impl NetSession {
                 pending.fetch_add(1, Ordering::Relaxed);
                 let (peers, tokens, next, pending, password, sender) = (
                     Arc::clone(&accepted),
-                    Arc::clone(&tokens),
+                    tokens.clone(),
                     Arc::clone(&next),
                     Arc::clone(&pending),
                     Arc::clone(&password),
@@ -417,7 +421,12 @@ impl NetSession {
                 // client delays nobody else.
                 std::thread::spawn(move || {
                     let joined = admit_client(
-                        &stream, &peers, &tokens, &next, &password, &sender,
+                        &stream,
+                        &peers,
+                        tokens.as_deref(),
+                        &next,
+                        &password,
+                        &sender,
                     );
                     pending.fetch_sub(1, Ordering::Relaxed);
                     let Some(peer) = joined else { return };
@@ -432,7 +441,9 @@ impl NetSession {
                         &sender,
                     );
                     peers.lock().unwrap().remove(&peer);
-                    tokens.lock().unwrap().remove(&peer);
+                    if let Some(tokens) = &tokens {
+                        tokens.lock().unwrap().remove(&peer);
+                    }
                     let _ = sender.send(NetEvent::Disconnected(peer));
                 });
             }
@@ -443,7 +454,7 @@ impl NetSession {
             route: Route::Direct(peers),
             events: Mutex::new(events),
             lab: Mutex::default(),
-            datagrams: Some(datagrams),
+            datagrams,
             listener: Some((address, closed)),
         })
     }
@@ -1145,7 +1156,7 @@ fn room_code() -> String {
 fn admit_client(
     stream: &TcpStream,
     peers: &Mutex<BTreeMap<PeerId, TcpStream>>,
-    tokens: &Mutex<UdpPeers>,
+    tokens: Option<&Mutex<UdpPeers>>,
     next: &AtomicU32,
     password: &str,
     sender: &Sender<NetEvent>,
@@ -1172,9 +1183,13 @@ fn admit_client(
     // Ids, WELCOMEs and Connected events follow one order under the lock.
     let mut peers = peers.lock().unwrap();
     let peer = next.fetch_add(1, Ordering::Relaxed);
-    let token = token();
-    write_frame(&mut stream, WELCOME, peer, &token.to_le_bytes()).ok()?;
-    tokens.lock().unwrap().insert(peer, (token, ip, None));
+    // With no token in WELCOME the client sends everything reliably.
+    let token = tokens.map(|tokens| (tokens, token()));
+    let welcome = token.map_or(Vec::new(), |(_, t)| t.to_le_bytes().to_vec());
+    write_frame(&mut stream, WELCOME, peer, &welcome).ok()?;
+    if let Some((tokens, token)) = token {
+        tokens.lock().unwrap().insert(peer, (token, ip, None));
+    }
     if sender.send(NetEvent::Connected(peer)).is_err() {
         // The session is gone.
         let _ = stream.shutdown(Shutdown::Both);
@@ -1625,6 +1640,35 @@ mod tests {
 
         drop(client);
         assert_eq!(wait(&host, 1), [NetEvent::Disconnected(1)]);
+    }
+
+    #[test]
+    fn a_host_whose_udp_port_is_taken_sends_unreliable_messages_reliably() {
+        // Find a port free for TCP whose UDP twin we can hold.
+        let (listener, _udp) = loop {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            if let Ok(udp) = UdpSocket::bind(listener.local_addr().unwrap()) {
+                break (listener, udp);
+            }
+        };
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        assert!(host.datagrams.is_none());
+        let client = NetSession::join(address, "").unwrap();
+        assert!(client.datagrams.is_none());
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+        client.send_unreliable(HOST, b"up").unwrap();
+        let up = NetEvent::Message {
+            from: 1,
+            bytes: b"up".to_vec(),
+        };
+        assert_eq!(wait(&host, 1), [up]);
+        host.send_unreliable(1, b"down").unwrap();
+        let down = NetEvent::Message {
+            from: HOST,
+            bytes: b"down".to_vec(),
+        };
+        assert_eq!(wait(&client, 1), [down]);
     }
 
     #[test]
