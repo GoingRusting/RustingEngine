@@ -86,6 +86,44 @@ Codes ignore case and leave out the look-alikes I, O, 0 and 1. The room
 closes when its host leaves. Game code is the same as for direct
 sessions; only the constructor differs.
 
+## Remote procedure calls
+
+`net::rpc::Rpcs` calls a named method on a scene object across the
+session. Register the same methods on every peer, with who may call each
+and how it travels:
+
+```rust
+use rusting_engine::net::rpc::{Authority, Reliability, Rpcs};
+
+let mut rpcs = Rpcs::new();
+rpcs.register("jump", Authority::Owner, Reliability::Reliable)
+    .register("aim", Authority::Owner, Reliability::Unreliable)
+    .register("explode", Authority::Host, Reliability::Reliable);
+rpcs.set_owner("Raft 2", 2); // on the host: client 2 steers it
+
+rpcs.call(&session, "Raft 2", "jump", b"")?; // client: runs on the host
+
+for event in session.poll() {
+    if let NetEvent::Message { from, bytes } = event {
+        match rpcs.accept(from, &bytes) {
+            Some(Ok(call)) => { /* apply call.method to call.object */ }
+            Some(Err(reason)) => eprintln!("refused: {reason}"),
+            None => { /* a plain game message */ }
+        }
+    }
+}
+```
+
+- `Authority::Host`: only the host calls it, and it runs on every client.
+  `Owner`: the host or the object's owner (the host by default).
+  `Anyone`: any peer. The host may call every method.
+- A client's call goes to the host, and a host's call goes to every
+  client. The host checks each client call against its own owners, so a
+  modified client cannot pass a forged one. Forward a call to the other
+  clients yourself when they should see it.
+- `Reliability::Unreliable` sends with `send_unreliable`, so its
+  arguments must fit in 1200 bytes with the names.
+
 ## Testing a bad connection
 
 `simulate` makes one end act as if its connection were slow or lossy, so a
