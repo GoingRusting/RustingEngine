@@ -8,6 +8,7 @@
 
 ### Added
 
+- Kill plane: `scene.set_kill_y(Some(y))` despawns loose dynamic CPU bodies that fall below `y`, with their children, and `scene.fell_out()` names them
 - Agent benchmark task `swarm-glass-enemies`: a performance task where a blended enemy material makes every enemy its own draw call, held to a `max_draws` budget
 - Agent benchmark task `jump-new-game`: a new-game task with a ball that jumps only while it rests on the floor
 - Agent benchmark task `sandbox-reset`: a feature task that puts the physics sandbox's pile back at its start without reloading

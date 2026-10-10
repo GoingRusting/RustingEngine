@@ -38,7 +38,7 @@ use crate::assets::{AssetServer, MeshAsset};
 use crate::runtime::sim_math;
 use crate::runtime::{
     Collider, ColliderShape, CollisionLayers, EventQueue, FrameTime,
-    GlobalTransform, GpuProxyOf, MeshRenderer, Parent, PhysicsBody,
+    GlobalTransform, GpuProxyOf, MeshRenderer, Name, Parent, PhysicsBody,
     PhysicsSettings, PhysicsSolver, RigidBody, RigidBodyKind, SimulationClass,
 };
 use crate::Transform;
@@ -1193,6 +1193,49 @@ pub(super) fn step_cpu_physics(world: &mut World) {
     physics.impacts = impacts;
     physics.bodies = bodies;
     physics.rest = rest;
+    if let Some(kill_y) = settings.kill_y {
+        kill_fallen(world, kill_y);
+    }
+}
+
+/// Despawns the loose dynamic bodies below `kill_y` with their children and
+/// sends [`FellOut`] for each, in body order.
+fn kill_fallen(world: &mut World, kill_y: f32) {
+    let fallen: Vec<Entity> = world
+        .resource::<PhysicsWorld>()
+        .bodies
+        .iter()
+        .filter(|body| {
+            body.movable
+                && !body.proxy
+                && body.kind == RigidBodyKind::Dynamic
+                && body.position.y < kill_y
+        })
+        .map(|body| body.entity)
+        .collect();
+    for entity in fallen {
+        let mut physics = world.resource_mut::<PhysicsWorld>();
+        let physics = &mut *physics;
+        physics.forget_body(entity);
+        physics.bodies.retain(|body| body.entity != entity);
+        for contacts in [&mut physics.contacts, &mut physics.impacts] {
+            contacts
+                .retain(|contact| contact.a != entity && contact.b != entity);
+        }
+        let name = world.get::<Name>(entity).map(|name| name.0.clone());
+        world
+            .resource_mut::<EventQueue<FellOut>>()
+            .send(FellOut { entity, name });
+        crate::runtime::despawn_tree(world, entity);
+    }
+}
+
+/// Sent in the fixed step a loose dynamic CPU body fell below
+/// [`PhysicsSettings::kill_y`], after it and its children were despawned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FellOut {
+    pub entity: Entity,
+    pub name: Option<String>,
 }
 
 impl PhysicsWorld {

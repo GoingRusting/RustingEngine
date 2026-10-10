@@ -4612,6 +4612,51 @@ fn joints_link_bodies_without_contacts_and_round_trip_through_scenes() {
 }
 
 #[test]
+fn the_kill_plane_despawns_fallen_bodies_and_sends_fell_out() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let resting =
+        cpu_body(world, [0.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    let barrel =
+        cpu_body(world, [20.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    world.entity_mut(barrel).insert(Name("Barrel".into()));
+    let lid = world.spawn(Transform::default()).id();
+    crate::runtime::hierarchy::set_parent(world, lid, barrel).unwrap();
+    // Off by default: the barrel keeps falling.
+    run_fixed_steps(&mut app, 120);
+    assert!(app.world().get_entity(barrel).is_ok());
+    app.world_mut().resource_mut::<PhysicsSettings>().kill_y = Some(-50.0);
+    let mut fell = Vec::new();
+    for _ in 0..240 {
+        run_fixed_steps(&mut app, 1);
+        fell.extend(
+            app.world()
+                .resource::<EventQueue<FellOut>>()
+                .iter()
+                .cloned(),
+        );
+    }
+    assert_eq!(
+        fell,
+        [FellOut {
+            entity: barrel,
+            name: Some("Barrel".into())
+        }]
+    );
+    let world = app.world();
+    assert!(
+        world.get_entity(barrel).is_err() && world.get_entity(lid).is_err()
+    );
+    assert!(world.get_entity(resting).is_ok());
+    assert!(world
+        .resource::<PhysicsWorld>()
+        .contacts()
+        .iter()
+        .all(|contact| contact.a != barrel && contact.b != barrel));
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {

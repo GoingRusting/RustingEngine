@@ -1128,6 +1128,7 @@ crate::reflect! {
     struct PhysicsSettings {
         gravity: [f32; 3] { unit: "m/s²" },
         enabled: bool,
+        kill_y: Option<f32> { unit: "m", doc: "Loose dynamic CPU bodies below this height are despawned and send FellOut." },
     }
 }
 

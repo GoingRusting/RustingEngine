@@ -137,6 +137,9 @@ pub fn resource_state_hash(world: &mut World) -> u64 {
     if let Some(settings) = world.get_resource::<PhysicsSettings>() {
         hasher.floats(&settings.gravity);
         hasher.word(u64::from(settings.enabled));
+        if let Some(kill_y) = settings.kill_y {
+            hasher.floats(&[kill_y]);
+        }
     }
     if let Some(physics) = world.get_resource::<PhysicsWorld>() {
         physics.hash_state(&mut hasher);

@@ -459,6 +459,9 @@ impl Default for RenderSettings {
 pub struct PhysicsSettings {
     pub gravity: [f32; 3],
     pub enabled: bool,
+    /// Loose dynamic CPU bodies below this height are despawned and send
+    /// `FellOut`; `None` keeps them falling.
+    pub kill_y: Option<f32>,
 }
 
 /// Reports which physics backends are connected to the ECS scene runner.
@@ -477,6 +480,7 @@ impl Default for PhysicsSettings {
         Self {
             gravity: [0.0, -9.81, 0.0],
             enabled: true,
+            kill_y: None,
         }
     }
 }

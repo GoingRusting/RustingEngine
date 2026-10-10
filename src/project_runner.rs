@@ -2384,7 +2384,7 @@ impl GameScene<'_> {
             return false;
         };
         let _ = rusting_core::hierarchy::clear_parent(self.world, entity);
-        despawn_tree(self.world, entity);
+        crate::runtime::despawn_tree(self.world, entity);
         true
     }
 
@@ -3238,6 +3238,25 @@ impl GameScene<'_> {
             .unwrap_or_default()
     }
 
+    /// Despawns loose dynamic CPU bodies that fall below `y`, so a rolled-away
+    /// barrel does not fall forever; `None` turns the kill plane off.
+    pub fn set_kill_y(&mut self, y: Option<f32>) {
+        self.world
+            .resource_mut::<crate::runtime::PhysicsSettings>()
+            .kill_y = y;
+    }
+
+    /// Names of the bodies the kill plane despawned since the last frame,
+    /// in body order. Unnamed bodies are left out.
+    #[must_use]
+    pub fn fell_out(&self) -> Vec<String> {
+        self.world
+            .resource::<EventQueue<crate::runtime::FellOut>>()
+            .iter()
+            .filter_map(|event| event.name.clone())
+            .collect()
+    }
+
     /// Animation markers passed since the last frame, in tick order.
     #[must_use]
     pub fn animation_events(&self) -> Vec<crate::runtime::AnimationEvent> {
@@ -3995,17 +4014,6 @@ fn copy_tree(world: &mut World, entity: Entity, name: Option<&str>) -> Entity {
         let _ = rusting_core::hierarchy::set_parent(world, child, copy);
     }
     copy
-}
-
-fn despawn_tree(world: &mut World, entity: Entity) {
-    let children = world
-        .get::<crate::runtime::Children>(entity)
-        .map(|children| children.0.clone())
-        .unwrap_or_default();
-    for child in children {
-        despawn_tree(world, child);
-    }
-    world.despawn(entity);
 }
 
 /// Signature used by the concise native Rust game update API.

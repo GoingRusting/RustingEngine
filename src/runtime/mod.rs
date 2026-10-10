@@ -62,7 +62,7 @@ pub use classes::ClassIndex;
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
-    Articulation, AxisMotion, CharacterMove, CollisionEvent, Contact,
+    Articulation, AxisMotion, CharacterMove, CollisionEvent, Contact, FellOut,
     GpuCollider, Joint, JointAxis, JointBroken, JointKind, JointMotor,
     JointSpring, NextSpawnOrder, PhysicsWorld, RayHit, Sleeping, SpawnOrder,
     SLEEP_STEPS,
@@ -258,6 +258,7 @@ impl Default for App {
         app.add_system(ScheduleStage::Update, click::route_click_events);
         app.add_event::<CollisionEvent>();
         app.add_event::<JointBroken>();
+        app.add_event::<FellOut>();
         app.add_event::<AnimationEvent>();
         // One chain: these systems all write `Transform`, and unordered
         // systems would run in whatever order threads finish.
@@ -933,4 +934,16 @@ pub fn run_edit_mode_systems(world: &mut World) {
             eprintln!("edit mode system: {error}");
         }
     }
+}
+
+/// Despawns `entity` and its children, deepest first.
+pub(crate) fn despawn_tree(world: &mut World, entity: Entity) {
+    let children = world
+        .get::<Children>(entity)
+        .map(|children| children.0.clone())
+        .unwrap_or_default();
+    for child in children {
+        despawn_tree(world, child);
+    }
+    world.despawn(entity);
 }

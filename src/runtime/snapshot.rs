@@ -509,6 +509,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<EventQueue<ClickEvent>>();
     types.register::<EventQueue<CollisionEvent>>();
     types.register::<EventQueue<JointBroken>>();
+    types.register::<EventQueue<FellOut>>();
     types.register::<EventQueue<GpuPhysicsEvent>>();
     types.register::<EventQueue<GpuPhysicsEventsLost>>();
     types.register::<EventQueue<HudButtonPressed>>();
