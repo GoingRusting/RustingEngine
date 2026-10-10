@@ -539,6 +539,11 @@ struct ShadowUpload {
     /// x is the cascade count, y the atlas tiles per side, z is 1 when the
     /// views are a point light's cube faces.
     cascade_info: [f32; 4],
+    /// Camera forward in xyz and `dot(eye, forward)` in w, for the light
+    /// cluster depth.
+    cluster_view: [f32; 4],
+    /// Cluster near plane in x and `ln(far / near)` in y.
+    cluster_depth: [f32; 4],
 }
 
 /// Side length in texels of the directional shadow map and the view
@@ -1219,6 +1224,140 @@ struct PreparedLights {
     /// shadows: the first uploaded one with `shadows` enabled, directional
     /// lights before spot lights.
     shadow: Option<(u32, ShadowView)>,
+    /// Uploaded directional lights; they come first and light every pixel.
+    directional: u32,
+    /// Upload index and bounding sphere (center, range) of each point and
+    /// spot light, binned into the light clusters every frame.
+    local: Vec<(u32, [f32; 4])>,
+}
+
+/// Screen tiles across and down and depth slices of the light clusters.
+const CLUSTER_GRID: [usize; 3] = [16, 9, 24];
+const CLUSTER_COUNT: usize =
+    CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2];
+/// Local lights one cluster lists; more are left out of that cluster.
+// ponytail: fixed cap per cluster bounds the upload at about 3.5 MB; sort by
+// brightness before capping if dense light crowds show missing lights.
+const MAX_LIGHTS_PER_CLUSTER: usize = 256;
+
+/// Bins point and spot lights into a view-space grid of screen tiles and
+/// exponential depth slices, so a pixel shades only the lights whose range
+/// reaches its cluster. The list starts with an (offset, count) pair per
+/// cluster; offsets index the same list.
+// ponytail: CPU binning of world-space boxes around each light sphere, rebuilt
+// every frame; move to a compute pass if thousands of lights cost frame time.
+fn build_light_clusters(
+    local: &[(u32, [f32; 4])],
+    clip: &Matrix4<f32>,
+    eye: [f32; 3],
+    forward: [f32; 3],
+    [near, far]: [f32; 2],
+) -> Vec<u32> {
+    let [columns, rows, slices] = CLUSTER_GRID;
+    let eye = Vector3::from(eye);
+    let forward = Vector3::from(forward);
+    let slice = |depth: f32| {
+        if depth <= near {
+            0
+        } else {
+            let t = (depth / near).ln() / (far / near).ln();
+            ((t * slices as f32) as usize).min(slices - 1)
+        }
+    };
+    let cell = |ndc: f32, count: usize| {
+        (((ndc * 0.5 + 0.5) * count as f32).floor().max(0.0) as usize)
+            .min(count - 1)
+    };
+    let mut ranges = Vec::with_capacity(local.len());
+    for &(index, [x, y, z, range]) in local {
+        let center = Vector3::new(x, y, z);
+        let depth = (center - eye).dot(&forward);
+        if depth + range < near.min(0.0) || depth - range > far {
+            continue;
+        }
+        let (mut low, mut high) = ([-1.0_f32; 2], [1.0_f32; 2]);
+        let mut behind = false;
+        let mut bounds = ([f32::MAX; 2], [f32::MIN; 2]);
+        for corner in 0..8 {
+            let offset = Vector3::new(
+                if corner & 1 == 0 { -range } else { range },
+                if corner & 2 == 0 { -range } else { range },
+                if corner & 4 == 0 { -range } else { range },
+            );
+            let point = clip * (center + offset).push(1.0);
+            if point.w <= 1e-4 {
+                behind = true;
+                break;
+            }
+            for axis in 0..2 {
+                let ndc = point[axis] / point.w;
+                bounds.0[axis] = bounds.0[axis].min(ndc);
+                bounds.1[axis] = bounds.1[axis].max(ndc);
+            }
+        }
+        if !behind {
+            if (0..2).any(|axis| bounds.0[axis] > 1.0 || bounds.1[axis] < -1.0)
+            {
+                continue;
+            }
+            (low, high) = bounds;
+        }
+        ranges.push((
+            index,
+            [cell(low[0], columns), cell(high[0], columns)],
+            [cell(low[1], rows), cell(high[1], rows)],
+            [slice(depth - range), slice(depth + range)],
+        ));
+    }
+    let cluster = |x: usize, y: usize, z: usize| (z * rows + y) * columns + x;
+    let mut counts = vec![0_usize; CLUSTER_COUNT];
+    for (_, xs, ys, zs) in &ranges {
+        for z in zs[0]..=zs[1] {
+            for y in ys[0]..=ys[1] {
+                for x in xs[0]..=xs[1] {
+                    let count = &mut counts[cluster(x, y, z)];
+                    *count = (*count + 1).min(MAX_LIGHTS_PER_CLUSTER);
+                }
+            }
+        }
+    }
+    let mut list = vec![0_u32; 2 * CLUSTER_COUNT];
+    let mut offset = list.len();
+    for (index, count) in counts.iter().enumerate() {
+        list[2 * index] = offset as u32;
+        offset += count;
+    }
+    list.resize(offset, 0);
+    let mut filled = vec![0_usize; CLUSTER_COUNT];
+    for (light, xs, ys, zs) in &ranges {
+        for z in zs[0]..=zs[1] {
+            for y in ys[0]..=ys[1] {
+                for x in xs[0]..=xs[1] {
+                    let index = cluster(x, y, z);
+                    if filled[index] < counts[index] {
+                        let at = list[2 * index] as usize + filled[index];
+                        list[at] = *light;
+                        filled[index] += 1;
+                    }
+                }
+            }
+        }
+    }
+    for (index, count) in counts.iter().enumerate() {
+        list[2 * index + 1] = *count as u32;
+    }
+    list
+}
+
+/// Near and far planes the light clusters slice depth between.
+fn cluster_depth_range(camera: Option<ExtractedCamera>) -> [f32; 2] {
+    let [near, far] = match camera.map(|camera| camera.projection) {
+        Some(Projection::Perspective { near, far, .. }) => [near, far],
+        Some(Projection::Orthographic { near, far, .. }) => [near, far],
+        None => [0.1, 1_000.0],
+    };
+    let near = near.max(0.01);
+    [near, far.max(near * 2.0)]
 }
 
 /// Resources reused when one swapchain image comes around again.
@@ -1406,7 +1545,7 @@ impl SceneViewport {
 
 /// Largest number of lights uploaded per frame; extra lights are dropped and
 /// counted in [`RenderCapacityDiagnostics::dropped_lights`].
-pub const MAX_LIGHTS: usize = 64;
+pub const MAX_LIGHTS: usize = 1024;
 
 /// Capacity and asset fallbacks the renderer took instead of failing the
 /// frame.
@@ -2421,6 +2560,7 @@ impl SceneRenderer {
         self.prepare_render_instances(render_world, assets)?;
         let camera = options.camera.or(render_world.active_camera);
         let clip = view_projection(camera, viewport.extent);
+        let cluster_range = cluster_depth_range(camera);
         let prepared = self.prepared_instances.as_ref().unwrap();
         let quality = resolve_quality(render_world.quality, &self.capabilities);
         let path = select_culling_path(
@@ -2598,7 +2738,7 @@ impl SceneRenderer {
                 lights.count,
                 lights.shadow.map_or(0, |(index, _)| index + 1),
                 options.debug_view as u32,
-                0,
+                lights.directional,
             ],
         };
         // The GPU paths leave `visibility` as the last CPU-culled frame's.
@@ -2883,7 +3023,35 @@ impl SceneRenderer {
                     f32::from(u8::from(point_shadow.is_some())),
                     0.0,
                 ],
+                cluster_view: [
+                    forward[0],
+                    forward[1],
+                    forward[2],
+                    Vector3::from(eye).dot(&Vector3::from(forward)),
+                ],
+                cluster_depth: [
+                    cluster_range[0],
+                    (cluster_range[1] / cluster_range[0]).ln(),
+                    0.0,
+                    0.0,
+                ],
             };
+        let cluster_list = build_light_clusters(
+            &self.prepared_lights.as_ref().unwrap().local,
+            &clip,
+            eye,
+            forward,
+            cluster_range,
+        );
+        let light_clusters = self.frame_contexts[self.frame_index]
+            .transient
+            .allocate_slice::<u32>(cluster_list.len() as DeviceSize)
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+        self.counters.upload_bytes += light_clusters.size();
+        light_clusters
+            .write()
+            .map_err(|error| SceneRenderError(error.to_string()))?
+            .copy_from_slice(&cluster_list);
         let shadow_set = DescriptorSet::new(
             self.descriptor_allocator.clone(),
             active.pipeline.layout().set_layouts()[2].clone(),
@@ -2939,6 +3107,7 @@ impl SceneRenderer {
                     };
                     WriteDescriptorSet::image_view_sampler(6, view, sampler)
                 },
+                WriteDescriptorSet::buffer(7, light_clusters),
             ],
             [],
         )
@@ -5016,6 +5185,19 @@ impl SceneRenderer {
             });
         }
         let shadow = shadow.or(point_shadow);
+        let directional = uploads
+            .iter()
+            .take_while(|upload| upload.position_kind[3] == 0.0)
+            .count() as u32;
+        let local = uploads
+            .iter()
+            .enumerate()
+            .skip(directional as usize)
+            .map(|(index, upload)| {
+                let [x, y, z, _] = upload.position_kind;
+                (index as u32, [x, y, z, upload.direction_range[3]])
+            })
+            .collect();
         self.capacity.dropped_lights = render_world.directional_lights.len()
             + render_world.point_lights.len()
             + render_world.spot_lights.len()
@@ -5070,6 +5252,8 @@ impl SceneRenderer {
             ambient,
             ground_ambient,
             shadow,
+            directional,
+            local,
         });
         Ok(())
     }
@@ -8918,6 +9102,8 @@ layout(set = 2, binding = 1) readonly buffer Shadow {
     vec4 cascade_far;
     vec4 cascade_forward;
     vec4 cascade_info;
+    vec4 cluster_view;
+    vec4 cluster_depth;
 } shadow;
 layout(set = 2, binding = 2) uniform sampler2D environment_map;
 layout(set = 2, binding = 3) uniform sampler2D scene_color;
@@ -8928,6 +9114,11 @@ layout(set = 2, binding = 5) uniform sampler2DArray probe_maps;
 // Screen-space ambient occlusion per target pixel when
 // shadow.ambient_occlusion.x is 1.
 layout(set = 2, binding = 6) uniform sampler2D ambient_occlusion;
+// Per light cluster an (offset, count) pair, then the light indices; see
+// `build_light_clusters`.
+layout(set = 2, binding = 7) readonly buffer Clusters {
+    uint data[];
+} clusters;
 #include "fog.glsl"
 // 0 opaque, 1 blended, 2 screen-space reflection overlay on opaque surfaces.
 layout(constant_id = 0) const uint PASS = 0u;
@@ -9240,10 +9431,25 @@ void main() {
             * diffuse_color * (1.0 - env_fresnel)
         + reflection * env_fresnel)
         * occlusion;
-    // ponytail: every fragment loops over every uploaded light, bounded by
-    // the quality profile's light budget; add clustered or tiled culling if
-    // scenes need more local lights than the budget.
-    for (uint index = 0; index < camera.light_info.x; ++index) {
+    // Directional lights (the first light_info.w) light every pixel; point
+    // and spot lights come from this pixel's cluster.
+    vec2 cell = (gl_FragCoord.xy - shadow.viewport.xy) / shadow.viewport.zw;
+    uvec2 tile = min(uvec2(max(cell, 0.0) * vec2(16.0, 9.0)), uvec2(15u, 8u));
+    float view_depth = dot(v_world_position, shadow.cluster_view.xyz)
+        - shadow.cluster_view.w;
+    uint slice = view_depth <= shadow.cluster_depth.x ? 0u : min(
+        uint(log(view_depth / shadow.cluster_depth.x)
+            / shadow.cluster_depth.y * 24.0),
+        23u
+    );
+    uint cluster = (slice * 9u + tile.y) * 16u + tile.x;
+    uint cluster_first = clusters.data[2u * cluster];
+    uint directional = camera.light_info.w;
+    uint light_count = directional + clusters.data[2u * cluster + 1u];
+    for (uint step = 0; step < light_count; ++step) {
+        uint index = step < directional
+            ? step
+            : clusters.data[cluster_first + step - directional];
         Light light = lights.data[index];
         float kind = light.position_kind.w;
         vec3 to_light;
@@ -11059,6 +11265,49 @@ mod tests {
         );
         let none = device(1, false);
         assert_eq!(count(Antialiasing::Msaa4, QualityProfile::High, &none), 1);
+    }
+
+    #[test]
+    fn light_clusters_list_only_the_lights_that_reach_them() {
+        // Camera at the origin looking down -Z, 90 degree view, square.
+        let clip = vulkan_clip_correction()
+            * Perspective3::new(1.0, std::f32::consts::FRAC_PI_2, 1.0, 100.0)
+                .to_homogeneous();
+        let eye = [0.0; 3];
+        let forward = [0.0, 0.0, -1.0];
+        let lights = [
+            (5, [-8.0, 0.0, -10.0, 1.0]), // left of center, near
+            (6, [0.0, 0.0, -60.0, 2.0]),  // center, far
+            (7, [0.0, 0.0, 20.0, 3.0]),   // behind the camera
+            (8, [0.0, 0.0, 0.0, 2.0]),    // around the camera
+            (9, [500.0, 0.0, -10.0, 1.0]), // far off to the right
+        ];
+        let list =
+            build_light_clusters(&lights, &clip, eye, forward, [1.0, 100.0]);
+        let [columns, rows, slices] = CLUSTER_GRID;
+        let at = |x: usize, y: usize, z: usize| {
+            let cluster = (z * rows + y) * columns + x;
+            let first = list[2 * cluster] as usize;
+            let count = list[2 * cluster + 1] as usize;
+            list[first..first + count].to_vec()
+        };
+        let slice = |depth: f32| {
+            ((depth.ln() / 100.0_f32.ln() * slices as f32) as usize)
+                .min(slices - 1)
+        };
+        // The near-left light: x = -8 at depth 10 is ndc -0.8, column 1.
+        assert_eq!(at(1, rows / 2, slice(10.0)), [5]);
+        assert!(at(columns - 2, rows / 2, slice(10.0)).is_empty());
+        assert!(at(1, rows / 2, slice(60.0)).is_empty());
+        // The far light only in its own depth slice, at the center.
+        assert_eq!(at(columns / 2, rows / 2, slice(60.0)), [6]);
+        assert!(at(columns / 2, rows / 2, slice(30.0)).is_empty());
+        // The light around the eye reaches every tile of the first slice;
+        // the ones behind and off screen reach nothing.
+        assert_eq!(at(0, 0, 0), [8]);
+        assert_eq!(at(columns - 1, rows - 1, 0), [8]);
+        assert!(!list[2 * CLUSTER_COUNT..].contains(&7));
+        assert!(!list[2 * CLUSTER_COUNT..].contains(&9));
     }
 
     #[test]
@@ -16879,12 +17128,107 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn clustered_point_lights_each_light_their_own_spot() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A perspective camera looks down at the floor at a slant, so the
+        // 49 small lights spread over many screen tiles and depth slices.
+        // Each light's spot must be lit and the gaps between them dark.
+        let extent = [96, 96];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        let eye = Point3::new(0.0, -2.5, 2.5);
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        camera.transform.matrix =
+            Matrix4::look_at_rh(&eye, &Point3::origin(), &Vector3::z())
+                .try_inverse()
+                .unwrap()
+                .into();
+        camera.projection = Projection::Perspective {
+            vertical_fov_radians: 1.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let camera = scene.render_world.active_camera;
+        let spacing = 0.4;
+        let spot = |column: i32, row: i32| {
+            Vector3::new(column as f32 * spacing, row as f32 * spacing, 0.05)
+        };
+        for column in -3..=3 {
+            for row in -3..=3 {
+                let index = scene.render_world.point_lights.len() as u32;
+                scene.render_world.point_lights.push(
+                    crate::runtime::ExtractedPointLight {
+                        entity: bevy_ecs::entity::Entity::from_raw_u32(
+                            3000 + index,
+                        )
+                        .unwrap(),
+                        transform: crate::runtime::GlobalTransform {
+                            matrix: Matrix4::new_translation(
+                                &(spot(column, row) + Vector3::z() * 0.1),
+                            )
+                            .into(),
+                        },
+                        light: crate::runtime::PointLight {
+                            color: [0.0, 1.0, 0.0],
+                            intensity: 3_000.0,
+                            range: 0.18,
+                            shadows: false,
+                        },
+                    },
+                );
+            }
+        }
+        scene.render_world.lights_revision += 1;
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let pixels = scene.pixels();
+        let clip = view_projection(camera, extent);
+        let green = |point: Vector3<f32>| {
+            let clip = clip * point.push(1.0);
+            let x = ((clip.x / clip.w * 0.5 + 0.5) * extent[0] as f32) as usize;
+            let y = ((clip.y / clip.w * 0.5 + 0.5) * extent[1] as f32) as usize;
+            pixels[(y * extent[0] as usize + x) * 4 + 1]
+        };
+        for column in -3..=3 {
+            for row in -3..=3 {
+                let lit = green(spot(column, row));
+                assert!(
+                    lit > 60,
+                    "light {column},{row} lights its spot: {lit}"
+                );
+                let gap =
+                    green(spot(column, row) + Vector3::new(0.2, 0.2, 0.0));
+                assert!(
+                    gap < 5,
+                    "gap next to {column},{row} stays dark: {gap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn quality_profiles_compare_on_one_scene() {
         if vulkano::VulkanLibrary::new().is_err() {
             eprintln!("skipping: no Vulkan driver present");
             return;
         }
-        // A floor under a red shadowed sun and 40 small green point lights,
+        // A floor under a red shadowed sun and 600 small green point lights,
         // more than the Eco and Balanced light budgets.
         let mut scene = SlabScene::with_extent(
             &[(0.0, MaterialAsset::default())],
@@ -16906,8 +17250,8 @@ mod tests {
                 },
             },
         );
-        for index in 0..40u32 {
-            let (column, row) = ((index % 8) as f32, (index / 8) as f32);
+        for index in 0..600u32 {
+            let (column, row) = ((index % 25) as f32, (index / 25) as f32);
             scene.render_world.point_lights.push(
                 crate::runtime::ExtractedPointLight {
                     entity: bevy_ecs::entity::Entity::from_raw_u32(
@@ -16916,16 +17260,16 @@ mod tests {
                     .unwrap(),
                     transform: crate::runtime::GlobalTransform {
                         matrix: Matrix4::new_translation(&Vector3::new(
-                            -0.875 + column * 0.25,
-                            -0.8 + row * 0.4,
-                            0.3,
+                            -0.96 + column * 0.08,
+                            -0.96 + row * 0.08,
+                            0.1,
                         ))
                         .into(),
                     },
                     light: crate::runtime::PointLight {
                         color: [0.0, 1.0, 0.0],
-                        intensity: 200.0,
-                        range: 0.5,
+                        intensity: 20.0,
+                        range: 0.15,
                         shadows: false,
                     },
                 },
@@ -16934,9 +17278,9 @@ mod tests {
         let msaa = scene.renderer.capabilities().msaa_samples;
         let mut rows = Vec::new();
         for (quality, lights, shadow_map, samples) in [
-            (QualityProfile::Eco, 16, 1024, 1),
-            (QualityProfile::Balanced, 32, 2048, msaa),
-            (QualityProfile::High, 41, 4096, msaa),
+            (QualityProfile::Eco, 256, 1024, 1),
+            (QualityProfile::Balanced, 512, 2048, msaa),
+            (QualityProfile::High, 601, 4096, msaa),
         ] {
             scene.render_world.quality = quality;
             scene.render_world.lights_revision += 1;
@@ -16955,7 +17299,7 @@ mod tests {
             let (red, green) = (mean(2), mean(1));
             let dropped = scene.renderer.capacity_diagnostics().dropped_lights;
             // The sun counts toward the budget too.
-            assert_eq!(dropped, 41 - lights, "{quality:?}");
+            assert_eq!(dropped, 601 - lights, "{quality:?}");
             assert_eq!(
                 scene.renderer.shadow_framebuffer.extent(),
                 [shadow_map; 2]

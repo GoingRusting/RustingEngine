@@ -2515,7 +2515,24 @@ Depends on: Milestones 3 and 4.
     run 924 lib tests passed.
     Not done: blending between cascades, per-cascade or per-face caster
     culling.
-- [ ] Clustered lighting for many point and spot lights.
+- [x] Clustered lighting for many point and spot lights.
+  - Done (2026-10-10): `build_light_clusters` (`scene_renderer.rs`) bins
+    each point and spot light's range sphere into a 16x9 screen-tile by 24
+    exponential-depth-slice grid every frame, on the CPU, into one
+    transient buffer (an offset/count pair per cluster, then light
+    indices, at most 256 per cluster). The fragment shader shades every
+    directional light, then only its cluster's lights. `MAX_LIGHTS` rises
+    from 64 to 1024 (budgets Eco 256, Balanced 512, High 1024); docs,
+    schema, lint text and the lint test follow. Evidence: unit test
+    `light_clusters_list_only_the_lights_that_reach_them` (near, far,
+    behind-camera, around-camera and off-screen lights land in the right
+    clusters only); GPU test `clustered_point_lights_each_light_their_own_spot`
+    (49 lights under a slanted perspective camera: every spot lit, every
+    gap dark); it fails when the shader's slice count (24 to 12) or tile
+    grid (16x9 to 9x16) disagrees with the CPU. `quality_profiles_compare_on_one_scene`
+    now uses 600 lights. Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 821 passed; gpu-tests run 926 lib tests passed.
+    Not done: GPU-side binning, per-cluster brightness sorting before the cap.
 - [ ] Area-light approximation and light cookies.
 
 ### Geometry and effects

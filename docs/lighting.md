@@ -54,10 +54,13 @@ matter.
 
 ## How many lights draw
 
-The renderer draws at most 64 lights a frame at `High` quality, 32 at
-`Balanced` and 16 at `Eco` (`/render/quality` in the scene). `Auto` picks
+The renderer draws at most 1024 lights a frame at `High` quality, 512 at
+`Balanced` and 256 at `Eco` (`/render/quality` in the scene). `Auto` picks
 `Eco` on an integrated GPU, `Balanced` on a discrete GPU with less than
-4 GiB of video memory, and `High` otherwise (64 on an RTX 3060). Budget for
+4 GiB of video memory, and `High` otherwise (1024 on an RTX 3060). Each
+pixel shades every directional light but only the point and spot lights
+whose `range` reaches its screen cluster, so many small lamps cost little;
+a few lamps with huge ranges cost as much as before. Budget for
 the lowest quality the game supports. Ambient and sky light do not count.
 
 Past the cap, lights are dropped in this order: directional lights are kept

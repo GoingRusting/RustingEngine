@@ -36,8 +36,8 @@ Do this after the game works and before calling it done.
   in a warm color, and a weaker sky or ambient light (the fill) in a cool
   color, or the reverse for night. Equal light from every side looks flat.
   One light casts shadows: the directional light, or a spot light with
-  `shadows` when there is no shadowed directional light. At most 64 lights
-  draw a frame at `High` quality, 32 at `Balanced` and 16 at `Eco`;
+  `shadows` when there is no shadowed directional light. At most 1024 lights
+  draw a frame at `High` quality, 512 at `Balanced` and 256 at `Eco`;
   `rusting docs show guide/lighting` says which one `Auto` picks.
 - **Materials.** Not everything has roughness 0.5. Metal is metallic and
   smoother; cloth, wood and stone are rough. Emissive is for lights,

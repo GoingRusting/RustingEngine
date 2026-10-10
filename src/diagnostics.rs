@@ -290,7 +290,7 @@ pub const CODES: &[CodeInfo] = &[
     ),
     code(
         "LINT_LIGHT_BUDGET",
-        "More lights are visible than the quality profile uploads (Eco 16, Balanced 32, High and Auto 64). The renderer takes visible directional, then point, then spot lights in scene order and drops the rest without lighting anything.",
+        "More lights are visible than the quality profile uploads (Eco 256, Balanced 512, High and Auto 1024). The renderer takes visible directional, then point, then spot lights in scene order and drops the rest without lighting anything.",
         "Hide lights that are not needed yet with `visible: false` (hidden lights are not uploaded), remove lights, or raise `render.quality`.",
         "rusting lint --json",
     ),

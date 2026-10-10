@@ -27,7 +27,7 @@ use crate::Transform;
 pub const RENDER_BENCHMARK_FRAMES: u32 = 600;
 /// GPU physics bodies in the benchmark scene.
 pub const RENDER_BENCHMARK_BODIES: usize = 1_000;
-/// Point lights in the benchmark scene; more than Eco's light budget.
+/// Point lights in the benchmark scene.
 pub const RENDER_BENCHMARK_POINT_LIGHTS: usize = 24;
 /// Pillars, each topped by a sphere.
 pub const RENDER_BENCHMARK_PILLARS: usize = 40;

@@ -6968,18 +6968,21 @@ src/main.rs:30:5: error[E0425]: cannot find value `x` in this scope";
 
     #[test]
     fn lint_names_visible_lights_past_the_quality_budget() {
-        let id = |n: u8| format!("00000000-0000-0000-0000-0000000000{n:02}");
+        let id = |n: u16| format!("00000000-0000-0000-0000-00000000{n:04}");
         let point =
             json!({"color": [1.0, 1.0, 1.0], "intensity": 5.0, "range": 8.0});
         // Spot first in the file, but the renderer takes point lights first.
         let mut entities = vec![
-            json!({"id": id(90), "name": "Spot", "spot_light": {"color": [1.0, 1.0, 1.0],
+            json!({"id": id(9990), "name": "Spot", "spot_light": {"color": [1.0, 1.0, 1.0],
                 "intensity": 5.0, "range": 8.0, "inner_angle": 0.3, "outer_angle": 0.5}}),
-            json!({"id": id(91), "name": "Hidden", "visible": false, "point_light": point}),
-            json!({"id": id(92), "name": "Off Set", "visible": false}),
-            json!({"id": id(93), "parent": id(92), "name": "Set Lamp", "point_light": point}),
+            json!({"id": id(9991), "name": "Hidden", "visible": false, "point_light": point}),
+            json!({"id": id(9992), "name": "Off Set", "visible": false}),
+            json!({"id": id(9993), "parent": id(9992), "name": "Set Lamp", "point_light": point}),
         ];
-        for n in 0..16 {
+        let eco = crate::rendering::scene_renderer::light_budget(
+            crate::runtime::QualityProfile::Eco,
+        ) as u16;
+        for n in 0..eco {
             entities.push(json!({"id": id(n), "name": format!("Lamp {n}"), "point_light": point}));
         }
         let scene = json!({"format_version": 7, "name": "Lights", "entities": entities,
