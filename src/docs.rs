@@ -105,6 +105,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/networking.md"),
     ),
+    (
+        "guide/godot-migration",
+        "guide",
+        include_str!("../docs/godot-migration.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.

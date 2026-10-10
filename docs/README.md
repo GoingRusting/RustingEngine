@@ -8,6 +8,8 @@ were run against this version of the engine.
 
 - [Getting started](getting-started.md): install the tools, open the editor,
   create a project, and press Play.
+- [Coming from Godot](godot-migration.md): Godot nodes, scenes, signals,
+  resources and GDScript callbacks mapped to RustingEngine.
 - [Core concepts](concepts.md): projects, scenes, cooking, frames and fixed
   ticks, CPU and GPU physics, and where game code runs.
 

@@ -2791,7 +2791,7 @@ Depends on: the features being documented. Documentation for each feature lands 
 - [ ] Generated API reference for engine crates and reflected types.
 - [ ] Step-by-step tutorials: first 3D game, first 2D game, physics sandbox, multiplayer physics game.
 - [ ] Demo projects per feature area, with a physics showcase gallery (destruction, fluids, cloth, vehicles, ragdolls, million-body scenes).
-- [ ] Migration guide for Godot users mapping nodes, signals, resources, and scripts to RustingEngine concepts.
+- [x] Migration guide for Godot users mapping nodes, signals, resources, and scripts to RustingEngine concepts. `docs/godot-migration.md` ("Coming from Godot"), linked from `docs/README.md` and served offline as `rusting docs show guide/godot-migration`: tables for nodes, scenes and the tree, script callbacks, signals and groups, resources and autoloads, project/editor/export, plus what has no counterpart yet. Every call and component it names was checked against the API table and `rusting schema`; its Rust example built as a throwaway example (`cargo build --example`, removed after). Its `rusting ...` commands pass `docs::tests::documented_commands_name_real_operations_and_flags`. Full check 2026-10-10: fmt, clippy (default, no-default-features, gpu-tests), tests (lib 822, 923 with gpu-tests) green.
 - [ ] Contribution guide, plugin authoring guide, and release notes process.
 
 ### Exit gate
