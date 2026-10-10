@@ -193,6 +193,26 @@ offsets.observe(from, input.tick, host_tick); // lead(peer) in ticks
 - A client whose `TickOffsets::lead` falls below zero sends too late;
   tell it to raise its margin.
 
+On the host, `net::input::InputBuffer` holds inputs until their tick, so
+uneven arrival (jitter) does not stall anyone:
+
+```rust
+use rusting_engine::net::input::InputBuffer;
+
+let mut inputs = InputBuffer::new(first_tick);
+// on each input message:
+if let Err(reason) = inputs.push(from, input.tick, input.steer) { /* log */ }
+// each host tick:
+let (tick, this_tick) = inputs.take();
+for entry in this_tick { /* apply entry.input for entry.peer */ }
+```
+
+- The margin passed to `input_tick` is the input delay: more ticks
+  absorb more jitter but add lag. `buffered(peer)` shows a client's
+  current cushion and `late(peer)` how many inputs missed their tick.
+- A late or lost input repeats the peer's last one (`fresh: false`).
+- Inputs more than `MAX_AHEAD` (120) ticks ahead are refused.
+
 ## Trusting nothing a client sends
 
 On a public server, assume some clients are modified. Keep the host the
