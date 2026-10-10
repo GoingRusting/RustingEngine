@@ -1403,6 +1403,36 @@ impl Default for Bloom {
     }
 }
 
+/// Exposure that follows the scene's brightness, like an eye adapting. The
+/// renderer measures the average brightness of the lit image every frame
+/// and moves the exposure toward `key / average`, within the limits. It
+/// multiplies the `ToneMapping` exposure, which stays as compensation. The
+/// one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoExposure {
+    /// Average linear brightness the image is brought to; 0.18 is mid grey.
+    pub key: f32,
+    /// Lowest exposure, reached in very bright scenes.
+    pub min_exposure: f32,
+    /// Highest exposure, reached in very dark scenes.
+    pub max_exposure: f32,
+    /// How fast the exposure follows a change, per second. The first
+    /// frame adapts at once.
+    pub speed: f32,
+}
+
+impl Default for AutoExposure {
+    fn default() -> Self {
+        Self {
+            key: 0.18,
+            min_exposure: 0.25,
+            max_exposure: 4.0,
+            speed: 1.5,
+        }
+    }
+}
+
 /// Shows what a camera sees on this object's mesh, like a CCTV monitor. The
 /// camera's image replaces the base color and emissive maps of the object's
 /// material, so a material with black base color and emissive `[1, 1, 1]`

@@ -847,6 +847,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"intensity": 0.5, "threshold": 1.0, "spread": 0.7}),
     },
     ComponentSection {
+        key: "rusting.auto_exposure",
+        summary: "Eye adaptation: every frame the renderer measures the average brightness of the lit image and moves exposure toward key / average, clamped to min_exposure..max_exposure, at speed per second (the first frame adapts at once). It multiplies the rusting.tone_mapping exposure. The first one found is used.",
+        gpu: "one single-workgroup compute pass reading 4096 samples",
+        example: || json!({"key": 0.18, "min_exposure": 0.25, "max_exposure": 4.0, "speed": 1.5}),
+    },
+    ComponentSection {
         key: "rusting.ambient_occlusion",
         summary: "Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres. Off on the Eco quality profile. The first one found is used.",
         gpu: "a depth prepass plus two full-screen compute passes",

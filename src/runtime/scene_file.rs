@@ -1172,6 +1172,8 @@ pub const REFLECTION_PROBE_COMPONENT: &str = "rusting.reflection_probe";
 pub const FOG_COMPONENT: &str = "rusting.fog";
 /// Registry name of the built-in bloom.
 pub const BLOOM_COMPONENT: &str = "rusting.bloom";
+/// Registry name of the built-in eye adaptation.
+pub const AUTO_EXPOSURE_COMPONENT: &str = "rusting.auto_exposure";
 pub const COLOR_GRADING_COMPONENT: &str = "rusting.color_grading";
 /// Registry name of the built-in fog and grading area.
 pub const POST_VOLUME_COMPONENT: &str = "rusting.post_volume";
@@ -1327,6 +1329,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::Bloom>(BLOOM_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::AutoExposure>(AUTO_EXPOSURE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::ColorGrading>(COLOR_GRADING_COMPONENT)

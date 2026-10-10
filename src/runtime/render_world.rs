@@ -144,6 +144,7 @@ pub struct RenderWorld {
     pub tone_mapping: Option<ToneMapping>,
     pub fog: Option<super::Fog>,
     pub bloom: Option<super::Bloom>,
+    pub auto_exposure: Option<super::AutoExposure>,
     pub color_grading: Option<super::ColorGrading>,
     /// Meshes that show a camera's image, in entity order.
     pub screens: Vec<ExtractedScreen>,
@@ -312,6 +313,7 @@ pub fn extract_render_world(world: &mut World) {
         super::Fog::lerp,
     );
     let bloom = collect_first::<super::Bloom>(world);
+    let auto_exposure = collect_first::<super::AutoExposure>(world);
     let color_grading = collect_blended(
         world,
         eye,
@@ -462,6 +464,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.tone_mapping = tone_mapping;
     render_world.fog = fog;
     render_world.bloom = bloom;
+    render_world.auto_exposure = auto_exposure;
     render_world.color_grading = color_grading;
     render_world.screens = screens;
     render_world.ambient_occlusion = ambient_occlusion;

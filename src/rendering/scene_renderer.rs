@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::post_effects::{
-    BloomChain, OcclusionParams, OcclusionTargets, PostPipelines,
+    BloomChain, ExposureMeter, OcclusionParams, OcclusionTargets, PostPipelines,
 };
 
 use nalgebra::{
@@ -1495,6 +1495,8 @@ pub struct SceneRenderer {
     post_pipelines: PostPipelines,
     /// Rebuilt with `hdr`.
     bloom_chain: BloomChain,
+    /// Rebuilt with `hdr`.
+    exposure: ExposureMeter,
     /// Rebuilt with `depth`.
     occlusion: OcclusionTargets,
     /// Depth-only opaque pass into `depth` that ambient occlusion traces;
@@ -1778,6 +1780,12 @@ impl SceneRenderer {
             &post_pipelines,
             &hdr,
         )?;
+        let exposure = ExposureMeter::new(
+            &memory_allocator,
+            &descriptor_allocator,
+            &post_pipelines,
+            &hdr,
+        )?;
         let occlusion =
             OcclusionTargets::new(&memory_allocator, initial_extent)?;
         let depth_prepass_pipeline = create_depth_prepass(&queue, &pipeline)?;
@@ -1788,6 +1796,7 @@ impl SceneRenderer {
             &tonemap_pipeline,
             &hdr,
             &bloom_chain,
+            &exposure,
             &scene_color,
             &scene_color_sampler,
         )?;
@@ -1877,6 +1886,7 @@ impl SceneRenderer {
             tonemap_set,
             post_pipelines,
             bloom_chain,
+            exposure,
             occlusion,
             depth_prepass_pipeline,
             depth_prepass_framebuffer,
@@ -2693,6 +2703,10 @@ impl SceneRenderer {
         let bloom = render_world
             .bloom
             .filter(|bloom| lit && effects.bloom && bloom.intensity > 0.0);
+        let auto_exposure = render_world.auto_exposure.filter(|_| lit);
+        if auto_exposure.is_none() {
+            self.exposure.reset();
+        }
         let grade = if lit {
             options
                 .grading
@@ -2706,6 +2720,9 @@ impl SceneRenderer {
         let sampled = grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
             || grade.distortion > 0.0;
+        // Bloom, the copy and auto exposure read the finished HDR outside
+        // the render pass.
+        let post = bloom.is_some() || sampled || auto_exposure.is_some();
         let ambient_occlusion =
             render_world.ambient_occlusion.filter(|occlusion| {
                 lit && effects.ambient_occlusion
@@ -3896,23 +3913,22 @@ impl SceneRenderer {
         // Frames that split for the scene color copy, or end the pass for
         // bloom, keep HDR and depth after the draws and continue them in the
         // late pass.
-        let (main_pass, clear_values) =
-            match (occlusion, split || bloom.is_some()) {
-                (true, false) => {
-                    (active.late_render_pass.clone(), clears(None, None))
-                }
-                (true, true) => {
-                    (active.middle_render_pass.clone(), clears(None, None))
-                }
-                (false, false) => (
-                    active.render_pass.clone(),
-                    clears(background, Some(1.0_f32.into())),
-                ),
-                (false, true) => (
-                    active.early_render_pass.clone(),
-                    clears(background, Some(1.0_f32.into())),
-                ),
-            };
+        let (main_pass, clear_values) = match (occlusion, split || post) {
+            (true, false) => {
+                (active.late_render_pass.clone(), clears(None, None))
+            }
+            (true, true) => {
+                (active.middle_render_pass.clone(), clears(None, None))
+            }
+            (false, false) => (
+                active.render_pass.clone(),
+                clears(background, Some(1.0_f32.into())),
+            ),
+            (false, true) => (
+                active.early_render_pass.clone(),
+                clears(background, Some(1.0_f32.into())),
+            ),
+        };
         commands
             .begin_render_pass(
                 RenderPassBeginInfo {
@@ -3993,7 +4009,7 @@ impl SceneRenderer {
                 .begin_render_pass(
                     RenderPassBeginInfo {
                         // Bloom ends this pass again after the blended draws.
-                        render_pass: if bloom.is_some() || sampled {
+                        render_pass: if post {
                             active.middle_render_pass.clone()
                         } else {
                             active.late_render_pass.clone()
@@ -4134,7 +4150,7 @@ impl SceneRenderer {
         // The whole target is tone mapped, so area outside the viewport shows
         // the background like the old clear did.
         passes.end(&mut commands)?;
-        if bloom.is_some() || sampled {
+        if post {
             // Bloom samples the finished HDR outside the render pass, then
             // an empty late pass continues to tone mapping.
             commands
@@ -4154,6 +4170,16 @@ impl SceneRenderer {
                     &settings,
                 )?;
                 count_work(&recorded, 0, dispatches, 0);
+                passes.end(&mut commands)?;
+            }
+            if let Some(settings) = auto_exposure {
+                passes.begin(&mut commands, FramePass::Exposure)?;
+                self.exposure.record(
+                    &mut commands,
+                    &self.post_pipelines,
+                    &settings,
+                )?;
+                count_work(&recorded, 0, 1, 0);
                 passes.end(&mut commands)?;
             }
             if sampled {
@@ -4236,6 +4262,7 @@ impl SceneRenderer {
                         (render_world.physics_tick % (1 << 24)) as f32,
                     ],
                     sampled: u32::from(sampled),
+                    auto_exposure: u32::from(auto_exposure.is_some()),
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -4470,6 +4497,7 @@ impl SceneRenderer {
         // at the probe's viewpoint would not match the reflected surface.
         // Fog stays: it is part of what the surroundings look like.
         world.bloom = None;
+        world.auto_exposure = None;
         world.ambient_occlusion = None;
         // Occlusion would test each face against the previous face's depth.
         world.culling = CullingMode::Frustum;
@@ -5983,6 +6011,12 @@ impl SceneRenderer {
                 &self.post_pipelines,
                 &self.hdr,
             )?;
+            self.exposure = ExposureMeter::new(
+                &self.memory_allocator,
+                &self.descriptor_allocator,
+                &self.post_pipelines,
+                &self.hdr,
+            )?;
             self.occlusion =
                 OcclusionTargets::new(&self.memory_allocator, extent)?;
             self.depth_prepass_framebuffer = create_depth_prepass_framebuffer(
@@ -5994,6 +6028,7 @@ impl SceneRenderer {
                 &self.passes.tonemap_pipeline,
                 &self.hdr,
                 &self.bloom_chain,
+                &self.exposure,
                 &self.scene_color,
                 &self.scene_color_sampler,
             )?;
@@ -6914,6 +6949,7 @@ fn create_tonemap_set(
     pipeline: &Arc<GraphicsPipeline>,
     hdr: &Arc<ImageView>,
     bloom: &BloomChain,
+    exposure: &ExposureMeter,
     scene_color: &Arc<ImageView>,
     scene_color_sampler: &Arc<Sampler>,
 ) -> Result<Arc<DescriptorSet>, SceneRenderError> {
@@ -6932,6 +6968,7 @@ fn create_tonemap_set(
                 scene_color.clone(),
                 scene_color_sampler.clone(),
             ),
+            WriteDescriptorSet::buffer(3, exposure.buffer.clone()),
         ],
         [],
     )
@@ -9320,6 +9357,8 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 // A copy of the HDR image in `scene`, for effects that read other pixels;
 // up to date only when `sampled` is 1.
 layout(set = 0, binding = 2) uniform sampler2D scene_image;
+// Factor auto exposure adapted to; read only when auto_exposure is 1.
+layout(set = 0, binding = 3) readonly buffer Exposure { float value; } adapted;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
 // band, distortion, seconds and frame number from the fixed tick. sampled is
 // 1 when scene_image may be read.
@@ -9336,6 +9375,7 @@ layout(push_constant) uniform ToneMap {
     vec4 film;
     vec4 tape;
     uint sampled;
+    uint auto_exposure;
 } tone;
 layout(location = 0) out vec4 f_color;
 // Uniform 0..1 from a pixel and a frame number, the same on every GPU.
@@ -9389,7 +9429,11 @@ void main() {
     } else if (tone.bloom > 0.0) {
         hdr.rgb += textureLod(bloom, uv, 0.0).rgb * tone.bloom;
     }
-    vec3 c = max(hdr.rgb * tone.exposure, 0.0);
+    float exposure = tone.exposure;
+    if (tone.auto_exposure == 1u) {
+        exposure *= adapted.value;
+    }
+    vec3 c = max(hdr.rgb * exposure, 0.0);
     if (tone.mapper == 1u) {
         c = c / (1.0 + c);
     } else if (tone.mapper == 2u) {
@@ -10422,6 +10466,89 @@ mod tests {
             ..fog
         });
         assert_eq!(render_pixel(&mut sky, center), [0, 0, 0]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn auto_exposure_brings_the_scene_to_its_key() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        use crate::runtime::{AutoExposure, ToneMapping};
+        let mut scene = SlabScene::new(&[(
+            0.0,
+            MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color: [0.02, 0.02, 0.02, 1.0],
+                ..MaterialAsset::default()
+            },
+        )]);
+        // The slab fills the whole view, so the average is 0.02.
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(10.0, 10.0, 0.1))
+                .into();
+        let center = [4, 4];
+        let fixed = |scene: &mut SlabScene, exposure: f32| {
+            scene.render_world.auto_exposure = None;
+            scene.render_world.tone_mapping = Some(ToneMapping {
+                exposure,
+                ..ToneMapping::default()
+            });
+            let pixel = render_pixel(scene, center);
+            scene.render_world.tone_mapping = None;
+            pixel
+        };
+        let unexposed = fixed(&mut scene, 1.0);
+        let times_three = fixed(&mut scene, 3.0);
+        let times_six = fixed(&mut scene, 6.0);
+        assert!(unexposed[0] < times_three[0] && times_three[0] < times_six[0]);
+        let close = |a: [u8; 3], b: [u8; 3]| {
+            a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1)
+        };
+        // The first frame adapts at once: 0.06 / 0.02.
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.06,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let adapted = render_pixel(&mut scene, center);
+        assert!(close(adapted, times_three), "{adapted:?} {times_three:?}");
+        assert!(scene
+            .renderer
+            .last_frame_passes()
+            .contains(&FramePass::Exposure));
+        // At speed 0 a new key does not move the adapted exposure.
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let held = render_pixel(&mut scene, center);
+        assert!(close(held, times_three), "{held:?} {times_three:?}");
+        // A frame without it starts over, and the limits clamp.
+        assert!(close(fixed(&mut scene, 1.0), unexposed));
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let readapted = render_pixel(&mut scene, center);
+        assert!(close(readapted, times_six), "{readapted:?} {times_six:?}");
+        fixed(&mut scene, 1.0);
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            max_exposure: 3.0,
+            ..AutoExposure::default()
+        });
+        let clamped = render_pixel(&mut scene, center);
+        assert!(close(clamped, times_three), "{clamped:?} {times_three:?}");
     }
 
     #[test]

@@ -5430,6 +5430,7 @@ fn atmosphere_settings_come_from_the_lowest_entity() {
     let render_world = app.world().resource::<RenderWorld>();
     assert_eq!(render_world.fog, None);
     assert_eq!(render_world.bloom, None);
+    assert_eq!(render_world.auto_exposure, None);
     assert_eq!(render_world.ambient_occlusion, None);
     let fog = Fog {
         density: 0.2,
@@ -5438,11 +5439,13 @@ fn atmosphere_settings_come_from_the_lowest_entity() {
     app.spawn(fog);
     app.spawn(Fog::default());
     app.spawn(Bloom::default());
+    app.spawn(AutoExposure::default());
     app.spawn(AmbientOcclusion::default());
     app.update(Duration::ZERO).unwrap();
     let render_world = app.world().resource::<RenderWorld>();
     assert_eq!(render_world.fog, Some(fog));
     assert_eq!(render_world.bloom, Some(Bloom::default()));
+    assert_eq!(render_world.auto_exposure, Some(AutoExposure::default()));
     assert_eq!(
         render_world.ambient_occlusion,
         Some(AmbientOcclusion::default())

@@ -9,11 +9,11 @@ use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::Rope;
 use crate::runtime::{
-    AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
-    AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake,
-    ColorGrading, CombineMode, Connection, Connections, Counter, CullingMode,
-    DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
-    EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
+    AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoExposure,
+    AutoSimulation, AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen,
+    CameraShake, ColorGrading, CombineMode, Connection, Connections, Counter,
+    CullingMode, DeterminismMode, Dialogue, DialogueChoice, DialogueLine,
+    Easing, EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
     GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
     InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
     LootEntry, LootTable, MeshSurfaces, ObjectState, PhysicsMaterial,
@@ -1130,6 +1130,27 @@ crate::reflect! {
         },
         priority: i32 {
             doc: "higher volumes blend over lower ones",
+        },
+    }
+}
+
+crate::reflect! {
+    struct AutoExposure {
+        key: f32 {
+            unit: "linear", min: 0.001, max: 1.0,
+            doc: "average brightness the image is brought to; 0.18 is mid grey",
+        },
+        min_exposure: f32 {
+            unit: "factor", min: 0.001,
+            doc: "lowest exposure, for very bright scenes",
+        },
+        max_exposure: f32 {
+            unit: "factor", min: 0.001,
+            doc: "highest exposure, for very dark scenes",
+        },
+        speed: f32 {
+            unit: "1/s", min: 0.0,
+            doc: "how fast exposure follows a change in brightness",
         },
     }
 }

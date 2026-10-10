@@ -2433,8 +2433,27 @@ Depends on: Milestones 3 and 4.
   refraction frames. Off in probe captures and non-Lit views. Evidence: GPU
   tests `bloom_spreads_bright_light_into_its_surroundings` (dark pixels
   beside an emissive quad brighten only with bloom on) and
-  `atmosphere_effects_combine_with_every_scene_path`. The other effects
-  are not started.
+  `atmosphere_effects_combine_with_every_scene_path`.
+  Done elsewhere: vignette and chromatic aberration are `ColorGrading`
+  fields (art direction C and the CRT/VHS item).
+  Partial (auto-exposure): `rusting.auto_exposure` (key, min_exposure,
+  max_exposure, speed). After the transparent pass, the `Exposure` compute
+  pass takes 4096 bilinear taps of the HDR target in one workgroup, sums
+  log luminance with a fixed-order reduction, and moves a persistent
+  exposure factor toward `key / average` in log space by
+  `1 - exp(-speed * dt)` (wall-clock dt; the first frame after a frame
+  without it snaps). Tone mapping multiplies the `ToneMapping` exposure by
+  it. Off in probe captures and non-Lit views; camera screens adapt in
+  their own renderer. Limits: plain average with no histogram or center
+  weighting; a bright spot between taps is missed. Evidence: GPU test
+  `auto_exposure_brings_the_scene_to_its_key` (a 0.02 slab at key 0.06
+  matches a fixed exposure of 3; speed 0 holds it when the key changes; a
+  frame without it resets; `max_exposure` clamps), which fails when the
+  meter writes 1.0; pass table `transitions_list_every_layout_change_between_passes`;
+  unit test `atmosphere_settings_come_from_the_lowest_entity`. Full check:
+  fmt, clippy three ways, `cargo test --workspace` (820 passed, 105
+  ignored) and GPU tests (922 passed). Depth of field, motion blur and
+  color grading LUTs are not started.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,

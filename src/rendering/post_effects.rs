@@ -1,10 +1,13 @@
 //! Screen-space effects recorded as compute passes around the main render
 //! pass: bloom over the finished HDR image before tone mapping, and ambient
-//! occlusion traced from a depth prepass before the scene is lit.
+//! occlusion traced from a depth prepass before the scene is lit, and the
+//! brightness measurement auto exposure adapts to.
 
 use std::sync::Arc;
 
-use vulkano::buffer::{BufferContents, Subbuffer};
+use vulkano::buffer::{
+    Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
+};
 use vulkano::command_buffer::{
     AutoCommandBufferBuilder, PrimaryAutoCommandBuffer,
 };
@@ -43,6 +46,7 @@ pub(super) struct PostPipelines {
     bloom_up: Arc<ComputePipeline>,
     occlusion_trace: Arc<ComputePipeline>,
     occlusion_blur: Arc<ComputePipeline>,
+    exposure: Arc<ComputePipeline>,
     linear: Arc<Sampler>,
     /// Point sampler; the occlusion target has no guaranteed linear
     /// filtering.
@@ -77,6 +81,7 @@ impl PostPipelines {
             occlusion_blur: create(occlusion_blur_shader::load(
                 device.clone(),
             ))?,
+            exposure: create(exposure_shader::load(device.clone()))?,
             linear: sampler(Filter::Linear)?,
             nearest: sampler(Filter::Nearest)?,
         };
@@ -86,6 +91,7 @@ impl PostPipelines {
             (&pipelines.bloom_up, "Bloom upsample"),
             (&pipelines.occlusion_trace, "Ambient occlusion trace"),
             (&pipelines.occlusion_blur, "Ambient occlusion blur"),
+            (&pipelines.exposure, "Auto exposure"),
         ] {
             name_object(&**pipeline, name);
         }
@@ -273,6 +279,106 @@ impl BloomChain {
             }
         }
         Ok(self.steps.len() as u32)
+    }
+}
+
+/// Exposure auto exposure has adapted to, in a buffer tone mapping reads,
+/// rebuilt with the HDR target.
+pub(super) struct ExposureMeter {
+    /// One `f32`: the adapted exposure factor.
+    pub(super) buffer: Subbuffer<f32>,
+    set: Arc<DescriptorSet>,
+    /// When the last measurement was recorded; `None` adapts at once.
+    last: Option<std::time::Instant>,
+}
+
+impl ExposureMeter {
+    pub(super) fn new(
+        allocator: &Arc<StandardMemoryAllocator>,
+        descriptor_allocator: &Arc<StandardDescriptorSetAllocator>,
+        pipelines: &PostPipelines,
+        hdr: &Arc<ImageView>,
+    ) -> Result<Self, SceneRenderError> {
+        let buffer = Buffer::new_sized::<f32>(
+            allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+        )
+        .map_err(error)?;
+        let set = DescriptorSet::new(
+            descriptor_allocator.clone(),
+            pipelines.exposure.layout().set_layouts()[0].clone(),
+            [
+                WriteDescriptorSet::image_view_sampler(
+                    0,
+                    hdr.clone(),
+                    pipelines.linear.clone(),
+                ),
+                WriteDescriptorSet::buffer(1, buffer.clone()),
+            ],
+            [],
+        )
+        .map_err(error)?;
+        Ok(Self {
+            buffer,
+            set,
+            last: None,
+        })
+    }
+
+    /// Frames without auto exposure call this, so the next one adapts at
+    /// once instead of from a stale value.
+    pub(super) fn reset(&mut self) {
+        self.last = None;
+    }
+
+    /// Measures the HDR image and moves the exposure in `buffer` toward
+    /// its target, by the wall-clock time since the last measurement.
+    pub(super) fn record(
+        &mut self,
+        commands: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        pipelines: &PostPipelines,
+        settings: &crate::runtime::AutoExposure,
+    ) -> Result<(), SceneRenderError> {
+        let now = std::time::Instant::now();
+        let blend = self.last.map_or(1.0, |last| {
+            let seconds = now.duration_since(last).as_secs_f32();
+            1.0 - (-settings.speed.max(0.0) * seconds).exp()
+        });
+        self.last = Some(now);
+        let min_exposure = settings.min_exposure.max(1e-3);
+        let pipeline = &pipelines.exposure;
+        commands
+            .bind_pipeline_compute(pipeline.clone())
+            .map_err(error)?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                self.set.clone(),
+            )
+            .map_err(error)?
+            .push_constants(
+                pipeline.layout().clone(),
+                0,
+                exposure_shader::Params {
+                    key: settings.key.max(1e-3),
+                    min_exposure,
+                    max_exposure: settings.max_exposure.max(min_exposure),
+                    blend,
+                },
+            )
+            .map_err(error)?;
+        unsafe {
+            commands.dispatch([1, 1, 1]).map_err(error)?;
+        }
+        Ok(())
     }
 }
 
@@ -693,6 +799,58 @@ void main() {
     }
     float occlusion = count > 0.0 ? sum / count : center.x;
     imageStore(target, pixel, vec4(pow(clamp(occlusion, 0.0, 1.0), params.settings.y)));
+}
+"
+    }
+}
+
+#[rustfmt::skip]
+mod exposure_shader {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        src: r"
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D hdr;
+layout(set = 0, binding = 1) buffer Exposure { float value; } exposure;
+// blend is how far this frame moves toward the target: 1 adapts at once.
+layout(push_constant) uniform Params {
+    float key;
+    float min_exposure;
+    float max_exposure;
+    float blend;
+} params;
+shared float sums[256];
+
+// ponytail: a fixed 64x64 grid of bilinear taps, so a small bright spot
+// between taps is missed; measure a bloom mip if that shows.
+const uint GRID = 64u;
+
+void main() {
+    uint index = gl_LocalInvocationIndex;
+    float sum = 0.0;
+    for (uint tap = index; tap < GRID * GRID; tap += 256u) {
+        vec2 uv = (vec2(tap % GRID, tap / GRID) + 0.5) / float(GRID);
+        vec3 c = textureLod(hdr, uv, 0.0).rgb;
+        sum += log2(max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
+    }
+    sums[index] = sum;
+    barrier();
+    // Fixed-order tree reduction, so the same image gives the same value.
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (index < stride) {
+            sums[index] += sums[index + stride];
+        }
+        barrier();
+    }
+    if (index == 0u) {
+        float average = exp2(sums[0] / float(GRID * GRID));
+        float target = clamp(params.key / average,
+            params.min_exposure, params.max_exposure);
+        // Adapting in log space feels even in both directions.
+        exposure.value = params.blend >= 1.0 ? target
+            : exp2(mix(log2(exposure.value), log2(target), params.blend));
+    }
 }
 "
     }

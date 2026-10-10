@@ -491,6 +491,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::PostVolume>();
     types.register::<super::CameraScreen>();
     types.register::<super::Bloom>();
+    types.register::<super::AutoExposure>();
     types.register::<super::AmbientOcclusion>();
     types.register::<SceneId>();
     types.register::<SkyLight>();

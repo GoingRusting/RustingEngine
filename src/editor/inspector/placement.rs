@@ -12,12 +12,13 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 
 use crate::runtime::{
-    AmbientLight, AmbientOcclusion, Bloom, Camera, DirectionalLight, Fog,
-    MeshRenderer, Name, PointLight, SceneBackground, SkyLight, SpotLight,
-    ToneMapping, AMBIENT_LIGHT_COMPONENT, AMBIENT_OCCLUSION_COMPONENT,
-    BACKGROUND_COMPONENT, BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT,
-    FOG_COMPONENT, HUD_ELEMENT_COMPONENT, POST_VOLUME_COMPONENT,
-    SKY_LIGHT_COMPONENT, TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
+    AmbientLight, AmbientOcclusion, AutoExposure, Bloom, Camera,
+    DirectionalLight, Fog, MeshRenderer, Name, PointLight, SceneBackground,
+    SkyLight, SpotLight, ToneMapping, AMBIENT_LIGHT_COMPONENT,
+    AMBIENT_OCCLUSION_COMPONENT, AUTO_EXPOSURE_COMPONENT, BACKGROUND_COMPONENT,
+    BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT, FOG_COMPONENT,
+    HUD_ELEMENT_COMPONENT, POST_VOLUME_COMPONENT, SKY_LIGHT_COMPONENT,
+    TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 use crate::runtime::{
     ANIMATION_COMPONENT, ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT,
@@ -63,6 +64,7 @@ fn kind(name: &str) -> Kind {
         | ENVIRONMENT_MAP_COMPONENT
         | FOG_COMPONENT
         | BLOOM_COMPONENT
+        | AUTO_EXPOSURE_COMPONENT
         | COLOR_GRADING_COMPONENT
         | POST_VOLUME_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
@@ -125,6 +127,7 @@ pub(in crate::editor) fn placement(
         }
         FOG_COMPONENT => first_with::<Fog>(world),
         BLOOM_COMPONENT => first_with::<Bloom>(world),
+        AUTO_EXPOSURE_COMPONENT => first_with::<AutoExposure>(world),
         COLOR_GRADING_COMPONENT => {
             first_with::<crate::runtime::ColorGrading>(world)
         }
@@ -363,6 +366,10 @@ pub(in crate::editor) fn component_help(
         BLOOM_COMPONENT => (
             "Makes very bright areas glow.",
             "Lamps, sun, magic, neon.",
+        ),
+        AUTO_EXPOSURE_COMPONENT => (
+            "Brightens dark scenes and darkens bright ones, like an eye adapting.",
+            "Walking from a dark cave into sunlight.",
         ),
         AMBIENT_OCCLUSION_COMPONENT => (
             "Darkens creases and contact points for depth.",
