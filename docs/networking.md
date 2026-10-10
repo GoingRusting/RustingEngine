@@ -1,7 +1,8 @@
 # Networking
 
 `rusting_engine::net` sends reliable, ordered messages between one host and
-its clients over TCP. It uses only the standard library. Every client talks
+its clients over TCP, and unreliable ones over UDP. It uses only the
+standard library. Every client talks
 to the host, and the host forwards what other clients need (a star).
 
 - The host has id `HOST` (0). Clients get ids from 1 in join order.
@@ -115,6 +116,22 @@ session.simulate(NetConditions {
 simulation is holding back. Show it on a debug HUD to see what a game
 sends per second.
 
+## Unreliable messages
+
+`send_unreliable(peer, bytes)` and `broadcast_unreliable(bytes)` send over
+UDP beside the TCP connection. A lost one is gone instead of holding up
+the messages behind it, so use them for state sent every tick, such as
+positions. They arrive as the same `NetEvent::Message`.
+
+- A message may be lost, duplicated or arrive out of order. Send whole
+  state, not changes, and drop old ones (put a tick number in each).
+- At most `MAX_UNRELIABLE` (1200) bytes, so one fits in a packet.
+- The host listens for UDP on its TCP port: open both in the firewall.
+- They go reliably where there is no UDP route: through a relay, in a
+  loopback session, and to a client whose first datagram has not reached
+  the host yet.
+- `simulate` drops them at the loss rate instead of resending them.
+
 ## Tests without sockets
 
 `NetSession::loopback(clients)` returns a host and that many clients joined
@@ -137,9 +154,8 @@ for event in host.poll() {
 
 ## Limits
 
-- TCP only: no unreliable UDP channel yet, so a lost packet delays the
-  messages behind it. Send state snapshots at a fixed rate rather than
-  every frame.
+- Reliable messages ride TCP, so a lost packet delays the messages behind
+  it. Send per-tick state with `send_unreliable` instead.
 - No replication, prediction or rollback is built in. Send what changed
   (positions, counters) and apply it on the other side.
 - No encryption. The password and relay token travel in plain text, so
