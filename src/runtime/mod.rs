@@ -8,6 +8,7 @@ mod animation;
 mod audio;
 mod classes;
 mod click;
+pub mod cloth;
 mod components;
 mod cpu_physics;
 mod determinism;
@@ -62,6 +63,7 @@ pub use audio::{
     MAX_VOICE_LIMIT, QUEUE_LIMIT,
 };
 pub use classes::ClassIndex;
+pub use cloth::{Cloth, ClothSettings};
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{

@@ -195,7 +195,7 @@ pub struct SoftBody {
     rest_volumes: Vec<f32>,
 }
 
-fn vector(value: [f32; 3]) -> Vector3<f32> {
+pub(super) fn vector(value: [f32; 3]) -> Vector3<f32> {
     Vector3::from(value)
 }
 
@@ -424,133 +424,45 @@ impl SoftBody {
         if h <= 0.0 {
             return;
         }
-        let gravity = vector(settings.gravity);
-        let keep = (1.0 - settings.damping * h).clamp(0.0, 1.0);
         let mut previous = self.positions.clone();
         for _ in 0..substeps {
-            for i in 0..self.positions.len() {
-                previous[i] = self.positions[i];
-                if self.inverse_masses[i] == 0.0 {
-                    continue;
-                }
-                let velocity = vector(self.velocities[i]) * keep + gravity * h;
-                self.velocities[i] = velocity.into();
-                self.positions[i] =
-                    (vector(self.positions[i]) + velocity * h).into();
-            }
-            for body in bodies.iter_mut() {
-                body.position =
-                    (vector(body.position) + vector(body.velocity) * h).into();
-                body.rotation =
-                    nalgebra::Rotation3::new(vector(body.angular_velocity) * h)
-                        * body.rotation;
-            }
-            self.solve_edges(settings.edge_compliance / (h * h));
+            previous.copy_from_slice(&self.positions);
+            predict(
+                &mut self.positions,
+                &mut self.velocities,
+                &self.inverse_masses,
+                settings.gravity,
+                settings.damping,
+                h,
+            );
+            advance_bodies(bodies, h);
+            solve_distances(
+                &mut self.positions,
+                &self.inverse_masses,
+                &self.edges,
+                &self.rest_lengths,
+                settings.edge_compliance / (h * h),
+            );
             self.solve_volumes(settings.volume_compliance / (h * h));
-            for anchor in anchors {
-                let weight = self.inverse_masses[anchor.particle];
-                let Some(body) = bodies.get_mut(anchor.body) else {
-                    continue;
-                };
-                if weight == 0.0 {
-                    continue;
-                }
-                let arm = body.rotation * vector(anchor.local);
-                let gap = vector(body.position) + arm
-                    - vector(self.positions[anchor.particle]);
-                self.close_gap(anchor.particle, body, arm, gap, h);
-            }
-            for obstacle in obstacles {
-                let Some(body) = bodies.get_mut(obstacle.body) else {
-                    continue;
-                };
-                for i in 0..self.positions.len() {
-                    if self.inverse_masses[i] == 0.0 {
-                        continue;
-                    }
-                    let arm = vector(self.positions[i]) - vector(body.position);
-                    let local = body.rotation.inverse() * arm;
-                    if let Some((normal, depth)) =
-                        obstacle.shape.push_out(local)
-                    {
-                        let gap = body.rotation * normal * depth;
-                        self.close_gap(i, body, arm, gap, h);
-                    }
-                }
-            }
-            for i in 0..self.positions.len() {
-                if self.inverse_masses[i] == 0.0 {
-                    continue;
-                }
-                if let Some(floor) = settings.floor {
-                    if self.positions[i][1] < floor {
-                        self.positions[i] =
-                            [previous[i][0], floor, previous[i][2]];
-                    }
-                }
-                self.velocities[i] =
-                    ((vector(self.positions[i]) - vector(previous[i])) / h)
-                        .into();
-            }
+            solve_holds(
+                &mut self.positions,
+                &self.inverse_masses,
+                bodies,
+                anchors,
+                obstacles,
+                h,
+            );
+            finish_substep(
+                &mut self.positions,
+                &mut self.velocities,
+                &self.inverse_masses,
+                &previous,
+                settings.floor,
+                h,
+            );
         }
         if let Some(strain) = settings.tear_strain {
             self.tear(strain);
-        }
-    }
-
-    /// Moves `particle` by `gap` (to where it should be), shared with
-    /// `body` as one XPBD position constraint: the body is pushed and turned
-    /// the other way at `arm` from its center, as much as its inverse mass
-    /// and inertia allow.
-    fn close_gap(
-        &mut self,
-        particle: usize,
-        body: &mut AnchorBody,
-        arm: Vector3<f32>,
-        gap: Vector3<f32>,
-        h: f32,
-    ) {
-        let weight = self.inverse_masses[particle];
-        let length = gap.norm();
-        if length < 1e-9 || weight == 0.0 {
-            return;
-        }
-        let normal = gap / length;
-        let turn = arm.cross(&normal);
-        let body_weight =
-            body.inverse_mass + turn.dot(&(body.inverse_inertia * turn));
-        let lambda = length / (weight + body_weight);
-        self.positions[particle] = (vector(self.positions[particle])
-            + normal * (weight * lambda))
-            .into();
-        let push = -normal * lambda;
-        body.position =
-            (vector(body.position) + push * body.inverse_mass).into();
-        body.velocity =
-            (vector(body.velocity) + push * (body.inverse_mass / h)).into();
-        let spin = body.inverse_inertia * arm.cross(&push);
-        body.rotation = nalgebra::Rotation3::new(spin) * body.rotation;
-        body.angular_velocity =
-            (vector(body.angular_velocity) + spin / h).into();
-    }
-
-    fn solve_edges(&mut self, alpha: f32) {
-        for (edge, &rest) in self.edges.iter().zip(&self.rest_lengths) {
-            let [a, b] = edge.map(|index| index as usize);
-            let weight = self.inverse_masses[a] + self.inverse_masses[b];
-            let delta = vector(self.positions[a]) - vector(self.positions[b]);
-            let length = delta.norm();
-            if weight + alpha == 0.0 || length < 1e-9 {
-                continue;
-            }
-            let normal = delta / length;
-            let lambda = -(length - rest) / (weight + alpha);
-            self.positions[a] = (vector(self.positions[a])
-                + normal * (lambda * self.inverse_masses[a]))
-                .into();
-            self.positions[b] = (vector(self.positions[b])
-                - normal * (lambda * self.inverse_masses[b]))
-                .into();
         }
     }
 
@@ -596,6 +508,173 @@ impl SoftBody {
                 .wrapping_mul(0x0000_0100_0000_01b3);
         }
         hash
+    }
+}
+
+/// Starts a substep: damps every free particle's velocity, adds gravity
+/// and moves the particle by it.
+pub(super) fn predict(
+    positions: &mut [[f32; 3]],
+    velocities: &mut [[f32; 3]],
+    inverse_masses: &[f32],
+    gravity: [f32; 3],
+    damping: f32,
+    h: f32,
+) {
+    let keep = (1.0 - damping * h).clamp(0.0, 1.0);
+    for i in 0..positions.len() {
+        if inverse_masses[i] == 0.0 {
+            continue;
+        }
+        let velocity = vector(velocities[i]) * keep + vector(gravity) * h;
+        velocities[i] = velocity.into();
+        positions[i] = (vector(positions[i]) + velocity * h).into();
+    }
+}
+
+/// Moves and turns every body by its velocities for one substep.
+pub(super) fn advance_bodies(bodies: &mut [AnchorBody], h: f32) {
+    for body in bodies {
+        body.position =
+            (vector(body.position) + vector(body.velocity) * h).into();
+        body.rotation =
+            nalgebra::Rotation3::new(vector(body.angular_velocity) * h)
+                * body.rotation;
+    }
+}
+
+/// One Gauss-Seidel pass over distance constraints between particle pairs,
+/// in slice order, with XPBD compliance `alpha` (already divided by h²).
+pub(super) fn solve_distances(
+    positions: &mut [[f32; 3]],
+    inverse_masses: &[f32],
+    pairs: &[[u32; 2]],
+    rests: &[f32],
+    alpha: f32,
+) {
+    for (pair, &rest) in pairs.iter().zip(rests) {
+        let [a, b] = pair.map(|index| index as usize);
+        let weight = inverse_masses[a] + inverse_masses[b];
+        let delta = vector(positions[a]) - vector(positions[b]);
+        let length = delta.norm();
+        if weight + alpha == 0.0 || length < 1e-9 {
+            continue;
+        }
+        let normal = delta / length;
+        let lambda = -(length - rest) / (weight + alpha);
+        positions[a] = (vector(positions[a])
+            + normal * (lambda * inverse_masses[a]))
+            .into();
+        positions[b] = (vector(positions[b])
+            - normal * (lambda * inverse_masses[b]))
+            .into();
+    }
+}
+
+/// Holds anchored particles on their bodies and pushes particles out of
+/// obstacles, moving the bodies back (see [`SoftBody::step_coupled`]).
+pub(super) fn solve_holds(
+    positions: &mut [[f32; 3]],
+    inverse_masses: &[f32],
+    bodies: &mut [AnchorBody],
+    anchors: &[Anchor],
+    obstacles: &[Obstacle],
+    h: f32,
+) {
+    for anchor in anchors {
+        let Some(body) = bodies.get_mut(anchor.body) else {
+            continue;
+        };
+        if anchor.particle >= positions.len() {
+            continue;
+        }
+        let arm = body.rotation * vector(anchor.local);
+        let gap =
+            vector(body.position) + arm - vector(positions[anchor.particle]);
+        close_gap(
+            positions,
+            inverse_masses,
+            anchor.particle,
+            body,
+            arm,
+            gap,
+            h,
+        );
+    }
+    for obstacle in obstacles {
+        let Some(body) = bodies.get_mut(obstacle.body) else {
+            continue;
+        };
+        for i in 0..positions.len() {
+            if inverse_masses[i] == 0.0 {
+                continue;
+            }
+            let arm = vector(positions[i]) - vector(body.position);
+            let local = body.rotation.inverse() * arm;
+            if let Some((normal, depth)) = obstacle.shape.push_out(local) {
+                let gap = body.rotation * normal * depth;
+                close_gap(positions, inverse_masses, i, body, arm, gap, h);
+            }
+        }
+    }
+}
+
+/// Moves `particle` by `gap` (to where it should be), shared with `body` as
+/// one XPBD position constraint: the body is pushed and turned the other
+/// way at `arm` from its center, as much as its inverse mass and inertia
+/// allow.
+fn close_gap(
+    positions: &mut [[f32; 3]],
+    inverse_masses: &[f32],
+    particle: usize,
+    body: &mut AnchorBody,
+    arm: Vector3<f32>,
+    gap: Vector3<f32>,
+    h: f32,
+) {
+    let weight = inverse_masses[particle];
+    let length = gap.norm();
+    if length < 1e-9 || weight == 0.0 {
+        return;
+    }
+    let normal = gap / length;
+    let turn = arm.cross(&normal);
+    let body_weight =
+        body.inverse_mass + turn.dot(&(body.inverse_inertia * turn));
+    let lambda = length / (weight + body_weight);
+    positions[particle] =
+        (vector(positions[particle]) + normal * (weight * lambda)).into();
+    let push = -normal * lambda;
+    body.position = (vector(body.position) + push * body.inverse_mass).into();
+    body.velocity =
+        (vector(body.velocity) + push * (body.inverse_mass / h)).into();
+    let spin = body.inverse_inertia * arm.cross(&push);
+    body.rotation = nalgebra::Rotation3::new(spin) * body.rotation;
+    body.angular_velocity = (vector(body.angular_velocity) + spin / h).into();
+}
+
+/// Ends a substep: lifts particles below the floor onto it without
+/// sideways motion (static friction) and takes velocities from how far
+/// each particle moved.
+pub(super) fn finish_substep(
+    positions: &mut [[f32; 3]],
+    velocities: &mut [[f32; 3]],
+    inverse_masses: &[f32],
+    previous: &[[f32; 3]],
+    floor: Option<f32>,
+    h: f32,
+) {
+    for i in 0..positions.len() {
+        if inverse_masses[i] == 0.0 {
+            continue;
+        }
+        if let Some(floor) = floor {
+            if positions[i][1] < floor {
+                positions[i] = [previous[i][0], floor, previous[i][2]];
+            }
+        }
+        velocities[i] =
+            ((vector(positions[i]) - vector(previous[i])) / h).into();
     }
 }
 
