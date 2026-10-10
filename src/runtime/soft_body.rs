@@ -500,6 +500,13 @@ impl SoftBody {
         }
     }
 
+    /// The rest length of each edge and the rest volume of each
+    /// tetrahedron, in the order of [`Self::edges`] and
+    /// [`Self::tetrahedra`].
+    pub(super) fn rests(&self) -> (&[f32], &[f32]) {
+        (&self.rest_lengths, &self.rest_volumes)
+    }
+
     /// FNV-1a over every position and velocity bit, for determinism checks.
     pub fn state_hash(&self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325u64;

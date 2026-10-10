@@ -388,6 +388,42 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_soft_block_steps_on_the_gpu_with_the_cpu_reference_bits() {
+        use crate::rendering::test_support::headless_device;
+        use crate::runtime::gpu_cloth::pack_soft_body;
+        use crate::runtime::{SoftBody, SoftBodySettings};
+
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let base = headless_device();
+        let mut runner =
+            GpuClothRunner::new(base.device.clone(), base.queue.clone())
+                .unwrap();
+        let body = SoftBody::block([-0.5, 1.0, -0.5], [4, 4, 4], 0.25, 1000.0)
+            .unwrap();
+        let words =
+            pack_soft_body(&body, &SoftBodySettings::default(), 1.0 / 60.0, 90)
+                .unwrap();
+        let mut reference = words.clone();
+        step_on_cpu(&mut reference);
+        let id = PhysicsId {
+            slot: 1,
+            generation: 0,
+        };
+        runner.submit(id, 90, words).unwrap();
+        runner.block_until_complete();
+        let done = runner.take_completed();
+        assert_eq!(done.len(), 1);
+        assert!(done[0].words == reference, "GPU and CPU bits differ");
+    }
+
+    #[test]
     fn a_cloth_reaching_the_floor_sends_its_event_once() {
         use crate::runtime::{
             App, ClothVolume, EventQueue, GpuEventRegistry, GpuPhysicsEvent,

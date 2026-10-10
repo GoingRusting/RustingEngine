@@ -1,12 +1,16 @@
 #version 450
-// XPBD cloth in one workgroup; src/runtime/gpu_cloth.rs packs the words and
-// holds the bit-exact Rust reference (`step_on_cpu`); change both.
+// XPBD cloth and soft bodies in one workgroup; src/runtime/gpu_cloth.rs
+// packs the words and holds the bit-exact Rust reference (`step_on_cpu`);
+// change both.
 //
-// Header words: 0 particle count, 1 color count, 2 substeps, 3 steps,
-// 4 floor on, 5 substep h, 6 velocity kept per substep, 7..9 gravity,
-// 10 floor height, 12 color table, 13 constraints, 14 particles (offsets).
-// Color table: color count + 1 starts into the constraints.
-// Constraint: a, b, rest length, alpha (compliance / h^2).
+// Header words: 0 particle count, 1 distance color count, 2 substeps,
+// 3 steps, 4 floor on, 5 substep h, 6 velocity kept per substep,
+// 7..9 gravity, 10 floor height, 11 volume color count; offsets:
+// 12 distance color table, 13 distance constraints, 14 particles,
+// 15 volume color table, 16 volume constraints.
+// Color table: color count + 1 starts into its constraints.
+// Distance constraint: a, b, rest length, alpha (compliance / h^2).
+// Volume constraint: four corners, rest volume, alpha.
 // Particle: position xyz, velocity xyz, inverse mass, previous position xyz.
 layout(local_size_x = 256) in;
 #include <sim_math.glsl>
@@ -14,6 +18,10 @@ layout(set = 0, binding = 0) coherent buffer Data { uint words[]; };
 
 const uint CONSTRAINT_WORDS = 4u;
 const uint PARTICLE_WORDS = 10u;
+const uint VOLUME_WORDS = 6u;
+// 1 / 6 rounded to float, as `SIXTH` in gpu_cloth.rs.
+const float SIXTH = uintBitsToFloat(0x3E2AAAABu);
+const uvec3 OPPOSITE[4] = uvec3[4](uvec3(1u, 3u, 2u), uvec3(0u, 2u, 3u), uvec3(0u, 3u, 1u), uvec3(0u, 1u, 2u));
 
 float word(uint index) { return uintBitsToFloat(words[index]); }
 vec3 read3(uint index) { return vec3(word(index), word(index + 1u), word(index + 2u)); }
@@ -21,6 +29,10 @@ void write3(uint index, vec3 v) {
     words[index] = floatBitsToUint(v.x);
     words[index + 1u] = floatBitsToUint(v.y);
     words[index + 2u] = floatBitsToUint(v.z);
+}
+vec3 cross_of(vec3 a, vec3 b) {
+    precise vec3 c = vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+    return c;
 }
 void sync() {
     memoryBarrierBuffer();
@@ -40,6 +52,9 @@ void main() {
     uint color_base = words[12];
     uint constraint_base = words[13];
     uint particle_base = words[14];
+    uint volume_colors = words[11];
+    uint volume_table = words[15];
+    uint volume_base = words[16];
     float inverse_h = sim_recip(h);
 
     for (uint round = 0u; round < rounds; round++) {
@@ -77,6 +92,39 @@ void main() {
                 precise vec3 moved_b = xb - normal * (lambda * wb);
                 write3(pa, moved_a);
                 write3(pb, moved_b);
+            }
+            sync();
+        }
+        for (uint color = 0u; color < volume_colors; color++) {
+            uint end = words[volume_table + color + 1u];
+            for (uint k = words[volume_table + color] + lane; k < end; k += gl_WorkGroupSize.x) {
+                uint q = volume_base + k * VOLUME_WORDS;
+                uint p[4];
+                vec3 x[4];
+                float w[4];
+                for (uint j = 0u; j < 4u; j++) {
+                    p[j] = particle_base + words[q + j] * PARTICLE_WORDS;
+                    x[j] = read3(p[j]);
+                    w[j] = word(p[j] + 6u);
+                }
+                float rest = word(q + 4u);
+                float alpha = word(q + 5u);
+                vec3 gradients[4];
+                precise float weight = 0.0;
+                for (uint j = 0u; j < 4u; j++) {
+                    uvec3 o = OPPOSITE[j];
+                    precise vec3 g = cross_of(x[o.y] - x[o.x], x[o.z] - x[o.x]) * SIXTH;
+                    gradients[j] = g;
+                    weight = weight + w[j] * sim_dot(g, g);
+                }
+                precise float denominator = weight + alpha;
+                if (denominator == 0.0) continue;
+                precise float volume = sim_dot(cross_of(x[1] - x[0], x[2] - x[0]), x[3] - x[0]) * SIXTH;
+                precise float lambda = -(volume - rest) * sim_recip(denominator);
+                for (uint j = 0u; j < 4u; j++) {
+                    precise vec3 moved = x[j] + gradients[j] * (lambda * w[j]);
+                    write3(p[j], moved);
+                }
             }
             sync();
         }
