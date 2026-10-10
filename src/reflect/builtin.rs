@@ -632,7 +632,7 @@ crate::reflect! {
         anchor: [f32; 3] { unit: "m", doc: "rope end in this body's local space" },
         target_anchor: [f32; 3] { unit: "m", doc: "rope end in the target's local space, or world space" },
         length: f32 { unit: "m", min: 0.0, doc: "longest the rope stretches" },
-        segments: u32 { doc: "bead count; more bend smoother and cost more" },
+        segments: u32 { doc: "bead count, 1 to 256; more bend smoother and cost more" },
         radius: f32 { unit: "m", min: 0.0, doc: "bead radius; keep it under half of length / (segments + 1)" },
         mass: f32 { unit: "kg", min: 0.0, doc: "per bead" },
     }

@@ -95,7 +95,7 @@ pub use render_benchmark::*;
 pub use render_world::*;
 pub use replay::*;
 pub use retarget::*;
-pub use rope::{Rope, RopeBead, RopeState};
+pub use rope::{Rope, RopeBead, RopeState, MAX_SEGMENTS as MAX_ROPE_SEGMENTS};
 pub use rusting_core::app::AppError;
 pub use rusting_core::input::ClickEvent;
 pub use rusting_core::schedule::{CpuFrameTimings, FrameReport, ScheduleStage};

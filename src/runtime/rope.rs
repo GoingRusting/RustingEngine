@@ -20,6 +20,9 @@ use super::{
 };
 use crate::Transform;
 
+/// Most beads one rope spawns, so a bad scene cannot spawn millions.
+pub const MAX_SEGMENTS: u32 = 256;
+
 /// A rope from this entity's body to `target`'s. See the module docs.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,7 +36,7 @@ pub struct Rope {
     pub target_anchor: [f32; 3],
     /// Longest the rope stretches, in metres.
     pub length: f32,
-    /// Bead count; more bend smoother and cost more.
+    /// Bead count, 1 to [`MAX_SEGMENTS`]; more bend smoother and cost more.
     pub segments: u32,
     /// Bead radius; keep it under half of `length / (segments + 1)`.
     pub radius: f32,
@@ -92,7 +95,7 @@ pub(super) fn build_ropes(world: &mut World) {
         .collect();
     ropes.sort_unstable_by_key(|(id, entity, _)| (*id, entity.to_bits()));
     for (_, owner, rope) in ropes {
-        let count = rope.segments.max(1);
+        let count = rope.segments.clamp(1, MAX_SEGMENTS);
         let link = rope.length / (count + 1) as f32;
         let from = world_point(world, rope.target, rope.target_anchor);
         let to = world_point(world, owner, rope.anchor);
