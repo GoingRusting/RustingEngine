@@ -455,6 +455,8 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<super::FluidParticle>();
     types.register::<super::fluid::OwnedSurface>();
     types.register::<super::FluidVolume>();
+    types.register::<super::SoftBodyVolume>();
+    types.register::<super::ClothVolume>();
     types.register::<Children>();
     types.register::<Collider>();
     types.register::<CollisionLayers>();

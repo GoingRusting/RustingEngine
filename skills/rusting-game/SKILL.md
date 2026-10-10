@@ -114,6 +114,14 @@ Prefer these components over game code when they fit:
   the entity. Dynamic bodies with sphere colliders float and sink in it.
   It is CPU only and one entity per particle, so keep it to a few thousand
   particles.
+- `rusting.soft_block` makes a jelly: `count_x/y/z` cubes of `spacing`
+  meters centered on the entity, kept in shape by XPBD. `softness` 0 is
+  rigid and 1e-3 wobbly; `tear_strain` above 0 lets it tear. It lands on
+  sphere, box and capsule colliders and pushes dynamic bodies back.
+- `rusting.cloth` makes a sheet of `count_x` by `count_y` squares in the
+  entity's XY plane. `pin_top` hangs its top edge on `holder` (a body) or
+  in place when `holder` is null; `wind` blows it and `tear_strain` above
+  0 lets it tear. It drapes over the same colliders as soft blocks.
 - `rusting.player_controller` walks up ground no steeper than
   `max_slope` (radians, default 45°) and steps onto ledges up to
   `max_step_height` (default 0.3 m); anything taller is a wall. Set
@@ -254,6 +262,8 @@ each one's fields, defaults and an example:
 - `rusting.ragdoll`: Hands a character's bones from animation to CPU physics and back.
 - `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
 - `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.
+- `rusting.soft_block`: XPBD soft body: a block of count_x by count_y by count_z cubes of spacing metres centered on the entity, each cut into six tetrahedra that keep their edge lengths and volumes.
+- `rusting.cloth`: XPBD cloth: a sheet of count_x by count_y squares of spacing metres in the entity's XY plane, centered on it, each cut into two triangles.
 - `rusting.gravity_volume`: Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored).
 - `rusting.mesh_surfaces`: Per-triangle surfaces for a collider with shape "TriangleMesh" on the same object.
 - `rusting.polygon`: A 2D outline for a collider with shape "Polygon" or "Chain" on the same object.

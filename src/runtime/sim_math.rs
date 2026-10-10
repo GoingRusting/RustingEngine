@@ -393,6 +393,7 @@ mod tests {
                 Some("-DGRID_PASS=1"),
             ),
             ("src/shaders/compute/sim_math_test.comp", None),
+            ("src/shaders/compute/cloth.comp", None),
         ] {
             let output = std::process::Command::new("glslc")
                 .args([

@@ -5734,6 +5734,139 @@ fn fluid_volumes_step_with_the_fixed_tick() {
     assert!(mean(&volume.fluid.positions) < mean(&start) - 0.3);
 }
 
+/// An 8 kg jelly cube of 0.2 m hanging under a 0.2 m box at `[0, 2, 0]`,
+/// its top face attached to the box. Returns (box, jelly).
+fn jelly_under_a_box(
+    app: &mut App,
+    kind: RigidBodyKind,
+) -> (bevy_ecs::entity::Entity, bevy_ecs::entity::Entity) {
+    let world = app.world_mut();
+    let body = cpu_body(
+        world,
+        [0.0, 2.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.1; 3],
+        },
+        kind,
+    );
+    let mut rigid = world.get_mut::<RigidBody>(body).unwrap();
+    rigid.mass = 8.0;
+    rigid.gravity_scale = 0.0;
+    let settings = SoftBodySettings {
+        floor: None,
+        damping: 0.0,
+        edge_compliance: 1e-5,
+        ..SoftBodySettings::default()
+    };
+    let cube =
+        SoftBody::block([-0.1, 1.7, -0.1], [2, 2, 2], 0.1, 1000.0).unwrap();
+    let mut volume = SoftBodyVolume::new(settings, cube);
+    let transform = *world.get::<Transform>(body).unwrap();
+    assert_eq!(
+        volume.attach_near([0.0, 2.0, 0.0], 0.18, body, &transform),
+        9
+    );
+    (body, world.spawn(volume).id())
+}
+
+#[test]
+fn a_hanging_soft_body_pulls_its_dynamic_body_down_by_its_weight() {
+    let mut app = App::new();
+    let (body, jelly) = jelly_under_a_box(&mut app, RigidBodyKind::Dynamic);
+    run_fixed_steps(&mut app, 60);
+    // Only the jelly feels gravity, so after one second the box and jelly
+    // together carry the jelly's weight times one second of momentum.
+    let world = app.world();
+    let soft = &world.get::<SoftBodyVolume>(jelly).unwrap().body;
+    let (mass, momentum) = soft
+        .velocities
+        .iter()
+        .zip(&soft.inverse_masses)
+        .fold((0.0, 0.0), |(mass, momentum), (velocity, weight)| {
+            (mass + 1.0 / weight, momentum + velocity[1] / weight)
+        });
+    let rigid = world.get::<RigidBody>(body).unwrap();
+    let total = momentum + rigid.mass * rigid.linear_velocity[1];
+    let expected = -mass * 9.81;
+    assert!(
+        (total - expected).abs() < 0.05 * expected.abs(),
+        "momentum {total}, expected {expected}"
+    );
+    let shared = expected / (mass + rigid.mass);
+    assert!(
+        rigid.linear_velocity[1] < 0.7 * shared,
+        "the box fell at only {:?}, shared speed {shared}",
+        rigid.linear_velocity
+    );
+    assert!(
+        length(rigid.angular_velocity) < 0.5,
+        "the box spins at {:?}",
+        rigid.angular_velocity
+    );
+}
+
+#[test]
+fn a_soft_body_follows_a_moving_kinematic_body() {
+    let mut app = App::new();
+    let (body, jelly) = jelly_under_a_box(&mut app, RigidBodyKind::Kinematic);
+    app.world_mut()
+        .get_mut::<RigidBody>(body)
+        .unwrap()
+        .linear_velocity = [1.0, 0.0, 0.0];
+    run_fixed_steps(&mut app, 60);
+    let world = app.world();
+    let origin = world.get::<Transform>(body).unwrap().position;
+    assert!((origin[0] - 1.0).abs() < 0.05, "box at {origin:?}");
+    let volume = world.get::<SoftBodyVolume>(jelly).unwrap();
+    for attachment in &volume.attachments {
+        let at = volume.body.positions[attachment.particle];
+        for axis in 0..3 {
+            let want = origin[axis] + attachment.local[axis];
+            assert!((at[axis] - want).abs() < 0.03, "{at:?} not at {want}");
+        }
+    }
+    let bottom = volume
+        .body
+        .positions
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::MAX, f32::min);
+    let mean_x = volume.body.positions.iter().map(|p| p[0]).sum::<f32>()
+        / volume.body.positions.len() as f32;
+    assert!(bottom > 1.5, "the jelly tore loose: bottom at {bottom}");
+    assert!(mean_x > 0.8, "the jelly stayed behind at x {mean_x}");
+}
+
+#[test]
+fn a_dynamic_box_dropped_on_a_jelly_comes_to_rest_on_it() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let crate_box = cpu_body(
+        world,
+        [0.0, 1.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.15; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    world.get_mut::<RigidBody>(crate_box).unwrap().mass = 2.0;
+    let settings = SoftBodySettings {
+        edge_compliance: 1e-4,
+        damping: 2.0,
+        ..SoftBodySettings::default()
+    };
+    let pad =
+        SoftBody::block([-0.3, 0.0, -0.3], [3, 2, 3], 0.2, 500.0).unwrap();
+    world.spawn(SoftBodyVolume::new(settings, pad));
+    run_fixed_steps(&mut app, 120);
+    let world = app.world();
+    let rest = world.get::<Transform>(crate_box).unwrap().position;
+    let speed = world.get::<RigidBody>(crate_box).unwrap().linear_velocity;
+    assert!(rest[1] > 0.45, "the box sank into the jelly to {rest:?}");
+    assert!(rest[1] < 0.6, "the box floats at {rest:?}");
+    assert!(speed[1].abs() < 0.3, "the box still moves at {speed:?}");
+}
+
 #[test]
 fn fluid_volumes_with_a_visual_own_one_entity_per_particle() {
     use crate::assets::PrimitiveShape;
@@ -5971,6 +6104,221 @@ fn fluid_blocks_round_trip_through_scenes_and_become_volumes() {
     assert_eq!(volume.fluid.positions.len(), 24);
     assert_eq!(volume.settings.bounds.0[1], 1.5);
     let _ = entity;
+}
+
+#[test]
+fn soft_blocks_round_trip_through_scenes_and_land_on_a_box() {
+    let block = SoftBlock {
+        count_x: 2,
+        count_y: 1,
+        count_z: 3,
+        softness: 1e-3,
+        tear_strain: 0.5,
+        ..SoftBlock::default()
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    app.spawn((Transform::new([0.0, 1.0, 0.0]), block));
+    app.spawn((
+        Transform::new([0.0, -0.5, 0.0]),
+        PhysicsBody::default(),
+        RigidBody {
+            kind: RigidBodyKind::Fixed,
+            ..RigidBody::default()
+        },
+        Collider {
+            shape: ColliderShape::Box {
+                half_extents: [2.0, 0.5, 2.0],
+            },
+            ..Collider::default()
+        },
+    ));
+    let document = scene_document(app.world_mut(), "soft").unwrap();
+    let mut loaded = App::new();
+    loaded.add_plugin(crate::assets::AssetPlugin).unwrap();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut query = loaded.world_mut().query::<&SoftBlock>();
+    assert_eq!(query.single(loaded.world()).unwrap(), &block);
+    run_fixed_steps(&mut loaded, 120);
+    let mut query = loaded.world_mut().query::<&SoftBodyVolume>();
+    let volume = query.single(loaded.world()).unwrap();
+    assert_eq!(volume.body.positions.len(), 3 * 2 * 4);
+    assert_eq!(volume.body.tetrahedra.len(), 6 * 6);
+    assert_eq!(volume.settings.tear_strain, Some(0.5));
+    let bottom = volume
+        .body
+        .positions
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::MAX, f32::min);
+    assert!((-0.01..0.03).contains(&bottom), "rests at {bottom}");
+}
+
+#[test]
+fn a_visible_soft_block_draws_one_skin_that_goes_with_it() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let block =
+        app.spawn((Transform::new([0.0, 1.0, 0.0]), SoftBlock::default()));
+    let hidden = app.spawn((
+        Transform::new([3.0, 1.0, 0.0]),
+        SoftBlock {
+            visible: false,
+            ..SoftBlock::default()
+        },
+    ));
+    run_fixed_steps(&mut app, 2);
+    let skins = |app: &mut App| {
+        let mut query = app
+            .world_mut()
+            .query::<(&crate::runtime::FluidParticle, &MeshRenderer)>();
+        query
+            .iter(app.world())
+            .map(|(owner, renderer)| (owner.0, renderer.mesh))
+            .collect::<Vec<_>>()
+    };
+    let drawn = skins(&mut app);
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].0, block);
+    let mesh = drawn[0].1;
+    let low = |app: &App| {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        assets
+            .meshes
+            .get(mesh)
+            .unwrap()
+            .vertices
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::MAX, f32::min)
+    };
+    let before = low(&app);
+    run_fixed_steps(&mut app, 10);
+    assert!(
+        low(&app) < before - 0.01,
+        "the skin did not follow the fall"
+    );
+    assert_eq!(skins(&mut app).len(), 1);
+    app.world_mut().despawn(block);
+    run_fixed_steps(&mut app, 2);
+    assert!(skins(&mut app).is_empty());
+    let assets = app.world().resource::<crate::assets::AssetServer>();
+    assert!(assets.meshes.get(mesh).is_none());
+    let _ = hidden;
+}
+
+#[test]
+fn cloth_round_trips_through_scenes_hangs_on_its_holder_and_drapes() {
+    let fixed_box = |position: [f32; 3], half_extents: [f32; 3]| {
+        (
+            Transform::new(position),
+            PhysicsBody::default(),
+            RigidBody {
+                kind: RigidBodyKind::Fixed,
+                ..RigidBody::default()
+            },
+            Collider {
+                shape: ColliderShape::Box { half_extents },
+                ..Collider::default()
+            },
+        )
+    };
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let pole = app.spawn(fixed_box([0.0, 2.05, 3.0], [0.5, 0.05, 0.05]));
+    let flag = ClothSheet {
+        count_x: 6,
+        count_y: 6,
+        holder: pole,
+        wind: [0.0, 0.0, 2.0],
+        ..ClothSheet::default()
+    };
+    // The flag's top edge sits on the pole's bottom face.
+    app.spawn((Transform::new([0.0, 1.7, 3.0]), flag));
+    app.spawn(fixed_box([0.0, -0.5, 0.0], [2.0, 0.5, 2.0]));
+    let tarp = ClothSheet {
+        count_x: 6,
+        count_y: 6,
+        pin_top: false,
+        visible: false,
+        ..ClothSheet::default()
+    };
+    app.spawn((Transform::new([0.0, 1.0, 0.0]), tarp));
+    let document = scene_document(app.world_mut(), "cloth").unwrap();
+    let mut loaded = App::new();
+    loaded.add_plugin(crate::assets::AssetPlugin).unwrap();
+    load_scene_document(loaded.world_mut(), &document, SceneLoadMode::Replace)
+        .unwrap();
+    let mut sheets = loaded
+        .world_mut()
+        .query::<(bevy_ecs::entity::Entity, &ClothSheet)>();
+    let sheets: Vec<_> = sheets
+        .iter(loaded.world())
+        .map(|(entity, sheet)| (entity, *sheet))
+        .collect();
+    assert_eq!(sheets.len(), 2);
+    let (flag_entity, loaded_flag) =
+        *sheets.iter().find(|(_, sheet)| sheet.pin_top).unwrap();
+    let (tarp_entity, _) =
+        *sheets.iter().find(|(_, sheet)| !sheet.pin_top).unwrap();
+    let pole_position = loaded
+        .world()
+        .get::<Transform>(loaded_flag.holder)
+        .expect("the holder is remapped to the loaded pole")
+        .position;
+    assert_eq!(pole_position, [0.0, 2.05, 3.0]);
+    assert_eq!(
+        loaded_flag,
+        ClothSheet {
+            holder: loaded_flag.holder,
+            ..flag
+        }
+    );
+    run_fixed_steps(&mut loaded, 90);
+    let world = loaded.world();
+    let flag = world.get::<ClothVolume>(flag_entity).unwrap();
+    assert_eq!(flag.attachments.len(), 7);
+    for particle in 0..7 {
+        let top = flag.cloth.positions[particle];
+        assert!((top[1] - 2.0).abs() < 0.01, "top row moved to {top:?}");
+    }
+    let blown = flag.cloth.positions.iter().map(|p| p[2]).sum::<f32>()
+        / flag.cloth.positions.len() as f32;
+    assert!(blown > 3.02, "the wind did not blow the flag: {blown}");
+    let tarp = world.get::<ClothVolume>(tarp_entity).unwrap();
+    assert!(tarp.skin.is_none());
+    for p in &tarp.cloth.positions {
+        assert!(p[1] > -0.02, "the tarp fell through the box: {p:?}");
+    }
+    // Only the flag draws: one two-sided mesh.
+    let mut drawn = loaded
+        .world_mut()
+        .query::<(&crate::runtime::FluidParticle, &MeshRenderer)>();
+    let drawn: Vec<_> = drawn
+        .iter(loaded.world())
+        .map(|(owner, renderer)| (owner.0, renderer.mesh))
+        .collect();
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].0, flag_entity);
+    let assets = loaded.world().resource::<crate::assets::AssetServer>();
+    let mesh = assets.meshes.get(drawn[0].1).unwrap();
+    assert_eq!(mesh.vertices.len(), 2 * 49);
+    assert_eq!(mesh.indices.len(), 2 * 3 * 72);
+}
+
+#[test]
+fn huge_soft_blocks_are_shrunk_to_the_cap() {
+    let block = SoftBlock {
+        count_x: 1000,
+        count_y: 1000,
+        count_z: 2,
+        ..SoftBlock::default()
+    };
+    let volume = block.volume([0.0; 3]).unwrap();
+    let particles = volume.body.positions.len() as u64;
+    assert!(particles <= crate::runtime::soft_body::MAX_SOFT_BLOCK_PARTICLES);
+    assert!(particles > 1000, "shrunk too far to {particles}");
 }
 
 #[test]
@@ -6966,6 +7314,59 @@ fn dynamic_players_walk_jump_stay_upright_and_shove_by_mass() {
         "heavy crate went to {:?}",
         at(&app, heavy)
     );
+}
+
+#[test]
+fn a_motorised_sweeper_knocks_a_dynamic_player_away() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let start = [0.0, 0.91, 2.0];
+    let body =
+        cpu_body(world, start, DEFAULT_PLAYER_SHAPE, RigidBodyKind::Dynamic);
+    world.get_mut::<RigidBody>(body).unwrap().mass = 80.0;
+    world.entity_mut(body).insert(PlayerController::default());
+    // A 20 kg bar on a hinge about world Y, its motor turning it into the
+    // player standing 2 m from the pivot. The motor must beat the walk
+    // brake (80 kg x 40 m/s² = 3200 N, so 6400 N·m at 2 m): Hammer Run's
+    // 5000 N·m sweepers stall against a dynamic player.
+    let pivot = [0.0, 0.6, 0.0];
+    let bar = cpu_body(
+        world,
+        pivot,
+        ColliderShape::Box {
+            half_extents: [2.8, 0.2, 0.2],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    let mut rigid = world.get_mut::<RigidBody>(bar).unwrap();
+    rigid.mass = 20.0;
+    rigid.gravity_scale = 0.0;
+    let frame = [0.0, 0.0, std::f32::consts::FRAC_PI_2];
+    world.entity_mut(bar).insert(Joint {
+        frame,
+        target_frame: frame,
+        ..Joint::new(
+            JointKind::Hinge {
+                limit: None,
+                spring: None,
+                motor: Some(JointMotor {
+                    speed: 1.5,
+                    max_force: 20000.0,
+                }),
+            },
+            bevy_ecs::entity::Entity::PLACEHOLDER,
+            [0.0; 3],
+            pivot,
+        )
+    });
+    run_fixed_steps(&mut app, 150);
+    let end = app.world().get::<Transform>(body).unwrap().position;
+    let moved =
+        ((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt();
+    assert!(moved > 1.0, "knocked only {moved} m, to {end:?}");
+    let spin = app.world().get::<RigidBody>(bar).unwrap().angular_velocity;
+    assert!(spin[1].abs() > 1.0, "the sweeper stalled: {spin:?}");
 }
 
 #[test]

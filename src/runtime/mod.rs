@@ -8,6 +8,7 @@ mod animation;
 mod audio;
 mod classes;
 mod click;
+pub mod cloth;
 mod components;
 mod cpu_physics;
 mod determinism;
@@ -16,6 +17,7 @@ mod events;
 pub mod fluid;
 pub mod fluid_surface;
 mod game_feel;
+pub mod gpu_cloth;
 pub(crate) mod hierarchy;
 mod hybrid_physics;
 mod ik;
@@ -39,6 +41,7 @@ mod signals;
 pub mod sim_math;
 mod skinning;
 mod snapshot;
+pub mod soft_body;
 mod state_hash;
 #[cfg(test)]
 mod tests;
@@ -61,6 +64,7 @@ pub use audio::{
     MAX_VOICE_LIMIT, QUEUE_LIMIT,
 };
 pub use classes::ClassIndex;
+pub use cloth::{Cloth, ClothSettings, ClothSheet, ClothVolume};
 pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
@@ -114,6 +118,10 @@ pub use skinning::{
     Skin, SkinnedMesh,
 };
 pub use snapshot::{SnapshotError, WorldSnapshot};
+pub use soft_body::{
+    Anchor, AnchorBody, Obstacle, ObstacleShape, SoftAttachment, SoftBlock,
+    SoftBody, SoftBodySettings, SoftBodyVolume,
+};
 pub use state_hash::*;
 pub use time::{FrameTime, RandomSeed, TimeControl};
 pub use two_d::*;
@@ -301,9 +309,19 @@ impl Default for App {
                 )
                     .chain(),
                 animation::advance_animations,
-                fluid::spawn_fluid_volumes,
+                (
+                    fluid::spawn_fluid_volumes,
+                    soft_body::spawn_soft_bodies,
+                    cloth::spawn_cloths,
+                )
+                    .chain(),
                 fluid::couple_fluids,
-                fluid::step_fluids,
+                (
+                    fluid::step_fluids,
+                    soft_body::step_soft_bodies,
+                    soft_body::sync_soft_skins,
+                )
+                    .chain(),
                 fluid::sync_fluid_visuals,
                 fluid::reap_surfaces,
                 fluid::sync_fluid_surfaces,

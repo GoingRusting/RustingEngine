@@ -574,6 +574,8 @@ pub(super) fn reap_surfaces(
     )>,
     volumes: bevy_ecs::prelude::Query<&FluidVolume>,
     waters: bevy_ecs::prelude::Query<&super::WaterMesh>,
+    soft: bevy_ecs::prelude::Query<&super::SoftBodyVolume>,
+    cloths: bevy_ecs::prelude::Query<&super::ClothVolume>,
 ) {
     let Some(mut assets) = assets else {
         return;
@@ -586,7 +588,19 @@ pub(super) fn reap_surfaces(
                 .is_some_and(|surface| surface.entity == Some(entity))
         }) || waters
             .get(owner.0)
-            .is_ok_and(|water| water.entity() == entity);
+            .is_ok_and(|water| water.entity() == entity)
+            || soft.get(owner.0).is_ok_and(|volume| {
+                volume
+                    .skin
+                    .as_ref()
+                    .is_some_and(|skin| skin.entity == Some(entity))
+            })
+            || cloths.get(owner.0).is_ok_and(|cloth| {
+                cloth
+                    .skin
+                    .as_ref()
+                    .is_some_and(|skin| skin.entity == Some(entity))
+            });
         if kept {
             continue;
         }
@@ -615,7 +629,7 @@ pub(super) fn step_fluids(
 /// Stable order for anything that visits several objects: [`SpawnOrder`]
 /// first (it survives reloads and restores), then entity order for objects
 /// without one.
-fn visit_key(
+pub(super) fn visit_key(
     order: Option<&super::SpawnOrder>,
     entity: bevy_ecs::prelude::Entity,
 ) -> (bool, u64, bevy_ecs::prelude::Entity) {

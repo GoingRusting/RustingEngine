@@ -13,6 +13,7 @@ pub mod debug_overlay;
 pub mod egui_painter;
 pub mod frame_pacer;
 pub mod frame_passes;
+pub mod gpu_cloth;
 mod post_effects;
 pub mod readback;
 pub mod render_scale;

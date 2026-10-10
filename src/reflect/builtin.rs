@@ -7,6 +7,7 @@ use bevy_ecs::entity::Entity;
 
 use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
+use crate::runtime::ClothSheet;
 use crate::runtime::Rope;
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoExposure,
@@ -21,9 +22,9 @@ use crate::runtime::{
     PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
     PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
     RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
-    SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
-    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
-    TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
+    SkyLight, SlideSound, SoftBlock, SoundCue, SoundId, SpawnGrid, Squash,
+    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
+    Tween, TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -687,6 +688,43 @@ crate::reflect! {
         viscosity: f32 { unit: "factor", min: 0.0, max: 1.0 },
         visible: bool { doc: "draw the fluid as a water surface" },
         show_particles: bool { doc: "also draw one sphere per particle" },
+    }
+}
+
+crate::reflect! {
+    struct SoftBlock {
+        spacing: f32 { unit: "m", min: 0.01, doc: "side of one cube of six tetrahedra" },
+        count_x: u32 { unit: "cubes" },
+        count_y: u32 { unit: "cubes" },
+        count_z: u32 { unit: "cubes" },
+        density: f32 { unit: "kg/m³", min: 1.0 },
+        softness: f32 { unit: "compliance", min: 0.0, doc: "edge compliance; 0 is rigid, 1e-3 a wobbly jelly" },
+        squash: f32 { unit: "compliance", min: 0.0, doc: "volume compliance; 0 keeps the volume" },
+        damping: f32 { unit: "1/s", min: 0.0, doc: "fraction of velocity lost per second" },
+        tear_strain: f32 { unit: "factor", min: 0.0, doc: "edges stretched past rest times 1 + this tear; 0 never" },
+        substeps: u32 { unit: "substeps", min: 1.0, max: 64.0 },
+        visible: bool { doc: "draw the outer faces" },
+    }
+}
+
+crate::reflect! {
+    struct ClothSheet {
+        spacing: f32 { unit: "m", min: 0.01, doc: "side of one square of two triangles" },
+        count_x: u32 { unit: "squares" },
+        count_y: u32 { unit: "squares" },
+        density: f32 { unit: "kg/m²", min: 0.001 },
+        stretch: f32 { unit: "compliance", min: 0.0, doc: "edge compliance; 0 does not stretch" },
+        bend: f32 { unit: "compliance", min: 0.0, doc: "bend compliance; larger folds more easily" },
+        damping: f32 { unit: "1/s", min: 0.0, doc: "fraction of velocity lost per second" },
+        wind: [f32; 3] { unit: "m/s", doc: "air velocity blowing on the sheet" },
+        drag: f32 { unit: "factor", min: 0.0, doc: "how hard moving air pushes the sheet" },
+        thickness: f32 { unit: "m", min: 0.0, doc: "half the closest two layers get" },
+        self_collision: bool { doc: "keep folds from passing through each other" },
+        tear_strain: f32 { unit: "factor", min: 0.0, doc: "edges stretched past rest times 1 + this tear; 0 never" },
+        substeps: u32 { unit: "substeps", min: 1.0, max: 64.0 },
+        pin_top: bool { doc: "hold the top edge on the holder, or in place without one" },
+        holder: Entity { doc: "body the top edge hangs on; null pins it in place" },
+        visible: bool { doc: "draw both sides of the sheet" },
     }
 }
 

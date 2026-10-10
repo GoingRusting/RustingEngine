@@ -1,0 +1,145 @@
+#version 450
+// XPBD cloth and soft bodies in one workgroup; src/runtime/gpu_cloth.rs
+// packs the words and holds the bit-exact Rust reference (`step_on_cpu`);
+// change both.
+//
+// Header words: 0 particle count, 1 distance color count, 2 substeps,
+// 3 steps, 4 floor on, 5 substep h, 6 velocity kept per substep,
+// 7..9 gravity, 10 floor height, 11 volume color count; offsets:
+// 12 distance color table, 13 distance constraints, 14 particles,
+// 15 volume color table, 16 volume constraints.
+// Color table: color count + 1 starts into its constraints.
+// Distance constraint: a, b, rest length, alpha (compliance / h^2).
+// Volume constraint: four corners, rest volume, alpha.
+// Particle: position xyz, velocity xyz, inverse mass, previous position xyz.
+layout(local_size_x = 256) in;
+#include <sim_math.glsl>
+layout(set = 0, binding = 0) coherent buffer Data { uint words[]; };
+
+const uint CONSTRAINT_WORDS = 4u;
+const uint PARTICLE_WORDS = 10u;
+const uint VOLUME_WORDS = 6u;
+// 1 / 6 rounded to float, as `SIXTH` in gpu_cloth.rs.
+const float SIXTH = uintBitsToFloat(0x3E2AAAABu);
+const uvec3 OPPOSITE[4] = uvec3[4](uvec3(1u, 3u, 2u), uvec3(0u, 2u, 3u), uvec3(0u, 3u, 1u), uvec3(0u, 1u, 2u));
+
+float word(uint index) { return uintBitsToFloat(words[index]); }
+vec3 read3(uint index) { return vec3(word(index), word(index + 1u), word(index + 2u)); }
+void write3(uint index, vec3 v) {
+    words[index] = floatBitsToUint(v.x);
+    words[index + 1u] = floatBitsToUint(v.y);
+    words[index + 2u] = floatBitsToUint(v.z);
+}
+vec3 cross_of(vec3 a, vec3 b) {
+    precise vec3 c = vec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+    return c;
+}
+void sync() {
+    memoryBarrierBuffer();
+    barrier();
+}
+
+void main() {
+    uint lane = gl_LocalInvocationID.x;
+    uint count = words[0];
+    uint colors = words[1];
+    uint rounds = words[2] * words[3];
+    bool has_floor = words[4] != 0u;
+    float h = word(5u);
+    float keep = word(6u);
+    vec3 gravity = read3(7u);
+    float floor_height = word(10u);
+    uint color_base = words[12];
+    uint constraint_base = words[13];
+    uint particle_base = words[14];
+    uint volume_colors = words[11];
+    uint volume_table = words[15];
+    uint volume_base = words[16];
+    float inverse_h = sim_recip(h);
+
+    for (uint round = 0u; round < rounds; round++) {
+        for (uint i = lane; i < count; i += gl_WorkGroupSize.x) {
+            uint p = particle_base + i * PARTICLE_WORDS;
+            vec3 x = read3(p);
+            write3(p + 7u, x);
+            if (word(p + 6u) == 0.0) continue;
+            precise vec3 v = read3(p + 3u) * keep + gravity * h;
+            write3(p + 3u, v);
+            precise vec3 moved = x + v * h;
+            write3(p, moved);
+        }
+        sync();
+        for (uint color = 0u; color < colors; color++) {
+            uint end = words[color_base + color + 1u];
+            for (uint k = words[color_base + color] + lane; k < end; k += gl_WorkGroupSize.x) {
+                uint q = constraint_base + k * CONSTRAINT_WORDS;
+                uint pa = particle_base + words[q] * PARTICLE_WORDS;
+                uint pb = particle_base + words[q + 1u] * PARTICLE_WORDS;
+                float rest = word(q + 2u);
+                float alpha = word(q + 3u);
+                float wa = word(pa + 6u);
+                float wb = word(pb + 6u);
+                vec3 xa = read3(pa);
+                vec3 xb = read3(pb);
+                precise float weight = wa + wb;
+                precise vec3 delta = xa - xb;
+                float distance = sim_length(delta);
+                precise float denominator = weight + alpha;
+                if (denominator == 0.0 || distance < 1e-9) continue;
+                vec3 normal = sim_div(delta, distance);
+                precise float lambda = -(distance - rest) * sim_recip(denominator);
+                precise vec3 moved_a = xa + normal * (lambda * wa);
+                precise vec3 moved_b = xb - normal * (lambda * wb);
+                write3(pa, moved_a);
+                write3(pb, moved_b);
+            }
+            sync();
+        }
+        for (uint color = 0u; color < volume_colors; color++) {
+            uint end = words[volume_table + color + 1u];
+            for (uint k = words[volume_table + color] + lane; k < end; k += gl_WorkGroupSize.x) {
+                uint q = volume_base + k * VOLUME_WORDS;
+                uint p[4];
+                vec3 x[4];
+                float w[4];
+                for (uint j = 0u; j < 4u; j++) {
+                    p[j] = particle_base + words[q + j] * PARTICLE_WORDS;
+                    x[j] = read3(p[j]);
+                    w[j] = word(p[j] + 6u);
+                }
+                float rest = word(q + 4u);
+                float alpha = word(q + 5u);
+                vec3 gradients[4];
+                precise float weight = 0.0;
+                for (uint j = 0u; j < 4u; j++) {
+                    uvec3 o = OPPOSITE[j];
+                    precise vec3 g = cross_of(x[o.y] - x[o.x], x[o.z] - x[o.x]) * SIXTH;
+                    gradients[j] = g;
+                    weight = weight + w[j] * sim_dot(g, g);
+                }
+                precise float denominator = weight + alpha;
+                if (denominator == 0.0) continue;
+                precise float volume = sim_dot(cross_of(x[1] - x[0], x[2] - x[0]), x[3] - x[0]) * SIXTH;
+                precise float lambda = -(volume - rest) * sim_recip(denominator);
+                for (uint j = 0u; j < 4u; j++) {
+                    precise vec3 moved = x[j] + gradients[j] * (lambda * w[j]);
+                    write3(p[j], moved);
+                }
+            }
+            sync();
+        }
+        for (uint i = lane; i < count; i += gl_WorkGroupSize.x) {
+            uint p = particle_base + i * PARTICLE_WORDS;
+            if (word(p + 6u) == 0.0) continue;
+            vec3 x = read3(p);
+            vec3 previous = read3(p + 7u);
+            if (has_floor && x.y < floor_height) {
+                x = vec3(previous.x, floor_height, previous.z);
+                write3(p, x);
+            }
+            precise vec3 velocity = (x - previous) * inverse_h;
+            write3(p + 3u, velocity);
+        }
+        sync();
+    }
+}
