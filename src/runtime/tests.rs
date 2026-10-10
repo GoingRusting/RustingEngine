@@ -4829,6 +4829,35 @@ fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
 }
 
 #[test]
+fn a_box_pile_steps_the_same_on_one_and_many_workers() {
+    let run = |workers| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let mut app = App::new();
+            let world = app.world_mut();
+            cpu_ground(world);
+            // 200 boxes in a loose 10 x 10 x 2 block fall into a heap.
+            for i in 0..200 {
+                let at = [
+                    (i % 10) as f32 * 1.05 + 0.01 * (i / 100) as f32,
+                    0.6 + (i / 100) as f32 * 1.1,
+                    (i / 10 % 10) as f32 * 1.05,
+                ];
+                cpu_body(world, at, UNIT_BOX, RigidBodyKind::Dynamic);
+            }
+            run_fixed_steps(&mut app, 60);
+            crate::runtime::state_hash::world_state_hash(app.world_mut())
+        })
+    };
+    let one = run(1);
+    assert_eq!(run(4), one);
+    assert_eq!(run(7), one);
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {

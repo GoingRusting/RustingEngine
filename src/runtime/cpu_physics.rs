@@ -1947,14 +1947,18 @@ fn field_pushes(
     pushes
 }
 
+/// Narrow phase over the broad-phase pairs, split across rayon workers.
+/// An indexed collect keeps pair order, so any worker count gives the same
+/// contacts in the same order.
 fn find_contacts(bodies: &[Body]) -> Vec<(usize, usize, Contact)> {
-    let mut contacts = Vec::new();
-    for (a, b) in broad_phase_candidates(bodies) {
-        if let Some(contact) = narrow_phase(&bodies[a], &bodies[b]) {
-            contacts.push((a, b, contact));
-        }
-    }
-    contacts
+    use rayon::prelude::*;
+    broad_phase_candidates(bodies)
+        .par_iter()
+        .with_min_len(64)
+        .filter_map(|&(a, b)| {
+            narrow_phase(&bodies[a], &bodies[b]).map(|contact| (a, b, contact))
+        })
+        .collect()
 }
 
 fn narrow_phase(first: &Body, second: &Body) -> Option<Contact> {
