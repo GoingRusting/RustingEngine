@@ -205,6 +205,9 @@ enum Route {
     Direct(Arc<Mutex<BTreeMap<PeerId, TcpStream>>>),
     /// One stream to a relay; frames name the other end.
     Relay(Mutex<TcpStream>),
+    /// In-process sessions made by [`NetSession::loopback`]: every member's
+    /// event queue, host included, by peer.
+    Loopback(Arc<Mutex<BTreeMap<PeerId, Sender<NetEvent>>>>),
 }
 
 impl NetSession {
@@ -372,6 +375,38 @@ impl NetSession {
         })
     }
 
+    /// A host and `clients` clients joined to it in this process, with no
+    /// sockets, for tests. They behave like a direct host and its clients:
+    /// the host's first [`NetSession::poll`] reports each client as
+    /// `Connected`, dropping a client reports it `Disconnected`, and
+    /// dropping the host closes every client.
+    #[must_use]
+    pub fn loopback(clients: usize) -> (Self, Vec<Self>) {
+        let group = Arc::new(Mutex::new(BTreeMap::new()));
+        let member = |me: PeerId| {
+            let (sender, events) = channel();
+            group.lock().unwrap().insert(me, sender);
+            Self {
+                me,
+                room: None,
+                route: Route::Loopback(Arc::clone(&group)),
+                events: Mutex::new(events),
+                lab: Mutex::default(),
+                listener: None,
+            }
+        };
+        let host = member(HOST);
+        let clients = (1..=clients as PeerId)
+            .map(|peer| {
+                let client = member(peer);
+                let group = group.lock().unwrap();
+                let _ = group[&HOST].send(NetEvent::Connected(peer));
+                client
+            })
+            .collect();
+        (host, clients)
+    }
+
     /// This end's id: [`HOST`] for the host.
     #[must_use]
     pub fn id(&self) -> PeerId {
@@ -391,6 +426,13 @@ impl NetSession {
             Route::Direct(peers) if self.me == HOST => {
                 peers.lock().unwrap().keys().copied().collect()
             }
+            Route::Loopback(group) if self.me == HOST => group
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .filter(|&peer| peer != HOST)
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -410,6 +452,18 @@ impl NetSession {
             }
             Route::Relay(stream) => {
                 write_frame(&mut *stream.lock().unwrap(), DATA, to, bytes)?;
+            }
+            Route::Loopback(group) => {
+                let message = NetEvent::Message {
+                    from: self.me,
+                    bytes: bytes.to_vec(),
+                };
+                group
+                    .lock()
+                    .unwrap()
+                    .get(&to)
+                    .and_then(|peer| peer.send(message).ok())
+                    .ok_or_else(|| invalid("no such peer"))?;
             }
         }
         self.lab.lock().unwrap().sent(bytes);
@@ -440,6 +494,12 @@ impl NetSession {
                     bytes,
                 )?;
                 self.lab.lock().unwrap().sent(bytes);
+                Ok(())
+            }
+            Route::Loopback(_) => {
+                for peer in self.peers() {
+                    self.send(peer, bytes)?;
+                }
                 Ok(())
             }
         }
@@ -492,6 +552,17 @@ impl Drop for NetSession {
             }
             Route::Relay(stream) => {
                 let _ = stream.lock().unwrap().shutdown(Shutdown::Both);
+            }
+            Route::Loopback(group) => {
+                let mut group = group.lock().unwrap();
+                group.remove(&self.me);
+                if self.me == HOST {
+                    for peer in group.values() {
+                        let _ = peer.send(NetEvent::Closed);
+                    }
+                } else if let Some(host) = group.get(&HOST) {
+                    let _ = host.send(NetEvent::Disconnected(self.me));
+                }
             }
         }
     }
@@ -1052,6 +1123,39 @@ fn rejected(reason: &[u8]) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loopback_sessions_act_like_a_host_and_its_clients() {
+        let (host, mut clients) = NetSession::loopback(2);
+        assert_eq!(host.peers(), vec![1, 2]);
+        assert_eq!(
+            host.poll(),
+            vec![NetEvent::Connected(1), NetEvent::Connected(2)]
+        );
+        clients[1].send(HOST, b"hi").unwrap();
+        assert!(clients[1].send(1, b"no").is_err());
+        assert_eq!(
+            host.poll(),
+            vec![NetEvent::Message {
+                from: 2,
+                bytes: b"hi".to_vec()
+            }]
+        );
+        host.broadcast(b"all").unwrap();
+        for client in &clients {
+            let all = NetEvent::Message {
+                from: HOST,
+                bytes: b"all".to_vec(),
+            };
+            assert_eq!(client.poll(), vec![all]);
+        }
+        drop(clients.remove(0));
+        assert_eq!(host.poll(), vec![NetEvent::Disconnected(1)]);
+        assert_eq!(host.peers(), vec![2]);
+        assert!(host.send(1, b"gone").is_err());
+        drop(host);
+        assert_eq!(clients[0].poll(), vec![NetEvent::Closed]);
+    }
+
     use super::*;
     use std::time::Instant;
 

@@ -115,6 +115,26 @@ session.simulate(NetConditions {
 simulation is holding back. Show it on a debug HUD to see what a game
 sends per second.
 
+## Tests without sockets
+
+`NetSession::loopback(clients)` returns a host and that many clients joined
+to it inside one process, with no ports or threads. They take the same
+calls as real sessions: the host's first `poll` reports each client as
+`Connected`, a dropped client is `Disconnected`, and a dropped host sends
+`Closed` to every client. Unit-test game networking code with them.
+
+```rust
+use rusting_engine::net::{NetEvent, NetSession, HOST};
+
+let (host, clients) = NetSession::loopback(2);
+clients[0].send(HOST, b"ready")?;
+for event in host.poll() {
+    if let NetEvent::Message { from, bytes } = event {
+        host.send(from, &bytes)?; // echo back
+    }
+}
+```
+
 ## Limits
 
 - TCP only: no unreliable UDP channel yet, so a lost packet delays the
