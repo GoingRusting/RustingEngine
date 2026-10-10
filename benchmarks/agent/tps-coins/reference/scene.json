@@ -1,0 +1,16 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Coin 1",
+    "transform": {"position": [0.0, 1.0, -2.0], "rotation": [0.0, 0.0, 0.0], "scale": [0.4, 0.4, 0.4]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Sphere"},
+      "material": {"Inline": {"base_color": [1.0, 0.8, 0.1, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Coin 2",
+    "transform": {"position": [-3.0, 1.0, 1.0], "rotation": [0.0, 0.0, 0.0], "scale": [0.4, 0.4, 0.4]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Sphere"},
+      "material": {"Inline": {"base_color": [1.0, 0.8, 0.1, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Coin 3",
+    "transform": {"position": [3.0, 1.0, 2.0], "rotation": [0.0, 0.0, 0.0], "scale": [0.4, 0.4, 0.4]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Sphere"},
+      "material": {"Inline": {"base_color": [1.0, 0.8, 0.1, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Coins",
+    "components": {"rusting.counter": {"name": "coins"}}}}
+]}

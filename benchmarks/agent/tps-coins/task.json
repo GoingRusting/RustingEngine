@@ -1,0 +1,21 @@
+{
+  "kind": "feature",
+  "template": "third-person",
+  "request": "Add coins to collect in this third-person level. Place three coins named `Coin 1`, `Coin 2` and `Coin 3` at (0, 1, -2), (-3, 1, 1) and (3, 1, 2). When the player comes within 1 m of a coin, the coin disappears and a counter named `coins` (starting at 0) adds 1. Once all three are collected, the `Help` text says `All coins!`. Keep the existing test passing.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    let player = scene.object(\"Player\").position();\n    for index in 1..=3 {\n        let name = format!(\"Coin {index}\");\n        let Some(coin) = scene.try_object(&name).map(|coin| coin.position())\n        else {\n            continue;\n        };\n        let distance = coin\n            .iter()\n            .zip(player)\n            .map(|(a, b)| (a - b) * (a - b))\n            .sum::<f32>()\n            .sqrt();\n        if distance > 1.0 {\n            continue;\n        }\n        scene.despawn(&name);\n        if scene.add_to_counter(\"coins\", 1) == 3 {\n            scene.set_hud(\"Help\", |hud| hud.text = \"All coins!\".into());\n        }\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "../../../src/templates/walk_forward.json",
+    "hidden/coins.json"
+  ]
+}

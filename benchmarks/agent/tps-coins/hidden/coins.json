@@ -1,0 +1,21 @@
+{
+  "name": "coins: walking onto a coin collects it once, and three coins say All coins!",
+  "ticks": 90,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "coins", "equals": 0}},
+    {"tick": 5, "expect": {"entity": "Coin 1", "exists": true}},
+    {"tick": 10, "set": {"entity": "Player", "path": "/transform/position", "value": [0.0, 1.0, -2.0]}},
+    {"tick": 15, "expect": {"counter": "coins", "equals": 1}},
+    {"tick": 15, "expect": {"entity": "Coin 1", "exists": false}},
+    {"tick": 20, "set": {"entity": "Player", "path": "/transform/position", "value": [0.0, 1.0, 4.0]}},
+    {"tick": 25, "set": {"entity": "Player", "path": "/transform/position", "value": [0.0, 1.0, -2.0]}},
+    {"tick": 30, "expect": {"counter": "coins", "equals": 1}},
+    {"tick": 35, "set": {"entity": "Player", "path": "/transform/position", "value": [-3.0, 1.0, 1.0]}},
+    {"tick": 40, "expect": {"counter": "coins", "equals": 2}},
+    {"tick": 40, "expect": {"entity": "Help", "path": "/components/rusting.hud/text", "not_equals": "All coins!"}},
+    {"tick": 45, "set": {"entity": "Player", "path": "/transform/position", "value": [3.0, 1.0, 2.0]}},
+    {"tick": 50, "expect": {"counter": "coins", "equals": 3}},
+    {"tick": 50, "expect": {"entity": "Coin 3", "exists": false}},
+    {"tick": 50, "expect": {"entity": "Help", "path": "/components/rusting.hud/text", "equals": "All coins!"}}
+  ]
+}
