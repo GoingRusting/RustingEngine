@@ -19,7 +19,15 @@
 //! `PhysicsBody`, and a kinematic `RigidBody` to make sensors report it and
 //! let it push dynamic bodies; `push_bodies: false` keeps it from moving
 //! them. Surfaces steeper than `max_slope` are walls, and ledges up to
-//! `max_step_height` are stepped onto.
+//! `max_step_height` are stepped onto. A walker on the ground that is not
+//! rising snaps down ramps and steps of that height instead of leaving the
+//! ground.
+//!
+//! With a dynamic `RigidBody` the solver moves the body instead: walking
+//! steers its horizontal velocity with a bounded force (so heavy bodies
+//! resist it), a jump sets its vertical velocity, gravity comes from the
+//! physics step rather than `gravity`, and the body never tips over. A
+//! dynamic player does not crouch, swim, dash, or ride platforms.
 //!
 //! The body rides moving and turning floors: a platform that turns carries
 //! the body around with it and turns its heading by the same yaw.
@@ -432,6 +440,10 @@ fn crouch_shape(
     }
 }
 
+/// Largest horizontal acceleration (m/s²) a dynamic player's walk applies.
+// ponytail: fixed; make it a PlayerController field when a game needs it.
+const DYNAMIC_WALK_ACCELERATION: f32 = 40.0;
+
 /// Gives a dynamic body the walker ran into at least the walker's speed into
 /// it, along the contact normal. The slide stops the walker a skin short of
 /// the body, so without this the solver never sees them overlap.
@@ -474,6 +486,7 @@ pub(super) fn player_move(
         &mut PlayerController,
         &mut Transform,
         Option<&Collider>,
+        Option<&mut RigidBody>,
     )>,
     floors: Query<
         (&Transform, Option<&Parent>, Option<&GlobalTransform>),
@@ -511,7 +524,11 @@ pub(super) fn player_move(
     let sprint = actions.held(&input, PLAYER_SPRINT);
     let crouch = actions.held(&input, PLAYER_CROUCH);
     let rise = actions.held(&input, PLAYER_JUMP);
-    for (entity, mut player, mut transform, collider) in &mut players {
+    for (entity, mut player, mut transform, collider, mut rigid) in &mut players
+    {
+        let dynamic = rigid
+            .as_ref()
+            .is_some_and(|rigid| rigid.kind == RigidBodyKind::Dynamic);
         let mut shape =
             collider.map_or(DEFAULT_PLAYER_SHAPE, |collider| collider.shape);
         let water = (player.swim_speed > 0.0)
@@ -519,7 +536,7 @@ pub(super) fn player_move(
             .flatten()
             .filter(|(surface, _)| transform.position[1] < *surface);
         player.swimming = water.is_some();
-        match (player.crouch_height > 0.0 && !player.swimming)
+        match (player.crouch_height > 0.0 && !player.swimming && !dynamic)
             .then(|| crouch_shape(shape, player.crouch_height))
             .flatten()
         {
@@ -578,6 +595,48 @@ pub(super) fn player_move(
         if length > 0.0 {
             motion = motion.map(|value| value / length * speed * dt);
         }
+        if let Some(rigid) = rigid.as_mut().filter(|_| dynamic) {
+            // The solver moves a dynamic player: walking sets its
+            // horizontal velocity, a jump its vertical one, and gravity,
+            // contacts, and shoves come from the physics step.
+            let grounded = physics
+                .snap_to_floor(
+                    shape,
+                    transform.position,
+                    0.05,
+                    player.collision_mask,
+                    Some(entity),
+                    player.max_slope,
+                )
+                .is_some();
+            if grounded {
+                player.air_jumps_used = 0;
+            }
+            if dt > 0.0 {
+                // Steer toward the walk velocity with a bounded force, so a
+                // heavy body resists the walker instead of being dragged.
+                let max = DYNAMIC_WALK_ACCELERATION * dt;
+                for axis in [0, 2] {
+                    let change = (motion[axis] / dt
+                        - rigid.linear_velocity[axis])
+                        .clamp(-max, max);
+                    rigid.linear_velocity[axis] += change;
+                }
+            }
+            if player.jump_requested {
+                if grounded {
+                    rigid.linear_velocity[1] = player.jump_speed;
+                } else if player.air_jumps_used < player.air_jumps {
+                    player.air_jumps_used += 1;
+                    rigid.linear_velocity[1] = player.jump_speed;
+                }
+            }
+            player.jump_requested = false;
+            player.grounded = grounded;
+            player.vertical_speed = rigid.linear_velocity[1];
+            player.velocity = rigid.linear_velocity;
+            continue;
+        }
         if let Some((surface, current)) = water {
             // Float toward the rest depth unless rising or diving; a jump
             // only leaves the water from the surface.
@@ -630,7 +689,7 @@ pub(super) fn player_move(
             transform.rotation = [0.0, player.yaw, 0.0];
         }
 
-        let moved = physics.move_character_on_foot(
+        let mut moved = physics.move_character_on_foot(
             shape,
             start,
             motion,
@@ -639,6 +698,26 @@ pub(super) fn player_move(
             player.max_slope,
             player.max_step_height,
         );
+        // Ground snapping: a walker on the ground that is not rising stays
+        // on it down ramps and steps no taller than `max_step_height`.
+        if player.grounded
+            && !moved.grounded
+            && player.vertical_speed <= 0.0
+            && water.is_none()
+        {
+            if let Some((position, floor)) = physics.snap_to_floor(
+                shape,
+                moved.position,
+                player.max_step_height,
+                player.collision_mask,
+                Some(entity),
+                player.max_slope,
+            ) {
+                moved.position = position;
+                moved.grounded = true;
+                moved.floor = Some(floor);
+            }
+        }
         if let Some((wall, normal)) = moved.wall.filter(|_| player.push_bodies)
         {
             push(&mut pushed, wall, normal, motion, dt);

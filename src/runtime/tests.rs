@@ -6293,3 +6293,173 @@ fn heavy_boxes_rest_on_light_ones_with_substeps() {
         assert_eq!(pairs.len(), unique.len(), "repeated events {pairs:?}");
     }
 }
+
+#[test]
+fn walking_players_stay_grounded_down_ramps_and_low_steps() {
+    // Walks the player toward -Z for one second from `start` over
+    // `ground` and returns the steps it spent off the ground and its end.
+    let walk = |ground: &dyn Fn(&mut bevy_ecs::world::World), start| {
+        let mut app = App::new();
+        let world = app.world_mut();
+        ground(world);
+        let body = cpu_body(
+            world,
+            start,
+            DEFAULT_PLAYER_SHAPE,
+            RigidBodyKind::Kinematic,
+        );
+        world.entity_mut(body).insert(PlayerController::default());
+        run_fixed_steps(&mut app, 30);
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_key(KeyCode::KeyW, true);
+        let mut airborne = 0;
+        for _ in 0..60 {
+            run_fixed_steps(&mut app, 1);
+            let player = app.world().get::<PlayerController>(body).unwrap();
+            airborne += u32::from(!player.grounded);
+        }
+        (
+            airborne,
+            app.world().get::<Transform>(body).unwrap().position,
+        )
+    };
+    // A 20 degree ramp rising toward +Z.
+    let ramp = |world: &mut bevy_ecs::world::World| {
+        let ramp = cpu_body(
+            world,
+            [0.0, 0.0, 0.0],
+            ColliderShape::Box {
+                half_extents: [3.0, 0.5, 8.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        world.get_mut::<Transform>(ramp).unwrap().rotation =
+            [-20_f32.to_radians(), 0.0, 0.0];
+    };
+    let (airborne, end) = walk(&ramp, [0.0, 3.0, 3.0]);
+    assert!(end[2] < 0.0, "did not walk down: {end:?}");
+    assert_eq!(airborne, 0, "left the ramp, ended at {end:?}");
+
+    // A 0.2 m step down from a platform to the floor.
+    let step = |world: &mut bevy_ecs::world::World| {
+        cpu_ground(world);
+        cpu_body(
+            world,
+            [0.0, 0.1, 2.0],
+            ColliderShape::Box {
+                half_extents: [2.0, 0.1, 2.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+    };
+    let (airborne, end) = walk(&step, [0.0, 1.2, 1.0]);
+    assert!(end[2] < -1.0, "did not walk off: {end:?}");
+    assert_eq!(airborne, 0, "fell off the step, ended at {end:?}");
+
+    // A 1 m ledge is past the snap reach, so the player falls off it.
+    let ledge = |world: &mut bevy_ecs::world::World| {
+        cpu_ground(world);
+        cpu_body(
+            world,
+            [0.0, 0.5, 2.0],
+            ColliderShape::Box {
+                half_extents: [2.0, 0.5, 2.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+    };
+    let (airborne, end) = walk(&ledge, [0.0, 2.0, 1.0]);
+    assert!(airborne > 5, "stuck to the ledge: {airborne} {end:?}");
+    assert!(end[1] < 1.0, "did not land below: {end:?}");
+}
+
+#[test]
+fn dynamic_players_walk_jump_stay_upright_and_shove_by_mass() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let body = cpu_body(
+        world,
+        [0.0, 0.91, 0.0],
+        DEFAULT_PLAYER_SHAPE,
+        RigidBodyKind::Dynamic,
+    );
+    world.get_mut::<RigidBody>(body).unwrap().mass = 80.0;
+    world.entity_mut(body).insert(PlayerController::default());
+    // A light crate and a heavy one ahead of the player (-Z), side by side.
+    let light = cpu_body(
+        world,
+        [-1.0, 0.25, -2.0],
+        ColliderShape::Box {
+            half_extents: [0.25; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    let heavy = cpu_body(
+        world,
+        [1.0, 0.25, -2.0],
+        ColliderShape::Box {
+            half_extents: [0.25; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    world.get_mut::<RigidBody>(heavy).unwrap().mass = 2000.0;
+    run_fixed_steps(&mut app, 30);
+    let player =
+        |app: &App| *app.world().get::<PlayerController>(body).unwrap();
+    assert!(player(&app).grounded, "never landed");
+
+    // Jump: rises, then lands again.
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    input.record_key(KeyCode::Space, true);
+    run_fixed_steps(&mut app, 1);
+    let mut input = app.world_mut().resource_mut::<RuntimeInput>();
+    input.record_key(KeyCode::Space, false);
+    input.clear_frame_edges();
+    let mut peak = 0.0_f32;
+    for _ in 0..90 {
+        run_fixed_steps(&mut app, 1);
+        peak =
+            peak.max(app.world().get::<Transform>(body).unwrap().position[1]);
+    }
+    assert!(peak > 1.5, "jumped only to {peak}");
+    assert!(player(&app).grounded, "did not land");
+
+    // Walk into each crate in turn: the light one is shoved, the heavy one
+    // barely moves.
+    let at = |app: &App, entity| {
+        app.world().get::<Transform>(entity).unwrap().position
+    };
+    for x in [-1.0, 1.0] {
+        app.world_mut().get_mut::<Transform>(body).unwrap().position =
+            [x, 0.91, 0.0];
+        app.world_mut()
+            .get_mut::<RigidBody>(body)
+            .unwrap()
+            .linear_velocity = [0.0; 3];
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_key(KeyCode::KeyW, true);
+        run_fixed_steps(&mut app, 60);
+        app.world_mut()
+            .resource_mut::<RuntimeInput>()
+            .record_key(KeyCode::KeyW, false);
+        run_fixed_steps(&mut app, 30);
+        let rotation = app.world().get::<Transform>(body).unwrap().rotation;
+        assert!(
+            rotation[0].abs() < 1e-4 && rotation[2].abs() < 1e-4,
+            "tipped over: {rotation:?}"
+        );
+    }
+    assert!(
+        at(&app, light)[2] < -3.0,
+        "light crate stayed at {:?}",
+        at(&app, light)
+    );
+    assert!(
+        at(&app, heavy)[2] > -2.3,
+        "heavy crate went to {:?}",
+        at(&app, heavy)
+    );
+}

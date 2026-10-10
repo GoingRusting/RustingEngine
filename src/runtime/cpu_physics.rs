@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy_ecs::entity::Entity;
-use bevy_ecs::prelude::{Component, Resource, World};
+use bevy_ecs::prelude::{Component, Has, Resource, World};
 use nalgebra::{
     Matrix3, Matrix4, Quaternion, Rotation3, UnitQuaternion, Vector3,
 };
@@ -917,6 +917,44 @@ impl PhysicsWorld {
         )
     }
 
+    /// Where a walking character on the ground at `position` lands when it
+    /// snaps down at most `distance` onto a floor no steeper than
+    /// `max_slope` radians: its new position and the floor, or `None` with
+    /// no floor in reach. Past a ledge, the ledge's edge holds the shape
+    /// while a floor below its center is in reach, so it steps down instead
+    /// of falling.
+    #[must_use]
+    pub fn snap_to_floor(
+        &self,
+        shape: ColliderShape,
+        position: [f32; 3],
+        distance: f32,
+        layer_mask: u32,
+        exclude: Option<Entity>,
+        max_slope: f32,
+    ) -> Option<([f32; 3], Entity)> {
+        let floor_y = max_slope.cos();
+        let down = [0.0, -1.0, 0.0];
+        let hit = self
+            .shape_cast(shape, position, down, distance, layer_mask, exclude)?;
+        if hit.normal[1] < floor_y {
+            let reach = shape_bottom(shape) + distance;
+            let below = self.raycast_where(
+                position,
+                down,
+                reach,
+                layer_mask,
+                |entity| Some(entity) != exclude,
+            )?;
+            if below.normal[1] < floor_y {
+                return None;
+            }
+        }
+        let mut position = position;
+        position[1] -= (hit.distance - 0.01).max(0.0);
+        Some((position, hit.entity))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn slide(
         &self,
@@ -936,19 +974,10 @@ impl PhysicsWorld {
         let mut floor = None;
         let mut ceiling = false;
         let mut wall = None;
-        // Distance from the center down to the bottom of the shape.
-        let bottom = match Shape::scaled(shape, [1.0; 3]) {
-            Some(Shape::Sphere(radius)) => radius,
-            Some(Shape::Box(half)) => half.y,
-            Some(Shape::Capsule {
-                half_height,
-                radius,
-            }) => half_height + radius,
-            _ => {
-                remaining = Vector3::zeros();
-                0.0
-            }
-        };
+        let bottom = shape_bottom(shape);
+        if bottom == 0.0 {
+            remaining = Vector3::zeros();
+        }
         // A cast passes through a collider it starts inside, so a body
         // teleported or risen into a floor would fall through it. Cast down
         // from above to lift a body sunk less than its `bottom` onto the top.
@@ -1016,6 +1045,20 @@ impl PhysicsWorld {
             ceiling,
             wall,
         }
+    }
+}
+
+/// Distance from a character shape's center down to its bottom; 0 for
+/// shapes a character cannot be.
+fn shape_bottom(shape: ColliderShape) -> f32 {
+    match Shape::scaled(shape, [1.0; 3]) {
+        Some(Shape::Sphere(radius)) => radius,
+        Some(Shape::Box(half)) => half.y,
+        Some(Shape::Capsule {
+            half_height,
+            radius,
+        }) => half_height + radius,
+        _ => 0.0,
     }
 }
 
@@ -1457,6 +1500,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
         Option<&MeshRenderer>,
         Option<&GpuProxyOf>,
         Option<&SpawnOrder>,
+        Has<super::PlayerController>,
     )>();
     let assets = world.get_resource::<AssetServer>();
     let mut used = MeshCache::new();
@@ -1491,6 +1535,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 renderer,
                 proxy,
                 order,
+                player,
             )| {
                 let movable = parent.is_none();
                 // ponytail: children read the pose propagated last frame, and
@@ -1570,7 +1615,8 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         friction: collider.friction.max(0.0),
                         restitution: collider.restitution.clamp(0.0, 1.0),
                         inverse_mass,
-                        inverse_inertia: if inverse_mass > 0.0 {
+                        // A dynamic player never tips over.
+                        inverse_inertia: if inverse_mass > 0.0 && !player {
                             shape.inverse_inertia(rigid.mass)
                         } else {
                             Vector3::zeros()
@@ -1583,7 +1629,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         } else {
                             Vector3::zeros()
                         },
-                        angular_velocity: if moving {
+                        angular_velocity: if moving && !player {
                             rigid.angular_velocity.into()
                         } else {
                             Vector3::zeros()
