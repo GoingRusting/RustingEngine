@@ -6594,3 +6594,115 @@ fn a_hit_on_the_bottom_of_a_sleeping_stack_wakes_and_topples_it() {
     let top = app.world().get::<Transform>(boxes[4]).unwrap().position;
     assert!(top[1] < 4.0, "top box stayed up at {top:?}");
 }
+
+#[test]
+fn bullets_never_tunnel_through_thin_walls_of_any_kind() {
+    use crate::assets::{MeshAsset, MeshVertex, PrimitiveShape};
+    let bullets = [
+        ColliderShape::Sphere { radius: 0.05 },
+        ColliderShape::Box {
+            half_extents: [0.05; 3],
+        },
+        ColliderShape::Capsule {
+            half_height: 0.1,
+            radius: 0.03,
+        },
+    ];
+    let mut tunneled = Vec::new();
+    for wall in 0..4 {
+        for (b, bullet) in bullets.iter().enumerate() {
+            for speed in [60.0_f32, 400.0] {
+                for angle in [0.0_f32, 0.5, 1.0] {
+                    let mut app = App::new();
+                    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+                    let (cube, quad, material) = {
+                        let mut assets =
+                            app.world_mut()
+                                .resource_mut::<crate::assets::AssetServer>();
+                        let quad = assets.meshes.insert(MeshAsset {
+                            vertices: [
+                                [-20.0, -20.0],
+                                [20.0, -20.0],
+                                [20.0, 20.0],
+                                [-20.0, 20.0],
+                            ]
+                            .map(|[x, y]| MeshVertex {
+                                position: [x, y, 0.0],
+                                ..MeshVertex::default()
+                            })
+                            .to_vec(),
+                            indices: vec![0, 1, 2, 0, 2, 3],
+                        });
+                        (
+                            assets.builtin_primitives[&PrimitiveShape::Cube],
+                            quad,
+                            assets.fallback_material,
+                        )
+                    };
+                    let world = app.world_mut();
+                    world.resource_mut::<PhysicsSettings>().gravity = [0.0; 3];
+                    // A 2 cm box, a 2 cm hull, a one-sided triangle quad
+                    // facing the bullet, or a heavy dynamic 2 cm plate.
+                    let (shape, mesh) = match wall {
+                        0 | 3 => (
+                            ColliderShape::Box {
+                                half_extents: [20.0, 20.0, 0.01],
+                            },
+                            None,
+                        ),
+                        1 => (ColliderShape::ConvexMesh, Some(cube)),
+                        _ => (ColliderShape::TriangleMesh, Some(quad)),
+                    };
+                    let target = cpu_body(
+                        world,
+                        [0.0, 0.0, -5.0],
+                        shape,
+                        if wall == 3 {
+                            RigidBodyKind::Dynamic
+                        } else {
+                            RigidBodyKind::Fixed
+                        },
+                    );
+                    world.get_mut::<RigidBody>(target).unwrap().mass = 1000.0;
+                    if let Some(mesh) = mesh {
+                        world.entity_mut(target).insert(MeshRenderer {
+                            mesh,
+                            material,
+                            cast_shadows: false,
+                            receive_shadows: false,
+                        });
+                        if wall == 1 {
+                            world.get_mut::<Transform>(target).unwrap().scale =
+                                [40.0, 40.0, 0.02];
+                        }
+                    }
+                    let shot = cpu_body(
+                        world,
+                        [0.0; 3],
+                        *bullet,
+                        RigidBodyKind::Dynamic,
+                    );
+                    world.get_mut::<RigidBody>(shot).unwrap().linear_velocity =
+                        [speed * angle.sin(), 0.0, -speed * angle.cos()];
+                    run_fixed_steps(&mut app, 20);
+                    let z =
+                        app.world().get::<Transform>(shot).unwrap().position[2]
+                            - app
+                                .world()
+                                .get::<Transform>(target)
+                                .unwrap()
+                                .position[2]
+                            - 5.0;
+                    // Stopped at the wall, not short of it or past it.
+                    if !(-5.0..-4.7).contains(&z) {
+                        tunneled.push((wall, b, speed, angle, z));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        tunneled.is_empty(),
+        "(wall, bullet, speed, angle, z): {tunneled:?}"
+    );
+}
