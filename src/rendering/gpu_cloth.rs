@@ -28,8 +28,11 @@ use vulkano::sync::GpuFuture;
 
 use bevy_ecs::prelude::{Entity, World};
 
-use crate::runtime::gpu_cloth::{pack, unpack, GpuCloth};
-use crate::runtime::{ClothVolume, FrameTime, PhysicsId, PhysicsIdRegistry};
+use crate::runtime::gpu_cloth::{floor_contact, pack, unpack, GpuCloth};
+use crate::runtime::{
+    route_gpu_physics_events, ClothVolume, FrameTime, GpuEventPayload,
+    PhysicsId, PhysicsIdRegistry, RawGpuPhysicsEvent,
+};
 
 mod shader {
     vulkano_shaders::shader! {
@@ -225,12 +228,13 @@ impl GpuClothRunner {
 /// it submitted.
 // ponytail: a despawned cloth keeps its PhysicsId slot; release it on
 // removal if scenes churn many GPU cloths.
-pub fn service_gpu_cloths(
-    world: &mut World,
-    runner: &mut GpuClothRunner,
-) -> Result<usize, String> {
-    world.init_resource::<PhysicsIdRegistry>();
-    for state in runner.take_completed() {
+/// Writes finished cloth states into their [`ClothVolume`]s and sends each
+/// cloth's [`GpuCloth::floor_event`] through [`route_gpu_physics_events`]
+/// when a free particle first reaches the floor. States of despawned cloths
+/// are dropped.
+pub fn apply_gpu_cloth_states(world: &mut World, states: &[GpuClothState]) {
+    let mut events = Vec::new();
+    for state in states {
         let entity = world
             .resource::<PhysicsIdRegistry>()
             .resolve(state.physics_id);
@@ -242,12 +246,40 @@ pub fn service_gpu_cloths(
         let Some(mut gpu) = entity.get_mut::<GpuCloth>() else {
             continue;
         };
+        let contact = floor_contact(&state.words);
+        if let (Some(event), Some((index, [x, y, z])), false) =
+            (gpu.floor_event, contact, gpu.on_floor)
+        {
+            events.push(RawGpuPhysicsEvent {
+                body_slot: state.physics_id.slot,
+                body_generation: state.physics_id.generation,
+                event_id: event.0,
+                tick_low: state.tick as u32,
+                tick_high: (state.tick >> 32) as u32,
+                payload_kind: GpuEventPayload::Contact as u32,
+                payload: [x, y, z, index as f32],
+                ..Default::default()
+            });
+        }
         gpu.in_flight = false;
         gpu.tick = Some(state.tick);
+        gpu.on_floor = contact.is_some();
         if let Some(mut volume) = entity.get_mut::<ClothVolume>() {
             unpack(&state.words, &mut volume.cloth);
         }
     }
+    if !events.is_empty() {
+        route_gpu_physics_events(world, &events);
+    }
+}
+
+pub fn service_gpu_cloths(
+    world: &mut World,
+    runner: &mut GpuClothRunner,
+) -> Result<usize, String> {
+    world.init_resource::<PhysicsIdRegistry>();
+    let completed = runner.take_completed();
+    apply_gpu_cloth_states(world, &completed);
 
     let time = world.resource::<FrameTime>();
     let (tick, dt) = (time.fixed_tick, time.fixed_delta.as_secs_f32());
@@ -353,5 +385,66 @@ mod tests {
         assert_eq!(runner.take_completed(), expected);
         assert_eq!(runner.in_flight(), 0);
         assert!(runner.take_completed().is_empty());
+    }
+
+    #[test]
+    fn a_cloth_reaching_the_floor_sends_its_event_once() {
+        use crate::runtime::{
+            App, ClothVolume, EventQueue, GpuEventRegistry, GpuPhysicsEvent,
+            HybridPhysicsPlugin,
+        };
+
+        let mut app = App::new();
+        app.add_plugin(HybridPhysicsPlugin).unwrap();
+        // Unpinned, the sheet drops onto the floor.
+        let (mut cloth, mut settings) = hanging();
+        cloth.inverse_masses.fill(1.0);
+        settings.floor = Some(0.0);
+        let event = app
+            .world_mut()
+            .resource_mut::<GpuEventRegistry>()
+            .register("cloth landed");
+        let entity = app.spawn((
+            ClothVolume {
+                settings,
+                cloth: cloth.clone(),
+                attachments: Vec::new(),
+                skin: None,
+            },
+            GpuCloth {
+                floor_event: Some(event),
+                ..GpuCloth::default()
+            },
+        ));
+        let id = app
+            .world_mut()
+            .resource_mut::<PhysicsIdRegistry>()
+            .assign(entity);
+        let state = |tick: u64, steps: u32| {
+            let mut words = pack(&cloth, &settings, 1.0 / 60.0, steps).unwrap();
+            step_on_cpu(&mut words);
+            GpuClothState {
+                physics_id: id,
+                tick,
+                words,
+            }
+        };
+        let (airborne, landed) = (state(1, 1), state(120, 120));
+        for states in [vec![airborne], vec![landed.clone(), landed]] {
+            apply_gpu_cloth_states(app.world_mut(), &states);
+        }
+        app.update(std::time::Duration::ZERO).unwrap();
+        let events: Vec<GpuPhysicsEvent> = app
+            .world()
+            .resource::<EventQueue<GpuPhysicsEvent>>()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!((events[0].entity, events[0].tick), (entity, 120));
+        assert_eq!(events[0].payload_kind, GpuEventPayload::Contact as u32);
+        assert_eq!(events[0].payload[1], 0.0);
+        let gpu = app.world().get::<GpuCloth>(entity).unwrap();
+        assert!(gpu.on_floor && !gpu.in_flight);
     }
 }

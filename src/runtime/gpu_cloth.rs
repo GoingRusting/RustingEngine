@@ -11,11 +11,13 @@
 //!
 //! The kernel covers gravity, damping, pins, stretch and bend constraints
 //! and the floor. Wind, self-collision, tearing and rigid-body anchors stay
-//! CPU-only for now.
+//! CPU-only for now. [`GpuCloth::floor_event`] reports floor contact through
+//! the same [`super::GpuPhysicsEvent`] queue as rigid GPU bodies.
 
 use bevy_ecs::prelude::Component;
 
 use super::cloth::{Cloth, ClothSettings, MAX_CLOTH_PARTICLES};
+use super::hybrid_physics::GpuEventId;
 use super::sim_math::{length, recip};
 use super::soft_body::MAX_SOFT_BODY_SUBSTEPS;
 
@@ -31,6 +33,12 @@ pub struct GpuCloth {
     pub tick: Option<u64>,
     /// A submission for this cloth is still on the GPU.
     pub in_flight: bool,
+    /// Registered event sent when a free particle first reaches the floor,
+    /// with a [`super::GpuEventPayload::Contact`] payload of the touching
+    /// particle's position and index; see [`floor_contact`].
+    pub floor_event: Option<GpuEventId>,
+    /// A free particle rested on the floor at `tick`.
+    pub on_floor: bool,
 }
 
 /// Words before the color table; see the header comment in `cloth.comp`.
@@ -131,6 +139,23 @@ pub fn unpack(words: &[u32], cloth: &mut Cloth) {
         cloth.positions[i] = [float(p), float(p + 1), float(p + 2)];
         cloth.velocities[i] = [float(p + 3), float(p + 4), float(p + 5)];
     }
+}
+
+/// The lowest-index free particle in `words` that lies on or below the
+/// floor, with its position, or `None` without a floor or contact.
+#[must_use]
+pub fn floor_contact(words: &[u32]) -> Option<(u32, [f32; 3])> {
+    if words[4] == 0 {
+        return None;
+    }
+    let floor = f32::from_bits(words[10]);
+    let base = words[14] as usize;
+    (0..words[0]).find_map(|i| {
+        let p = base + i as usize * PARTICLE_WORDS;
+        let [x, y, z, w] =
+            [p, p + 1, p + 2, p + 6].map(|index| f32::from_bits(words[index]));
+        (w != 0.0 && y <= floor).then_some((i, [x, y, z]))
+    })
 }
 
 /// Runs `cloth.comp` on the CPU, one constraint at a time in color order.
@@ -266,5 +291,20 @@ mod tests {
         let mut repeat = again;
         step_on_cpu(&mut repeat);
         assert_eq!(repeat, words);
+        assert_eq!(floor_contact(&words), None);
+    }
+
+    #[test]
+    fn the_first_free_particle_on_the_floor_is_the_contact() {
+        let (mut cloth, mut settings) = hanging();
+        cloth.inverse_masses.fill(1.0);
+        settings.floor = Some(0.0);
+        let mut words = pack(&cloth, &settings, 1.0 / 60.0, 1).unwrap();
+        assert_eq!(floor_contact(&words), None);
+        words[3] = 120;
+        step_on_cpu(&mut words);
+        let (index, position) = floor_contact(&words).unwrap();
+        // The unpinned sheet drops two seconds onto the floor.
+        assert!(index < 81 && position[1] == 0.0, "{index} {position:?}");
     }
 }
