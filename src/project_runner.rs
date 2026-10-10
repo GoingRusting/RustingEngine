@@ -5554,7 +5554,8 @@ pub fn run_project_headless<P: Plugin>(
 /// Runs a cooked scene as a dedicated server: no window, Vulkan device, or
 /// renderer, one fixed tick per `fixed_delta` of real time, until game code
 /// quits. Inserts [`crate::net::DedicatedServer`] so game code knows to
-/// host.
+/// host, and keeps its load figures current. Prints a warning when a
+/// stall drops ticks.
 ///
 /// # Arguments
 /// * `scene_path` - Path to cooked `.rscene.bin` data.
@@ -5564,12 +5565,12 @@ pub fn run_project_server<P: Plugin>(
     plugin: P,
 ) -> Result<(), Box<dyn Error>> {
     let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
-    runtime
-        .world_mut()
-        .insert_resource(crate::net::DedicatedServer);
+    let mut server = crate::net::DedicatedServer::default();
     let step = runtime.world().resource::<FrameTime>().fixed_delta;
     let mut deadline = Instant::now();
     loop {
+        runtime.world_mut().insert_resource(server);
+        let started = Instant::now();
         runtime.update(step)?;
         runtime
             .world_mut()
@@ -5579,14 +5580,25 @@ pub fn run_project_server<P: Plugin>(
         if runtime.exit_requested() {
             return Ok(());
         }
-        deadline += step;
         let now = Instant::now();
+        server.ticks += 1;
+        server.last_budget = (now - started).as_secs_f32() / step.as_secs_f32();
+        server.budget += (server.last_budget - server.budget) * 0.05;
+        deadline += step;
         if deadline > now {
             std::thread::sleep(deadline - now);
         } else if now - deadline > step * 10 {
             // Too far behind (a long stall): drop the lost ticks instead of
             // running them back to back.
+            let dropped =
+                ((now - deadline).as_secs_f64() / step.as_secs_f64()) as u64;
+            server.dropped_ticks += dropped;
+            eprintln!(
+                "server overloaded: skipped {dropped} ticks after a stall"
+            );
             deadline = now;
+        } else {
+            server.late_ticks += 1;
         }
     }
 }
@@ -6454,10 +6466,20 @@ mod tests {
     fn a_dedicated_server_ticks_in_real_time_until_the_game_quits() {
         static TICKS: AtomicU32 = AtomicU32::new(0);
         fn serve(scene: &mut GameScene<'_>, _: &FrameTime) {
-            assert!(scene
-                .world
-                .contains_resource::<crate::net::DedicatedServer>());
-            if TICKS.fetch_add(1, Ordering::Relaxed) + 1 == 6 {
+            let ticks = TICKS.fetch_add(1, Ordering::Relaxed);
+            let server = *scene.world.resource::<crate::net::DedicatedServer>();
+            assert_eq!(server.ticks, u64::from(ticks));
+            if ticks == 2 {
+                // Overrun the step: tick 3 starts late and reports it.
+                std::thread::sleep(FrameTime::default().fixed_delta * 3);
+            }
+            if ticks == 3 {
+                assert!(server.last_budget > 2.5, "{server:?}");
+                assert!(server.budget > 0.0);
+                assert!(server.late_ticks >= 1, "{server:?}");
+                assert_eq!(server.dropped_ticks, 0);
+            }
+            if ticks + 1 == 6 {
                 scene.quit();
             }
         }

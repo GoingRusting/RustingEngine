@@ -117,6 +117,11 @@ fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
 }
 ```
 
+- The `DedicatedServer` resource also reports the loop's load: `budget`
+  (the share of the fixed step a tick's work takes, smoothed; above 1.0
+  the server cannot keep up), `last_budget`, `late_ticks`, and
+  `dropped_ticks` (skipped after a stall of over 10 steps, with a
+  warning on stderr). Send them to your monitoring or print them.
 - GPU physics bodies stay still without a renderer, as in `--ticks` runs;
   use CPU bodies for server-side simulation.
 

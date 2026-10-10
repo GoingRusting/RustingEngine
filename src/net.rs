@@ -236,9 +236,22 @@ impl Lab {
 
 /// Present while the game runs as a dedicated server
 /// ([`crate::project::SERVER_ENV`], `rusting run --server`): there is no
-/// window or local player, so game code should host and not join.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct DedicatedServer;
+/// window or local player, so game code should host and not join. Its
+/// fields report the tick loop's load, as of the tick before this one.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct DedicatedServer {
+    /// Ticks run.
+    pub ticks: u64,
+    /// Share of the fixed step the last tick's work took: above 1.0 the
+    /// server cannot keep up.
+    pub last_budget: f32,
+    /// `last_budget` smoothed over about the last 20 ticks.
+    pub budget: f32,
+    /// Ticks that started after their deadline.
+    pub late_ticks: u64,
+    /// Ticks skipped to catch up after a stall of more than 10 steps.
+    pub dropped_ticks: u64,
+}
 
 /// One end of a multiplayer session. See the [module docs](self).
 #[derive(Resource)]
