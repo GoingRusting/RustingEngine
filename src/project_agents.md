@@ -144,6 +144,9 @@ command takes `--json` for output a program can read.
 - Uneven ground: give an object `"shape": "Heightfield"` in its collider
   and a `rusting.heightfield` with `heights[row][column]` and `spacing`.
   It is static. Draw it with a mesh from `Heightfield::mesh()`.
+- Compound bodies: parent solid collider objects to a Dynamic CPU body and
+  they move with it as one body (a table on its legs). Contacts and ray
+  hits on a child report the parent; the parent's mass counts for all.
 - `rusting.force_field` on a Fixed sensor body pushes dynamic CPU bodies
   inside it: `Directional`, `Radial` (negative `strength` pulls in),
   `Vortex` around `direction`, or `Wind` with `turbulence` gusts. Use it

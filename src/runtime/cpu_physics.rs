@@ -491,6 +491,17 @@ enum Shape {
     Hull(Arc<MeshData>),
     /// Static triangle soup, collided one triangle at a time.
     Triangles(Arc<MeshData>),
+    /// A dynamic body's own collider plus its collider children, moving as
+    /// one body; pairs collide part by part.
+    Compound(Arc<[Part]>),
+}
+
+/// One collider of a [`Shape::Compound`], placed in the body's frame.
+#[derive(Clone, Debug)]
+struct Part {
+    offset: Vector3<f32>,
+    rotation: Rotation3<f32>,
+    shape: Shape,
 }
 
 /// A mesh collider in the body's local frame, already scaled.
@@ -640,6 +651,7 @@ impl Shape {
                 half_height,
                 radius,
             } => Vector3::new(radius, half_height + radius, radius),
+            Self::Compound(ref parts) => compound_half_extents(parts),
         };
         let squared = half.component_mul(&half);
         Vector3::new(
@@ -662,6 +674,10 @@ impl Shape {
                 let half = mesh.half_extents;
                 [0.0, half.x, half.y, half.z]
             }
+            Self::Compound(ref parts) => {
+                let half = compound_half_extents(parts);
+                [0.0, half.x, half.y, half.z]
+            }
             Self::Sphere(radius) => [1.0, radius, 0.0, 0.0],
             Self::Capsule {
                 half_height,
@@ -669,6 +685,31 @@ impl Shape {
             } => [2.0, half_height, radius, 0.0],
         }
     }
+
+    fn bounding_radius(&self) -> f32 {
+        match *self {
+            Self::Sphere(radius) => radius,
+            Self::Hull(ref mesh) | Self::Triangles(ref mesh) => {
+                mesh.bounding_radius
+            }
+            Self::Box(half) => half.norm(),
+            Self::Capsule {
+                half_height,
+                radius,
+            } => half_height + radius,
+            Self::Compound(ref parts) => parts
+                .iter()
+                .map(|part| part.offset.norm() + part.shape.bounding_radius())
+                .fold(0.0, f32::max),
+        }
+    }
+}
+
+/// Half extents of a box around every part's bounding sphere.
+fn compound_half_extents(parts: &[Part]) -> Vector3<f32> {
+    parts.iter().fold(Vector3::zeros(), |half, part| {
+        half.sup(&part.offset.abs().add_scalar(part.shape.bounding_radius()))
+    })
 }
 
 /// World-space inverse inertia of a solid `collider` of `mass`, the same
@@ -774,7 +815,29 @@ impl Body {
             Shape::Hull(ref mesh) | Shape::Triangles(ref mesh) => {
                 mesh.inner_radius
             }
+            Shape::Compound(_) => self
+                .parts()
+                .iter()
+                .map(Self::inner_radius)
+                .fold(f32::INFINITY, f32::min),
         }
+    }
+
+    /// Each part of a compound as a body of its own (same entity and
+    /// motion); any other body as itself.
+    fn parts(&self) -> Vec<Self> {
+        let Shape::Compound(ref parts) = self.shape else {
+            return vec![self.clone()];
+        };
+        parts
+            .iter()
+            .map(|part| Self {
+                position: self.position + self.rotation * part.offset,
+                rotation: self.rotation * part.rotation,
+                shape: part.shape.clone(),
+                ..self.clone()
+            })
+            .collect()
     }
 
     /// Radius around the core shape: a sphere is a rounded point and a
@@ -804,6 +867,9 @@ impl Body {
             Shape::Box(half) => local.zip_map(&half, |d, h| h.copysign(d)),
             Shape::Hull(ref mesh) | Shape::Triangles(ref mesh) => {
                 farthest(&mesh.points)
+            }
+            Shape::Compound(_) => {
+                unreachable!("compound pairs collide part by part")
             }
         };
         self.position + self.rotation * point
@@ -839,17 +905,7 @@ impl Body {
     }
 
     fn bounding_radius(&self) -> f32 {
-        match self.shape {
-            Shape::Sphere(radius) => radius,
-            Shape::Hull(ref mesh) | Shape::Triangles(ref mesh) => {
-                mesh.bounding_radius
-            }
-            Shape::Box(half) => half.norm(),
-            Shape::Capsule {
-                half_height,
-                radius,
-            } => half_height + radius,
-        }
+        self.shape.bounding_radius()
     }
 }
 
@@ -1886,6 +1942,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 let key = (order.map_or(u64::MAX, |order| order.0), entity);
                 Some((
                     key,
+                    parent.map(|parent| parent.0),
                     Body {
                         entity,
                         kind,
@@ -1935,8 +1992,85 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
     *meshes = used;
     // Query order follows archetypes and entity ids change on a reload;
     // sort so results depend on neither.
-    bodies.sort_by_key(|(key, _)| *key);
-    bodies.into_iter().map(|(_, body)| body).collect()
+    bodies.sort_by_key(|(key, ..)| *key);
+    merge_compounds(
+        world,
+        bodies
+            .into_iter()
+            .map(|(_, parent, body)| (parent, body))
+            .collect(),
+    )
+}
+
+/// Folds the solid collider children of each dynamic CPU body into that
+/// body as a [`Shape::Compound`], so they move with it (Godot's compound
+/// rigid body). Contacts and ray hits on a child report the parent.
+// ponytail: the parent's own mass, origin and friction stand for the whole
+// compound, and its inertia is the box around the parts. Sum the parts'
+// mass and inertia if uneven compounds tumble wrongly.
+fn merge_compounds(
+    world: &World,
+    bodies: Vec<(Option<Entity>, Body)>,
+) -> Vec<Body> {
+    let hosts: HashMap<Entity, usize> = bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, (parent, body))| {
+            parent.is_none()
+                && body.kind == RigidBodyKind::Dynamic
+                && body.inverse_mass > 0.0
+        })
+        .map(|(index, (_, body))| (body.entity, index))
+        .collect();
+    let mut parts: HashMap<usize, Vec<Part>> = HashMap::new();
+    let mut merged = vec![false; bodies.len()];
+    for (index, (parent, body)) in bodies.iter().enumerate() {
+        let Some(&host) = parent.and_then(|parent| hosts.get(&parent)) else {
+            continue;
+        };
+        if body.sensor || body.proxy {
+            continue;
+        }
+        let (Some(local), Some(host_pose)) = (
+            world.get::<Transform>(body.entity),
+            world.get::<Transform>(bodies[host].1.entity),
+        ) else {
+            continue;
+        };
+        merged[index] = true;
+        parts.entry(host).or_default().push(Part {
+            offset: Vector3::from(local.position)
+                .component_mul(&Vector3::from(host_pose.scale)),
+            rotation: sim_math::rotation_from_euler(
+                local.rotation[0],
+                local.rotation[1],
+                local.rotation[2],
+            ),
+            shape: body.shape.clone(),
+        });
+    }
+    bodies
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !merged[*index])
+        .map(|(index, (_, mut body))| {
+            if let Some(children) = parts.remove(&index) {
+                let own = Part {
+                    offset: Vector3::zeros(),
+                    rotation: Rotation3::identity(),
+                    shape: body.shape.clone(),
+                };
+                body.shape = Shape::Compound(
+                    std::iter::once(own).chain(children).collect(),
+                );
+                if body.inverse_inertia != Vector3::zeros() {
+                    body.inverse_inertia =
+                        body.shape.inverse_inertia(1.0 / body.inverse_mass);
+                }
+            }
+            body
+        })
+        .collect()
 }
 
 /// Candidates from a three-dimensional bounding-sphere broad phase. Sweep
@@ -2301,6 +2435,26 @@ fn solve_velocities(
 /// Every other pair, and edge contacts, use the single contact point.
 fn manifold(a: &Body, b: &Body, contact: &Contact) -> Vec<Vector3<f32>> {
     let single = vec![Vector3::from(contact.point)];
+    if matches!(a.shape, Shape::Compound(_))
+        || matches!(b.shape, Shape::Compound(_))
+    {
+        // Points of every touching pair of parts that pushes the same way
+        // as the deepest one: a table stands on all its legs.
+        let normal = Vector3::from(contact.normal);
+        let others = b.parts();
+        let mut points = Vec::new();
+        for part in a.parts() {
+            for other in &others {
+                let Some(touch) = collide(&part, other) else {
+                    continue;
+                };
+                if Vector3::from(touch.normal).dot(&normal) > 0.9 {
+                    points.extend(manifold(&part, other, &touch));
+                }
+            }
+        }
+        return if points.is_empty() { single } else { points };
+    }
     let (&Shape::Box(half_a), &Shape::Box(half_b)) = (&a.shape, &b.shape)
     else {
         return mesh_manifold(a, b, contact).unwrap_or(single);
@@ -2488,6 +2642,9 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) -> Vec<Contact> {
             || body.articulated
             || body.sensor
             || travel <= reach
+            // ponytail: a compound is not swept; a center ray would let its
+            // parts pass through. Sweep each part if thin compounds tunnel.
+            || matches!(body.shape, Shape::Compound(_))
         {
             continue;
         }
@@ -2572,7 +2729,7 @@ fn grown(body: &Body, pad: f32) -> std::borrow::Cow<'_, Body> {
             half_height,
             radius: radius + pad,
         },
-        Shape::Hull(_) | Shape::Triangles(_) => {
+        Shape::Hull(_) | Shape::Triangles(_) | Shape::Compound(_) => {
             return std::borrow::Cow::Borrowed(body);
         }
     };
@@ -2650,6 +2807,17 @@ fn write_back(world: &mut World, bodies: &[Body]) {
 fn collide(a: &Body, b: &Body) -> Option<Contact> {
     let sensor = a.sensor || b.sensor;
     let (normal, depth, point) = match (&a.shape, &b.shape) {
+        (Shape::Compound(_), _) | (_, Shape::Compound(_)) => {
+            // The deepest touching pair of parts.
+            let others = b.parts();
+            return a
+                .parts()
+                .iter()
+                .flat_map(|part| {
+                    others.iter().filter_map(|other| collide(part, other))
+                })
+                .max_by(|x, y| x.depth.total_cmp(&y.depth));
+        }
         (Shape::Triangles(_), Shape::Triangles(_)) => return None,
         (_, Shape::Triangles(mesh)) => triangles(a, b, mesh)?,
         (Shape::Triangles(mesh), _) => flip(triangles(b, a, mesh)?),
@@ -2712,8 +2880,8 @@ fn flip((normal, depth, point): Hit) -> Hit {
 fn capsule_proxy(capsule: &Body, other: &Body) -> (Vector3<f32>, f32) {
     let (start, end, radius) = capsule.segment();
     let center = match other.shape {
-        Shape::Hull(_) | Shape::Triangles(_) => {
-            unreachable!("mesh pairs use the convex test")
+        Shape::Hull(_) | Shape::Triangles(_) | Shape::Compound(_) => {
+            unreachable!("mesh and compound pairs use their own tests")
         }
         Shape::Capsule { .. } => {
             let (other_start, other_end, _) = other.segment();
@@ -3278,6 +3446,11 @@ fn ray_body(
             };
             Some((t, body.rotation * normal))
         }
+        Shape::Compound(_) => body
+            .parts()
+            .iter()
+            .filter_map(|part| ray_body(origin, direction, part))
+            .min_by(|a, b| a.0.total_cmp(&b.0)),
         Shape::Capsule { .. } => {
             let (start, end, radius) = body.segment();
             let t = ray_capsule(origin, direction, start, end, radius)?;

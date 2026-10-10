@@ -9,6 +9,7 @@
 
 ### Added
 
+- Compound bodies: solid collider children of a dynamic CPU body move with it as one body; contacts and ray hits on them report the parent (they were fixed in place before)
 - The CPU physics narrow phase runs on all cores; results stay bit-identical for any worker count
 - `ColliderShape::Heightfield` with a `rusting.heightfield` height grid: static uneven ground for CPU bodies and the player; `Heightfield::mesh()` draws the same surface
 - `rusting.force_field`: directional, radial, vortex and turbulent wind fields that push dynamic CPU bodies inside a sensor collider

@@ -4895,6 +4895,57 @@ fn bodies_rest_on_flat_heightfield_cells_and_roll_off_its_hills() {
 }
 
 #[test]
+fn collider_children_move_with_their_dynamic_parent_as_one_body() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [10.0, 0.5, 10.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    // A 2 x 2 m table top with four 1 m legs under its corners.
+    let table = cpu_body(
+        world,
+        [0.0, 2.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [1.0, 0.1, 1.0],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    let leg = ColliderShape::Box {
+        half_extents: [0.1, 0.5, 0.1],
+    };
+    let legs =
+        [[0.8, 0.8], [0.8, -0.8], [-0.8, 0.8], [-0.8, -0.8]].map(|[x, z]| {
+            let leg = cpu_body(
+                app.world_mut(),
+                [x, -0.6, z],
+                leg,
+                RigidBodyKind::Fixed,
+            );
+            app.set_parent(leg, table).unwrap();
+            leg
+        });
+    run_fixed_steps(&mut app, 120);
+    let world = app.world();
+    let pose = world.get::<Transform>(table).unwrap();
+    // Standing level on its legs: the leg bottoms 1.1 m below the top.
+    assert!((pose.position[1] - 1.1).abs() < 0.03, "{:?}", pose.position);
+    assert!(pose.rotation.iter().all(|angle| angle.abs() < 0.02));
+    assert_eq!(world.get::<Transform>(legs[0]).unwrap().position[1], -0.6);
+    // A ray at leg height reports the table.
+    let hit = world
+        .resource::<PhysicsWorld>()
+        .raycast([5.0, 0.5, 0.8], [-1.0, 0.0, 0.0], 10.0, u32::MAX)
+        .unwrap();
+    assert_eq!(hit.entity, table);
+    assert!((hit.distance - 4.1).abs() < 0.03, "{hit:?}");
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {
