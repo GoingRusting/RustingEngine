@@ -444,6 +444,10 @@ pub struct RenderSettings {
     /// Stretch a scaled frame with nearest-neighbour filtering, so a low
     /// `render_scale` shows square pixels instead of blur.
     pub pixelated: bool,
+    /// Above 0, a `render_scale` below 1 is stretched with an
+    /// edge-preserving filter and contrast-adaptive sharpening of this
+    /// strength (up to 1), like FSR 1, instead of a plain linear stretch.
+    pub upscale_sharpness: f32,
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
     pub culling: CullingMode,
@@ -466,6 +470,7 @@ impl Default for RenderSettings {
             max_fps: 120,
             render_scale: 1.0,
             pixelated: false,
+            upscale_sharpness: 0.0,
             background_color: [0.025, 0.04, 0.07, 1.0],
             culling: CullingMode::Auto,
             antialiasing: Antialiasing::Auto,

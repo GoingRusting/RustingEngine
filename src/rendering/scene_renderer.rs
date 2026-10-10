@@ -1749,6 +1749,11 @@ pub struct SceneRenderer {
     upscale_to: Option<(Arc<ImageView>, Option<SceneViewport>)>,
     /// Nearest-neighbour filtering for the `upscale_to` blit.
     upscale_nearest: bool,
+    /// Strength of the sharp upscale that replaces the linear stretch of
+    /// [`Self::upscale_next_frame`]; 0 keeps the blit.
+    upscale_sharpness: f32,
+    /// Built for the first sharp upscale's target format.
+    sharp_upscale: Option<(Arc<RenderPass>, Arc<GraphicsPipeline>)>,
     last_frame_culled: Option<usize>,
     last_culling_path: CullingPath,
     culling_stats: CullingStats,
@@ -2102,6 +2107,8 @@ impl SceneRenderer {
             last_frame_passes: Vec::new(),
             upscale_to: None,
             upscale_nearest: false,
+            upscale_sharpness: 0.0,
+            sharp_upscale: None,
             last_frame_culled: Some(0),
             last_culling_path: CullingPath::Direct,
             culling_stats: CullingStats::default(),
@@ -2262,6 +2269,13 @@ impl SceneRenderer {
     /// [`Self::upscale_next_frame`] and [`Self::blit_next_frame`].
     pub fn set_upscale_nearest(&mut self, nearest: bool) {
         self.upscale_nearest = nearest;
+    }
+
+    /// Above 0, [`Self::upscale_next_frame`] stretches with an
+    /// edge-preserving filter and contrast-adaptive sharpening of this
+    /// strength (up to 1) instead of the linear blit.
+    pub fn set_upscale_sharpness(&mut self, sharpness: f32) {
+        self.upscale_sharpness = sharpness.clamp(0.0, 1.0);
     }
 
     pub fn blit_next_frame(
@@ -4840,7 +4854,108 @@ impl SceneRenderer {
         commands
             .end_render_pass(Default::default())
             .map_err(|error| SceneRenderError(error.to_string()))?;
-        if let Some((upscaled, region)) = self.upscale_to.take() {
+        let upscale = self.upscale_to.take();
+        let sharp = upscale.as_ref().is_some_and(|(_, region)| {
+            region.is_none()
+                && !self.upscale_nearest
+                && self.upscale_sharpness > 0.0
+        });
+        if let Some((upscaled, _)) = upscale.as_ref().filter(|_| sharp) {
+            let format = upscaled.format();
+            let (render_pass, pipeline) = match &self.sharp_upscale {
+                Some((pass, pipeline))
+                    if pass.attachments()[0].format == format =>
+                {
+                    (pass.clone(), pipeline.clone())
+                }
+                _ => {
+                    let built = create_sharp_upscale(&self.queue, format)?;
+                    self.sharp_upscale = Some(built.clone());
+                    built
+                }
+            };
+            // ponytail: a framebuffer per frame; cache per target view if
+            // its creation shows up in recording time.
+            let framebuffer = Framebuffer::new(
+                render_pass,
+                FramebufferCreateInfo {
+                    attachments: vec![upscaled.clone()],
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+            let [width, height, _] = upscaled.image().extent();
+            let set = DescriptorSet::new(
+                self.descriptor_allocator.clone(),
+                pipeline.layout().set_layouts()[0].clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    target.clone(),
+                    self.scene_color_sampler.clone(),
+                )],
+                [],
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+            commands
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        clear_values: vec![None],
+                        ..RenderPassBeginInfo::framebuffer(framebuffer)
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_pipeline_graphics(pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .set_viewport(
+                    0,
+                    [Viewport {
+                        offset: [0.0, 0.0],
+                        extent: [width as f32, height as f32],
+                        depth_range: 0.0..=1.0,
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .set_scissor(
+                    0,
+                    [Scissor {
+                        offset: [0, 0],
+                        extent: [width, height],
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    set,
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .push_constants(
+                    pipeline.layout().clone(),
+                    0,
+                    sharp_upscale_shader::Params {
+                        inv_target: [1.0 / width as f32, 1.0 / height as f32],
+                        sharpness: self.upscale_sharpness,
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            unsafe {
+                commands
+                    .draw(3, 1, 0, 0)
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+            }
+            commands
+                .end_render_pass(Default::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+        } else if let Some((upscaled, region)) = upscale {
             let mut info = BlitImageInfo {
                 filter: if self.upscale_nearest {
                     Filter::Nearest
@@ -7843,6 +7958,82 @@ fn create_tonemap_pipeline(
     .map_err(|error| SceneRenderError(error.to_string()))
 }
 
+/// Render pass into a `format` target and the pipeline of the sharp
+/// upscale drawn in it.
+fn create_sharp_upscale(
+    queue: &Arc<Queue>,
+    format: Format,
+) -> Result<(Arc<RenderPass>, Arc<GraphicsPipeline>), SceneRenderError> {
+    let error = |error: &dyn Display| SceneRenderError(error.to_string());
+    let device = queue.device().clone();
+    let render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            color: {
+                format: format,
+                samples: 1,
+                load_op: DontCare,
+                store_op: Store,
+            }
+        },
+        pass: {
+            color: [color],
+            depth_stencil: {}
+        }
+    )
+    .map_err(|e| error(&e))?;
+    name_object(&*render_pass, "Sharp upscale");
+    let entry = |module: Result<Arc<vulkano::shader::ShaderModule>, _>| {
+        module
+            .map_err(|e: vulkano::Validated<vulkano::VulkanError>| error(&e))?
+            .entry_point("main")
+            .ok_or_else(|| {
+                SceneRenderError("sharp upscale entry point is missing".into())
+            })
+    };
+    let stages = [
+        PipelineShaderStageCreateInfo::new(entry(
+            tonemap_vertex_shader::load(device.clone()),
+        )?),
+        PipelineShaderStageCreateInfo::new(entry(sharp_upscale_shader::load(
+            device.clone(),
+        ))?),
+    ];
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .map_err(|e| error(&e))?,
+    )
+    .map_err(|e| error(&e))?;
+    let subpass = Subpass::from(render_pass.clone(), 0)
+        .ok_or_else(|| SceneRenderError("sharp upscale subpass".into()))?;
+    let pipeline = GraphicsPipeline::new(
+        device,
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(Default::default()),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                1,
+                ColorBlendAttachmentState::default(),
+            )),
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .map_err(|e| error(&e))?;
+    name_object(&*pipeline, "Sharp upscale");
+    Ok((render_pass, pipeline))
+}
+
 /// Sky fog over the background in subpass 0: drawn at the far plane with
 /// `LessOrEqual`, so only pixels no surface covered pass. The background
 /// is kept by the fog's transmittance in alpha and the in-scattered light
@@ -10070,6 +10261,80 @@ void main() {
     // One triangle that covers the whole viewport.
     vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"
+    }
+}
+
+/// Upscale in the spirit of FSR 1: Catmull-Rom filtering, kept inside the
+/// four nearest source texels so edges do not ring, then contrast-adaptive
+/// sharpening from the source texels around the pixel.
+#[rustfmt::skip]
+mod sharp_upscale_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(push_constant) uniform Params {
+    vec2 inv_target;
+    float sharpness;
+} params;
+layout(location = 0) out vec4 color;
+
+vec3 at(vec2 uv) {
+    return textureLod(source, uv, 0.0).rgb;
+}
+
+// Catmull-Rom from nine bilinear taps (Jimenez 2016).
+vec3 catmull_rom(vec2 uv, vec2 size) {
+    vec2 pos = uv * size;
+    vec2 center = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - center;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (center - 1.0) / size;
+    vec2 t12 = (center + w2 / w12) / size;
+    vec2 t3 = (center + 2.0) / size;
+    return at(vec2(t0.x, t0.y)) * w0.x * w0.y
+        + at(vec2(t12.x, t0.y)) * w12.x * w0.y
+        + at(vec2(t3.x, t0.y)) * w3.x * w0.y
+        + at(vec2(t0.x, t12.y)) * w0.x * w12.y
+        + at(vec2(t12.x, t12.y)) * w12.x * w12.y
+        + at(vec2(t3.x, t12.y)) * w3.x * w12.y
+        + at(vec2(t0.x, t3.y)) * w0.x * w3.y
+        + at(vec2(t12.x, t3.y)) * w12.x * w3.y
+        + at(vec2(t3.x, t3.y)) * w3.x * w3.y;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy * params.inv_target;
+    vec2 size = vec2(textureSize(source, 0));
+    vec2 texel = 1.0 / size;
+    // The four source texels around the pixel bound the result.
+    vec2 base = (floor(uv * size - 0.5) + 0.5) * texel;
+    vec3 a = at(base);
+    vec3 b = at(base + vec2(texel.x, 0.0));
+    vec3 c = at(base + vec2(0.0, texel.y));
+    vec3 d = at(base + texel);
+    vec3 lo = min(min(a, b), min(c, d));
+    vec3 hi = max(max(a, b), max(c, d));
+    vec3 middle = clamp(catmull_rom(uv, size), lo, hi);
+    // AMD CAS: a negative lobe on the cross neighbors, weaker where the
+    // neighborhood already spans much of the range.
+    vec3 n = at(uv - vec2(0.0, texel.y));
+    vec3 s = at(uv + vec2(0.0, texel.y));
+    vec3 e = at(uv + vec2(texel.x, 0.0));
+    vec3 w = at(uv - vec2(texel.x, 0.0));
+    vec3 low = min(middle, min(min(n, s), min(e, w)));
+    vec3 high = max(middle, max(max(n, s), max(e, w)));
+    vec3 amount = sqrt(clamp(min(low, 1.0 - high) / max(high, 1e-4), 0.0, 1.0));
+    vec3 lobe = -amount / mix(8.0, 5.0, params.sharpness);
+    vec3 sharp = (middle + lobe * (n + s + e + w)) / (1.0 + 4.0 * lobe);
+    color = vec4(clamp(sharp, 0.0, 1.0), 1.0);
 }
 "
     }

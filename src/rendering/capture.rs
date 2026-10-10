@@ -673,6 +673,68 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn sharp_upscale_keeps_edges_steeper_than_the_linear_stretch() {
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let (mesh, material) = {
+            let assets = app.world().resource::<AssetServer>();
+            (assets.fallback_mesh, assets.fallback_material)
+        };
+        app.spawn((
+            Transform::new([0.0, 0.0, 3.0]),
+            Camera {
+                active: true,
+                ..Camera::default()
+            },
+        ));
+        app.spawn((
+            Transform::default(),
+            MeshRenderer {
+                mesh,
+                material,
+                cast_shadows: false,
+                receive_shadows: false,
+            },
+        ));
+        let mut capture = HeadlessCapture::new([64, 64]).unwrap();
+        let mut shoot = |app: &mut App, sharpness: f32| {
+            let mut settings = app.world_mut().resource_mut::<RenderSettings>();
+            settings.render_scale = 0.5;
+            settings.upscale_sharpness = sharpness;
+            capture.frame(app, Duration::from_millis(16)).unwrap();
+            capture.rgba()
+        };
+        let linear = shoot(&mut app, 0.0);
+        let sharp = shoot(&mut app, 1.0);
+        let green = |rgba: &[u8], x: usize, y: usize| {
+            i64::from(rgba[(y * 64 + x) * 4 + 1])
+        };
+        // Squared steps between neighbors: steeper edges add up to more.
+        let steepness = |rgba: &[u8]| {
+            let mut sum = 0;
+            for y in 0..64 {
+                for x in 0..63 {
+                    sum += (green(rgba, x + 1, y) - green(rgba, x, y)).pow(2);
+                    sum += (green(rgba, y, x + 1) - green(rgba, y, x)).pow(2);
+                }
+            }
+            sum
+        };
+        let (soft, crisp) = (steepness(&linear), steepness(&sharp));
+        assert!(crisp * 2 > soft * 3, "linear {soft}, sharp {crisp}");
+        // Flat areas look the same either way.
+        for (x, y) in [(32, 32), (1, 1), (62, 62)] {
+            let (a, b) = (green(&linear, x, y), green(&sharp, x, y));
+            assert!(a.abs_diff(b) < 8, "({x}, {y}): {a} vs {b}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn a_flash_tints_the_drawn_object_and_fades_back() {
         let mut app = App::new();
         app.add_plugin(AssetPlugin).unwrap();

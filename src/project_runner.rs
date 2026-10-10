@@ -836,6 +836,17 @@ impl GameScene<'_> {
         self.world.resource_mut::<RenderSettings>().pixelated = pixelated;
     }
 
+    /// Above 0, stretches a [`Self::set_render_scale`] frame below 1 with
+    /// an edge-preserving filter and sharpening of this strength (up to
+    /// 1), like FSR 1, instead of blur. 0 (the default) is a plain stretch.
+    pub fn set_upscale_sharpness(&mut self, sharpness: f32) {
+        if sharpness.is_finite() {
+            self.world
+                .resource_mut::<RenderSettings>()
+                .upscale_sharpness = sharpness.clamp(0.0, 1.0);
+        }
+    }
+
     /// Sets the exposure of the scene's `rusting.tone_mapping`, adding a
     /// linear one when the scene has none. 1 is neutral; above 1 brightens
     /// a dark camera feed. Negative or non-finite values are ignored.

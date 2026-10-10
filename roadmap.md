@@ -2505,7 +2505,7 @@ Depends on: Milestones 3 and 4.
   tests (931 passed). With bloom, auto exposure, LUTs, depth of field and
   motion blur in, and vignette and chromatic aberration in `ColorGrading`,
   the item is done.
-- [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
+- [x] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
   Partial (FXAA): `Antialiasing::Fxaa` (Project Settings and Render
   Settings list it as "FXAA") renders the scene at 1 sample and runs a
   console-style FXAA (Lottes) in the tone-mapping pass. It reads the HDR
@@ -2538,8 +2538,23 @@ Depends on: Milestones 3 and 4.
   fmt, clippy x3 clean; workspace tests 820 passed (the flaky net
   handshake test passes alone); gpu-tests 933 passed. Limits: no test
   covers reprojection under camera motion. Split views that share one
-  renderer reset the history every view, so they get no TAA. Not started:
-  FSR-class upscaling.
+  renderer reset the history every view, so they get no TAA.
+  Upscaling: `RenderSettings::upscale_sharpness` (0 to 1, default 0; game
+  API `set_upscale_sharpness`). Above 0, a `render_scale` below 1 is
+  stretched by a full-screen pass, not the linear blit. The pass does a
+  9-tap Catmull-Rom filter, clamped to the 4 nearest source texels so
+  edges do not ring, then AMD CAS-style contrast-adaptive sharpening. The
+  capability check is the existing render-scale one: the scaled image's
+  format must support blit and linear filtering, else the frame renders
+  at scale 1. Pixelated and split-viewport blits keep the old path. GPU
+  test `sharp_upscale_keeps_edges_steeper_than_the_linear_stretch`, at
+  render scale 0.5 on 64x64: summed squared neighbor steps are 30056
+  linear vs 62520 sharp (the test requires more than 1.5x). Center and
+  corners match within 8. Mutation checks: with the sharp path off, both
+  give 30056; with no sharpening lobe, 33448; both fail. Limit: the test
+  cannot tell Catmull-Rom from bilinear in the center tap, because
+  sharpening dominates. Full check: fmt, clippy x3 clean; workspace tests
+  821 passed; gpu-tests 934 passed.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,
   height_falloff, sun_scatter, sky_affect). `src/shaders/fog.glsl`

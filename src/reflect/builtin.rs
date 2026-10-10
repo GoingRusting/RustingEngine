@@ -1303,6 +1303,10 @@ crate::reflect! {
         pixelated: bool {
             doc: "Stretch a scaled frame with nearest-neighbour filtering: square pixels instead of blur.",
         },
+        upscale_sharpness: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "Above 0, a render scale below 1 is stretched with an edge-preserving filter and contrast-adaptive sharpening of this strength (FSR 1 style) instead of blur.",
+        },
         background_color: [f32; 4] {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,
         },

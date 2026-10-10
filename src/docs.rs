@@ -919,6 +919,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "set_render_scale",
             "render_scale",
             "set_pixelated",
+            "set_upscale_sharpness",
             "set_vsync",
             "set_max_fps",
             "set_fullscreen",
