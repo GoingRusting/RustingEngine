@@ -331,6 +331,7 @@ fn hash_collider(hasher: &mut StateHasher, collider: &Collider) {
         }
         ColliderShape::ConvexMesh => hasher.word(3),
         ColliderShape::TriangleMesh => hasher.word(4),
+        ColliderShape::Heightfield => hasher.word(5),
     }
     hasher.floats(&[collider.friction, collider.restitution]);
     hasher.word(u64::from(collider.sensor));

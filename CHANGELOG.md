@@ -10,6 +10,7 @@
 ### Added
 
 - The CPU physics narrow phase runs on all cores; results stay bit-identical for any worker count
+- `ColliderShape::Heightfield` with a `rusting.heightfield` height grid: static uneven ground for CPU bodies and the player; `Heightfield::mesh()` draws the same surface
 - `rusting.force_field`: directional, radial, vortex and turbulent wind fields that push dynamic CPU bodies inside a sensor collider
 - `rusting.physics_material`: a named collider surface with friction and restitution combine modes (Default, Average, Min, Multiply, Max); `SoundCue::with_material` plays a cue only on touches of that surface
 - `rusting.vehicle`: raycast cars with spring-damper suspension, a slip-curve tire model, an open differential, an engine with flywheel inertia and an automatic gearbox; `player_input` drives one with the player actions

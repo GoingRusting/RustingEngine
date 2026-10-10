@@ -13,8 +13,8 @@ use crate::runtime::{
     CombineMode, Connection, Connections, Counter, CullingMode,
     DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
     EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
-    GravityVolume, Health, HudAnchor, HudElement, InputAction, Joint,
-    JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
+    GravityVolume, Health, Heightfield, HudAnchor, HudElement, InputAction,
+    Joint, JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
     ObjectState, PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
     PlatformerController, PlayerController, PostVolume, QualityProfile,
     RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, ReverbZone,
@@ -700,6 +700,13 @@ crate::reflect! {
             doc: "above 0, pulls toward the volume's centre instead, for a planet",
         },
         priority: i32 { doc: "the highest wins where volumes overlap" },
+    }
+}
+
+crate::reflect! {
+    struct Heightfield {
+        heights: Vec<Vec<f32>> { unit: "m", doc: "heights[row][column]; rows run along +Z, columns along +X, centred on the object" },
+        spacing: f32 { unit: "m", min: 0.001, doc: "distance between neighbouring samples" },
     }
 }
 

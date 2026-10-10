@@ -28,6 +28,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::{Component, Has, Resource, World};
 use nalgebra::{
@@ -85,6 +86,89 @@ impl Default for GravityVolume {
             toward_center: 0.0,
             priority: 0,
         }
+    }
+}
+
+/// A grid of ground heights for a `Heightfield` collider: `heights[row]
+/// [column]`, rows along +Z and columns along +X, `spacing` metres apart and
+/// centred on the entity. [`Heightfield::mesh`] gives the same surface to
+/// draw.
+#[derive(
+    Component, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct Heightfield {
+    pub heights: Vec<Vec<f32>>,
+    pub spacing: f32,
+}
+
+impl Default for Heightfield {
+    fn default() -> Self {
+        Self {
+            heights: vec![vec![0.0; 2]; 2],
+            spacing: 1.0,
+        }
+    }
+}
+
+impl Heightfield {
+    /// Two triangles per grid cell, facing up, with smooth normals and UVs
+    /// spanning the grid. Short rows count as 0 past their end.
+    pub fn mesh(&self) -> crate::assets::MeshAsset {
+        let rows = self.heights.len();
+        let columns = self.heights.iter().map(Vec::len).max().unwrap_or(0);
+        let height = |row: usize, column: usize| {
+            self.heights[row.min(rows - 1)]
+                .get(column.min(columns - 1))
+                .copied()
+                .unwrap_or(0.0)
+        };
+        if rows < 2 || columns < 2 {
+            return crate::assets::MeshAsset::default();
+        }
+        let origin = [
+            -0.5 * (columns - 1) as f32 * self.spacing,
+            -0.5 * (rows - 1) as f32 * self.spacing,
+        ];
+        let mut vertices = Vec::with_capacity(rows * columns);
+        for row in 0..rows {
+            for column in 0..columns {
+                let dx = height(row, column + 1)
+                    - height(row, column.saturating_sub(1));
+                let dz = height(row + 1, column)
+                    - height(row.saturating_sub(1), column);
+                let normal =
+                    Vector3::new(-dx, 2.0 * self.spacing, -dz).normalize();
+                vertices.push(crate::assets::MeshVertex {
+                    position: [
+                        origin[0] + column as f32 * self.spacing,
+                        height(row, column),
+                        origin[1] + row as f32 * self.spacing,
+                    ],
+                    normal: normal.into(),
+                    uv: [
+                        column as f32 / (columns - 1) as f32,
+                        row as f32 / (rows - 1) as f32,
+                    ],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
+                });
+            }
+        }
+        let mut indices = Vec::with_capacity((rows - 1) * (columns - 1) * 6);
+        for row in 0..rows - 1 {
+            for column in 0..columns - 1 {
+                let at = |r: usize, c: usize| (r * columns + c) as u32;
+                let [a, b, c, d] = [
+                    at(row, column),
+                    at(row, column + 1),
+                    at(row + 1, column),
+                    at(row + 1, column + 1),
+                ];
+                // Counterclockwise seen from above.
+                indices.extend([a, c, b, b, c, d]);
+            }
+        }
+        crate::assets::MeshAsset { vertices, indices }
     }
 }
 
@@ -531,7 +615,9 @@ impl Shape {
                 half_height: half_height * scale.y,
                 radius: radius * scale.x.max(scale.z),
             },
-            ColliderShape::ConvexMesh | ColliderShape::TriangleMesh => {
+            ColliderShape::ConvexMesh
+            | ColliderShape::TriangleMesh
+            | ColliderShape::Heightfield => {
                 return None;
             }
         })
@@ -1738,6 +1824,28 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 };
                 let shape = match Shape::scaled(collider.shape, pose.scale) {
                     Some(shape) => shape,
+                    None if collider.shape == ColliderShape::Heightfield => {
+                        let field =
+                            world.entity(entity).get_ref::<Heightfield>()?;
+                        // Keyed by entity and last change, so an unchanged
+                        // grid is not rebuilt every step.
+                        let key = (
+                            entity.to_bits(),
+                            u64::from(field.last_changed().get()),
+                            pose.scale.map(f32::to_bits),
+                            false,
+                        );
+                        let mesh = match meshes.get(&key) {
+                            Some(mesh) => mesh.clone(),
+                            None => Arc::new(MeshData::new(
+                                &field.mesh(),
+                                pose.scale,
+                                false,
+                            )),
+                        };
+                        used.insert(key, mesh.clone());
+                        Shape::Triangles(mesh)
+                    }
                     None => {
                         let handle = renderer?.mesh;
                         let assets = assets?;

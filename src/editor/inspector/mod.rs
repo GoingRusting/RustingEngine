@@ -1145,6 +1145,7 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
         Capsule,
         Convex,
         Triangles,
+        Heightfield,
     }
     let current = match collider.shape {
         ColliderShape::Box { .. } => Shape::Box,
@@ -1152,6 +1153,7 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
         ColliderShape::Capsule { .. } => Shape::Capsule,
         ColliderShape::ConvexMesh => Shape::Convex,
         ColliderShape::TriangleMesh => Shape::Triangles,
+        ColliderShape::Heightfield => Shape::Heightfield,
     };
     let mut shape = current;
     widgets::choice(
@@ -1164,6 +1166,7 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
             (Shape::Capsule, "Capsule"),
             (Shape::Convex, "Convex Mesh"),
             (Shape::Triangles, "Triangle Mesh"),
+            (Shape::Heightfield, "Heightfield"),
         ],
     );
     if shape != current {
@@ -1178,6 +1181,7 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
             },
             Shape::Convex => ColliderShape::ConvexMesh,
             Shape::Triangles => ColliderShape::TriangleMesh,
+            Shape::Heightfield => ColliderShape::Heightfield,
         };
     }
     let size =
@@ -1204,6 +1208,9 @@ fn edit_collider(ui: &mut egui::Ui, collider: &mut Collider) {
         }
         ColliderShape::TriangleMesh => {
             widgets::value(ui, "Source", "This mesh (static only)");
+        }
+        ColliderShape::Heightfield => {
+            widgets::value(ui, "Source", "Heightfield grid (static only)");
         }
     }
     let unit = |value| DragValue::new(value).range(0.0..=1.0).speed(0.01);

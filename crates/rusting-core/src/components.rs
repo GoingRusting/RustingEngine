@@ -620,6 +620,9 @@ pub enum ColliderShape {
     /// The triangles of the entity's `MeshRenderer` mesh, scaled by its
     /// transform. Static only: a body with it never moves.
     TriangleMesh,
+    /// The entity's `rusting.heightfield` height grid, scaled by its
+    /// transform. Static only, like `TriangleMesh`.
+    Heightfield,
 }
 
 #[derive(Component, Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]

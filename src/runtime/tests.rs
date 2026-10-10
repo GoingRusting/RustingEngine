@@ -4858,6 +4858,43 @@ fn a_box_pile_steps_the_same_on_one_and_many_workers() {
 }
 
 #[test]
+fn bodies_rest_on_flat_heightfield_cells_and_roll_off_its_hills() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    // 8 x 8 m of ground with one 2 m peak in the middle.
+    let mut heights = vec![vec![0.0; 5]; 5];
+    heights[2][2] = 2.0;
+    let field = Heightfield {
+        heights,
+        spacing: 2.0,
+    };
+    let mesh = field.mesh();
+    assert_eq!((mesh.vertices.len(), mesh.indices.len()), (25, 96));
+    assert!(mesh.vertices.iter().all(|vertex| vertex.normal[1] > 0.5));
+    let ground = cpu_body(
+        world,
+        [0.0; 3],
+        ColliderShape::Heightfield,
+        RigidBodyKind::Fixed,
+    );
+    world.entity_mut(ground).insert(field);
+    let ball = ColliderShape::Sphere { radius: 0.25 };
+    let flat = cpu_body(world, [-3.0, 1.0, -3.0], ball, RigidBodyKind::Dynamic);
+    let slope = cpu_body(world, [1.0, 2.0, 0.0], ball, RigidBodyKind::Dynamic);
+    let at = |app: &App, entity| {
+        app.world().get::<Transform>(entity).unwrap().position
+    };
+    run_fixed_steps(&mut app, 60);
+    // Down the hill, still on the grid.
+    let rolled = at(&app, slope);
+    assert!(rolled[0] > 2.0 && rolled[1] > 0.0, "{rolled:?}");
+    run_fixed_steps(&mut app, 120);
+    let rest = at(&app, flat);
+    assert!((rest[1] - 0.25).abs() < 0.05, "{rest:?}");
+    assert!((rest[0] + 3.0).abs() < 0.05, "{rest:?}");
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {

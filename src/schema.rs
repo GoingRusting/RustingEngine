@@ -724,7 +724,7 @@ const ENTITY_SECTIONS: &[Section] = &[
         gpu: NO_GPU,
         example: || json!({"shape": {"Box": {"half_extents": [0.5, 0.5, 0.5]}}, "friction": 0.6, "restitution": 0.2, "sensor": false}),
         fields: &[
-            field("/shape/Box/half_extents", METRES, "> 0", "other variants: {\"Sphere\": {\"radius\"}}, {\"Capsule\": {\"half_height\", \"radius\"}}, \"ConvexMesh\", \"TriangleMesh\" (static only)"),
+            field("/shape/Box/half_extents", METRES, "> 0", "other variants: {\"Sphere\": {\"radius\"}}, {\"Capsule\": {\"half_height\", \"radius\"}}, \"ConvexMesh\", \"TriangleMesh\" (static only), \"Heightfield\" (static only, reads rusting.heightfield)"),
             field("/friction", "", ">= 0", ""),
             field("/restitution", "", "0..1", "bounciness"),
             field("/sensor", "", "", "reports overlaps without pushing"),
@@ -983,6 +983,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored). Where volumes overlap the highest priority wins. gravity_scale still applies. GPU bodies and the player controller are not affected.",
         gpu: NO_GPU,
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
+    },
+    ComponentSection {
+        key: "rusting.heightfield",
+        summary: "A grid of ground heights for a collider with shape \"Heightfield\" on the same object (static only, like TriangleMesh). heights[row][column] in metres; rows run along +Z and columns along +X, spacing metres apart, centred on the object and scaled by its transform. Game code can draw the same surface with Heightfield::mesh().",
+        gpu: NO_GPU,
+        example: || json!({"heights": [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.5, 0.0]], "spacing": 2.0}),
     },
     ComponentSection {
         key: "rusting.force_field",

@@ -141,6 +141,9 @@ command takes `--json` for output a program can read.
   friction and restitution combine (`Min` on ice keeps it slippery); a
   `rusting.sound_cue` with `with_material` plays only on touches of that
   surface, for per-surface impact sounds.
+- Uneven ground: give an object `"shape": "Heightfield"` in its collider
+  and a `rusting.heightfield` with `heights[row][column]` and `spacing`.
+  It is static. Draw it with a mesh from `Heightfield::mesh()`.
 - `rusting.force_field` on a Fixed sensor body pushes dynamic CPU bodies
   inside it: `Directional`, `Radial` (negative `strength` pulls in),
   `Vortex` around `direction`, or `Wind` with `turbulence` gusts. Use it
