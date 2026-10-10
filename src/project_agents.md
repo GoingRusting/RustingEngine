@@ -101,10 +101,12 @@ command takes `--json` for output a program can read.
   disappears. Animate 2D sprites with a `Scale` tween instead.
 - Player and platformer controllers ride moving platforms (kinematic bodies
   moved by `rusting.tween` or game code).
-- The player controller is kinematic: moving bodies do not push it, but it
-  pushes dynamic bodies it walks into (`push_bodies`). Handle hazards in game
-  code with `touching`, as below; it includes the floor and the wall the
-  player stands on or pushes.
+- On a kinematic body the player controller is never pushed, but it pushes
+  dynamic bodies it walks into (`push_bodies`). Handle hazards in game code
+  with `touching`, as below; it includes the floor and the wall the player
+  stands on or pushes. On a `Dynamic` rigid body the solver moves the player,
+  so hazards push it, but its walk brakes with up to 40 m/s² times its mass:
+  a motorised sweeper needs more force than that at the player to carry it.
 - Input actions for the player controller: `player.forward`, `player.back`,
   `player.left`, `player.right`, `player.jump`, `player.sprint`,
   `player.crouch` (needs `crouch_height` above 0; the body shrinks to that

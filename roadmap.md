@@ -221,12 +221,21 @@ share one undoable command layer.
 - [x] Gap: `GameScene` had no counter helper. `GameScene::counter(name)`.
   Evidence: `project_runner::tests::game_code_reads_and_sets_counters_by_name`.
   Other components stay behind `world()`.
-- [ ] Gap (deferred with deep physics): a kinematic player is never pushed
+- [x] Gap (deferred with deep physics): a kinematic player is never pushed
   by dynamic bodies, so hazards need game code. Pushing it out of overlaps
   was tried: the solver treats the kinematic player as infinite mass, so a
   motorised sweeper stalls against it and only nudges it a few centimetres.
   Real knockback needs the player as a finite-mass body in the solver. The
-  agent guide documents the `touching` pattern instead.
+  agent guide documents the `touching` pattern instead. Closed by the
+  dynamic player option (Milestone 10): a `PlayerController` on a `Dynamic`
+  body is a finite-mass solver body. Evidence:
+  `runtime::tests::a_motorised_sweeper_knocks_a_dynamic_player_away` (a
+  20 kg bar on a 20000 N·m hinge motor carries an 80 kg idle player more
+  than 1 m and keeps turning). Limit: the walk brakes at up to 40 m/s² times
+  the mass (3200 N for 80 kg), so Hammer Run's 5000 N·m sweepers still
+  stall against a player 2 m from the pivot; `src/project_agents.md` says
+  so. Kinematic players are unchanged. Full check 2026-10-10: fmt and
+  clippy x3 clean; lib 821 tests, 922 with gpu-tests.
 - [x] Gap: `run --ticks` reported nothing about the end state. It saves the
   scene to `build/final.rscene` for `scene query`; game `eprintln!` output is
   in the `--json` result. Evidence: `rusting run samples/hammer_run --ticks

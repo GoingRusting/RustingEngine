@@ -6966,6 +6966,59 @@ fn dynamic_players_walk_jump_stay_upright_and_shove_by_mass() {
 }
 
 #[test]
+fn a_motorised_sweeper_knocks_a_dynamic_player_away() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let start = [0.0, 0.91, 2.0];
+    let body =
+        cpu_body(world, start, DEFAULT_PLAYER_SHAPE, RigidBodyKind::Dynamic);
+    world.get_mut::<RigidBody>(body).unwrap().mass = 80.0;
+    world.entity_mut(body).insert(PlayerController::default());
+    // A 20 kg bar on a hinge about world Y, its motor turning it into the
+    // player standing 2 m from the pivot. The motor must beat the walk
+    // brake (80 kg x 40 m/s² = 3200 N, so 6400 N·m at 2 m): Hammer Run's
+    // 5000 N·m sweepers stall against a dynamic player.
+    let pivot = [0.0, 0.6, 0.0];
+    let bar = cpu_body(
+        world,
+        pivot,
+        ColliderShape::Box {
+            half_extents: [2.8, 0.2, 0.2],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    let mut rigid = world.get_mut::<RigidBody>(bar).unwrap();
+    rigid.mass = 20.0;
+    rigid.gravity_scale = 0.0;
+    let frame = [0.0, 0.0, std::f32::consts::FRAC_PI_2];
+    world.entity_mut(bar).insert(Joint {
+        frame,
+        target_frame: frame,
+        ..Joint::new(
+            JointKind::Hinge {
+                limit: None,
+                spring: None,
+                motor: Some(JointMotor {
+                    speed: 1.5,
+                    max_force: 20000.0,
+                }),
+            },
+            bevy_ecs::entity::Entity::PLACEHOLDER,
+            [0.0; 3],
+            pivot,
+        )
+    });
+    run_fixed_steps(&mut app, 150);
+    let end = app.world().get::<Transform>(body).unwrap().position;
+    let moved =
+        ((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt();
+    assert!(moved > 1.0, "knocked only {moved} m, to {end:?}");
+    let spin = app.world().get::<RigidBody>(bar).unwrap().angular_velocity;
+    assert!(spin[1].abs() > 1.0, "the sweeper stalled: {spin:?}");
+}
+
+#[test]
 fn ragdolls_generate_from_skinned_joints_and_go_limp() {
     let mut app = App::new();
     let world = app.world_mut();
