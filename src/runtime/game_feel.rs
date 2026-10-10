@@ -1433,6 +1433,28 @@ impl Default for AutoExposure {
     }
 }
 
+/// Camera lens blur: objects away from `focus_distance` blur, the more the
+/// farther from it, up to `blur`, the blur radius far behind the focus as a
+/// fraction of the screen height. An object at half the focus distance
+/// blurs as much. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DepthOfField {
+    /// Distance from the camera in metres that stays sharp.
+    pub focus_distance: f32,
+    /// Largest blur radius as a fraction of the screen height.
+    pub blur: f32,
+}
+
+impl Default for DepthOfField {
+    fn default() -> Self {
+        Self {
+            focus_distance: 10.0,
+            blur: 0.01,
+        }
+    }
+}
+
 /// Shows what a camera sees on this object's mesh, like a CCTV monitor. The
 /// camera's image replaces the base color and emissive maps of the object's
 /// material, so a material with black base color and emissive `[1, 1, 1]`

@@ -111,6 +111,19 @@ one. The lookup runs after `rusting.color_grading` and does not follow
 "rusting.color_lut": {"texture": "looks/warm_film.png", "intensity": 0.8}
 ```
 
+`rusting.depth_of_field` blurs what is nearer or farther than
+`focus_distance` metres, like a camera lens. `blur` is the largest blur
+radius as a fraction of the screen height: 0.005 is subtle, 0.02 is strong.
+Objects at half the focus distance, or far behind it, get the full blur.
+Move `focus_distance` from a script for focus pulls in cutscenes:
+
+```json
+"rusting.depth_of_field": {"focus_distance": 4.0, "blur": 0.01}
+```
+
+A blurred object in front of a sharp one keeps a hard outline; it does not
+spread over the sharp one.
+
 ### Film and CRT/VHS effects
 
 The same component carries film and old-screen effects. Each one is 0..1

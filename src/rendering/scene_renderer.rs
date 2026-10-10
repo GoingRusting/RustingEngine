@@ -2585,6 +2585,17 @@ impl SceneRenderer {
         self.prepare_render_instances(render_world, assets)?;
         let camera = options.camera.or(render_world.active_camera);
         let clip = view_projection(camera, viewport.extent);
+        // The projection alone turns stored depth back into distance.
+        let lens_depth = {
+            let lens = view_projection(
+                camera.map(|camera| ExtractedCamera {
+                    transform: Default::default(),
+                    ..camera
+                }),
+                viewport.extent,
+            );
+            [lens[(2, 2)], lens[(2, 3)], lens[(3, 2)], lens[(3, 3)]]
+        };
         let cluster_range = cluster_depth_range(camera);
         let prepared = self.prepared_instances.as_ref().unwrap();
         let quality = resolve_quality(render_world.quality, &self.capabilities);
@@ -2945,17 +2956,18 @@ impl SceneRenderer {
                 let view =
                     self.prepared_textures.get(&handle.key())?.view.clone()?;
                 let [width, height, _] = view.image().extent();
-                (height >= 2 && width == height * height).then_some((
-                    view,
-                    intensity.min(1.0),
-                    height,
-                ))
+                (height >= 2 && width == height * height)
+                    .then_some((view, intensity.min(1.0)))
             });
         // Effects that read neighboring pixels sample a copy of the HDR
         // image, made after the render pass is split as for bloom.
+        let depth_of_field = render_world
+            .depth_of_field
+            .filter(|lens| lit && lens.blur > 0.0 && lens.focus_distance > 0.0);
         let sampled = grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
-            || grade.distortion > 0.0;
+            || grade.distortion > 0.0
+            || depth_of_field.is_some();
         // Bloom, the copy and auto exposure read the finished HDR outside
         // the render pass.
         let post = bloom.is_some() || sampled || auto_exposure.is_some();
@@ -4504,6 +4516,33 @@ impl SceneRenderer {
                         self.scene_color.image().clone(),
                     ))
                     .map_err(|error| SceneRenderError(error.to_string()))?;
+                if depth_of_field.is_some() {
+                    // Mip 0 of the pyramid is the depth the lens blur reads.
+                    let (set, size) = &self.depth_pyramid.mips[0];
+                    let pipeline = &self.depth_pyramid_copy_pipeline;
+                    commands
+                        .bind_pipeline_compute(pipeline.clone())
+                        .map_err(|error| SceneRenderError(error.to_string()))?
+                        .bind_descriptor_sets(
+                            PipelineBindPoint::Compute,
+                            pipeline.layout().clone(),
+                            0,
+                            set.clone(),
+                        )
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                    count_work(&recorded, 0, 1, 0);
+                    unsafe {
+                        commands
+                            .dispatch([
+                                size[0].div_ceil(8),
+                                size[1].div_ceil(8),
+                                1,
+                            ])
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?;
+                    }
+                }
                 passes.end(&mut commands)?;
             }
             commands
@@ -4541,14 +4580,21 @@ impl SceneRenderer {
                 DescriptorSet::new(
                     self.descriptor_allocator.clone(),
                     active.tonemap_pipeline.layout().set_layouts()[1].clone(),
-                    [WriteDescriptorSet::image_view_sampler(
-                        0,
-                        color_lut.as_ref().map_or_else(
-                            || self.white_texture.0.clone(),
-                            |(view, ..)| view.clone(),
+                    [
+                        WriteDescriptorSet::image_view_sampler(
+                            0,
+                            color_lut.as_ref().map_or_else(
+                                || self.white_texture.0.clone(),
+                                |(view, ..)| view.clone(),
+                            ),
+                            self.scene_color_sampler.clone(),
                         ),
-                        self.scene_color_sampler.clone(),
-                    )],
+                        WriteDescriptorSet::image_view_sampler(
+                            1,
+                            self.depth_pyramid.view.clone(),
+                            self.depth_pyramid.sampler.clone(),
+                        ),
+                    ],
                     [],
                 )
                 .map_err(|error| SceneRenderError(error.to_string()))?,
@@ -4595,14 +4641,15 @@ impl SceneRenderer {
                             * render_world.fixed_delta_seconds,
                         (render_world.physics_tick % (1 << 24)) as f32,
                     ],
-                    sampled: u32::from(sampled),
-                    auto_exposure: u32::from(auto_exposure.is_some()),
+                    flags: u32::from(sampled)
+                        | u32::from(auto_exposure.is_some()) << 1,
                     lut: color_lut
                         .as_ref()
-                        .map_or(0.0, |(_, intensity, _)| *intensity),
-                    lut_size: color_lut
-                        .as_ref()
-                        .map_or(0.0, |(.., size)| *size as f32),
+                        .map_or(0.0, |(_, intensity)| *intensity),
+                    focus: depth_of_field
+                        .map_or(0.0, |lens| lens.focus_distance),
+                    blur: depth_of_field.map_or(0.0, |lens| lens.blur),
+                    depth: lens_depth,
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -9933,9 +9980,13 @@ layout(set = 0, binding = 3) readonly buffer Exposure { float value; } adapted;
 // The ColorLut strip, lut_size squares of lut_size x lut_size texels; read
 // only when lut > 0, its intensity.
 layout(set = 1, binding = 0) uniform sampler2D lut_strip;
+// Opaque depth, up to date only when blur > 0.
+layout(set = 1, binding = 1) uniform sampler2D scene_depth;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
-// band, distortion, seconds and frame number from the fixed tick. sampled is
-// 1 when scene_image may be read.
+// band, distortion, seconds and frame number from the fixed tick. flags bit
+// 0 is set when scene_image may be read, bit 1 for auto exposure. focus and
+// blur follow DepthOfField; depth holds the projection entries [2][2],
+// [2][3], [3][2] and [3][3] (row, column) that undo stored depth.
 layout(push_constant) uniform ToneMap {
     float exposure;
     uint mapper;
@@ -9948,10 +9999,11 @@ layout(push_constant) uniform ToneMap {
     vec4 highlights;
     vec4 film;
     vec4 tape;
-    uint sampled;
-    uint auto_exposure;
+    uint flags;
     float lut;
-    float lut_size;
+    float focus;
+    float blur;
+    vec4 depth;
 } tone;
 layout(location = 0) out vec4 f_color;
 // Uniform 0..1 from a pixel and a frame number, the same on every GPU.
@@ -9974,13 +10026,47 @@ vec3 hdr_at(vec2 uv) {
     }
     return c;
 }
+// Blur radius at uv as a fraction of the screen height.
+float blur_at(vec2 uv) {
+    float d = textureLod(scene_depth, uv, 0.0).r;
+    float z = (tone.depth.y - d * tone.depth.w) / (d * tone.depth.z - tone.depth.x);
+    return min(tone.blur * abs(1.0 - tone.focus / max(-z, 1e-4)), tone.blur);
+}
+// Gathers a disc the size of this pixel's blur. Nearer samples sharper than
+// it would reach this pixel stay out, so focused edges do not smear over a
+// blurred background.
+// ponytail: blurred foreground does not spread over a sharp background;
+// a scatter or tiled max-blur pass would add that.
+vec3 defocus(vec2 uv) {
+    float radius = blur_at(uv);
+    float depth = textureLod(scene_depth, uv, 0.0).r;
+    vec2 to_uv = vec2(tone.inv_extent.x / tone.inv_extent.y, 1.0);
+    vec3 sum = hdr_at(uv);
+    float weight = 1.0;
+    if (radius / tone.inv_extent.y < 0.5) {
+        return sum;
+    }
+    for (int i = 0; i < 32; i++) {
+        // Golden-angle spiral, evenly covering the disc.
+        float r = sqrt((float(i) + 0.5) / 32.0) * radius;
+        float a = float(i) * 2.39996;
+        vec2 at = uv + vec2(cos(a), sin(a)) * r * to_uv;
+        float reach = blur_at(at);
+        float w = textureLod(scene_depth, at, 0.0).r < depth
+            ? clamp((reach - r) / tone.inv_extent.y + 1.0, 0.0, 1.0)
+            : 1.0;
+        sum += hdr_at(at) * w;
+        weight += w;
+    }
+    return sum / weight;
+}
 float luma_of(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 void main() {
     vec4 hdr = subpassLoad(scene);
     vec2 uv = gl_FragCoord.xy * tone.inv_extent;
-    if (tone.sampled == 1u) {
+    if ((tone.flags & 1u) != 0u) {
         if (tone.tape.y > 0.0) {
             // Tube bulge, plus rows that sway slowly with time.
             vec2 centered = uv - 0.5;
@@ -9989,12 +10075,12 @@ void main() {
             uv.x += tone.tape.y * 0.004
                 * sin(uv.y * 60.0 + tone.tape.z * 5.0);
         }
-        vec2 split = (uv - 0.5) * tone.film.y * 0.02;
-        hdr.rgb = vec3(
-            hdr_at(uv + split).r,
-            hdr_at(uv).g,
-            hdr_at(uv - split).b
-        );
+        hdr.rgb = tone.blur > 0.0 ? defocus(uv) : hdr_at(uv);
+        if (tone.film.y > 0.0) {
+            vec2 split = (uv - 0.5) * tone.film.y * 0.02;
+            hdr.r = hdr_at(uv + split).r;
+            hdr.b = hdr_at(uv - split).b;
+        }
         if (tone.film.w > 0.0) {
             // Color smears to the right; brightness stays sharp.
             vec2 step_x = vec2(tone.film.w * 8.0 * tone.inv_extent.x, 0.0);
@@ -10006,7 +10092,7 @@ void main() {
         hdr.rgb += textureLod(bloom, uv, 0.0).rgb * tone.bloom;
     }
     float exposure = tone.exposure;
-    if (tone.auto_exposure == 1u) {
+    if ((tone.flags & 2u) != 0u) {
         exposure *= adapted.value;
     }
     vec3 c = max(hdr.rgb * exposure, 0.0);
@@ -10031,7 +10117,7 @@ void main() {
     if (tone.lut > 0.0) {
         // Look up in sRGB, as the strip was authored; the texture decodes
         // back to linear. Blue blends two neighboring squares.
-        float n = tone.lut_size;
+        float n = float(textureSize(lut_strip, 0).y);
         vec3 encoded = mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
             step(0.0031308, c));
         vec3 at = clamp(encoded, 0.0, 1.0) * (n - 1.0);
@@ -12083,6 +12169,102 @@ mod tests {
         scene.render_world.color_lut = Some((strip, 0.5));
         let [red, blue] = center(&mut scene);
         assert!(red > 60 && blue > 60, "half lut mixes both: {red}, {blue}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn depth_of_field_blurs_only_away_from_the_focus() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // An unlit slab 5 m from the camera, white on the left half and
+        // black on the right. In focus it matches the frame without lens
+        // blur; nearer or farther focus softens the edge.
+        let extent = [64, 64];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        let edge = scene.assets.textures.insert(TextureAsset {
+            size: [128, 4],
+            rgba8: (0..4)
+                .flat_map(|_| {
+                    (0..128).flat_map(|x| {
+                        if x < 64 {
+                            [255; 4]
+                        } else {
+                            [0, 0, 0, 255]
+                        }
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.renderables[0].material =
+            scene.assets.materials.insert(MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color_texture: Some(edge),
+                ..MaterialAsset::default()
+            });
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        // Pixels on the middle row neither black nor white.
+        let soft = |pixels: &[u8]| {
+            (0..extent[0])
+                .filter(|x| {
+                    let green = pixels[((32 * extent[0] + x) * 4 + 1) as usize];
+                    (30..=225).contains(&green)
+                })
+                .count()
+        };
+        for projection in [
+            Projection::Orthographic {
+                vertical_size: 2.0,
+                near: 0.1,
+                far: 100.0,
+            },
+            Projection::Perspective {
+                vertical_fov_radians: 2.0 * (1.0f32 / 5.0).atan(),
+                near: 0.1,
+                far: 100.0,
+            },
+        ] {
+            scene
+                .render_world
+                .active_camera
+                .as_mut()
+                .unwrap()
+                .projection = projection;
+            scene.render_world.depth_of_field = None;
+            let sharp = frame(&mut scene);
+            assert!(soft(&sharp) <= 3, "{projection:?}: {}", soft(&sharp));
+            let mut lens = crate::runtime::DepthOfField {
+                focus_distance: 5.0,
+                blur: 0.05,
+            };
+            scene.render_world.depth_of_field = Some(lens);
+            assert_eq!(frame(&mut scene), sharp, "{projection:?} in focus");
+            for focus in [2.5, 50.0] {
+                lens.focus_distance = focus;
+                scene.render_world.depth_of_field = Some(lens);
+                let blurred = soft(&frame(&mut scene));
+                assert!(
+                    blurred >= 4,
+                    "{projection:?} focus {focus}: {blurred}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -868,6 +868,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"key": 0.18, "min_exposure": 0.25, "max_exposure": 4.0, "speed": 1.5}),
     },
     ComponentSection {
+        key: "rusting.depth_of_field",
+        summary: "Lens blur: objects nearer or farther than focus_distance metres blur, up to blur (a fraction of the screen height) far behind the focus or at half its distance. Reads the opaque depth, so transparent objects blur with what is behind them. The first one found is used.",
+        gpu: "a copy of the HDR image and depth, and 32 taps per pixel in tone mapping",
+        example: || json!({"focus_distance": 10.0, "blur": 0.01}),
+    },
+    ComponentSection {
         key: "rusting.ambient_occlusion",
         summary: "Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres. Off on the Eco quality profile. The first one found is used.",
         gpu: "a depth prepass plus two full-screen compute passes",

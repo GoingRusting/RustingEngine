@@ -12,16 +12,16 @@ use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoExposure,
     AutoSimulation, AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen,
     CameraShake, ColorGrading, ColorLut, CombineMode, Connection, Connections,
-    Counter, CullingMode, DeterminismMode, Dialogue, DialogueChoice,
-    DialogueLine, Easing, EnvironmentMap, FieldKind, Flash, FluidBlock, Fog,
-    ForceField, GravityVolume, GroundSurface, Health, Heightfield, HudAnchor,
-    HudElement, InputAction, Joint, JointAxis, JointKind, JointMotor,
-    JointSpring, LightCookie, LootEntry, LootTable, MeshSurfaces, ObjectState,
-    PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
-    PlatformerController, PlayerController, Polygon2d, PostVolume,
-    QualityProfile, RandomSeed, ReflectionProbe, RenderBounds, RenderSettings,
-    ReverbZone, SceneBackground, SceneInstance, ShadowQuality, SkyLight,
-    SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
+    Counter, CullingMode, DepthOfField, DeterminismMode, Dialogue,
+    DialogueChoice, DialogueLine, Easing, EnvironmentMap, FieldKind, Flash,
+    FluidBlock, Fog, ForceField, GravityVolume, GroundSurface, Health,
+    Heightfield, HudAnchor, HudElement, InputAction, Joint, JointAxis,
+    JointKind, JointMotor, JointSpring, LightCookie, LootEntry, LootTable,
+    MeshSurfaces, ObjectState, PhysicsMaterial, PhysicsSettings,
+    PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
+    PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
+    RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
+    SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
     StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
     TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
@@ -1172,6 +1172,19 @@ crate::reflect! {
         speed: f32 {
             unit: "1/s", min: 0.0,
             doc: "how fast exposure follows a change in brightness",
+        },
+    }
+}
+
+crate::reflect! {
+    struct DepthOfField {
+        focus_distance: f32 {
+            unit: "m", min: 0.01,
+            doc: "distance from the camera that stays sharp",
+        },
+        blur: f32 {
+            unit: "fraction", min: 0.0, max: 0.05,
+            doc: "largest blur radius as a fraction of the screen height",
         },
     }
 }

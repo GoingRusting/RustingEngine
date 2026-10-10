@@ -2467,6 +2467,26 @@ Depends on: Milestones 3 and 4.
   the shader drops the lookup. Full check: fmt, clippy three ways,
   `cargo test --workspace` (821 passed, 111 ignored) and GPU tests (929
   passed). Depth of field and motion blur are not started.
+  Partial (depth of field): `rusting.depth_of_field` (focus_distance,
+  blur). Frames with it take the scene-color copy path and also copy the
+  opaque depth into depth-pyramid mip 0. Tone mapping turns depth back into
+  distance with four projection entries (perspective and orthographic),
+  sets the blur radius to `blur * |1 - focus / distance|` capped at `blur`
+  (a fraction of the screen height), and gathers 32 golden-angle taps;
+  nearer taps sharper than their distance stay out, so sharp edges do not
+  smear over a blurred background. Push constants packed to 128 bytes
+  (sampled and auto-exposure flags in one word; LUT size from the texture).
+  Lit view only. Limits: a blurred foreground keeps a hard outline over a
+  sharp background (no scatter or max-blur tiles); transparent objects blur
+  with what is behind them. Evidence: GPU test
+  `depth_of_field_blurs_only_away_from_the_focus` (an edge slab 5 m away
+  matches the plain frame at focus 5 and softens at 2.5 and 50, for both
+  projections); it fails when the gather is skipped, the distance sign is
+  flipped, or the depth formula is scaled. Full check: fmt, clippy three
+  ways, `cargo test --workspace` (821 passed, 112 ignored; the tools
+  lane's `a_handshake_must_arrive_whole_in_time_and_stay_small` failed once
+  under load and passes alone) and GPU tests (930 passed). Motion blur is
+  not started.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,

@@ -229,6 +229,7 @@ each one's fields, defaults and an example:
 - `rusting.post_volume`: Makes the rusting.fog and rusting.color_grading on the same object apply only near it: fully while the active camera is inside the box of half size extents (world axes, metres), fading out over blend metres outside.
 - `rusting.bloom`: Glow around pixels brighter than threshold (linear, before exposure), spread over the screen before tone mapping.
 - `rusting.auto_exposure`: Eye adaptation: every frame the renderer measures the average brightness of the lit image and moves exposure toward key / average, clamped to min_exposure..max_exposure, at speed per second (the first frame adapts at once).
+- `rusting.depth_of_field`: Lens blur: objects nearer or farther than focus_distance metres blur, up to blur (a fraction of the screen height) far behind the focus or at half its distance.
 - `rusting.ambient_occlusion`: Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres.
 - `rusting.background`: Clear color behind the scene.
 - `rusting.render_bounds`: Render-only visibility bounds in local space, separate from the collider.
