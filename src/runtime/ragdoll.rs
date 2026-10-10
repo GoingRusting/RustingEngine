@@ -222,6 +222,88 @@ pub fn step_ragdolls(world: &mut World, dt: f32) {
     }
 }
 
+/// Bones shorter than this (fingers, toes) get no body.
+const MIN_GENERATED_BONE: f32 = 0.05;
+
+/// Ragdoll bones for every joint of the `Skin`s under `root`, with
+/// `total_mass` kg shared by volume. A bone's length runs to its farthest
+/// child joint along its +Y (half its parent's for an end bone), its radius
+/// is a quarter of that, and bones shorter than 5 cm are left out. The
+/// result is a starting point to tune by hand.
+#[must_use]
+pub fn ragdoll_bones(
+    world: &World,
+    root: Entity,
+    total_mass: f32,
+) -> Vec<RagdollBone> {
+    let mut joints: Vec<Entity> = Vec::new();
+    let mut queue = vec![root];
+    while let Some(at) = queue.pop() {
+        if let Some(skin) = world.get::<super::Skin>(at) {
+            for path in &skin.joints {
+                if let Some(joint) = find_target(world, at, path) {
+                    if !joints.contains(&joint) {
+                        joints.push(joint);
+                    }
+                }
+            }
+        }
+        if let Some(children) = world.get::<Children>(at) {
+            queue.extend(children.0.iter().rev());
+        }
+    }
+    let mut lengths: Vec<f32> = joints
+        .iter()
+        .map(|&joint| {
+            world.get::<Children>(joint).map_or(0.0, |children| {
+                children
+                    .0
+                    .iter()
+                    .filter(|child| joints.contains(child))
+                    .filter_map(|&child| world.get::<Transform>(child))
+                    .map(|child| child.position[1])
+                    .fold(0.0, f32::max)
+            })
+        })
+        .collect();
+    // End bones: half the parent joint's length. Joints come parents first.
+    for i in 0..joints.len() {
+        if lengths[i] == 0.0 {
+            let parent = world.get::<Parent>(joints[i]).map(|p| p.0);
+            if let Some(p) = joints.iter().position(|&j| Some(j) == parent) {
+                lengths[i] = lengths[p] * 0.5;
+            }
+        }
+    }
+    let mut bones: Vec<RagdollBone> = joints
+        .iter()
+        .zip(lengths)
+        .filter(|(_, length)| *length >= MIN_GENERATED_BONE)
+        .filter_map(|(&joint, length)| {
+            let mut names = Vec::new();
+            let mut at = joint;
+            while at != root {
+                names.push(world.get::<super::Name>(at)?.0.clone());
+                at = world.get::<Parent>(at)?.0;
+            }
+            names.reverse();
+            let radius = length * 0.25;
+            Some(RagdollBone {
+                path: names.join("/"),
+                length,
+                radius,
+                mass: radius * radius * length,
+                ..RagdollBone::default()
+            })
+        })
+        .collect();
+    let volume: f32 = bones.iter().map(|bone| bone.mass).sum();
+    for bone in &mut bones {
+        bone.mass *= total_mass / volume;
+    }
+    bones
+}
+
 /// Bone indices, shallowest path first, so parents come before children.
 fn depth_order(ragdoll: &Ragdoll) -> Vec<usize> {
     let mut order: Vec<usize> = (0..ragdoll.bones.len()).collect();

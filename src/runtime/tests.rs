@@ -6463,3 +6463,74 @@ fn dynamic_players_walk_jump_stay_upright_and_shove_by_mass() {
         at(&app, heavy)
     );
 }
+
+#[test]
+fn ragdolls_generate_from_skinned_joints_and_go_limp() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    let hero = world
+        .spawn((Name("Hero".into()), Transform::new([0.0, 0.0, 0.0])))
+        .id();
+    let named = |world: &mut World, name: &str, y: f32, parent| {
+        let entity = world
+            .spawn((Name(name.into()), Transform::new([0.0, y, 0.0])))
+            .id();
+        hierarchy::set_parent(world, entity, parent).unwrap();
+        entity
+    };
+    let armature = named(world, "Armature", 0.0, hero);
+    let hips = named(world, "Hips", 1.0, armature);
+    let spine = named(world, "Spine", 0.3, hips);
+    named(world, "Head", 0.4, spine);
+    let finger = named(world, "Finger", 0.04, spine);
+    named(world, "Tip", 0.03, finger);
+    let body = named(world, "Body", 0.0, hero);
+    world.entity_mut(body).insert(Skin {
+        joints: [
+            "Hips",
+            "Hips/Spine",
+            "Hips/Spine/Head",
+            "Hips/Spine/Finger",
+            "Hips/Spine/Finger/Tip",
+        ]
+        .map(|path| format!("../Armature/{path}"))
+        .into(),
+        inverse_bind: Vec::new(),
+    });
+
+    let bones = ragdoll_bones(world, hero, 60.0);
+    let found: Vec<_> = bones
+        .iter()
+        .map(|bone| (bone.path.as_str(), bone.length))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("Armature/Hips", 0.3),
+            ("Armature/Hips/Spine", 0.4),
+            ("Armature/Hips/Spine/Head", 0.2),
+        ],
+        "finger bones are too short for bodies"
+    );
+    let mass: f32 = bones.iter().map(|bone| bone.mass).sum();
+    assert!((mass - 60.0).abs() < 1e-3, "masses sum to {mass}");
+    assert!(bones[1].mass > bones[0].mass && bones[0].mass > bones[2].mass);
+
+    world.entity_mut(hero).insert(Ragdoll {
+        bones,
+        command: Some(true),
+        ..Ragdoll::default()
+    });
+    run_fixed_steps(&mut app, 60);
+    let state = app.world().get::<RagdollState>(hero).unwrap();
+    assert_eq!(state.phase, RagdollPhase::Limp);
+    assert_eq!(state.parts.len(), 3);
+    // The head started 1.7 m up.
+    let end = app
+        .world()
+        .get::<Transform>(state.parts[2])
+        .unwrap()
+        .position;
+    assert!(end[1] < 1.2, "head body stayed at {end:?}");
+}

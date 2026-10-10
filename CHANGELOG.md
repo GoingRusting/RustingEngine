@@ -9,6 +9,7 @@
 
 ### Added
 
+- `GameScene::generate_ragdoll(name, total_mass)` and `runtime::ragdoll_bones` build ragdoll bones from a character's skinned joints.
 - A `PlayerController` on a dynamic `RigidBody` is moved by the solver: walking steers it with a bounded force, jumps set its vertical speed, and it never tips over.
 - Ground snapping for `PlayerController`: a walking player stays on the ground down ramps and steps no taller than `max_step_height` instead of hopping off them, so it can jump all the way down. `PhysicsWorld::snap_to_floor` gives the same snap to custom character code.
 - `PhysicsSettings::substeps` and `ProjectRunner::set_physics_substeps` split each CPU physics step into equal substeps. Eight substeps hold a 20-link joint chain with a 50:1 tip within 2 cm, where one stretched it by metres; four rest 100 kg on 1 kg. Trade-off table in docs/concepts.md.

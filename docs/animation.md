@@ -339,6 +339,13 @@ and blend back to the animation afterwards:
   bones blend back to the animation over `blend_time` seconds.
 - Bones without an entry keep their animated local pose.
 
+`scene.generate_ragdoll("Hero", 70.0)` fills `bones` from the joints of
+the `Skin`s under the character, sharing 70 kg by volume, and keeps the
+other settings. Each bone runs to its farthest child joint along its +Y
+(an end bone gets half its parent's length), its radius is a quarter of
+its length, and bones under 5 cm (fingers, toes) get no body. Treat the
+result as a start: widen the hips and chest by hand.
+
 ### Active ragdolls
 
 Set `muscle` (Hz) above 0 and the character is physical all the time: its
@@ -380,6 +387,7 @@ scene.stop_animation("Door");                  // hold the current pose
 scene.set_animation_speed("Fan", 2.0);
 scene.set_animation_parameter("Hero", "speed", 3.5);  // state machine input
 let step = scene.take_root_motion("Hero");     // local metres since last call
+scene.generate_ragdoll("Hero", 70.0);          // bones from the skeleton
 scene.set_ragdoll("Hero", true);               // go limp; false gets up
 scene.set_ragdoll_muscle("Hero", 10.0);        // active ragdoll; 0 is passive
 if scene.is_limp("Hero") { /* knocked down */ }

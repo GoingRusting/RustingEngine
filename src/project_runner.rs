@@ -3134,6 +3134,28 @@ impl GameScene<'_> {
         }
     }
 
+    /// Gives the named character a `rusting.ragdoll` whose bones come from
+    /// the joints of the `Skin`s under it (see
+    /// [`crate::runtime::ragdoll_bones`]), sharing `total_mass` kg. Keeps
+    /// the other settings of a ragdoll it already has. Returns the bone
+    /// count; 0 when the object is missing or has no skinned joints.
+    pub fn generate_ragdoll(&mut self, name: &str, total_mass: f32) -> usize {
+        let Some(entity) = find_or_warn(self.world, name) else {
+            return 0;
+        };
+        let bones =
+            crate::runtime::ragdoll_bones(self.world, entity, total_mass);
+        let count = bones.len();
+        let mut ragdoll = self
+            .world
+            .get::<crate::runtime::Ragdoll>(entity)
+            .cloned()
+            .unwrap_or_default();
+        ragdoll.bones = bones;
+        self.world.entity_mut(entity).insert(ragdoll);
+        count
+    }
+
     /// Sets the named character's ragdoll muscle stiffness in Hz. Above 0
     /// makes it an active ragdoll; 0 lets it go limp and then return to
     /// plain animation.
