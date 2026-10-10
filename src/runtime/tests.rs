@@ -5731,6 +5731,109 @@ fn fluid_volumes_step_with_the_fixed_tick() {
     assert!(mean(&volume.fluid.positions) < mean(&start) - 0.3);
 }
 
+/// An 8 kg jelly cube of 0.2 m hanging under a 0.2 m box at `[0, 2, 0]`,
+/// its top face attached to the box. Returns (box, jelly).
+fn jelly_under_a_box(
+    app: &mut App,
+    kind: RigidBodyKind,
+) -> (bevy_ecs::entity::Entity, bevy_ecs::entity::Entity) {
+    let world = app.world_mut();
+    let body = cpu_body(
+        world,
+        [0.0, 2.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.1; 3],
+        },
+        kind,
+    );
+    let mut rigid = world.get_mut::<RigidBody>(body).unwrap();
+    rigid.mass = 8.0;
+    rigid.gravity_scale = 0.0;
+    let settings = SoftBodySettings {
+        floor: None,
+        damping: 0.0,
+        edge_compliance: 1e-5,
+        ..SoftBodySettings::default()
+    };
+    let cube =
+        SoftBody::block([-0.1, 1.7, -0.1], [2, 2, 2], 0.1, 1000.0).unwrap();
+    let mut volume = SoftBodyVolume::new(settings, cube);
+    let transform = *world.get::<Transform>(body).unwrap();
+    assert_eq!(
+        volume.attach_near([0.0, 2.0, 0.0], 0.18, body, &transform),
+        9
+    );
+    (body, world.spawn(volume).id())
+}
+
+#[test]
+fn a_hanging_soft_body_pulls_its_dynamic_body_down_by_its_weight() {
+    let mut app = App::new();
+    let (body, jelly) = jelly_under_a_box(&mut app, RigidBodyKind::Dynamic);
+    run_fixed_steps(&mut app, 60);
+    // Only the jelly feels gravity, so after one second the box and jelly
+    // together carry the jelly's weight times one second of momentum.
+    let world = app.world();
+    let soft = &world.get::<SoftBodyVolume>(jelly).unwrap().body;
+    let (mass, momentum) = soft
+        .velocities
+        .iter()
+        .zip(&soft.inverse_masses)
+        .fold((0.0, 0.0), |(mass, momentum), (velocity, weight)| {
+            (mass + 1.0 / weight, momentum + velocity[1] / weight)
+        });
+    let rigid = world.get::<RigidBody>(body).unwrap();
+    let total = momentum + rigid.mass * rigid.linear_velocity[1];
+    let expected = -mass * 9.81;
+    assert!(
+        (total - expected).abs() < 0.05 * expected.abs(),
+        "momentum {total}, expected {expected}"
+    );
+    let shared = expected / (mass + rigid.mass);
+    assert!(
+        rigid.linear_velocity[1] < 0.7 * shared,
+        "the box fell at only {:?}, shared speed {shared}",
+        rigid.linear_velocity
+    );
+    assert!(
+        length(rigid.angular_velocity) < 0.5,
+        "the box spins at {:?}",
+        rigid.angular_velocity
+    );
+}
+
+#[test]
+fn a_soft_body_follows_a_moving_kinematic_body() {
+    let mut app = App::new();
+    let (body, jelly) = jelly_under_a_box(&mut app, RigidBodyKind::Kinematic);
+    app.world_mut()
+        .get_mut::<RigidBody>(body)
+        .unwrap()
+        .linear_velocity = [1.0, 0.0, 0.0];
+    run_fixed_steps(&mut app, 60);
+    let world = app.world();
+    let origin = world.get::<Transform>(body).unwrap().position;
+    assert!((origin[0] - 1.0).abs() < 0.05, "box at {origin:?}");
+    let volume = world.get::<SoftBodyVolume>(jelly).unwrap();
+    for attachment in &volume.attachments {
+        let at = volume.body.positions[attachment.particle];
+        for axis in 0..3 {
+            let want = origin[axis] + attachment.local[axis];
+            assert!((at[axis] - want).abs() < 0.03, "{at:?} not at {want}");
+        }
+    }
+    let bottom = volume
+        .body
+        .positions
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::MAX, f32::min);
+    let mean_x = volume.body.positions.iter().map(|p| p[0]).sum::<f32>()
+        / volume.body.positions.len() as f32;
+    assert!(bottom > 1.5, "the jelly tore loose: bottom at {bottom}");
+    assert!(mean_x > 0.8, "the jelly stayed behind at x {mean_x}");
+}
+
 #[test]
 fn fluid_volumes_with_a_visual_own_one_entity_per_particle() {
     use crate::assets::PrimitiveShape;

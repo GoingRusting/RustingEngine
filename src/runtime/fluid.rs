@@ -615,7 +615,7 @@ pub(super) fn step_fluids(
 /// Stable order for anything that visits several objects: [`SpawnOrder`]
 /// first (it survives reloads and restores), then entity order for objects
 /// without one.
-fn visit_key(
+pub(super) fn visit_key(
     order: Option<&super::SpawnOrder>,
     entity: bevy_ecs::prelude::Entity,
 ) -> (bool, u64, bevy_ecs::prelude::Entity) {

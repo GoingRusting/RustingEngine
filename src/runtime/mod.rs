@@ -115,6 +115,10 @@ pub use skinning::{
     Skin, SkinnedMesh,
 };
 pub use snapshot::{SnapshotError, WorldSnapshot};
+pub use soft_body::{
+    Anchor, AnchorBody, SoftAttachment, SoftBody, SoftBodySettings,
+    SoftBodyVolume,
+};
 pub use state_hash::*;
 pub use time::{FrameTime, RandomSeed, TimeControl};
 pub use two_d::*;
@@ -304,7 +308,7 @@ impl Default for App {
                 animation::advance_animations,
                 fluid::spawn_fluid_volumes,
                 fluid::couple_fluids,
-                fluid::step_fluids,
+                (fluid::step_fluids, soft_body::step_soft_bodies).chain(),
                 fluid::sync_fluid_visuals,
                 fluid::reap_surfaces,
                 fluid::sync_fluid_surfaces,

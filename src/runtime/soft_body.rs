@@ -48,6 +48,30 @@ impl Default for SoftBodySettings {
     }
 }
 
+/// A rigid body that soft-body particles hang on, for
+/// [`SoftBody::step_coupled`]. The step moves and turns it with the pull of
+/// its particles; inverse mass and inertia 0 make it immovable (kinematic).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnchorBody {
+    pub position: [f32; 3],
+    pub rotation: nalgebra::Rotation3<f32>,
+    pub velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub inverse_mass: f32,
+    /// World-space inverse inertia, held fixed through the step.
+    pub inverse_inertia: nalgebra::Matrix3<f32>,
+}
+
+/// Holds one particle on a point fixed to an [`AnchorBody`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchor {
+    pub particle: usize,
+    /// Index into the bodies slice.
+    pub body: usize,
+    /// The point in the body's frame.
+    pub local: [f32; 3],
+}
+
 /// A tetrahedral soft body: particles, their tetrahedra and the edges
 /// between them, with rest lengths and volumes taken at creation.
 #[derive(Clone, Debug, PartialEq)]
@@ -203,6 +227,24 @@ impl SoftBody {
 
     /// Advances the body by `dt` seconds.
     pub fn step(&mut self, settings: &SoftBodySettings, dt: f32) {
+        self.step_coupled(settings, dt, &mut [], &[]);
+    }
+
+    /// Advances the body by `dt` seconds with each anchor's particle held on
+    /// its point of a rigid body. Each substep solves the anchors as
+    /// zero-length XPBD constraints between particle and body (Müller et
+    /// al. 2020, "Detailed rigid body simulation with extended position
+    /// based dynamics"), so the body is pulled and turned by the soft body
+    /// as well as carrying it. Bodies move with their velocities through
+    /// the step and come back with the pose and velocities they end it with. Anchors on pinned particles or missing bodies hold
+    /// nothing.
+    pub fn step_coupled(
+        &mut self,
+        settings: &SoftBodySettings,
+        dt: f32,
+        bodies: &mut [AnchorBody],
+        anchors: &[Anchor],
+    ) {
         let substeps = settings.substeps.clamp(1, MAX_SOFT_BODY_SUBSTEPS);
         let h = dt / substeps as f32;
         if h <= 0.0 {
@@ -222,8 +264,52 @@ impl SoftBody {
                 self.positions[i] =
                     (vector(self.positions[i]) + velocity * h).into();
             }
+            for body in bodies.iter_mut() {
+                body.position =
+                    (vector(body.position) + vector(body.velocity) * h).into();
+                body.rotation =
+                    nalgebra::Rotation3::new(vector(body.angular_velocity) * h)
+                        * body.rotation;
+            }
             self.solve_edges(settings.edge_compliance / (h * h));
             self.solve_volumes(settings.volume_compliance / (h * h));
+            for anchor in anchors {
+                let weight = self.inverse_masses[anchor.particle];
+                let Some(body) = bodies.get_mut(anchor.body) else {
+                    continue;
+                };
+                if weight == 0.0 {
+                    continue;
+                }
+                let arm = body.rotation * vector(anchor.local);
+                let gap = vector(body.position) + arm
+                    - vector(self.positions[anchor.particle]);
+                let length = gap.norm();
+                if length < 1e-9 {
+                    continue;
+                }
+                let normal = gap / length;
+                let turn = arm.cross(&normal);
+                let body_weight = body.inverse_mass
+                    + turn.dot(&(body.inverse_inertia * turn));
+                // The correction moves the particle toward the point and
+                // the body the other way.
+                let lambda = length / (weight + body_weight);
+                self.positions[anchor.particle] =
+                    (vector(self.positions[anchor.particle])
+                        + normal * (weight * lambda))
+                        .into();
+                let push = -normal * lambda;
+                body.position =
+                    (vector(body.position) + push * body.inverse_mass).into();
+                body.velocity = (vector(body.velocity)
+                    + push * (body.inverse_mass / h))
+                    .into();
+                let spin = body.inverse_inertia * arm.cross(&push);
+                body.rotation = nalgebra::Rotation3::new(spin) * body.rotation;
+                body.angular_velocity =
+                    (vector(body.angular_velocity) + spin / h).into();
+            }
             for i in 0..self.positions.len() {
                 if self.inverse_masses[i] == 0.0 {
                     continue;
@@ -303,6 +389,173 @@ impl SoftBody {
                 .wrapping_mul(0x0000_0100_0000_01b3);
         }
         hash
+    }
+}
+
+/// Holds a particle of a [`SoftBodyVolume`] on a point fixed to a rigid
+/// body. The body carries the particle along, and a dynamic body feels the
+/// soft body pull back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoftAttachment {
+    pub particle: usize,
+    pub body: bevy_ecs::prelude::Entity,
+    /// The point in the body's frame, in meters (scale is not applied).
+    pub local: [f32; 3],
+}
+
+/// A soft body on an entity, stepped once per fixed tick after rigid
+/// physics. It is runtime state made by game code: not reflected or saved
+/// in scene files yet, but kept in snapshots.
+#[derive(bevy_ecs::prelude::Component, Clone, Debug)]
+pub struct SoftBodyVolume {
+    pub settings: SoftBodySettings,
+    pub body: SoftBody,
+    pub attachments: Vec<SoftAttachment>,
+}
+
+impl SoftBodyVolume {
+    pub fn new(settings: SoftBodySettings, body: SoftBody) -> Self {
+        Self {
+            settings,
+            body,
+            attachments: Vec::new(),
+        }
+    }
+
+    /// Attaches every particle within `radius` of `point` (world space) to
+    /// `body`, whose transform is `transform`, where the particles are now.
+    /// Returns how many were attached.
+    pub fn attach_near(
+        &mut self,
+        point: [f32; 3],
+        radius: f32,
+        body: bevy_ecs::prelude::Entity,
+        transform: &crate::Transform,
+    ) -> usize {
+        let rotation = body_rotation(transform);
+        let origin = vector(transform.position);
+        let before = self.attachments.len();
+        for (particle, &position) in self.body.positions.iter().enumerate() {
+            if (vector(position) - vector(point)).norm() <= radius {
+                self.attachments.push(SoftAttachment {
+                    particle,
+                    body,
+                    local: (rotation.inverse() * (vector(position) - origin))
+                        .into(),
+                });
+            }
+        }
+        self.attachments.len() - before
+    }
+}
+
+fn body_rotation(transform: &crate::Transform) -> nalgebra::Rotation3<f32> {
+    let [roll, pitch, yaw] = transform.rotation;
+    super::sim_math::rotation_from_euler(roll, pitch, yaw)
+}
+
+/// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`] in
+/// spawn order with its attached particles held on their bodies, then gives
+/// each dynamic body the impulse the soft body pulled it with. Attachments
+/// to a missing or parented body hold nothing.
+#[allow(clippy::type_complexity)]
+pub(super) fn step_soft_bodies(
+    time: bevy_ecs::prelude::Res<super::FrameTime>,
+    mut volumes: bevy_ecs::prelude::Query<(
+        bevy_ecs::prelude::Entity,
+        Option<&super::SpawnOrder>,
+        &mut SoftBodyVolume,
+    )>,
+    mut bodies: bevy_ecs::prelude::Query<
+        (
+            &mut crate::Transform,
+            &mut super::RigidBody,
+            Option<&super::Collider>,
+        ),
+        bevy_ecs::prelude::Without<super::Parent>,
+    >,
+) {
+    let dt = time.fixed_delta.as_secs_f32();
+    let mut volumes: Vec<_> = volumes.iter_mut().collect();
+    volumes.sort_by_key(|(entity, order, _)| {
+        super::fluid::visit_key(*order, *entity)
+    });
+    for (_, _, mut volume) in volumes {
+        let volume = &mut *volume;
+        let mut entities = Vec::new();
+        let mut held = Vec::new();
+        let mut anchors = Vec::new();
+        for attachment in &volume.attachments {
+            let Ok((transform, rigid, collider)) = bodies.get(attachment.body)
+            else {
+                continue;
+            };
+            if attachment.particle >= volume.body.positions.len() {
+                continue;
+            }
+            let body = match entities.iter().position(|&e| e == attachment.body)
+            {
+                Some(index) => index,
+                None => {
+                    let dynamic = rigid.kind == super::RigidBodyKind::Dynamic
+                        && rigid.mass > 0.0;
+                    let rotation = body_rotation(transform);
+                    let inverse_inertia = match collider {
+                        Some(collider) if dynamic => {
+                            super::cpu_physics::world_inverse_inertia(
+                                collider,
+                                transform.scale,
+                                &rotation,
+                                rigid.mass,
+                            )
+                        }
+                        _ => nalgebra::Matrix3::zeros(),
+                    };
+                    // Rigid physics already moved the body through this
+                    // tick; the soft step moves it through the tick again
+                    // from where it was, now pulled by its particles.
+                    let velocity = vector(rigid.linear_velocity);
+                    let spin = vector(rigid.angular_velocity);
+                    entities.push(attachment.body);
+                    held.push(AnchorBody {
+                        position: (vector(transform.position) - velocity * dt)
+                            .into(),
+                        rotation: nalgebra::Rotation3::new(-spin * dt)
+                            * rotation,
+                        velocity: rigid.linear_velocity,
+                        angular_velocity: rigid.angular_velocity,
+                        inverse_mass: if dynamic {
+                            1.0 / rigid.mass
+                        } else {
+                            0.0
+                        },
+                        inverse_inertia,
+                    });
+                    held.len() - 1
+                }
+            };
+            anchors.push(Anchor {
+                particle: attachment.particle,
+                body,
+                local: attachment.local,
+            });
+        }
+        volume
+            .body
+            .step_coupled(&volume.settings, dt, &mut held, &anchors);
+        for (entity, state) in entities.into_iter().zip(held) {
+            let Ok((mut transform, mut rigid, _)) = bodies.get_mut(entity)
+            else {
+                continue;
+            };
+            if state.inverse_mass > 0.0 {
+                let (roll, pitch, yaw) = state.rotation.euler_angles();
+                transform.position = state.position;
+                transform.rotation = [roll, pitch, yaw];
+                rigid.linear_velocity = state.velocity;
+                rigid.angular_velocity = state.angular_velocity;
+            }
+        }
     }
 }
 
