@@ -531,8 +531,9 @@ share one undoable command layer.
   test `commands_apply_once_before_the_step_and_reject_stale_bodies`
   covers both. The lateness and the reset recipe are in
   `docs/pitfalls.md` and `docs/determinism.md` (2026-10-09 audit).
-- [ ] Gap (Same Shift): a camera that renders into a texture or a screen
+- [x] Gap (Same Shift): a camera that renders into a texture or a screen
   rectangle, for monitors and split screen.
+  Done 2026-10-10 (bookkeeping): `rusting.camera_screen` renders a camera into a texture (split-signal F7, 4688062), and `Camera.viewport` draws one into a screen rectangle for split screen.
 - [x] Gap: `RenderSettings::render_scale` is read by the window and headless
   capture: the scene renders into an offscreen image of the scaled size and a
   linear blit stretches it over the target (`rendering::render_scale`). See
@@ -741,10 +742,11 @@ Goal: create the engine runtime that owns canonical scene state and system execu
 - [x] Use worker tasks only for safe asset decoding and preparation.
   Evidence: `Assets::load_async` runs only the CPU loader on a worker; results
   are published on the main thread by `poll_loads` (see Milestone 2).
-- [ ] Execute animations as ECS systems instead of passive data.
+- [x] Execute animations as ECS systems instead of passive data.
   The unused legacy `SceneObject::animation` field was removed with
   `RenderScene`. Real ECS animation remains part of Milestone 14; it needs
   clip sampling, pose application, and a fixed/update schedule integration.
+  Done 2026-10-10 (bookkeeping): clips run as ECS systems, `animation::advance_animations` in the update schedule and `step_animations` (`src/runtime/animation.rs`), with blending, crossfades and root motion (Milestone 14).
 
 ### Exit gate
 
@@ -830,9 +832,10 @@ Goal: make assets stable, deduplicated, reloadable, and serializable.
   sampling disabled in the shader) and `material_without_texture_samples_white`.
   Known ceiling: no mip chain yet. The other maps landed with the Milestone 4
   PBR pass.
-- [ ] Add skins and animation after the static scene path is stable.
+- [x] Add skins and animation after the static scene path is stable.
   Blocked: needs the skeleton/clip/pose runtime from Milestone 14; import
   lands together with that runtime rather than as data nothing consumes.
+  Done 2026-10-10 (bookkeeping): skins and morph targets are item 7 of the asset plan (CPU skinning; GPU skinning is open there).
 - [x] Preserve glTF materials unless the caller explicitly supplies an override.
   `spawn_gltf_nodes(app, nodes, material_override)` keeps each primitive's
   imported material when the override is `None`. Fixed a real loss: glTF
