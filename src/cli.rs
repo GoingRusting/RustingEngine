@@ -330,7 +330,7 @@ pub fn new_project(
 
 /// `rusting systems`: the engine's ECS systems with the components and
 /// resources each reads and writes, plus the game code functions of the
-/// project at `root` (if it is one; see [`game_system_access`]). `reads` or
+/// project at `root` (if it is one; see `game_system_access`). `reads` or
 /// `writes` keeps the systems that read or write that type name; systems
 /// with `all` access may touch anything, so they are always kept.
 pub fn system_access(
@@ -6077,7 +6077,7 @@ const EXPORT_VERIFY_TICKS: u32 = 60;
 /// Cooks, builds a release, and packages the game into a new folder under
 /// `parent`, the same way the editor's Export does. A native export is then
 /// verified: a copy of the folder in a fresh temporary location must run
-/// [`EXPORT_VERIFY_TICKS`] headless ticks and exit cleanly. Cross-target
+/// `EXPORT_VERIFY_TICKS` headless ticks and exit cleanly. Cross-target
 /// exports are not run.
 pub fn export_game_project(
     root: &Path,

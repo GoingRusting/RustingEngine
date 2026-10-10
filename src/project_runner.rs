@@ -4112,7 +4112,7 @@ struct SimpleGamePlugin {
     components: Option<GameComponents>,
 }
 
-/// Registers a game's own scene components; written by [`rusting_game!`]
+/// Registers a game's own scene components; written by `rusting_game!`
 /// from its `components: [Type => "game.name"]` list.
 pub type GameComponents =
     fn(&mut App) -> Result<(), crate::runtime::SceneIoError>;
@@ -5769,7 +5769,7 @@ pub fn run_game_with_tick(
 }
 
 /// Runs a cooked scene like [`run_game_with_tick`], after registering the
-/// game's own scene components. [`rusting_game!`] calls this for its
+/// game's own scene components. `rusting_game!` calls this for its
 /// `components:` list.
 ///
 /// # Arguments

@@ -293,7 +293,7 @@ fn optional_device_features(
 }
 
 /// `VulkanoConfig::default()` plus the validation layer (see
-/// [`validation_instance_info`]), the `RUSTING_VULKAN_DEVICE` device choice,
+/// `validation_instance_info`), the `RUSTING_VULKAN_DEVICE` device choice,
 /// and the optional features the renderer uses when the device
 /// `VulkanoContext` will pick has them. `VulkanoContext`
 /// panics on a requested feature the device lacks, so the pick is probed

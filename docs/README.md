@@ -36,6 +36,11 @@ were run against this version of the engine.
 - `rusting schema`: the full catalog of commands and scene components, with
   each field's default, unit, and valid range. It is generated from the
   engine itself, so it is always current.
+- API reference: `rusting docs show component/<name>` (also `resource/` and
+  `asset/`) prints one reflected type's fields, generated from the same
+  catalog, and `rusting docs show api/GameScene` indexes the gameplay
+  methods. For the Rust crates, `cargo doc --workspace --no-deps --open`
+  builds the full reference; CI fails on a broken link in it.
 - [Determinism](determinism.md): what makes a simulation reproducible, state
   hashes, `rusting determinism`, and replays.
 - [Architecture](../architecture.md): how the runtime, renderer, and editor

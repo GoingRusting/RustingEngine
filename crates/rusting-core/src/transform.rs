@@ -15,16 +15,16 @@ pub struct Transform {
     ///
     /// IMPORTANT: These values are in radians, not degrees.
     ///
-    /// rotation[0] = rotation around X
-    /// rotation[1] = rotation around Y
-    /// rotation[2] = rotation around Z
+    /// `rotation[0]` = rotation around X
+    /// `rotation[1]` = rotation around Y
+    /// `rotation[2]` = rotation around Z
     pub rotation: [f32; 3],
 
     /// Object size along each local axis:
     ///
-    /// scale[0] = size along X
-    /// scale[1] = size along Y
-    /// scale[2] = size along Z
+    /// `scale[0]` = size along X
+    /// `scale[1]` = size along Y
+    /// `scale[2]` = size along Z
     ///
     /// [1.0, 1.0, 1.0] means normal size.
     /// [2.0, 2.0, 2.0] means twice as large.
