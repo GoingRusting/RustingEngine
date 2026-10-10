@@ -30,7 +30,7 @@ use crate::runtime::{
     RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT, RENDER_BOUNDS_COMPONENT,
     REVERB_ZONE_COMPONENT, SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT,
     SLIDE_SOUND_COMPONENT, SOUND_CUE_COMPONENT, TWEEN_COMPONENT,
-    WATER_COMPONENT,
+    VEHICLE_COMPONENT, WATER_COMPONENT,
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
@@ -241,6 +241,10 @@ pub(in crate::editor) fn component_help(
         GRAVITY_VOLUME_COMPONENT => (
             "Replaces gravity for bodies inside this sensor: zero-g, sideways, or toward its centre.",
             "Zero-g rooms, wind tunnels and small planets.",
+        ),
+        VEHICLE_COMPONENT => (
+            "Drives a dynamic box body on raycast wheels with suspension, tire grip and a gearbox.",
+            "Cars, trucks and karts. Keep the body's box above the wheels' reach.",
         ),
         WATER_COMPONENT => (
             "A rectangle of animated waves that light objects float in, with an optional current.",

@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.vehicle`: raycast cars with spring-damper suspension, a slip-curve tire model, an open differential, an engine with flywheel inertia and an automatic gearbox; `player_input` drives one with the player actions
 - Regression tests for ten-box stacks settling with cached contacts for a hit waking a whole sleeping stack, and for bullets against thin box, hull, triangle and dynamic walls.
 - `GameScene::generate_ragdoll(name, total_mass)` and `runtime::ragdoll_bones` build ragdoll bones from a character's skinned joints.
 - A `PlayerController` on a dynamic `RigidBody` is moved by the solver: walking steers it with a bounded force, jumps set its vertical speed, and it never tips over.

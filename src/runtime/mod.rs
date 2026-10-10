@@ -45,6 +45,7 @@ mod time;
 mod two_d;
 #[cfg(feature = "ui")]
 mod ui;
+mod vehicle;
 pub mod water;
 mod waypoints;
 
@@ -114,6 +115,7 @@ pub use time::{FrameTime, RandomSeed, TimeControl};
 pub use two_d::*;
 #[cfg(feature = "ui")]
 pub use ui::{RuntimeUi, UiTheme};
+pub use vehicle::{Vehicle, Wheel};
 pub use water::{WaterBody, WaterMesh};
 pub use waypoints::WaypointGraph;
 
@@ -265,7 +267,8 @@ impl Default for App {
         app.add_systems(
             ScheduleStage::FixedUpdate,
             (
-                cpu_physics::step_cpu_physics,
+                (vehicle::drive_vehicles, cpu_physics::step_cpu_physics)
+                    .chain(),
                 player::player_move,
                 player::player_face,
                 two_d::platformer_move,

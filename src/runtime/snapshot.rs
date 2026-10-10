@@ -441,6 +441,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<FluidBlock>();
     types.register::<super::WaterBody>();
     types.register::<super::GravityVolume>();
+    types.register::<super::Vehicle>();
     types.register::<super::WaterMesh>();
     types.register::<super::FluidParticle>();
     types.register::<super::fluid::OwnedSurface>();

@@ -985,6 +985,20 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
     },
     ComponentSection {
+        key: "rusting.vehicle",
+        summary: "A raycast car on this object's dynamic CPU rigid body (box collider, mass around 1200). Each wheel casts a ray down the body's up axis from its local position (forward is -Z); a hit within suspension + radius pushes the body up with a spring (stiffness, damping), and the tire grips along the ground by a slip curve up to grip times the load. Driven wheels share engine_torque times the gear ratio and final_drive equally (open differential); the gearbox shifts by rpm. Set throttle (-1..1, below 0 reverses), brake (0..1) and steer (-1..1, above 0 turns right) from game code, or player_input true to drive with the player forward/back/left/right actions and jump to brake. Keep the collider box clear of the ground at rest. gear, rpm and each wheel's spin, compression and grounded are state.",
+        gpu: NO_GPU,
+        example: || {
+            // Through text, so f32 fields stay short like the other examples.
+            let text = serde_json::to_string(&crate::runtime::Vehicle {
+                player_input: true,
+                ..crate::runtime::Vehicle::default()
+            })
+            .expect("a vehicle serializes");
+            serde_json::from_str(&text).expect("it parses back")
+        },
+    },
+    ComponentSection {
         key: "rusting.water",
         summary: "Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored). Dynamic bodies with sphere, box or capsule colliders float in it, and flow_speed carries them along flow_direction, which also turns the waves. Deterministic and cheap; a long thin rectangle with a flow_speed is a river. flat_shading gives faceted low-poly waves. A player_controller with swim_speed swims in it. Put it on an empty object.",
         gpu: "one mesh of about resolution squared vertices, rewritten every fixed tick",

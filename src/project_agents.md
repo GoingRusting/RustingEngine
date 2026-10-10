@@ -131,6 +131,12 @@ command takes `--json` for output a program can read.
   `rusting docs show guide/effects` covers its fields.
 - A `rusting.burst_emitter` with `rate` emits continuously over its `area`
   box; `stretch` makes tall particles such as rain streaks.
+- `rusting.vehicle` on a dynamic box body (mass about 1200) makes a car:
+  raycast wheels with springs, tire grip and a gearbox. `player_input`
+  true drives it with the player actions; game code steers it with
+  `set_field(name, "/components/rusting.vehicle/throttle", json!(1.0))`
+  (also `brake`, `steer`). `rusting schema vehicle --json`
+  lists the wheel fields.
 - A dynamic body with a `ConvexMesh` collider collides as the convex hull
   of its mesh: a `Cylinder` mesh makes a rolling barrel.
 - `rusting.animation` plays keyframe clips (position, rotation, scale,

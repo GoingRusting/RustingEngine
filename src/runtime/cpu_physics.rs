@@ -427,6 +427,22 @@ impl Shape {
     }
 }
 
+/// World-space inverse inertia of a solid `collider` of `mass`, the same
+/// the solver uses. A mesh collider counts as its unscaled-cube box.
+pub(super) fn world_inverse_inertia(
+    collider: &Collider,
+    scale: [f32; 3],
+    rotation: &Rotation3<f32>,
+    mass: f32,
+) -> Matrix3<f32> {
+    let shape = Shape::scaled(collider.shape, scale)
+        .unwrap_or(Shape::Box(Vector3::from(scale).abs() * 0.5));
+    let rotation = rotation.matrix();
+    rotation
+        * Matrix3::from_diagonal(&shape.inverse_inertia(mass))
+        * rotation.transpose()
+}
+
 /// [`GpuCollider::shape`] kind of a GPU body that has no collider.
 pub(crate) const GPU_NO_SHAPE: [f32; 4] = [3.0, 0.0, 0.0, 0.0];
 

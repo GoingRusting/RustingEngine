@@ -6706,3 +6706,71 @@ fn bullets_never_tunnel_through_thin_walls_of_any_kind() {
         "(wall, bullet, speed, angle, z): {tunneled:?}"
     );
 }
+
+fn drive_a_car() -> (Vec<String>, Transform) {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_body(
+        world,
+        [0.0, -0.5, 0.0],
+        ColliderShape::Box {
+            half_extents: [200.0, 0.5, 200.0],
+        },
+        RigidBodyKind::Fixed,
+    );
+    let car = cpu_body(
+        world,
+        [0.0, 1.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.9, 0.3, 2.0],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    world.get_mut::<RigidBody>(car).unwrap().mass = 1200.0;
+    world.entity_mut(car).insert(Vehicle::default());
+    let mut log = Vec::new();
+    let mut phase = |app: &mut App, steps, throttle, brake, steer| {
+        let mut vehicle = app.world_mut().get_mut::<Vehicle>(car).unwrap();
+        (vehicle.throttle, vehicle.brake, vehicle.steer) =
+            (throttle, brake, steer);
+        run_fixed_steps(app, steps);
+        let world = app.world();
+        let at = *world.get::<Transform>(car).unwrap();
+        let v = world.get::<RigidBody>(car).unwrap().linear_velocity;
+        let vehicle = world.get::<Vehicle>(car).unwrap();
+        log.push(format!(
+            "at {:?} rot {:?} v {v:?} gear {} grounded {}",
+            at.position,
+            at.rotation,
+            vehicle.gear,
+            vehicle.wheels.iter().filter(|w| w.grounded).count()
+        ));
+        (at, v, vehicle.gear)
+    };
+    // Settles level on its springs.
+    let (at, v, _) = phase(&mut app, 120, 0.0, 0.0, 0.0);
+    assert!((at.position[1] - 0.866).abs() < 0.03, "{log:?}");
+    assert!(at.rotation[0].abs() < 0.01 && at.rotation[2].abs() < 0.01);
+    assert!(v.iter().all(|v| v.abs() < 0.05), "{log:?}");
+    // Full throttle drives forward (-Z), straight, and shifts up.
+    let (at, _, gear) = phase(&mut app, 300, 1.0, 0.0, 0.0);
+    assert!(
+        at.position[2] < -30.0 && at.position[0].abs() < 0.5,
+        "{log:?}"
+    );
+    assert!(gear > 0, "{log:?}");
+    // Steering right turns the heading toward +X (yaw goes down).
+    let (at, ..) = phase(&mut app, 120, 0.3, 0.0, 1.0);
+    assert!(at.rotation[1] < -0.5, "{log:?}");
+    assert!(at.rotation[0].abs() < 0.2 && at.rotation[2].abs() < 0.2);
+    // Brakes stop it.
+    let (at, v, _) = phase(&mut app, 300, 0.0, 1.0, 0.0);
+    assert!(v[0].hypot(v[2]) < 0.2, "{log:?}");
+    (log, at)
+}
+
+#[test]
+fn raycast_cars_settle_drive_turn_brake_and_replay_exactly() {
+    let (_, at) = drive_a_car();
+    assert_eq!(drive_a_car().1, at);
+}

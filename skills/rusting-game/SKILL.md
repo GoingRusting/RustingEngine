@@ -249,6 +249,7 @@ each one's fields, defaults and an example:
 - `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
 - `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.
 - `rusting.gravity_volume`: Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored).
+- `rusting.vehicle`: A raycast car on this object's dynamic CPU rigid body (box collider, mass around 1200).
 - `rusting.water`: Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored).
 - `rusting.hud`: Text label or button drawn over the game view.
 - `rusting.input_action`: Binds a named action to keys and mouse buttons, for game code (GameScene::pressed, held) and scenario press steps.

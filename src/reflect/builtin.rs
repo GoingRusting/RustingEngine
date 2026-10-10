@@ -20,7 +20,7 @@ use crate::runtime::{
     SceneBackground, SceneInstance, ShadowQuality, SkyLight, SlideSound,
     SoundCue, SoundId, SpawnGrid, Squash, StateAction, StateTransition,
     TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
-    TweenRepeat, WaterBody,
+    TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -698,6 +698,40 @@ crate::reflect! {
             doc: "above 0, pulls toward the volume's centre instead, for a planet",
         },
         priority: i32 { doc: "the highest wins where volumes overlap" },
+    }
+}
+
+crate::reflect! {
+    struct Vehicle {
+        wheels: Vec<Wheel> { doc: "suspension rays and tires" },
+        engine_torque: f32 { unit: "N·m", min: 0.0, doc: "flat up to max_rpm" },
+        max_rpm: f32 { unit: "rpm", min: 1.0, doc: "no torque above it; the gearbox shifts up near it" },
+        gear_ratios: Vec<f32> { doc: "forward gears from first; reverse uses the first" },
+        final_drive: f32 { min: 0.0, doc: "multiplies every gear" },
+        brake_torque: f32 { unit: "N·m", min: 0.0, doc: "per wheel at full brake" },
+        max_steer: f32 { unit: "rad", min: 0.0, doc: "steered wheels' angle at full lock" },
+        player_input: bool { doc: "forward/back drive, left/right steer, jump brakes" },
+        throttle: f32 { min: -1.0, max: 1.0, doc: "below 0 drives backward" },
+        brake: f32 { min: 0.0, max: 1.0, doc: "0 to 1" },
+        steer: f32 { min: -1.0, max: 1.0, doc: "above 0 turns right" },
+        gear: usize { doc: "state: index into gear_ratios" },
+        rpm: f32 { unit: "rpm", doc: "state: engine speed" },
+    }
+}
+
+crate::reflect! {
+    struct Wheel {
+        position: [f32; 3] { unit: "m", doc: "suspension mount in body space; forward is -Z" },
+        radius: f32 { unit: "m", min: 0.01, doc: "tire radius" },
+        suspension: f32 { unit: "m", min: 0.0, doc: "spring travel below the mount" },
+        stiffness: f32 { unit: "N/m", min: 0.0, doc: "spring" },
+        damping: f32 { unit: "N·s/m", min: 0.0, doc: "spring damper" },
+        steer: bool { doc: "turns with steer" },
+        drive: bool { doc: "gets engine torque" },
+        grip: f32 { min: 0.0, doc: "friction at the peak of the tire curve" },
+        spin: f32 { unit: "rad/s", doc: "state: positive rolls forward" },
+        compression: f32 { unit: "m", doc: "state: spring pressed in" },
+        grounded: bool { doc: "state: touched ground this step" },
     }
 }
 
