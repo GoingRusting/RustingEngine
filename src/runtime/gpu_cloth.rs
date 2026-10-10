@@ -1,4 +1,5 @@
-//! The GPU form of [`Cloth`]: `src/shaders/compute/cloth.comp` steps the
+//! The GPU form of [`Cloth`]: `src/shaders/compute/cloth.comp`, run by
+//! [`crate::rendering::gpu_cloth::GpuClothRunner`], steps the
 //! particles in one workgroup, and [`step_on_cpu`] is its bit-exact Rust
 //! reference.
 //!
@@ -249,46 +250,5 @@ mod tests {
         let mut repeat = again;
         step_on_cpu(&mut repeat);
         assert_eq!(repeat, words);
-    }
-
-    mod cloth_shader {
-        vulkano_shaders::shader! {
-            ty: "compute",
-            include: ["src/shaders"],
-            path: "src/shaders/compute/cloth.comp",
-        }
-    }
-
-    #[test]
-    #[cfg_attr(
-        not(feature = "gpu-tests"),
-        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
-    )]
-    fn the_shader_matches_the_cpu_reference_bit_for_bit() {
-        use crate::rendering::test_support::{
-            dispatch_and_read_back, headless_device,
-        };
-
-        if vulkano::VulkanLibrary::new().is_err() {
-            eprintln!("skipping: no Vulkan driver present");
-            return;
-        }
-        let base = headless_device();
-        let (cloth, settings) = hanging();
-        let settings = ClothSettings {
-            floor: Some(1.5),
-            ..settings
-        };
-        let words = pack(&cloth, &settings, 1.0 / 60.0, 60).unwrap();
-        let mut expected = words.clone();
-        step_on_cpu(&mut expected);
-        let shader = cloth_shader::load(base.device.clone()).unwrap();
-        let result = dispatch_and_read_back(
-            base,
-            shader.entry_point("main").unwrap(),
-            words,
-            [1, 1, 1],
-        );
-        assert_eq!(result, expected);
     }
 }
