@@ -248,9 +248,9 @@ pub struct NetSession {
 /// receiver's token (u64), the sender's id (u32), both little-endian, and
 /// the payload; the token, sent in WELCOME, keeps strangers from injecting
 /// messages.
-/// By peer: the token its datagrams carry and, once one arrived, where to
-/// send.
-type UdpPeers = BTreeMap<PeerId, (u64, Option<SocketAddr>)>;
+/// By peer: the token its datagrams carry, the IP address they must come
+/// from (the peer's TCP one), and, once one arrived, where to send.
+type UdpPeers = BTreeMap<PeerId, (u64, IpAddr, Option<SocketAddr>)>;
 
 struct Datagrams {
     socket: UdpSocket,
@@ -283,12 +283,15 @@ impl Datagrams {
                 let token = u64::from_le_bytes(head[..8].try_into().unwrap());
                 let peer = PeerId::from_le_bytes(head[8..].try_into().unwrap());
                 let mut known = known.lock().unwrap();
-                let Some(entry) =
-                    known.get_mut(&peer).filter(|(want, _)| *want == token)
+                // Pinning the IP keeps someone who saw the token from
+                // turning the host's datagrams on another machine.
+                let Some(entry) = known
+                    .get_mut(&peer)
+                    .filter(|(want, ip, _)| *want == token && *ip == from.ip())
                 else {
                     continue;
                 };
-                entry.1 = Some(from);
+                entry.2 = Some(from);
                 let message = NetEvent::Message {
                     from: peer,
                     bytes: bytes.to_vec(),
@@ -315,7 +318,7 @@ impl Datagrams {
             .lock()
             .unwrap()
             .get(&to)
-            .and_then(|(token, address)| Some((*token, (*address)?)))
+            .and_then(|(token, _, address)| Some((*token, (*address)?)))
         else {
             return Ok(false);
         };
@@ -437,7 +440,7 @@ impl NetSession {
                 };
                 let datagrams = Datagrams::open(
                     UdpSocket::bind(any)?,
-                    BTreeMap::from([(HOST, (token, Some(host)))]),
+                    BTreeMap::from([(HOST, (token, host.ip(), Some(host)))]),
                 )?;
                 // Tells the host where to send. Repeated in case one is
                 // lost; until one arrives the host sends reliably.
@@ -1138,12 +1141,13 @@ fn admit_client(
         return None;
     }
     let writer = stream.try_clone().ok()?;
+    let ip = stream.peer_addr().ok()?.ip();
     // Ids, WELCOMEs and Connected events follow one order under the lock.
     let mut peers = peers.lock().unwrap();
     let peer = next.fetch_add(1, Ordering::Relaxed);
     let token = token();
     write_frame(&mut stream, WELCOME, peer, &token.to_le_bytes()).ok()?;
-    tokens.lock().unwrap().insert(peer, (token, None));
+    tokens.lock().unwrap().insert(peer, (token, ip, None));
     if sender.send(NetEvent::Connected(peer)).is_err() {
         // The session is gone.
         let _ = stream.shutdown(Shutdown::Both);
@@ -1415,6 +1419,19 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert!(host.poll().is_empty());
         assert_eq!(host.stats().held, 0, "lost, not resent");
+
+        // The right token from another IP address is ignored.
+        let datagrams = host.datagrams.as_ref().unwrap();
+        let (token, ..) = datagrams.peers.lock().unwrap()[&1];
+        if let Ok(stranger) = UdpSocket::bind("127.0.0.2:0") {
+            let mut datagram = token.to_le_bytes().to_vec();
+            datagram.extend(1u32.to_le_bytes());
+            datagram.extend(b"evil");
+            stranger.send_to(&datagram, address).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let peers = datagrams.peers.lock().unwrap();
+            assert_eq!(peers[&1].2.unwrap().ip(), address.ip());
+        }
 
         // No UDP route in a loopback session: it goes reliably.
         let (host, clients) = NetSession::loopback(1);

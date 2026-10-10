@@ -126,6 +126,9 @@ positions. They arrive as the same `NetEvent::Message`.
 - A message may be lost, duplicated or arrive out of order. Send whole
   state, not changes, and drop old ones (put a tick number in each).
 - At most `MAX_UNRELIABLE` (1200) bytes, so one fits in a packet.
+- The host takes datagrams for a client only from that client's TCP IP
+  address. A client whose UDP leaves from another public address (rare,
+  some carrier NATs) gets no unreliable messages through.
 - The host listens for UDP on its TCP port: open both in the firewall.
 - They go reliably where there is no UDP route: through a relay, in a
   loopback session, and to a client whose first datagram has not reached
