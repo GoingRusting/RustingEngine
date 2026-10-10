@@ -275,7 +275,7 @@ editor. Results appear in `Cargo Output`.
   by a frame or more.
 - **Render Settings** holds the scene's render settings, VSync, the FPS
   limit, the GPU in use, and rendering diagnostics. Its Quality section
-  sets anti-aliasing (Auto, Off, MSAA 2x or MSAA 4x) and the shadow map
+  sets anti-aliasing (Auto, Off, MSAA 2x, MSAA 4x or FXAA) and the shadow map
   size (Auto, Low, Medium or High); Auto follows the quality profile. Like
   VSync, these two are not saved with the scene. MSAA 2x falls back to off
   on a GPU without it, and "MSAA in use" shows the count the renderer

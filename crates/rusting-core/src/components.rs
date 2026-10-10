@@ -397,9 +397,11 @@ pub enum CullingMode {
     FrustumAndOcclusion,
 }
 
-/// Multisample anti-aliasing. `Auto` follows the quality profile: off on
-/// `Eco`, the most samples the device offers (up to 4) otherwise. A count
-/// the device lacks falls back to the next lower one.
+/// Anti-aliasing. `Auto` follows the quality profile: off on `Eco`, the
+/// most multisamples the device offers (up to 4) otherwise. A count the
+/// device lacks falls back to the next lower one. `Fxaa` renders one sample
+/// and smooths edges found in the final image instead: cheaper than MSAA,
+/// also smooths edges inside textures and alpha-cut leaves, a little softer.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
 )]
@@ -409,6 +411,7 @@ pub enum Antialiasing {
     Off,
     Msaa2,
     Msaa4,
+    Fxaa,
 }
 
 /// Shadow map resolution and reach. `Auto` follows the quality profile.

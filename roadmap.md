@@ -2506,6 +2506,20 @@ Depends on: Milestones 3 and 4.
   motion blur in, and vignette and chromatic aberration in `ColorGrading`,
   the item is done.
 - [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
+  Partial (FXAA): `Antialiasing::Fxaa` (Project Settings and Render
+  Settings list it as "FXAA") renders the scene at 1 sample and runs a
+  console-style FXAA (Lottes) in the tone-mapping pass. It reads the HDR
+  copy and finds edges on the exposed, compressed luma. Flat areas exit
+  early, and the far tap falls back to the near tap when it leaves the
+  local luma range. GPU test `fxaa_smooths_a_stair_stepped_edge` draws a
+  tilted white slab at 64x64. Without FXAA, fewer than 4 pixels fall
+  between the dark and white levels; with it, more than 30 do. The
+  background and the slab interior stay unchanged. Mutation checks: an
+  edge test that always exits early, and a blend that returns the center
+  pixel, both fail the test. Full check: fmt, clippy x3 clean;
+  workspace tests 820 passed (flaky net handshake test passes alone);
+  gpu-tests 932 passed. Not started: TAA (history, jitter,
+  reprojection) and FSR-class upscaling.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,
   height_falloff, sun_scatter, sky_affect). `src/shaders/fog.glsl`

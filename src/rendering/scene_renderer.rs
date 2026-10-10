@@ -2989,7 +2989,9 @@ impl SceneRenderer {
                 reproject: reproject.into(),
                 strength: motion_blur.map_or(0.0, |blur| blur.intensity),
             };
-        let sampled = grade.chromatic_aberration > 0.0
+        let fxaa = lit && render_world.antialiasing == Antialiasing::Fxaa;
+        let sampled = fxaa
+            || grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
             || grade.distortion > 0.0
             || depth_of_field.is_some()
@@ -4670,7 +4672,8 @@ impl SceneRenderer {
                         (render_world.physics_tick % (1 << 24)) as f32,
                     ],
                     flags: u32::from(sampled)
-                        | u32::from(auto_exposure.is_some()) << 1,
+                        | u32::from(auto_exposure.is_some()) << 1
+                        | u32::from(fxaa) << 2,
                     lut: color_lut
                         .as_ref()
                         .map_or(0.0, |(_, intensity)| *intensity),
@@ -8987,7 +8990,7 @@ pub fn scene_sample_count(
 ) -> u32 {
     let wanted = match antialiasing {
         Antialiasing::Auto if msaa_enabled(profile) => 4,
-        Antialiasing::Auto | Antialiasing::Off => 1,
+        Antialiasing::Auto | Antialiasing::Off | Antialiasing::Fxaa => 1,
         Antialiasing::Msaa2 => 2,
         Antialiasing::Msaa4 => 4,
     };
@@ -10020,7 +10023,8 @@ layout(set = 1, binding = 2) readonly buffer Motion {
 } motion;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
 // band, distortion, seconds and frame number from the fixed tick. flags bit
-// 0 is set when scene_image may be read, bit 1 for auto exposure. focus and
+// 0 is set when scene_image may be read, bit 1 for auto exposure, bit 2 for
+// FXAA. focus and
 // blur follow DepthOfField; depth holds the projection entries [2][2],
 // [2][3], [3][2] and [3][3] (row, column) that undo stored depth.
 layout(push_constant) uniform ToneMap {
@@ -10099,6 +10103,38 @@ vec3 defocus(vec2 uv) {
 float luma_of(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
+// Perceived brightness after exposure, roughly as the tone curve shows it,
+// so edges between bright areas count as much as dark ones.
+float edge_luma(vec2 uv) {
+    float l = luma_of(hdr_at(uv)) * tone.exposure;
+    return sqrt(l / (1.0 + l));
+}
+// FXAA in the style of Lottes' console version: four diagonal lumas give
+// the edge direction, then two short and two long taps along the edge
+// blend it; the long blend is dropped when it leaves the local luma range.
+vec3 fxaa(vec2 uv) {
+    vec2 px = tone.inv_extent;
+    float nw = edge_luma(uv + vec2(-0.5, -0.5) * px);
+    float ne = edge_luma(uv + vec2(0.5, -0.5) * px);
+    float sw = edge_luma(uv + vec2(-0.5, 0.5) * px);
+    float se = edge_luma(uv + vec2(0.5, 0.5) * px);
+    vec3 center = hdr_at(uv);
+    float m = sqrt(luma_of(center) * tone.exposure / (1.0 + luma_of(center) * tone.exposure));
+    float lo = min(m, min(min(nw, ne), min(sw, se)));
+    float hi = max(m, max(max(nw, ne), max(sw, se)));
+    if (hi - lo < max(0.0625, hi * 0.125)) {
+        return center;
+    }
+    vec2 dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+    float reduce = max((nw + ne + sw + se) * 0.03125, 1.0 / 128.0);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8.0, 8.0) * px;
+    vec3 near = 0.5 * (hdr_at(uv + dir * (1.0 / 3.0 - 0.5))
+        + hdr_at(uv + dir * (2.0 / 3.0 - 0.5)));
+    vec3 far = near * 0.5 + 0.25 * (hdr_at(uv - dir * 0.5) + hdr_at(uv + dir * 0.5));
+    float l = luma_of(far) * tone.exposure;
+    l = sqrt(l / (1.0 + l));
+    return l < lo || l > hi ? near : far;
+}
 void main() {
     vec4 hdr = subpassLoad(scene);
     vec2 uv = gl_FragCoord.xy * tone.inv_extent;
@@ -10111,7 +10147,8 @@ void main() {
             uv.x += tone.tape.y * 0.004
                 * sin(uv.y * 60.0 + tone.tape.z * 5.0);
         }
-        hdr.rgb = tone.blur > 0.0 ? defocus(uv) : hdr_at(uv);
+        hdr.rgb = tone.blur > 0.0 ? defocus(uv)
+            : (tone.flags & 4u) != 0u ? fxaa(uv) : hdr_at(uv);
         if (motion.strength > 0.0) {
             // Screen motion since last frame, in uv, centered on the pixel.
             float d = textureLod(scene_depth, uv, 0.0).r;
@@ -12398,6 +12435,76 @@ mod tests {
         slide(&mut scene, -0.8);
         let cut = soft(&frame(&mut scene));
         assert!(cut <= 3, "cut: {cut}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn fxaa_smooths_a_stair_stepped_edge() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A white unlit slab turned slightly shows a stair-stepped edge
+        // against the dark background. FXAA puts in-between shades along
+        // it and leaves flat areas alone.
+        let extent = [64, 64];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0; 4],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        scene.render_world.renderables[0].transform =
+            crate::runtime::GlobalTransform {
+                matrix: (Matrix4::from_axis_angle(&Vector3::z_axis(), 0.3)
+                    * Matrix4::new_translation(&Vector3::new(1.5, 0.0, 0.0))
+                    * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                        2.0, 4.0, 0.1,
+                    )))
+                .into(),
+            };
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        let greens = |pixels: &[u8]| -> Vec<u8> {
+            pixels.chunks(4).map(|pixel| pixel[1]).collect()
+        };
+        scene.render_world.antialiasing = Antialiasing::Off;
+        let hard = greens(&frame(&mut scene));
+        scene.render_world.antialiasing = Antialiasing::Fxaa;
+        let smooth = greens(&frame(&mut scene));
+        let white = *hard.iter().max().unwrap();
+        let dark = *hard.iter().min().unwrap();
+        let between = |shades: &[u8]| {
+            shades
+                .iter()
+                .filter(|&&g| {
+                    u16::from(g) > u16::from(dark) + 20
+                        && u16::from(g) + 20 < u16::from(white)
+                })
+                .count()
+        };
+        assert!(between(&hard) < 4, "no AA: {}", between(&hard));
+        assert!(between(&smooth) > 30, "FXAA: {}", between(&smooth));
+        // Far from the edge nothing changes.
+        assert_eq!(hard[0], smooth[0], "background");
+        let inside = (32 * extent[0] + 62) as usize;
+        assert_eq!(hard[inside], smooth[inside], "slab");
     }
 
     #[test]
