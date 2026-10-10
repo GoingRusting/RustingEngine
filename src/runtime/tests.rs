@@ -4848,6 +4848,16 @@ fn a_box_pile_steps_the_same_on_one_and_many_workers() {
                 ];
                 cpu_body(world, at, UNIT_BOX, RigidBodyKind::Dynamic);
             }
+            // 30 three-box towers apart from the heap and each other: one
+            // contact island each, solved on separate workers.
+            for i in 0..90 {
+                let at = [
+                    -5.0 - (i / 3 % 6) as f32 * 3.0,
+                    0.5 + (i % 3) as f32 * 1.02,
+                    (i / 18) as f32 * 3.0,
+                ];
+                cpu_body(world, at, UNIT_BOX, RigidBodyKind::Dynamic);
+            }
             run_fixed_steps(&mut app, 60);
             crate::runtime::state_hash::world_state_hash(app.world_mut())
         })

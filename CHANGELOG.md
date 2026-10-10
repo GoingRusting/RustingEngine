@@ -9,6 +9,7 @@
 
 ### Added
 
+- The CPU contact solver solves independent islands on all cores, bit-identical to one worker
 - Heightfield `cells` and `surfaces`: each grid cell can have its own friction, restitution and sound material name (an ice patch on grass); `Contact::surface` says which one a contact touched
 - Compound bodies: solid collider children of a dynamic CPU body move with it as one body; contacts and ray hits on them report the parent (they were fixed in place before)
 - The CPU physics narrow phase runs on all cores; results stay bit-identical for any worker count

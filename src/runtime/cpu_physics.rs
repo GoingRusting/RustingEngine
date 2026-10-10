@@ -2278,6 +2278,7 @@ fn narrow_phase(first: &Body, second: &Body) -> Option<Contact> {
 }
 
 /// One manifold point of a solid contact, prepared for the solver.
+#[derive(Clone)]
 struct SolverPoint {
     a: usize,
     b: usize,
@@ -2451,35 +2452,23 @@ fn solve_velocities(
             + point.tangents[1] * second;
         apply(bodies, articulations, point, impulse);
     }
+    let serial = solve_free_islands(bodies, &inertia, links, &mut points);
     for _ in 0..SOLVER_ITERATIONS {
         for _ in 0..JOINT_PASSES {
             joints::solve(bodies, &inertia, articulations, &mut rows);
             articulations.solve_rows(bodies);
         }
-        for point in &mut points {
-            let velocity =
-                point_velocity(bodies, point.a, point.b, point.ra, point.rb);
-            let change =
-                (point.target - velocity.dot(&point.normal)) * point.masses[0];
-            let total = (point.impulses[0] + change).max(0.0);
-            let applied = total - point.impulses[0];
-            point.impulses[0] = total;
-            apply(bodies, articulations, point, point.normal * applied);
-
-            // Coulomb friction on each tangent, limited by the normal impulse.
-            let limit = point.friction * point.impulses[0];
-            for axis in 0..2 {
-                let tangent = point.tangents[axis];
-                let velocity = point_velocity(
-                    bodies, point.a, point.b, point.ra, point.rb,
-                );
-                let change = -velocity.dot(&tangent) * point.masses[axis + 1];
-                let total =
-                    (point.impulses[axis + 1] + change).clamp(-limit, limit);
-                let applied = total - point.impulses[axis + 1];
-                point.impulses[axis + 1] = total;
-                apply(bodies, articulations, point, tangent * applied);
-            }
+        for &index in &serial {
+            solve_point(
+                &mut (&mut *bodies, &mut *articulations),
+                &mut points[index],
+                |(bodies, _), point| {
+                    point_velocity(bodies, point.a, point.b, point.ra, point.rb)
+                },
+                |(bodies, articulations), point, impulse| {
+                    apply(bodies, articulations, point, impulse);
+                },
+            );
         }
     }
     warm.clear();
@@ -2498,6 +2487,178 @@ fn solve_velocities(
         );
     }
     broken
+}
+
+/// One sequential-impulse pass over `point`: the normal impulse, then
+/// Coulomb friction on each tangent, limited by the normal impulse.
+fn solve_point<S>(
+    state: &mut S,
+    point: &mut SolverPoint,
+    velocity: impl Fn(&S, &SolverPoint) -> Vector3<f32>,
+    apply: impl Fn(&mut S, &SolverPoint, Vector3<f32>),
+) {
+    let change = (point.target - velocity(state, point).dot(&point.normal))
+        * point.masses[0];
+    let total = (point.impulses[0] + change).max(0.0);
+    let applied = total - point.impulses[0];
+    point.impulses[0] = total;
+    apply(state, point, point.normal * applied);
+    let limit = point.friction * point.impulses[0];
+    for axis in 0..2 {
+        let tangent = point.tangents[axis];
+        let change =
+            -velocity(state, point).dot(&tangent) * point.masses[axis + 1];
+        let total = (point.impulses[axis + 1] + change).clamp(-limit, limit);
+        let applied = total - point.impulses[axis + 1];
+        point.impulses[axis + 1] = total;
+        apply(state, point, tangent * applied);
+    }
+}
+
+/// Velocities of one body, copied out of `bodies` so an island can be
+/// solved on its own worker.
+#[derive(Clone, Copy)]
+struct Motion {
+    velocity: Vector3<f32>,
+    angular_velocity: Vector3<f32>,
+    inverse_mass: f32,
+    inertia: Matrix3<f32>,
+}
+
+/// Solves every contact island that has no joint and no articulation on
+/// rayon workers, all [`SOLVER_ITERATIONS`] at once. Islands share no
+/// moving body, and each runs its points in contact order, so the result
+/// is the same for any worker count. Returns the indices of the remaining
+/// points, which the caller solves in turn with the joints.
+fn solve_free_islands(
+    bodies: &mut [Body],
+    inertia: &[Matrix3<f32>],
+    links: &[joints::JointLink],
+    points: &mut [SolverPoint],
+) -> Vec<usize> {
+    use rayon::prelude::*;
+    let moving = |index: usize| {
+        bodies[index].inverse_mass > 0.0 || bodies[index].articulated
+    };
+    // Union-find over moving bodies; fixed and kinematic ones do not join
+    // islands, because no impulse changes them.
+    let mut parent = (0..bodies.len()).collect::<Vec<_>>();
+    fn root(parent: &mut [usize], mut index: usize) -> usize {
+        while parent[index] != index {
+            parent[index] = parent[parent[index]];
+            index = parent[index];
+        }
+        index
+    }
+    for point in points.iter() {
+        if moving(point.a) && moving(point.b) {
+            let (a, b) =
+                (root(&mut parent, point.a), root(&mut parent, point.b));
+            parent[a.max(b)] = a.min(b);
+        }
+    }
+    let mut tied = vec![false; bodies.len()];
+    for link in links {
+        tied[link.b] = true;
+        if let Some(a) = link.a {
+            tied[a] = true;
+        }
+    }
+    for index in 0..bodies.len() {
+        if tied[index] || bodies[index].articulated {
+            let top = root(&mut parent, index);
+            tied[top] = true;
+        }
+    }
+    // Islands in order of their first point.
+    let mut island_of = HashMap::new();
+    let mut islands: Vec<Vec<usize>> = Vec::new();
+    let mut serial = Vec::new();
+    for (index, point) in points.iter().enumerate() {
+        let body = if moving(point.a) { point.a } else { point.b };
+        let top = root(&mut parent, body);
+        if !moving(body) || tied[top] {
+            serial.push(index);
+            continue;
+        }
+        let island = *island_of.entry(top).or_insert_with(|| {
+            islands.push(Vec::new());
+            islands.len() - 1
+        });
+        islands[island].push(index);
+    }
+    let bodies_ref = &*bodies;
+    let points_ref = &*points;
+    let solved = islands
+        .par_iter()
+        .map(|indices| {
+            let mut slots = HashMap::new();
+            let mut members = Vec::new();
+            let mut motions = Vec::new();
+            let mut slot = |body: usize| {
+                *slots.entry(body).or_insert_with(|| {
+                    members.push(body);
+                    motions.push(Motion {
+                        velocity: bodies_ref[body].velocity,
+                        angular_velocity: bodies_ref[body].angular_velocity,
+                        inverse_mass: bodies_ref[body].inverse_mass,
+                        inertia: inertia[body],
+                    });
+                    motions.len() - 1
+                })
+            };
+            let mut local = indices
+                .iter()
+                .map(|&index| {
+                    let mut point = points_ref[index].clone();
+                    point.a = slot(point.a);
+                    point.b = slot(point.b);
+                    point
+                })
+                .collect::<Vec<_>>();
+            for _ in 0..SOLVER_ITERATIONS {
+                for point in &mut local {
+                    solve_point(
+                        &mut motions,
+                        point,
+                        |motions, point| {
+                            let (first, second) =
+                                (&motions[point.a], &motions[point.b]);
+                            second.velocity
+                                + second.angular_velocity.cross(&point.rb)
+                                - first.velocity
+                                - first.angular_velocity.cross(&point.ra)
+                        },
+                        |motions, point, impulse| {
+                            let first = &mut motions[point.a];
+                            first.velocity -= impulse * first.inverse_mass;
+                            first.angular_velocity -=
+                                first.inertia * point.ra.cross(&impulse);
+                            let second = &mut motions[point.b];
+                            second.velocity += impulse * second.inverse_mass;
+                            second.angular_velocity +=
+                                second.inertia * point.rb.cross(&impulse);
+                        },
+                    );
+                }
+            }
+            let impulses =
+                local.iter().map(|point| point.impulses).collect::<Vec<_>>();
+            (members, motions, impulses)
+        })
+        .collect::<Vec<_>>();
+    for (indices, (members, motions, impulses)) in islands.iter().zip(solved) {
+        for (body, motion) in members.into_iter().zip(motions) {
+            if motion.inverse_mass > 0.0 {
+                bodies[body].velocity = motion.velocity;
+                bodies[body].angular_velocity = motion.angular_velocity;
+            }
+        }
+        for (&index, impulses) in indices.iter().zip(impulses) {
+            points[index].impulses = impulses;
+        }
+    }
+    serial
 }
 
 /// Friction and restitution of the heightfield cell `contact` touched on
