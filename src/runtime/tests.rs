@@ -6774,3 +6774,101 @@ fn raycast_cars_settle_drive_turn_brake_and_replay_exactly() {
     let (_, at) = drive_a_car();
     assert_eq!(drive_a_car().1, at);
 }
+
+#[test]
+fn physics_materials_combine_friction_and_bounce_and_name_hit_sounds() {
+    let material = |name: &str, friction, restitution| PhysicsMaterial {
+        name: name.into(),
+        friction_combine: friction,
+        restitution_combine: restitution,
+    };
+    // A box sliding at 5 m/s, friction 0.1 against a friction-1 floor.
+    let slide = |on_box: Option<PhysicsMaterial>, on_floor| {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let floor = cpu_body(
+            world,
+            [0.0, -0.5, 0.0],
+            ColliderShape::Box {
+                half_extents: [50.0, 0.5, 50.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        world.get_mut::<Collider>(floor).unwrap().friction = 1.0;
+        let crate_ =
+            cpu_body(world, [0.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+        world.get_mut::<Collider>(crate_).unwrap().friction = 0.1;
+        world.get_mut::<RigidBody>(crate_).unwrap().linear_velocity =
+            [5.0, 0.0, 0.0];
+        if let Some(material) = on_box {
+            world.entity_mut(crate_).insert(material);
+        }
+        if let Some(material) = on_floor {
+            world.entity_mut(floor).insert(material);
+        }
+        run_fixed_steps(&mut app, 360);
+        app.world().get::<Transform>(crate_).unwrap().position[0]
+    };
+    use CombineMode::{Default as Mean, Max, Min, Multiply};
+    let mean = slide(None, None);
+    let ice = slide(Some(material("ice", Min, Mean)), None);
+    // The floor's Max outranks the box's Min.
+    let grippy = slide(
+        Some(material("ice", Min, Mean)),
+        Some(material("rubber", Max, Mean)),
+    );
+    // sqrt(0.1) stops it in about 4 m, 0.1 in about 12.7 m, 1.0 in 1.3 m.
+    assert!((mean - 4.0).abs() < 0.5, "mean {mean}");
+    assert!((ice - 12.7).abs() < 1.0, "ice {ice}");
+    assert!((grippy - 1.3).abs() < 0.3, "grippy {grippy}");
+
+    // A bouncy ball on a dead floor: Default bounces, Multiply does not.
+    let bounce = |on_floor: PhysicsMaterial, cue: &str| {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let floor = cpu_body(
+            world,
+            [0.0, -0.5, 0.0],
+            ColliderShape::Box {
+                half_extents: [5.0, 0.5, 5.0],
+            },
+            RigidBodyKind::Fixed,
+        );
+        world.entity_mut(floor).insert(on_floor);
+        let ball = cpu_body(
+            world,
+            [0.0, 2.0, 0.0],
+            ColliderShape::Sphere { radius: 0.5 },
+            RigidBodyKind::Dynamic,
+        );
+        world.get_mut::<Collider>(ball).unwrap().restitution = 0.9;
+        world.entity_mut(ball).insert(SoundCue {
+            clip: "sfx/clang.wav".into(),
+            with_material: cue.into(),
+            ..SoundCue::default()
+        });
+        let mut top = 0.0_f32;
+        let mut sounds = 0;
+        let mut landed = false;
+        for _ in 0..120 {
+            run_fixed_steps(&mut app, 1);
+            let y = app.world().get::<Transform>(ball).unwrap().position[1];
+            landed |= y < 0.6;
+            if landed {
+                top = top.max(y);
+            }
+            sounds += app
+                .world()
+                .resource::<EventQueue<SoundEvent>>()
+                .iter()
+                .count();
+        }
+        (top, sounds)
+    };
+    let (high, metal_sounds) = bounce(material("metal", Mean, Mean), "metal");
+    let (low, wood_sounds) = bounce(material("wood", Mean, Multiply), "metal");
+    assert!(high > 1.5, "bounced to {high}");
+    assert!(low < 0.6, "dead floor bounced to {low}");
+    assert!(metal_sounds > 0, "a metal hit sounds");
+    assert_eq!(wood_sounds, 0, "a wood hit stays silent");
+}

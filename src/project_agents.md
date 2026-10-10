@@ -137,6 +137,10 @@ command takes `--json` for output a program can read.
   `set_field(name, "/components/rusting.vehicle/throttle", json!(1.0))`
   (also `brake`, `steer`). `rusting schema vehicle --json`
   lists the wheel fields.
+- `rusting.physics_material` names a collider's surface and sets how its
+  friction and restitution combine (`Min` on ice keeps it slippery); a
+  `rusting.sound_cue` with `with_material` plays only on touches of that
+  surface, for per-surface impact sounds.
 - A dynamic body with a `ConvexMesh` collider collides as the convex hull
   of its mesh: a `Cylinder` mesh makes a rolling barrel.
 - `rusting.animation` plays keyframe clips (position, rotation, scale,

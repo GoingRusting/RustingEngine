@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.physics_material`: a named collider surface with friction and restitution combine modes (Default, Average, Min, Multiply, Max); `SoundCue::with_material` plays a cue only on touches of that surface
 - `rusting.vehicle`: raycast cars with spring-damper suspension, a slip-curve tire model, an open differential, an engine with flywheel inertia and an automatic gearbox; `player_input` drives one with the player actions
 - Regression tests for ten-box stacks settling with cached contacts for a hit waking a whole sleeping stack, and for bullets against thin box, hull, triangle and dynamic walls.
 - `GameScene::generate_ragdoll(name, total_mass)` and `runtime::ragdoll_bones` build ragdoll bones from a character's skinned joints.

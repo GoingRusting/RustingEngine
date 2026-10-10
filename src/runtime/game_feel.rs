@@ -500,6 +500,10 @@ pub struct SoundCue {
     /// slower hits play quieter in proportion. 0 plays every hit at full
     /// `volume`.
     pub full_volume_speed: f32,
+    /// With `on_collision`, only touches of a collider whose
+    /// `PhysicsMaterial::name` is this count; empty for any.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub with_material: String,
     /// Fire when a GPU physics event with this registered name arrives for
     /// this body; empty for none.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -523,6 +527,7 @@ impl Default for SoundCue {
             on_collision: true,
             caption: String::new(),
             full_volume_speed: 0.0,
+            with_material: String::new(),
             on_gpu_event: String::new(),
             triggered: false,
             touching: false,
@@ -1609,25 +1614,39 @@ pub(super) fn advance_tweens(
 /// started touching something.
 pub(super) fn trigger_on_contact(
     physics: Res<PhysicsWorld>,
+    materials: Query<&super::PhysicsMaterial>,
     mut cues: Query<(Entity, &mut SoundCue)>,
     mut emitters: Query<(Entity, &mut BurstEmitter)>,
 ) {
     if cues.is_empty() && emitters.is_empty() {
         return;
     }
-    // Fastest closing speed per touching body.
+    // Fastest closing speed per touching body, and per body and the
+    // material of what it touches.
     let mut touching = BTreeMap::<Entity, f32>::new();
+    let mut by_material = BTreeMap::<(Entity, &str), f32>::new();
     for contact in physics.contacts() {
-        for body in [contact.a, contact.b] {
+        for (body, other) in [(contact.a, contact.b), (contact.b, contact.a)] {
             let speed = touching.entry(body).or_default();
             *speed = speed.max(contact.speed);
+            if let Ok(material) = materials.get(other) {
+                let speed =
+                    by_material.entry((body, &material.name)).or_default();
+                *speed = speed.max(contact.speed);
+            }
         }
     }
     for (entity, mut cue) in &mut cues {
-        let hit = touching.get(&entity).filter(|_| cue.on_collision);
+        let hit = if cue.with_material.is_empty() {
+            touching.get(&entity)
+        } else {
+            by_material.get(&(entity, cue.with_material.as_str()))
+        }
+        .filter(|_| cue.on_collision)
+        .copied();
         if hit.is_some() && !cue.touching {
             cue.triggered = true;
-            cue.hit_speed = hit.copied();
+            cue.hit_speed = hit;
         }
         cue.touching = hit.is_some();
     }

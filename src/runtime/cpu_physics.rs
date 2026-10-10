@@ -88,6 +88,67 @@ impl Default for GravityVolume {
     }
 }
 
+/// How two touching colliders' friction or restitution become the pair's.
+/// Where the two sides differ, the later variant in this list wins.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum CombineMode {
+    /// Friction: the geometric mean. Restitution: the larger.
+    #[default]
+    Default,
+    Average,
+    Min,
+    Multiply,
+    Max,
+}
+
+impl CombineMode {
+    fn combine(
+        self,
+        other: Self,
+        a: f32,
+        b: f32,
+        default: fn(f32, f32) -> f32,
+    ) -> f32 {
+        match self.max(other) {
+            Self::Default => default(a, b),
+            Self::Average => 0.5 * (a + b),
+            Self::Min => a.min(b),
+            Self::Multiply => a * b,
+            Self::Max => a.max(b),
+        }
+    }
+}
+
+/// A named surface on a CPU collider: how its `Collider::friction` and
+/// `restitution` combine with the other side's, and a `name` that sound
+/// cues can match (`SoundCue::with_material`), such as "metal" or "ice".
+#[derive(
+    Component,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct PhysicsMaterial {
+    pub name: String,
+    pub friction_combine: CombineMode,
+    pub restitution_combine: CombineMode,
+}
+
 /// Fired once per touching pair of CPU colliders in each `FixedUpdate` step.
 /// `sensor` is true when either collider is a sensor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -343,6 +404,8 @@ struct Body {
     layers: CollisionLayers,
     friction: f32,
     restitution: f32,
+    /// Friction and restitution [`CombineMode`]s.
+    combine: [CombineMode; 2],
     inverse_mass: f32,
     /// Inverse principal moments of inertia in the body's local axes; zero
     /// for bodies the solver does not move.
@@ -493,6 +556,7 @@ impl Body {
             layers: CollisionLayers::default(),
             friction: 0.0,
             restitution: 0.0,
+            combine: [CombineMode::Default; 2],
             inverse_mass: 0.0,
             inverse_inertia: Vector3::zeros(),
             asleep: false,
@@ -1517,6 +1581,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
         Option<&GpuProxyOf>,
         Option<&SpawnOrder>,
         Has<super::PlayerController>,
+        Option<&PhysicsMaterial>,
     )>();
     let assets = world.get_resource::<AssetServer>();
     let mut used = MeshCache::new();
@@ -1552,6 +1617,7 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                 proxy,
                 order,
                 player,
+                material,
             )| {
                 let movable = parent.is_none();
                 // ponytail: children read the pose propagated last frame, and
@@ -1630,6 +1696,10 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         layers: layers.copied().unwrap_or_default(),
                         friction: collider.friction.max(0.0),
                         restitution: collider.restitution.clamp(0.0, 1.0),
+                        combine: material
+                            .map_or([CombineMode::Default; 2], |m| {
+                                [m.friction_combine, m.restitution_combine]
+                            }),
                         inverse_mass,
                         // A dynamic player never tips over.
                         inverse_inertia: if inverse_mass > 0.0 && !player {
@@ -1870,7 +1940,12 @@ fn solve_velocities(
             };
             // Bounce targets use the closing speed before any impulse.
             let closing = point_velocity(bodies, a, b, ra, rb).dot(&normal);
-            let restitution = first.restitution.max(second.restitution);
+            let restitution = first.combine[1].combine(
+                second.combine[1],
+                first.restitution,
+                second.restitution,
+                f32::max,
+            );
             // correct_positions leaves articulations alone, so their
             // contacts push out of overlap through the velocity target.
             let push_out = if articulated {
@@ -1892,7 +1967,12 @@ fn solve_velocities(
                     0.0
                 }
                 .max(push_out),
-                friction: (first.friction * second.friction).sqrt(),
+                friction: first.combine[0].combine(
+                    second.combine[0],
+                    first.friction,
+                    second.friction,
+                    |a, b| (a * b).sqrt(),
+                ),
                 impulses: warm
                     .get(&(first.entity, second.entity))
                     .and_then(|old| {
@@ -3060,6 +3140,7 @@ mod tests {
             layers: CollisionLayers::default(),
             friction: 0.5,
             restitution: 0.0,
+            combine: [CombineMode::Default; 2],
             inverse_mass: 1.0,
             inverse_inertia: Vector3::repeat(1.0),
             asleep: false,

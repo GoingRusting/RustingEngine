@@ -10,17 +10,17 @@ use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::{
     AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
-    Connection, Connections, Counter, CullingMode, DeterminismMode, Dialogue,
-    DialogueChoice, DialogueLine, Easing, EnvironmentMap, Flash, FluidBlock,
-    Fog, GravityVolume, Health, HudAnchor, HudElement, InputAction, Joint,
-    JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
-    ObjectState, PhysicsSettings, PhysicsSyncMode, Pickup,
-    PlatformerController, PlayerController, PostVolume, QualityProfile,
-    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, ReverbZone,
-    SceneBackground, SceneInstance, ShadowQuality, SkyLight, SlideSound,
-    SoundCue, SoundId, SpawnGrid, Squash, StateAction, StateTransition,
-    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
-    TweenRepeat, Vehicle, WaterBody, Wheel,
+    CombineMode, Connection, Connections, Counter, CullingMode,
+    DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
+    EnvironmentMap, Flash, FluidBlock, Fog, GravityVolume, Health, HudAnchor,
+    HudElement, InputAction, Joint, JointAxis, JointKind, JointMotor,
+    JointSpring, LootEntry, LootTable, ObjectState, PhysicsMaterial,
+    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
+    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
+    RenderBounds, RenderSettings, ReverbZone, SceneBackground, SceneInstance,
+    ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash,
+    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
+    Tween, TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -346,6 +346,7 @@ crate::reflect! {
         on_collision: bool { doc: "CPU collider contacts only" },
         caption: String { doc: "shown for 2 s each time it fires, like [glass breaks]; empty for none" },
         full_volume_speed: f32 { unit: "m/s", min: 0.0, doc: "hits this fast play at full volume, slower ones quieter; 0 for always full" },
+        with_material: String { doc: "only touches of a collider with this physics_material name; empty for any" },
         on_gpu_event: String { doc: "registered GPU physics event name that plays this cue for this body; empty for none" },
         #[skip] triggered: bool,
         #[skip] touching: bool,
@@ -698,6 +699,18 @@ crate::reflect! {
             doc: "above 0, pulls toward the volume's centre instead, for a planet",
         },
         priority: i32 { doc: "the highest wins where volumes overlap" },
+    }
+}
+
+crate::reflect! {
+    enum CombineMode { Default, Average, Min, Multiply, Max }
+}
+
+crate::reflect! {
+    struct PhysicsMaterial {
+        name: String { doc: "surface name sound cues match with with_material, like metal or ice" },
+        friction_combine: CombineMode { doc: "Default is the geometric mean; where sides differ, the later mode in the list wins" },
+        restitution_combine: CombineMode { doc: "Default is the larger; where sides differ, the later mode in the list wins" },
     }
 }
 

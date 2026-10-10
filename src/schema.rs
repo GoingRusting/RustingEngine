@@ -914,9 +914,9 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.sound_cue",
-        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`). A clip `sfx:<preset> [seed]` (jump, coin, hit, explosion, laser, powerup, blip; seed default 1) plays a built-in synthesized sound with no file. A non-empty `caption` such as `[glass breaks]` shows for 2 s each time it fires.",
+        summary: "Sends a SoundEvent when the body starts touching something or game code calls trigger(). The windowed game plays the clip (path relative to assets/, not the scene-relative asset `reference`); headless runs and scenarios count it (scenario entity `audio:`). A clip `sfx:<preset> [seed]` (jump, coin, hit, explosion, laser, powerup, blip; seed default 1) plays a built-in synthesized sound with no file. A non-empty `with_material` plays only on touches of a collider whose physics_material has that name. A non-empty `caption` such as `[glass breaks]` shows for 2 s each time it fires.",
         gpu: NO_GPU,
-        example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true, "caption": "[thud]", "full_volume_speed": 6.0, "on_gpu_event": "hit"}),
+        example: || json!({"clip": "sounds/hit.ogg", "volume": 0.8, "on_collision": true, "caption": "[thud]", "full_volume_speed": 6.0, "with_material": "metal", "on_gpu_event": "hit"}),
     },
     ComponentSection {
         key: "rusting.slide_sound",
@@ -983,6 +983,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored). Where volumes overlap the highest priority wins. gravity_scale still applies. GPU bodies and the player controller are not affected.",
         gpu: NO_GPU,
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
+    },
+    ComponentSection {
+        key: "rusting.physics_material",
+        summary: "Names the surface of this object's CPU collider and sets how its collider friction and restitution combine with the other side's in a contact: Default (friction geometric mean, restitution the larger), Average, Min, Multiply or Max. Where the two sides' modes differ, the later one in that list wins, so Min on ice keeps it slippery against anything without Multiply or Max. A sound_cue with with_material set to this name plays only on touches of this surface. GPU bodies ignore it.",
+        gpu: NO_GPU,
+        example: || json!({"name": "ice", "friction_combine": "Min", "restitution_combine": "Default"}),
     },
     ComponentSection {
         key: "rusting.vehicle",
