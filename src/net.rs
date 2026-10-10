@@ -233,6 +233,12 @@ impl Lab {
     }
 }
 
+/// Present while the game runs as a dedicated server
+/// ([`crate::project::SERVER_ENV`], `rusting run --server`): there is no
+/// window or local player, so game code should host and not join.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct DedicatedServer;
+
 /// One end of a multiplayer session. See the [module docs](self).
 #[derive(Resource)]
 pub struct NetSession {

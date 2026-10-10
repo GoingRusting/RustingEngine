@@ -5444,7 +5444,8 @@ fn announce_first_frame() {
 /// [`crate::scenario::TEST_SCENARIO_ENV`] set, runs that scenario file
 /// through [`run_project_scenario`] instead. With
 /// [`crate::project::REPLAY_PLAY_ENV`] set, plays that replay headless and
-/// fails if it diverges.
+/// fails if it diverges. With [`crate::project::SERVER_ENV`] set, runs as a
+/// dedicated server through [`run_project_server`].
 ///
 /// # Arguments
 /// * `title` - Text shown in the game window title bar.
@@ -5481,6 +5482,9 @@ pub fn run_project<P: Plugin>(
             .and_then(|ticks| ticks.parse().ok())
             .ok_or(format!("{HEADLESS_TICKS_ENV} must be a tick count"))?;
         return run_project_headless(scene_path, plugin, ticks);
+    }
+    if std::env::var_os(crate::project::SERVER_ENV).is_some() {
+        return run_project_server(scene_path, plugin);
     }
     let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
     if let Some(path) = std::env::var_os(crate::project::REPLAY_PLAY_ENV) {
@@ -5545,6 +5549,46 @@ pub fn run_project_headless<P: Plugin>(
         std::fs::write(path, serde_json::to_vec(&report)?)?;
     }
     Ok(())
+}
+
+/// Runs a cooked scene as a dedicated server: no window, Vulkan device, or
+/// renderer, one fixed tick per `fixed_delta` of real time, until game code
+/// quits. Inserts [`crate::net::DedicatedServer`] so game code knows to
+/// host.
+///
+/// # Arguments
+/// * `scene_path` - Path to cooked `.rscene.bin` data.
+/// * `plugin` - Native Rust systems and resources used by this game.
+pub fn run_project_server<P: Plugin>(
+    scene_path: impl Into<PathBuf>,
+    plugin: P,
+) -> Result<(), Box<dyn Error>> {
+    let mut runtime = load_project_runtime(&scene_path.into(), plugin)?;
+    runtime
+        .world_mut()
+        .insert_resource(crate::net::DedicatedServer);
+    let step = runtime.world().resource::<FrameTime>().fixed_delta;
+    let mut deadline = Instant::now();
+    loop {
+        runtime.update(step)?;
+        runtime
+            .world_mut()
+            .resource_mut::<RuntimeInput>()
+            .clear_frame_edges();
+        announce_first_frame();
+        if runtime.exit_requested() {
+            return Ok(());
+        }
+        deadline += step;
+        let now = Instant::now();
+        if deadline > now {
+            std::thread::sleep(deadline - now);
+        } else if now - deadline > step * 10 {
+            // Too far behind (a long stall): drop the lost ticks instead of
+            // running them back to back.
+            deadline = now;
+        }
+    }
 }
 
 /// Loads a cooked scene and runs `ticks` updates of one `fixed_delta` each
@@ -6404,6 +6448,44 @@ mod tests {
             world: runtime.world_mut(),
         };
         assert!(scene.object("Ball").position()[1] < 5.0);
+    }
+
+    #[test]
+    fn a_dedicated_server_ticks_in_real_time_until_the_game_quits() {
+        static TICKS: AtomicU32 = AtomicU32::new(0);
+        fn serve(scene: &mut GameScene<'_>, _: &FrameTime) {
+            assert!(scene
+                .world
+                .contains_resource::<crate::net::DedicatedServer>());
+            if TICKS.fetch_add(1, Ordering::Relaxed) + 1 == 6 {
+                scene.quit();
+            }
+        }
+        let directory = std::env::temp_dir()
+            .join(format!("rusting-server-{}", uuid::Uuid::new_v4()));
+        let source = directory.join("main.rscene");
+        let cooked = directory.join("main.rscene.bin");
+        let mut editor = App::new();
+        editor.add_plugin(AssetPlugin).unwrap();
+        crate::runtime::save_scene(editor.world_mut(), &source, "main")
+            .unwrap();
+        crate::runtime::cook_scene(&source, &cooked).unwrap();
+        let start = Instant::now();
+        run_project_server(
+            &cooked,
+            SimpleGamePlugin {
+                update: serve,
+                tick: None,
+                components: None,
+            },
+        )
+        .unwrap();
+        let elapsed = start.elapsed();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(TICKS.load(Ordering::Relaxed), 6);
+        // Five sleeps of one fixed step each, not a busy loop.
+        let step = FrameTime::default().fixed_delta;
+        assert!(elapsed >= step * 5, "{elapsed:?}");
     }
 
     #[test]

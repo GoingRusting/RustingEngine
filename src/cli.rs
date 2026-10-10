@@ -5178,6 +5178,9 @@ pub struct RunOptions {
     /// export, from its own folder instead of cooking and building the
     /// project.
     pub exe: Option<PathBuf>,
+    /// Run as a dedicated server (`--server`): no window, real-time ticks
+    /// until the game quits or `timeout` stops it.
+    pub server: bool,
 }
 
 /// Cooks the main scene, builds the game, and runs it as a debug session:
@@ -5363,8 +5366,9 @@ pub fn fuzz_game_project(
 
 fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
     let start = Instant::now();
-    let headless =
-        options.headless_ticks.is_some() || options.scenario.is_some();
+    let headless = options.headless_ticks.is_some()
+        || options.scenario.is_some()
+        || options.server;
     if options.record.is_some() && (headless || options.replay.is_some()) {
         return CliResult::failure(
             "CLI_USAGE",
@@ -5450,6 +5454,9 @@ fn run_game_project_once(root: &Path, options: RunOptions) -> CliResult {
         let _ = std::fs::remove_file(&final_scene);
         game.env(crate::project::HEADLESS_TICKS_ENV, ticks.to_string())
             .env(crate::project::FINAL_SCENE_OUT_ENV, &final_scene);
+    }
+    if options.server {
+        game.env(crate::project::SERVER_ENV, "1");
     }
     if let Some(frames) = options.bench {
         game.env(crate::project::BENCH_FRAMES_ENV, frames.to_string());

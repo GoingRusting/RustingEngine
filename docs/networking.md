@@ -86,6 +86,40 @@ Codes ignore case and leave out the look-alikes I, O, 0 and 1. The room
 closes when its host leaves. Game code is the same as for direct
 sessions; only the constructor differs.
 
+## Listen servers and dedicated servers
+
+A listen server is a player's game that also hosts: call
+`NetSession::host` in it, and the host plays like any client. A dedicated
+server runs the same game with no window or player:
+
+```sh
+rusting run my_game --server            # from the project
+RUSTING_SERVER=1 ./my_game              # an exported game
+```
+
+- It ticks once per fixed step of real time, renders nothing, and runs
+  until game code calls `scene.quit()` (or `--timeout` stops it).
+- Game code sees the `net::DedicatedServer` resource there. Host instead
+  of showing a menu:
+
+```rust
+use rusting_engine::net::DedicatedServer;
+
+fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {
+    let world = scene.world();
+    if world.contains_resource::<DedicatedServer>()
+        && world.get_resource::<NetSession>().is_none()
+    {
+        if let Ok(session) = NetSession::host(7777, "") {
+            world.insert_resource(session);
+        }
+    }
+}
+```
+
+- GPU physics bodies stay still without a renderer, as in `--ticks` runs;
+  use CPU bodies for server-side simulation.
+
 ## Remote procedure calls
 
 `net::rpc::Rpcs` calls a named method on a scene object across the

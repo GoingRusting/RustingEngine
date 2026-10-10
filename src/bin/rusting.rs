@@ -455,6 +455,7 @@ fn run_command(args: &[String]) -> CliResult {
                     "--keep-going" => options.keep_going = true,
                     "--full" => full = true,
                     "--stderr" => options.echo_stderr = true,
+                    "--server" => options.server = true,
                     "--ticks" => match flags.next().map(|v| v.parse()) {
                         Some(Ok(ticks)) => options.headless_ticks = Some(ticks),
                         _ => return usage("--ticks requires a tick count"),
