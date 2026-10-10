@@ -32,6 +32,12 @@ Run the complete local release gate before submitting a pull request:
 The same formatting, strict Clippy, test, documentation, and release-build
 checks run in GitHub Actions.
 
+Also run Clippy with `--no-default-features` and with `--features gpu-tests`,
+and run the GPU tests: `cargo test --workspace --features gpu-tests --
+--test-threads=1`. They need a Vulkan device; lavapipe works when there is no
+GPU (see [Development environment](docs/dev-environment.md)). Run them one
+at a time: two GPU test runs at once can crash the NVIDIA driver.
+
 ## Code guidelines
 
 - Format Rust code with `cargo fmt` and keep Clippy clean with warnings denied.
@@ -48,6 +54,26 @@ checks run in GitHub Actions.
   and offset coverage or shader-reflection validation.
 - Do not commit `target`, `dist`, cooked `.rscene.bin` files, local editor
   settings, or machine-specific absolute paths.
+- Add no new dependency to `Cargo.toml` without the maintainer's approval.
+  Ask in the issue first; a few lines of code usually beat a new crate.
+- Physics and simulation code must stay deterministic. Do not accumulate
+  simulation state through order-dependent atomics, iterate bodies and
+  constraints in a stable order, and take randomness only from the
+  scene-seeded stream indexed by the fixed tick. See
+  [Determinism](docs/determinism.md).
+- Every scene edit in the editor goes through the snapshot undo system.
+
+## Roadmap and changelog
+
+- When a pull request finishes a `roadmap.md` item, check it off and write
+  the evidence next to it: the test names that prove it, or the measurement
+  with its hardware. Work that cannot be verified here stays unchecked with
+  a note saying why.
+- Add one line per user-visible change under `## [Unreleased]` in
+  `CHANGELOG.md`, in the section that fits: `Added`, `Changed`, `Fixed`,
+  `Performance`, or `Known limits`. Name the call, component, or command,
+  and say what a user can now do. A change that breaks saved scenes, game
+  code, or the network protocol goes under `Changed` and says what to do.
 
 ## Performance pull requests
 

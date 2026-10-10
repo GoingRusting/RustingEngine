@@ -51,6 +51,8 @@ were run against this version of the engine.
   solvers for GPU physics.
 - [WebAssembly scripts](scripting.md): the optional sandboxed scripting
   host for modding and designer logic, its host functions, and its limits.
+- [Writing a plugin](plugin-authoring.md): reusable plugin crates, naming,
+  determinism rules, and testing a plugin without a window.
 - [Development environment](dev-environment.md): iteration speed targets, running GPU tests without a
   GPU (lavapipe).
 - [Changelog](../CHANGELOG.md): what changed in each release.

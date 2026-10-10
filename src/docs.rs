@@ -110,6 +110,11 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/godot-migration.md"),
     ),
+    (
+        "guide/plugin-authoring",
+        "guide",
+        include_str!("../docs/plugin-authoring.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
