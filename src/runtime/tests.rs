@@ -4657,6 +4657,85 @@ fn the_kill_plane_despawns_fallen_bodies_and_sends_fell_out() {
 }
 
 #[test]
+fn gravity_volumes_replace_the_scene_gravity_for_bodies_inside() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let volume = |world: &mut bevy_ecs::world::World, at, shape, gravity| {
+        let entity = cpu_body(world, at, shape, RigidBodyKind::Fixed);
+        world.get_mut::<Collider>(entity).unwrap().sensor = true;
+        world.entity_mut(entity).insert(gravity);
+    };
+    let ball = ColliderShape::Sphere { radius: 0.25 };
+    // A zero-g room with a sideways wind tunnel of higher priority inside.
+    volume(
+        world,
+        [0.0; 3],
+        ColliderShape::Box {
+            half_extents: [5.0; 3],
+        },
+        GravityVolume::default(),
+    );
+    volume(
+        world,
+        [3.0, 0.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [1.0; 3],
+        },
+        GravityVolume {
+            gravity: [5.0, 0.0, 0.0],
+            priority: 1,
+            ..GravityVolume::default()
+        },
+    );
+    // A small planet pulling toward its centre.
+    volume(
+        world,
+        [100.0, 0.0, 0.0],
+        ColliderShape::Sphere { radius: 10.0 },
+        GravityVolume {
+            toward_center: 5.0,
+            ..GravityVolume::default()
+        },
+    );
+    let floating = cpu_body(world, [0.0; 3], ball, RigidBodyKind::Dynamic);
+    let blown = cpu_body(world, [3.0, 0.0, 0.0], ball, RigidBodyKind::Dynamic);
+    let above =
+        cpu_body(world, [100.0, 5.0, 0.0], ball, RigidBodyKind::Dynamic);
+    let below =
+        cpu_body(world, [100.0, -5.0, 0.0], ball, RigidBodyKind::Dynamic);
+    let outside =
+        cpu_body(world, [50.0, 0.0, 0.0], ball, RigidBodyKind::Dynamic);
+    run_fixed_steps(&mut app, 30);
+    let world = app.world();
+    let velocity =
+        |entity| world.get::<RigidBody>(entity).unwrap().linear_velocity;
+    let near = |a: [f32; 3], b: [f32; 3]| {
+        a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.1)
+    };
+    assert!(
+        near(velocity(floating), [0.0; 3]),
+        "{:?}",
+        velocity(floating)
+    );
+    assert!(
+        near(velocity(blown), [2.5, 0.0, 0.0]),
+        "{:?}",
+        velocity(blown)
+    );
+    assert!(
+        near(velocity(above), [0.0, -2.5, 0.0]),
+        "{:?}",
+        velocity(above)
+    );
+    assert!(
+        near(velocity(below), [0.0, 2.5, 0.0]),
+        "{:?}",
+        velocity(below)
+    );
+    assert!(velocity(outside)[1] < -4.5, "{:?}", velocity(outside));
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {

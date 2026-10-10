@@ -374,6 +374,16 @@ GPU sends back an event only when a rule matches. See
 `rigid_body.kind` is `Dynamic` (moved by forces), `Kinematic` (moved by your
 code or a controller), or `Fixed`.
 
+### Gravity volumes
+
+A `rusting.gravity_volume` on a `Fixed` CPU body with a sensor collider
+replaces the scene gravity for dynamic CPU bodies that overlap it, like a
+Godot `Area3D` gravity override. `gravity: [0, 0, 0]` makes a zero-g room and
+a sideways vector a wind tunnel. `toward_center` above 0 pulls toward the
+object's centre at that many m/s², so a sphere sensor becomes a small planet.
+Where volumes overlap, the highest `priority` wins. `gravity_scale` still
+applies. GPU bodies and the player controller keep the scene gravity.
+
 ### Many GPU bodies: keep the contact grid uncrowded
 
 GPU contacts use a grid. Each cell is as wide as the largest GPU body and

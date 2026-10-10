@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.gravity_volume`: a sensor body that replaces gravity for CPU bodies inside it (zero-g rooms, wind tunnels, `toward_center` planets), with `priority` for overlaps
 - Scenario reports give the game process's memory: `perf.rss_mb` at the end and `perf.rss_mb_peak` (Linux)
 - Agent benchmark new-game tasks `lift-new-game` (a lift moving up and down that counts trips), `seed-planter-new-game` (numbered copies of a template, one a second) and `lamp-switch-new-game` (a key toggles a point light)
 - Agent benchmark task `crate-plate-new-game`: a new-game task where pushing a crate onto a pressure plate opens a door

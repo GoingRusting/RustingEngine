@@ -1152,6 +1152,7 @@ pub const MORPH_COMPONENT: &str = "rusting.morph";
 /// Registry name of the built-in fluid block.
 pub const FLUID_BLOCK_COMPONENT: &str = "rusting.fluid_block";
 pub const WATER_COMPONENT: &str = "rusting.water";
+pub const GRAVITY_VOLUME_COMPONENT: &str = "rusting.gravity_volume";
 /// Registry name of the built-in HUD text or button.
 pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
 /// Registry name of the built-in reflected sky image.
@@ -1272,6 +1273,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::WaterBody>(WATER_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::GravityVolume>(GRAVITY_VOLUME_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::HudElement>(HUD_ELEMENT_COMPONENT)

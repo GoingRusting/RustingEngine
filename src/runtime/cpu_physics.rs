@@ -53,6 +53,41 @@ pub use joints::{
     JointSpring,
 };
 
+/// Replaces the scene gravity for dynamic CPU bodies that overlap this
+/// object's sensor collider, like a Godot `Area3D` gravity override: zero-g
+/// rooms, sideways wind tunnels, or a small planet. The object needs a CPU
+/// physics body with a sensor collider. Where volumes overlap, the highest
+/// `priority` wins, then the first in body order. `RigidBody::gravity_scale`
+/// still applies.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct GravityVolume {
+    /// Acceleration inside the volume in m/s²; `[0, 0, 0]` is zero-g.
+    pub gravity: [f32; 3],
+    /// Above 0, pulls toward the volume's centre at this many m/s² in place
+    /// of `gravity`, for a planet.
+    pub toward_center: f32,
+    pub priority: i32,
+}
+
+impl Default for GravityVolume {
+    fn default() -> Self {
+        Self {
+            gravity: [0.0; 3],
+            toward_center: 0.0,
+            priority: 0,
+        }
+    }
+}
+
 /// Fired once per touching pair of CPU colliders in each `FixedUpdate` step.
 /// `sensor` is true when either collider is a sensor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1081,14 +1116,16 @@ pub(super) fn step_cpu_physics(world: &mut World) {
     let gravity = Vector3::from(settings.gravity);
     let mut impacts = Vec::new();
     if settings.enabled {
-        for body in bodies
+        let gravities = body_gravity(world, &bodies, &contacts, gravity);
+        for (index, body) in bodies
             .iter_mut()
-            .filter(|body| body.inverse_mass > 0.0 && !body.articulated)
+            .enumerate()
+            .filter(|(_, body)| body.inverse_mass > 0.0 && !body.articulated)
         {
             let scale = world
                 .get::<RigidBody>(body.entity)
                 .map_or(1.0, |rigid| rigid.gravity_scale);
-            body.velocity += gravity * scale * dt;
+            body.velocity += gravities[index] * scale * dt;
         }
     }
     if settings.enabled {
@@ -1585,6 +1622,49 @@ fn broad_phase_candidates(bodies: &[Body]) -> Vec<(usize, usize)> {
     }
     candidates.sort_unstable();
     candidates
+}
+
+/// Each body's gravity: the scene's, or that of the [`GravityVolume`]
+/// sensor it overlaps with the highest priority (ties go to the first in
+/// body order, so the result does not depend on contact order).
+// ponytail: articulated bodies and sleepers keep the scene gravity; a volume
+// moved onto a sleeping body does not wake it.
+fn body_gravity(
+    world: &World,
+    bodies: &[Body],
+    contacts: &[(usize, usize, Contact)],
+    scene: Vector3<f32>,
+) -> Vec<Vector3<f32>> {
+    let mut best: Vec<Option<(i32, usize, GravityVolume)>> =
+        vec![None; bodies.len()];
+    for (a, b, _) in contacts.iter().filter(|(.., c)| c.sensor) {
+        for (volume, body) in [(*a, *b), (*b, *a)] {
+            let Some(found) = world.get::<GravityVolume>(bodies[volume].entity)
+            else {
+                continue;
+            };
+            let slot = &mut best[body];
+            if slot.is_none_or(|(priority, index, _)| {
+                (found.priority, std::cmp::Reverse(volume))
+                    > (priority, std::cmp::Reverse(index))
+            }) {
+                *slot = Some((found.priority, volume, *found));
+            }
+        }
+    }
+    best.iter()
+        .zip(bodies)
+        .map(|(slot, body)| match slot {
+            None => scene,
+            Some((_, volume, found)) if found.toward_center > 0.0 => {
+                (bodies[*volume].position - body.position)
+                    .try_normalize(1e-6)
+                    .unwrap_or_default()
+                    * found.toward_center
+            }
+            Some((.., found)) => Vector3::from(found.gravity),
+        })
+        .collect()
 }
 
 fn find_contacts(bodies: &[Body]) -> Vec<(usize, usize, Contact)> {

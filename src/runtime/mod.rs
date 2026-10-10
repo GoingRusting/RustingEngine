@@ -63,9 +63,9 @@ pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
     Articulation, AxisMotion, CharacterMove, CollisionEvent, Contact, FellOut,
-    GpuCollider, Joint, JointAxis, JointBroken, JointKind, JointMotor,
-    JointSpring, NextSpawnOrder, PhysicsWorld, RayHit, Sleeping, SpawnOrder,
-    SLEEP_STEPS,
+    GpuCollider, GravityVolume, Joint, JointAxis, JointBroken, JointKind,
+    JointMotor, JointSpring, NextSpawnOrder, PhysicsWorld, RayHit, Sleeping,
+    SpawnOrder, SLEEP_STEPS,
 };
 pub use determinism::*;
 pub use effect_presets::*;

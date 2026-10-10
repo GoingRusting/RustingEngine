@@ -979,6 +979,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"spacing": 0.1, "count_x": 6, "count_y": 6, "count_z": 6, "container_half_extents": [0.5, 0.5, 0.5], "iterations": 4, "viscosity": 0.01, "visible": true, "show_particles": false}),
     },
     ComponentSection {
+        key: "rusting.gravity_volume",
+        summary: "Replaces the scene gravity for dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true): gravity [0, 0, 0] is a zero-g room, a sideways vector a wind tunnel, and toward_center above 0 pulls toward the object's centre at that many m/s² for a small planet (gravity is then ignored). Where volumes overlap the highest priority wins. gravity_scale still applies. GPU bodies and the player controller are not affected.",
+        gpu: NO_GPU,
+        example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
+    },
+    ComponentSection {
         key: "rusting.water",
         summary: "Water for seas, lakes and rivers: a size by size rectangle of animated waves centered on the entity (axis aligned, rotation and scale ignored). Dynamic bodies with sphere, box or capsule colliders float in it, and flow_speed carries them along flow_direction, which also turns the waves. Deterministic and cheap; a long thin rectangle with a flow_speed is a river. flat_shading gives faceted low-poly waves. A player_controller with swim_speed swims in it. Put it on an empty object.",
         gpu: "one mesh of about resolution squared vertices, rewritten every fixed tick",

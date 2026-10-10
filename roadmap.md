@@ -2201,7 +2201,7 @@ Depends on: Milestones 5 and 8 (all new solver work follows the determinism rule
 - [ ] Physics materials with friction, restitution, combine modes, and per-material contact events.
 - [ ] Force fields: directional, radial, vortex, wind with turbulence, and custom field functions; usable by CPU and GPU bodies alike.
 - [ ] Buoyancy and drag against water volumes.
-- [ ] Gravity volumes and per-body gravity scale (planetary gravity, zero-g zones).
+- [x] Gravity volumes and per-body gravity scale (planetary gravity, zero-g zones). Evidence: `RigidBody::gravity_scale` already scaled gravity per body. `rusting.gravity_volume` (`GravityVolume { gravity, toward_center, priority }`, `src/runtime/cpu_physics.rs`) on a CPU body with a sensor collider replaces the scene gravity for overlapping dynamic CPU bodies; `toward_center` pulls toward the volume centre (planets); overlaps pick the highest priority, then the first in body order, so contact order does not matter. Registered in scene_file, reflect, snapshot, schema and placement help; docs "Gravity volumes" in `docs/concepts.md`. Not covered: GPU bodies, the player controller, articulated bodies, and waking sleepers when a volume moves onto them. Test: `gravity_volumes_replace_the_scene_gravity_for_bodies_inside` (zero-g, a higher-priority sideways tunnel inside it, a planet pulling from above and below, and an outside body falling). Full check 2026-10-10: fmt and clippy x3 clean; workspace tests pass, also with gpu-tests.
 
 ### Solver quality
 

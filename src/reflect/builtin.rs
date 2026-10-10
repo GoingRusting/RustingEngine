@@ -12,14 +12,15 @@ use crate::runtime::{
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
     Connection, Connections, Counter, CullingMode, DeterminismMode, Dialogue,
     DialogueChoice, DialogueLine, Easing, EnvironmentMap, Flash, FluidBlock,
-    Fog, Health, HudAnchor, HudElement, InputAction, Joint, JointAxis,
-    JointKind, JointMotor, JointSpring, LootEntry, LootTable, ObjectState,
-    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
-    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
-    RenderBounds, RenderSettings, ReverbZone, SceneBackground, SceneInstance,
-    ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash,
-    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
-    Tween, TweenProperty, TweenRepeat, WaterBody,
+    Fog, GravityVolume, Health, HudAnchor, HudElement, InputAction, Joint,
+    JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
+    ObjectState, PhysicsSettings, PhysicsSyncMode, Pickup,
+    PlatformerController, PlayerController, PostVolume, QualityProfile,
+    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, ReverbZone,
+    SceneBackground, SceneInstance, ShadowQuality, SkyLight, SlideSound,
+    SoundCue, SoundId, SpawnGrid, Squash, StateAction, StateTransition,
+    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
+    TweenRepeat, WaterBody,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -686,6 +687,17 @@ crate::reflect! {
         flat_shading: bool {
             doc: "Light each wave triangle with its own face normal for a faceted sea.",
         },
+    }
+}
+
+crate::reflect! {
+    struct GravityVolume {
+        gravity: [f32; 3] { unit: "m/s²", doc: "acceleration inside the volume; [0, 0, 0] is zero-g" },
+        toward_center: f32 {
+            unit: "m/s²", min: 0.0,
+            doc: "above 0, pulls toward the volume's centre instead, for a planet",
+        },
+        priority: i32 { doc: "the highest wins where volumes overlap" },
     }
 }
 
