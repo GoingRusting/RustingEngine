@@ -17,6 +17,7 @@ mod events;
 pub mod fluid;
 pub mod fluid_surface;
 mod game_feel;
+pub mod gpu_cloth;
 pub(crate) mod hierarchy;
 mod hybrid_physics;
 mod ik;

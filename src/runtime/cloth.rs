@@ -207,6 +207,25 @@ impl Cloth {
         self.velocities[particle] = [0.0; 3];
     }
 
+    /// Every distance constraint as its particles, rest length and
+    /// compliance: the edges, then the bends.
+    pub(super) fn distance_constraints(
+        &self,
+        settings: &ClothSettings,
+    ) -> Vec<([u32; 2], f32, f32)> {
+        let edges = self
+            .edges
+            .iter()
+            .zip(&self.edge_rests)
+            .map(|(&pair, &rest)| (pair, rest, settings.stretch_compliance));
+        let bends = self
+            .bends
+            .iter()
+            .zip(&self.bend_rests)
+            .map(|(&pair, &rest)| (pair, rest, settings.bend_compliance));
+        edges.chain(bends).collect()
+    }
+
     /// Triangle edges, sorted, each as its two particles.
     pub fn edges(&self) -> &[[u32; 2]] {
         &self.edges
