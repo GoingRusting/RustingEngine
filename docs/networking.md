@@ -325,7 +325,19 @@ match replica.apply(world, from, &bytes) {
   changed components, removed components and despawned objects. Nothing
   changed means no message.
 - `quantize` rounds every number at a field path to a step on the host, so
-  changes smaller than the step send nothing.
+  changes smaller than the step send nothing. A client's value is within
+  half a step of the host's. Steps must be positive; setting a path again
+  replaces its step, and `precision()` lists every path and step.
+  Starting points:
+
+  | Field | Step | Client error at most |
+  |---|---|---|
+  | `/transform/position` | 0.01 | 5 mm |
+  | `/transform/rotation` | 0.001 | 0.0005 rad (0.03°) per axis |
+  | `/transform/scale` | 0.01 | 0.005 |
+  | `/rusting.health/value` | 1 | exact for whole numbers |
+
+  Fields without a step travel at full `f64` precision.
 - Objects are matched by their scene id; ones the client lacks are
   spawned. To update an object both sides loaded from the same scene in
   place, mark it `Replicated` on the client too.

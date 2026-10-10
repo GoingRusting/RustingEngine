@@ -3415,7 +3415,14 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
   `net::replicate::tests::snapshots_encode_against_the_last_acknowledged_one`
   loses snapshot 2 and still gets its change in 3, smaller than a whole
   snapshot. `docs/networking.md` "Snapshots over unreliable messages".
-- [ ] Quantize replicated values with documented precision per field.
+- [x] Quantize replicated values with documented precision per field.
+  Evidence 2026-10-10 (lane tools): `Replication::quantize(pointer, step)`
+  now refuses non-positive or non-finite steps (a zero step made values
+  null), replaces a path's earlier step, and documents that clients are
+  within `step / 2`; `precision()` lists every path and step.
+  `net::replicate::tests::quantized_fields_stay_within_half_a_step`.
+  `docs/networking.md` has a per-field precision table (position 5 mm,
+  rotation 0.0005 rad, scale 0.005, health exact).
 - [ ] Interest management: replicate only what a client's team can currently see, using the vision system from Milestone 27.
 - [ ] Per-client bandwidth budget with measured usage and an enforced cap.
 - [ ] Replicate terrain modification events, not individual debris transforms. Clients re-simulate debris locally from the same events. This is the only approach that keeps bandwidth bounded during heavy destruction, and it depends on Milestone 8.

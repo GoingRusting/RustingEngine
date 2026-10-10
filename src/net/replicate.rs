@@ -76,9 +76,26 @@ impl Replication {
     /// Rounds every number at `pointer` (a component name and a field
     /// path, such as `/transform/position`) to a multiple of `step`, so
     /// tiny changes send nothing and clients see the same rounded values.
+    /// A client's value is then within `step / 2` of the host's. Setting
+    /// a pointer again replaces its step.
+    ///
+    /// # Panics
+    ///
+    /// When `step` is not a positive finite number.
     pub fn quantize(&mut self, pointer: &str, step: f64) -> &mut Self {
+        assert!(
+            step.is_finite() && step > 0.0,
+            "quantization step for {pointer} must be positive, not {step}"
+        );
+        self.steps.retain(|(kept, _)| kept != pointer);
         self.steps.push((pointer.to_owned(), step));
         self
+    }
+
+    /// Each quantized field path and its step, in the order set, so a game
+    /// can log or check the precision it replicates with.
+    pub fn precision(&self) -> &[(String, f64)] {
+        &self.steps
     }
 
     /// What changed since the last call, as one message for
@@ -544,6 +561,31 @@ mod tests {
 
     fn health(world: &World, entity: Entity) -> Option<i32> {
         world.get::<Health>(entity).map(|health| health.value)
+    }
+
+    #[test]
+    fn quantized_fields_stay_within_half_a_step() {
+        let mut replication = Replication::new();
+        replication
+            .quantize("/transform/position", 0.5)
+            .quantize("/transform/rotation", 0.001)
+            .quantize("/transform/position", 0.01);
+        assert_eq!(
+            replication.precision(),
+            [
+                ("/transform/rotation".to_owned(), 0.001),
+                ("/transform/position".to_owned(), 0.01),
+            ]
+        );
+        for x in [-2.5137, 0.0049, 0.0051, 1234.5678] {
+            let mut value = json!(x);
+            round(&mut value, 0.01);
+            assert!((value.as_f64().unwrap() - x).abs() <= 0.005 + 1e-12);
+        }
+        let zero = std::panic::catch_unwind(|| {
+            Replication::new().quantize("/transform/position", 0.0);
+        });
+        assert!(zero.is_err(), "a zero step would turn values into null");
     }
 
     #[test]
