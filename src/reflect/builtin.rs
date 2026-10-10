@@ -702,6 +702,7 @@ crate::reflect! {
         damping: f32 { unit: "1/s", min: 0.0, doc: "fraction of velocity lost per second" },
         tear_strain: f32 { unit: "factor", min: 0.0, doc: "edges stretched past rest times 1 + this tear; 0 never" },
         substeps: u32 { unit: "substeps", min: 1.0, max: 64.0 },
+        visible: bool { doc: "draw the outer faces" },
     }
 }
 

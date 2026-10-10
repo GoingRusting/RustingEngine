@@ -6153,6 +6153,59 @@ fn soft_blocks_round_trip_through_scenes_and_land_on_a_box() {
 }
 
 #[test]
+fn a_visible_soft_block_draws_one_skin_that_goes_with_it() {
+    let mut app = App::new();
+    app.add_plugin(crate::assets::AssetPlugin).unwrap();
+    let block =
+        app.spawn((Transform::new([0.0, 1.0, 0.0]), SoftBlock::default()));
+    let hidden = app.spawn((
+        Transform::new([3.0, 1.0, 0.0]),
+        SoftBlock {
+            visible: false,
+            ..SoftBlock::default()
+        },
+    ));
+    run_fixed_steps(&mut app, 2);
+    let skins = |app: &mut App| {
+        let mut query = app
+            .world_mut()
+            .query::<(&crate::runtime::FluidParticle, &MeshRenderer)>();
+        query
+            .iter(app.world())
+            .map(|(owner, renderer)| (owner.0, renderer.mesh))
+            .collect::<Vec<_>>()
+    };
+    let drawn = skins(&mut app);
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].0, block);
+    let mesh = drawn[0].1;
+    let low = |app: &App| {
+        let assets = app.world().resource::<crate::assets::AssetServer>();
+        assets
+            .meshes
+            .get(mesh)
+            .unwrap()
+            .vertices
+            .iter()
+            .map(|v| v.position[1])
+            .fold(f32::MAX, f32::min)
+    };
+    let before = low(&app);
+    run_fixed_steps(&mut app, 10);
+    assert!(
+        low(&app) < before - 0.01,
+        "the skin did not follow the fall"
+    );
+    assert_eq!(skins(&mut app).len(), 1);
+    app.world_mut().despawn(block);
+    run_fixed_steps(&mut app, 2);
+    assert!(skins(&mut app).is_empty());
+    let assets = app.world().resource::<crate::assets::AssetServer>();
+    assert!(assets.meshes.get(mesh).is_none());
+    let _ = hidden;
+}
+
+#[test]
 fn huge_soft_blocks_are_shrunk_to_the_cap() {
     let block = SoftBlock {
         count_x: 1000,

@@ -574,6 +574,7 @@ pub(super) fn reap_surfaces(
     )>,
     volumes: bevy_ecs::prelude::Query<&FluidVolume>,
     waters: bevy_ecs::prelude::Query<&super::WaterMesh>,
+    soft: bevy_ecs::prelude::Query<&super::SoftBodyVolume>,
 ) {
     let Some(mut assets) = assets else {
         return;
@@ -586,7 +587,13 @@ pub(super) fn reap_surfaces(
                 .is_some_and(|surface| surface.entity == Some(entity))
         }) || waters
             .get(owner.0)
-            .is_ok_and(|water| water.entity() == entity);
+            .is_ok_and(|water| water.entity() == entity)
+            || soft.get(owner.0).is_ok_and(|volume| {
+                volume
+                    .skin
+                    .as_ref()
+                    .is_some_and(|skin| skin.entity == Some(entity))
+            });
         if kept {
             continue;
         }

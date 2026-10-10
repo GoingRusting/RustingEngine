@@ -306,9 +306,15 @@ impl Default for App {
                 )
                     .chain(),
                 animation::advance_animations,
-                (fluid::spawn_fluid_volumes, soft_body::spawn_soft_bodies),
+                (fluid::spawn_fluid_volumes, soft_body::spawn_soft_bodies)
+                    .chain(),
                 fluid::couple_fluids,
-                (fluid::step_fluids, soft_body::step_soft_bodies).chain(),
+                (
+                    fluid::step_fluids,
+                    soft_body::step_soft_bodies,
+                    soft_body::sync_soft_skins,
+                )
+                    .chain(),
                 fluid::sync_fluid_visuals,
                 fluid::reap_surfaces,
                 fluid::sync_fluid_surfaces,

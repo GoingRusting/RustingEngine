@@ -618,6 +618,32 @@ pub struct SoftBodyVolume {
     pub settings: SoftBodySettings,
     pub body: SoftBody,
     pub attachments: Vec<SoftAttachment>,
+    /// Draws the outer faces of the tetrahedra; `None` draws nothing.
+    pub skin: Option<SoftSkin>,
+}
+
+/// The drawn surface of a [`SoftBodyVolume`]: one entity whose mesh is
+/// rebuilt from the particles whenever they move.
+#[derive(Clone, Debug)]
+pub struct SoftSkin {
+    pub material: crate::assets::Handle<crate::assets::MaterialAsset>,
+    mesh: Option<crate::assets::Handle<crate::assets::MeshAsset>>,
+    pub(super) entity: Option<bevy_ecs::prelude::Entity>,
+    /// State hash the mesh was built from; a body at rest keeps its mesh.
+    built_from: u64,
+}
+
+impl SoftSkin {
+    pub fn new(
+        material: crate::assets::Handle<crate::assets::MaterialAsset>,
+    ) -> Self {
+        Self {
+            material,
+            mesh: None,
+            entity: None,
+            built_from: 0,
+        }
+    }
 }
 
 impl SoftBodyVolume {
@@ -626,6 +652,7 @@ impl SoftBodyVolume {
             settings,
             body,
             attachments: Vec::new(),
+            skin: None,
         }
     }
 
@@ -695,6 +722,8 @@ pub struct SoftBlock {
     /// Strain past which edges tear; 0 never tears.
     pub tear_strain: f32,
     pub substeps: u32,
+    /// Draw the outer faces.
+    pub visible: bool,
 }
 
 impl Default for SoftBlock {
@@ -710,6 +739,7 @@ impl Default for SoftBlock {
             damping: 1.0,
             tear_strain: 0.0,
             substeps: 10,
+            visible: true,
         }
     }
 }
@@ -748,6 +778,7 @@ impl SoftBlock {
 /// without a volume its [`SoftBodyVolume`].
 pub(super) fn spawn_soft_bodies(
     mut commands: bevy_ecs::prelude::Commands,
+    mut assets: Option<bevy_ecs::prelude::ResMut<crate::assets::AssetServer>>,
     blocks: bevy_ecs::prelude::Query<
         (bevy_ecs::prelude::Entity, &SoftBlock, &crate::Transform),
         bevy_ecs::prelude::Without<SoftBodyVolume>,
@@ -755,10 +786,146 @@ pub(super) fn spawn_soft_bodies(
 ) {
     for (entity, block, transform) in &blocks {
         match block.volume(transform.position) {
-            Ok(volume) => {
+            Ok(mut volume) => {
+                if let Some(assets) =
+                    assets.as_deref_mut().filter(|_| block.visible)
+                {
+                    volume.skin = Some(SoftSkin::new(jelly_material(assets)));
+                }
                 commands.entity(entity).insert(volume);
             }
             Err(error) => eprintln!("soft block {entity}: {error}"),
+        }
+    }
+}
+
+fn jelly_material(
+    assets: &mut crate::assets::AssetServer,
+) -> crate::assets::Handle<crate::assets::MaterialAsset> {
+    const NAME: &str = "Soft Block Jelly";
+    if let Some((handle, _)) = assets
+        .materials
+        .iter()
+        .find(|(_, material)| material.name == NAME)
+    {
+        return handle;
+    }
+    assets.materials.insert(crate::assets::MaterialAsset {
+        name: NAME.into(),
+        base_color: [0.35, 0.8, 0.3, 1.0],
+        roughness: 0.25,
+        ..crate::assets::MaterialAsset::default()
+    })
+}
+
+/// The faces of a body's tetrahedra that no other tetrahedron shares, each
+/// wound counterclockwise seen from outside. Torn bodies show their cuts.
+pub fn skin_mesh(body: &SoftBody) -> crate::assets::MeshAsset {
+    let mut faces: Vec<([u32; 3], [u32; 3])> = Vec::new();
+    for &[a, b, c, d] in &body.tetrahedra {
+        for face in [[a, c, b], [a, b, d], [a, d, c], [b, c, d]] {
+            let mut key = face;
+            key.sort_unstable();
+            faces.push((key, face));
+        }
+    }
+    faces.sort_unstable();
+    let mut indices = Vec::new();
+    let mut index = 0;
+    while index < faces.len() {
+        let mut end = index + 1;
+        while end < faces.len() && faces[end].0 == faces[index].0 {
+            end += 1;
+        }
+        if end - index == 1 {
+            indices.extend(faces[index].1);
+        }
+        index = end;
+    }
+    let mut normals = vec![Vector3::zeros(); body.positions.len()];
+    for triangle in indices.chunks_exact(3) {
+        let [a, b, c] =
+            [0, 1, 2].map(|i| vector(body.positions[triangle[i] as usize]));
+        let face = (b - a).cross(&(c - a));
+        for &corner in triangle {
+            normals[corner as usize] += face;
+        }
+    }
+    let vertices = body
+        .positions
+        .iter()
+        .zip(&normals)
+        .map(|(&position, normal)| crate::assets::MeshVertex {
+            position,
+            normal: normal.try_normalize(1e-12).unwrap_or(Vector3::y()).into(),
+            ..crate::assets::MeshVertex::default()
+        })
+        .collect();
+    crate::assets::MeshAsset { vertices, indices }
+}
+
+/// Per fixed step, after [`step_soft_bodies`]: rebuilds the skin mesh of
+/// every visible volume that moved, spawning its entity the first time. The
+/// entity carries the fluid surface markers, so the editor hides it and
+/// [`super::fluid::reap_surfaces`] frees it once the volume is gone.
+pub(super) fn sync_soft_skins(
+    mut commands: bevy_ecs::prelude::Commands,
+    assets: Option<bevy_ecs::prelude::ResMut<crate::assets::AssetServer>>,
+    mut volumes: bevy_ecs::prelude::Query<(
+        bevy_ecs::prelude::Entity,
+        &mut SoftBodyVolume,
+    )>,
+    markers: bevy_ecs::prelude::Query<&super::FluidParticle>,
+) {
+    let Some(mut assets) = assets else {
+        return;
+    };
+    for (owner, mut volume) in &mut volumes {
+        let volume = &mut *volume;
+        let Some(skin) = volume.skin.as_mut() else {
+            continue;
+        };
+        let owned = skin.entity.is_some_and(|entity| {
+            markers.get(entity).is_ok_and(|marker| marker.0 == owner)
+        });
+        if !owned {
+            skin.mesh = None;
+            skin.entity = None;
+        }
+        let hash =
+            volume.body.state_hash() ^ volume.body.tetrahedra.len() as u64;
+        let live = skin
+            .mesh
+            .is_some_and(|handle| assets.meshes.get(handle).is_some());
+        if live && skin.built_from == hash {
+            continue;
+        }
+        skin.built_from = hash;
+        let mesh = skin_mesh(&volume.body);
+        match skin.mesh.and_then(|handle| assets.meshes.get_mut(handle)) {
+            Some(slot) => *slot = mesh,
+            None => {
+                let handle = assets.meshes.insert(mesh);
+                skin.mesh = Some(handle);
+                skin.entity = Some(
+                    commands
+                        .spawn((
+                            crate::Transform::default(),
+                            super::MeshRenderer {
+                                mesh: handle,
+                                material: skin.material,
+                                cast_shadows: true,
+                                receive_shadows: true,
+                            },
+                            super::FluidParticle(owner),
+                            super::fluid::OwnedSurface {
+                                mesh: handle,
+                                material: None,
+                            },
+                        ))
+                        .id(),
+                );
+            }
         }
     }
 }
@@ -1188,5 +1355,26 @@ mod tests {
             .map(|&p| (vector(p) - vector(bodies[0].position)).norm())
             .fold(f32::MAX, f32::min);
         assert!(deepest > 0.14, "a particle sits {deepest} inside the ball");
+    }
+
+    #[test]
+    fn the_skin_is_the_outer_faces_wound_outward() {
+        for (cells, triangles) in [([1, 1, 1], 12), ([2, 2, 2], 48)] {
+            let body = SoftBody::block([0.0; 3], cells, 0.5, 1000.0).unwrap();
+            let mesh = skin_mesh(&body);
+            assert_eq!(mesh.indices.len(), triangles * 3, "{cells:?}");
+            let center = Vector3::repeat(cells[0] as f32 * 0.25);
+            for triangle in mesh.indices.chunks_exact(3) {
+                let [a, b, c] = [0, 1, 2]
+                    .map(|i| vector(body.positions[triangle[i] as usize]));
+                let out = (b - a).cross(&(c - a));
+                assert!(out.dot(&((a + b + c) / 3.0 - center)) > 0.0);
+            }
+            for &index in &mesh.indices {
+                let vertex = &mesh.vertices[index as usize];
+                let outward = vector(vertex.position) - center;
+                assert!(vector(vertex.normal).dot(&outward) > 0.0);
+            }
+        }
     }
 }

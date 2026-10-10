@@ -117,8 +117,7 @@ Prefer these components over game code when they fit:
 - `rusting.soft_block` makes a jelly: `count_x/y/z` cubes of `spacing`
   meters centered on the entity, kept in shape by XPBD. `softness` 0 is
   rigid and 1e-3 wobbly; `tear_strain` above 0 lets it tear. It lands on
-  sphere, box and capsule colliders and pushes dynamic bodies back. It is
-  not drawn yet.
+  sphere, box and capsule colliders and pushes dynamic bodies back.
 - `rusting.player_controller` walks up ground no steeper than
   `max_slope` (radians, default 45°) and steps onto ledges up to
   `max_step_height` (default 0.3 m); anything taller is a wall. Set
