@@ -39,6 +39,7 @@ mod signals;
 pub mod sim_math;
 mod skinning;
 mod snapshot;
+pub mod soft_body;
 mod state_hash;
 #[cfg(test)]
 mod tests;
