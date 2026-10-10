@@ -150,8 +150,10 @@ if let Some(delta) = replication.delta(world)? {
 // Host, on NetEvent::Connected(peer):
 session.send(peer, &replication.full())?;
 
-// Client, for each NetEvent::Message from the host:
-match replica.apply(world, &bytes) {
+// Client, once, from the same Replication built the same way:
+let mut replica = Replica::new(&replication);
+// Client, for each NetEvent::Message { from, bytes }:
+match replica.apply(world, from, &bytes) {
     Some(Ok(())) => {}
     Some(Err(reason)) => eprintln!("bad replication message: {reason}"),
     None => { /* a plain game message or an RPC */ }
@@ -163,8 +165,14 @@ match replica.apply(world, &bytes) {
   changed means no message.
 - `quantize` rounds every number at a field path to a step on the host, so
   changes smaller than the step send nothing.
-- Objects are matched by their scene id. An object both sides loaded from
-  the same scene is updated in place; others are spawned on the client.
+- Objects are matched by their scene id; ones the client lacks are
+  spawned. To update an object both sides loaded from the same scene in
+  place, mark it `Replicated` on the client too.
+- A replica takes messages only from the host, only for the components
+  its `Replication` lists, and only for objects marked `Replicated`, and
+  tracks at most `MAX_OBJECTS` (16384). It refuses anything else whole,
+  so a host cannot delete or rewrite the client's own objects (menus,
+  cameras).
 - Send deltas with `broadcast`, not `broadcast_unreliable`: each builds on
   the one before. Send `full()` to a client that joins later, before the
   next delta.

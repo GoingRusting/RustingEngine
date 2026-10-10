@@ -9,7 +9,7 @@
 //! [`SceneId`], so objects both sides loaded from the same scene file are
 //! updated in place and new ones are spawned.
 
-use super::invalid;
+use super::{invalid, PeerId, HOST};
 use crate::runtime::{
     registered_component_values, remove_registered_component,
     set_registered_component, Name, SceneId,
@@ -27,6 +27,9 @@ const MAGIC: &[u8; 4] = b"\0rep";
 /// scene components.
 pub const TRANSFORM: &str = "transform";
 pub const NAME: &str = "name";
+/// Most objects a [`Replica`] tracks, so a host cannot make a client spawn
+/// without end.
+pub const MAX_OBJECTS: usize = 16_384;
 
 /// Marks an object the host replicates to clients.
 #[derive(Component, Clone, Copy, Debug, Default)]
@@ -172,23 +175,39 @@ impl Replication {
 /// A client's side: applies the host's messages to its world.
 #[derive(Clone, Debug, Default)]
 pub struct Replica {
+    components: Vec<String>,
     entities: BTreeMap<Uuid, Entity>,
 }
 
 impl Replica {
-    pub fn new() -> Self {
-        Self::default()
+    /// A replica that accepts only the components `replication` lists.
+    /// Build the same [`Replication`] on every peer and pass it here.
+    pub fn new(replication: &Replication) -> Self {
+        Self {
+            components: replication.components.clone(),
+            entities: BTreeMap::new(),
+        }
     }
 
-    /// Applies a message from [`Replication::delta`] or
+    /// Applies a message `from` a peer, made by [`Replication::delta`] or
     /// [`Replication::full`]. Returns `None` for a message that is not a
-    /// replication message, and an error for a bad one.
+    /// replication message, and an error for a bad one or one that does
+    /// not come from the host; a refused message changes nothing.
+    ///
+    /// It touches only objects marked [`Replicated`]: ones it spawned, and
+    /// ones the game marked, such as objects loaded from the same scene.
     pub fn apply(
         &mut self,
         world: &mut World,
+        from: PeerId,
         bytes: &[u8],
     ) -> Option<Result<(), String>> {
         let body = bytes.strip_prefix(MAGIC)?;
+        if from != HOST {
+            return Some(Err(format!(
+                "peer {from} sent replication; only the host may"
+            )));
+        }
         Some(self.apply_patch(world, body))
     }
 
@@ -199,22 +218,48 @@ impl Replica {
     ) -> Result<(), String> {
         let patch: Map<String, Value> =
             serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        // Check the whole message before changing anything.
+        let mut changes = Vec::with_capacity(patch.len());
+        let mut tracked = self.entities.len();
         for (key, change) in patch {
             let id =
                 Uuid::parse_str(&key).map_err(|error| error.to_string())?;
-            let Value::Object(changes) = change else {
-                if let Some(entity) = self.find(world, id) {
+            let entity = self.find(world, id)?;
+            match &change {
+                Value::Object(fields) => {
+                    if let Some(name) = fields
+                        .keys()
+                        .find(|name| !self.components.contains(name))
+                    {
+                        return Err(format!("{name} is not replicated"));
+                    }
+                    if entity.is_none() {
+                        tracked += 1;
+                    }
+                }
+                Value::Null => {}
+                _ => return Err(format!("{id}: expected an object or null")),
+            }
+            changes.push((id, entity, change));
+        }
+        if tracked > MAX_OBJECTS {
+            return Err(format!("more than {MAX_OBJECTS} replicated objects"));
+        }
+        for (id, entity, change) in changes {
+            let Value::Object(fields) = change else {
+                if let Some(entity) = entity {
                     world.despawn(entity);
                 }
                 self.entities.remove(&id);
                 continue;
             };
-            let entity = match self.find(world, id) {
-                Some(entity) => entity,
-                None => world.spawn((SceneId(id), Transform::default())).id(),
-            };
+            let entity = entity.unwrap_or_else(|| {
+                world
+                    .spawn((Replicated, SceneId(id), Transform::default()))
+                    .id()
+            });
             self.entities.insert(id, entity);
-            for (name, value) in changes {
+            for (name, value) in fields {
                 apply_component(world, entity, &name, value)
                     .map_err(|error| format!("{name} on {id}: {error}"))?;
             }
@@ -222,19 +267,30 @@ impl Replica {
         Ok(())
     }
 
-    /// The entity for `id`: one this replica spawned, or one already in
-    /// the world (loaded from the same scene).
-    fn find(&mut self, world: &mut World, id: Uuid) -> Option<Entity> {
+    /// The [`Replicated`] entity for `id`, or `None` when there is none.
+    /// Fails when an unmarked object has that id, which the host may not
+    /// touch.
+    fn find(
+        &self,
+        world: &mut World,
+        id: Uuid,
+    ) -> Result<Option<Entity>, String> {
         if let Some(entity) = self.entities.get(&id) {
-            return world.get_entity(*entity).is_ok().then_some(*entity);
+            if world.get_entity(*entity).is_ok() {
+                return Ok(Some(*entity));
+            }
         }
         // ponytail: scans every SceneId once per new object; keep an
         // index if replicated scenes get large.
-        world
-            .query::<(Entity, &SceneId)>()
+        let found = world
+            .query::<(Entity, &SceneId, Has<Replicated>)>()
             .iter(world)
-            .find(|(_, scene_id)| scene_id.0 == id)
-            .map(|(entity, _)| entity)
+            .find(|(_, scene_id, _)| scene_id.0 == id);
+        match found {
+            None => Ok(None),
+            Some((entity, _, true)) => Ok(Some(entity)),
+            Some(_) => Err(format!("{id} is not marked Replicated here")),
+        }
     }
 }
 
@@ -347,10 +403,10 @@ mod tests {
             ))
             .id();
         host.spawn((SceneId::new(), Name("Local only".into())));
-        let mut replica = Replica::new();
+        let mut replica = Replica::new(&replication);
 
         let spawn = replication.delta(&mut host).unwrap().unwrap();
-        replica.apply(&mut client, &spawn).unwrap().unwrap();
+        replica.apply(&mut client, HOST, &spawn).unwrap().unwrap();
         let mut names = client.query::<(Entity, &Name, &Transform)>();
         let found: Vec<_> = names
             .iter(&client)
@@ -375,13 +431,14 @@ mod tests {
             text.contains("rusting.health") && !text.contains("transform"),
             "{text}"
         );
-        replica.apply(&mut client, &update).unwrap().unwrap();
+        replica.apply(&mut client, HOST, &update).unwrap().unwrap();
         assert_eq!(health(&client, copy), Some(3));
 
         // A late joiner gets everything in one message.
-        let (mut late, mut late_replica) = (world(), Replica::new());
+        let (mut late, mut late_replica) =
+            (world(), Replica::new(&replication));
         late_replica
-            .apply(&mut late, &replication.full())
+            .apply(&mut late, HOST, &replication.full())
             .unwrap()
             .unwrap();
         let mut healths = late.query::<&Health>();
@@ -392,16 +449,16 @@ mod tests {
 
         host.entity_mut(raft).remove::<Health>();
         let removed = replication.delta(&mut host).unwrap().unwrap();
-        replica.apply(&mut client, &removed).unwrap().unwrap();
+        replica.apply(&mut client, HOST, &removed).unwrap().unwrap();
         assert_eq!(health(&client, copy), None);
 
         host.despawn(raft);
         let gone = replication.delta(&mut host).unwrap().unwrap();
-        replica.apply(&mut client, &gone).unwrap().unwrap();
+        replica.apply(&mut client, HOST, &gone).unwrap().unwrap();
         assert!(client.get_entity(copy).is_err());
-        assert_eq!(replica.apply(&mut client, b"game bytes"), None);
+        assert_eq!(replica.apply(&mut client, HOST, b"game bytes"), None);
         assert!(replica
-            .apply(&mut client, b"\0repnot json")
+            .apply(&mut client, HOST, b"\0repnot json")
             .unwrap()
             .is_err());
     }
@@ -411,12 +468,13 @@ mod tests {
         let (mut host, mut client) = (world(), world());
         let id = SceneId::new();
         host.spawn((Replicated, id, Transform::new([5.0, 0.0, 0.0])));
-        let on_client = client.spawn((id, Transform::default())).id();
+        let on_client =
+            client.spawn((Replicated, id, Transform::default())).id();
         let mut replication = Replication::new();
         replication.component(TRANSFORM);
         let message = replication.delta(&mut host).unwrap().unwrap();
-        Replica::new()
-            .apply(&mut client, &message)
+        Replica::new(&replication)
+            .apply(&mut client, HOST, &message)
             .unwrap()
             .unwrap();
         assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
@@ -424,5 +482,33 @@ mod tests {
             client.get::<Transform>(on_client).unwrap().position[0],
             5.0
         );
+    }
+
+    #[test]
+    fn a_replica_refuses_what_the_host_may_not_send() {
+        let mut client = world();
+        let mut replication = Replication::new();
+        replication.component(TRANSFORM);
+        let mut replica = Replica::new(&replication);
+        let local = SceneId::new();
+        let menu = client.spawn((local, Name("Menu".into()))).id();
+        let message = |patch: Value| encode(patch.as_object().unwrap());
+        let new = Uuid::new_v4().to_string();
+
+        let spawn = message(json!({ &new: {"transform": {}} }));
+        assert!(replica.apply(&mut client, 1, &spawn).unwrap().is_err());
+        let health = message(json!({ &new: {"rusting.health": {}} }));
+        assert!(replica.apply(&mut client, HOST, &health).unwrap().is_err());
+        let despawn = message(json!({ local.0.to_string(): null }));
+        assert!(replica.apply(&mut client, HOST, &despawn).unwrap().is_err());
+        assert!(client.get_entity(menu).is_ok());
+        assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
+
+        let flood: Map<String, Value> = (0..=MAX_OBJECTS)
+            .map(|_| (Uuid::new_v4().to_string(), json!({})))
+            .collect();
+        let refused = replica.apply(&mut client, HOST, &encode(&flood));
+        assert!(refused.unwrap().is_err());
+        assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
     }
 }
