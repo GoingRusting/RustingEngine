@@ -1,0 +1,14 @@
+{
+  "name": "gate: the flag does nothing before all five coins and wins after them",
+  "ticks": 60,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 10, "set": {"entity": "Player", "path": "/transform/position", "value": [8.5, 0.5, 0.0]}},
+    {"tick": 20, "expect": {"counter": "won", "equals": 0}},
+    {"tick": 20, "expect": {"entity": "Flag", "path": "/components/rusting.pickup/collected", "equals": false}},
+    {"tick": 25, "set": {"entity": "Player", "path": "/transform/position", "value": [4.0, 0.5, 0.0]}},
+    {"tick": 30, "set": {"counter": "coins", "value": 5}},
+    {"tick": 35, "set": {"entity": "Player", "path": "/transform/position", "value": [8.5, 0.5, 0.0]}},
+    {"tick": 45, "expect": {"counter": "won", "equals": 1}}
+  ]
+}

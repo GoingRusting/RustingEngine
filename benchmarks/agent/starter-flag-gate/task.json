@@ -1,0 +1,23 @@
+{
+  "kind": "bug-fix",
+  "template": "starter",
+  "request": "Players report that touching the flag wins the level at once, even with no coins collected. The help text says to grab every coin first. Fix it so the flag only counts once all five coins are collected; touching it earlier must do nothing, and touching it again after the coins must still win.",
+  "seed": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"counter\\\":\\\"won\\\",\\\"value\\\":1,\\\"requires\\\":\\\"coins\\\"",
+      "replace": "\\\"counter\\\":\\\"won\\\",\\\"value\\\":1,\\\"requires\\\":null"
+    }
+  ],
+  "remove": [],
+  "reference": [
+    {
+      "file": "scenes/main.rscene",
+      "find": "\\\"counter\\\":\\\"won\\\",\\\"value\\\":1,\\\"requires\\\":null",
+      "replace": "\\\"counter\\\":\\\"won\\\",\\\"value\\\":1,\\\"requires\\\":\\\"coins\\\""
+    }
+  ],
+  "hidden": [
+    "hidden/gate.json"
+  ]
+}
