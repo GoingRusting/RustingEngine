@@ -166,6 +166,40 @@ lobby::ready(&session)?;
   a new token on every rejoin. Only a dropped player can be taken over,
   so a token seen on the wire cannot steal a connected player.
 
+## Trusting nothing a client sends
+
+On a public server, assume some clients are modified. Keep the host the
+authority:
+
+- Clients send inputs (stick, buttons, aim), never positions,
+  velocities or world state. The host runs the movement itself;
+  `net::predict` lets the client still feel instant.
+- Check every input before using it: numbers finite and in range
+  (`x.is_finite() && x.abs() <= 1.0`), ticks near the host's, names
+  ones you registered. Drop the message on any failure.
+- `net::rpc` already checks who may call a method, and
+  `net::replicate` only moves state from the host to clients.
+- Limit how often each client may send with `net::limit::RateLimit`:
+
+```rust
+use rusting_engine::net::limit::RateLimit;
+use std::time::Instant;
+
+let mut limit = RateLimit::new(120.0, 30); // 120 a second, bursts of 30
+for event in session.poll() {
+    match event {
+        NetEvent::Message { from, bytes } => {
+            if !limit.allow(from, Instant::now()) {
+                continue; // over its rate: drop it
+            }
+            // validate, then apply
+        }
+        NetEvent::Disconnected(peer) => limit.forget(peer),
+        _ => {}
+    }
+}
+```
+
 ## Remote procedure calls
 
 `net::rpc::Rpcs` calls a named method on a scene object across the
