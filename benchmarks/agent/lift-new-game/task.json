@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a moving lift in this empty project. A box named `Lift` (2 m wide, 0.2 m tall, 2 m deep) starts at x = 0, y = 0, z = 0 and moves straight up at 1.5 m/s until y = 3, then straight down at 1.5 m/s back to y = 0, and repeats forever, using game time (60 fixed ticks a second). A counter named `trips` starts at 0 and adds 1 each time the lift reaches the top.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, time: &FrameTime) {\n    // A 4 s round trip: up 3 m in 2 s, down in 2 s.\n    let seconds = time.fixed_tick as f32 / 60.0;\n    let phase = seconds % 4.0;\n    let y = if phase < 2.0 { 1.5 * phase } else { 1.5 * (4.0 - phase) };\n    if let Some(mut lift) = scene.try_object(\"Lift\") {\n        lift.set_position([0.0, y, 0.0]);\n    }\n    let trips = ((seconds + 2.0) / 4.0).floor() as i32;\n    scene.set_counter(\"trips\", trips);\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/lift.json"
+  ]
+}

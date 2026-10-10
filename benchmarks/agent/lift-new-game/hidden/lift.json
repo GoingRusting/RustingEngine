@@ -1,0 +1,18 @@
+{
+  "name": "lift: rises 3 m in 2 s, comes back down, and counts each arrival at the top",
+  "ticks": 380,
+  "steps": [
+    {"tick": 5, "expect": {"counter": "trips", "equals": 0}},
+    {"tick": 60, "expect": {"entity": "Lift", "path": "/transform/position/1", "equals": 1.5, "tolerance": 0.1}},
+    {"tick": 60, "expect": {"entity": "Lift", "path": "/transform/position/0", "equals": 0.0, "tolerance": 0.01}},
+    {"tick": 100, "expect": {"counter": "trips", "equals": 0}},
+    {"tick": 115, "within": 125, "expect": {"entity": "Lift", "path": "/transform/position/1", "equals": 3.0, "tolerance": 0.05}},
+    {"tick": 130, "expect": {"counter": "trips", "equals": 1}},
+    {"tick": 125, "until": 230, "expect": {"entity": "Lift", "path": "/transform/position/1", "less_than": 3.05}},
+    {"tick": 180, "expect": {"entity": "Lift", "path": "/transform/position/1", "equals": 1.5, "tolerance": 0.1}},
+    {"tick": 235, "within": 245, "expect": {"entity": "Lift", "path": "/transform/position/1", "equals": 0.0, "tolerance": 0.05}},
+    {"tick": 300, "expect": {"entity": "Lift", "path": "/transform/position/1", "equals": 1.5, "tolerance": 0.1}},
+    {"tick": 300, "expect": {"counter": "trips", "equals": 1}},
+    {"tick": 370, "expect": {"counter": "trips", "equals": 2}}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "switch: each press of L toggles the lamp between 0 and 8, holding does not",
+  "ticks": 120,
+  "steps": [
+    {"tick": 5, "expect": {"entity": "Lamp", "path": "/point_light/intensity", "equals": 0.0, "tolerance": 0.01}},
+    {"tick": 5, "expect": {"entity": "Lamp", "path": "/point_light/range", "equals": 10.0, "tolerance": 0.01}},
+    {"tick": 10, "press": "switch"},
+    {"tick": 12, "until": 40, "expect": {"entity": "Lamp", "path": "/point_light/intensity", "equals": 8.0, "tolerance": 0.01}},
+    {"tick": 40, "expect": {"counter": "switches", "equals": 1}},
+    {"tick": 41, "release": "switch"},
+    {"tick": 50, "press": "switch"},
+    {"tick": 52, "expect": {"entity": "Lamp", "path": "/point_light/intensity", "equals": 0.0, "tolerance": 0.01}},
+    {"tick": 53, "release": "switch"},
+    {"tick": 60, "press": "switch"},
+    {"tick": 61, "release": "switch"},
+    {"tick": 70, "expect": {"entity": "Lamp", "path": "/point_light/intensity", "equals": 8.0, "tolerance": 0.01}},
+    {"tick": 70, "expect": {"counter": "switches", "equals": 3}}
+  ]
+}

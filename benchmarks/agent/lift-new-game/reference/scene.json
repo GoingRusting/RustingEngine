@@ -1,0 +1,8 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Lift",
+    "transform": {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [2.0, 0.2, 2.0]},
+    "mesh_renderer": {"mesh": {"BuiltinPrimitive": "Cube"},
+      "material": {"Inline": {"base_color": [0.5, 0.5, 0.6, 1.0]}}}}},
+  {"op": "create", "entity": {"name": "Trips",
+    "components": {"rusting.counter": {"name": "trips"}}}}
+]}

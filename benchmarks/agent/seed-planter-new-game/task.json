@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a seed planter in this empty project. A green sphere named `Seed` (radius 0.5) is the template; it waits out of sight at x = 0, y = -5, z = 0. Once every second of game time (60 fixed ticks, the first at tick 60), plant a copy of it: the n-th copy is named `Seed n` (`Seed 1`, `Seed 2`, ...) and placed at x = 2n, y = 0.5, z = 0. Stop after 5 copies. A counter named `planted` starts at 0 and counts the copies.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, time: &FrameTime) {\n    let due = (time.fixed_tick / 60).min(5) as i32;\n    while scene.counter_value(\"planted\") < due {\n        let n = scene.counter_value(\"planted\") + 1;\n        scene.spawn_copy(\"Seed\", format!(\"Seed {n}\"), [2.0 * n as f32, 0.5, 0.0]);\n        scene.add_to_counter(\"planted\", 1);\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/plant.json"
+  ]
+}

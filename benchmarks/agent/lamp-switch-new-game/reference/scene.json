@@ -1,0 +1,9 @@
+{"operations": [
+  {"op": "create", "entity": {"name": "Switch Action",
+    "components": {"rusting.input_action": {"action": "switch", "inputs": ["KeyL"]}}}},
+  {"op": "create", "entity": {"name": "Lamp",
+    "transform": {"position": [0.0, 3.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
+    "point_light": {"color": [1.0, 0.8, 0.6], "intensity": 0.0, "range": 10.0}}},
+  {"op": "create", "entity": {"name": "Switches",
+    "components": {"rusting.counter": {"name": "switches"}}}}
+]}

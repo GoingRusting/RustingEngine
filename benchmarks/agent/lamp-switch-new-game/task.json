@@ -1,0 +1,20 @@
+{
+  "kind": "new-game",
+  "template": "empty",
+  "request": "Build a light switch in this empty project. A point light named `Lamp` hangs at x = 0, y = 3, z = 0 with a warm color and a range of 10 m, and starts off (intensity 0). Each press of an input action named `switch` (key L) toggles it: off to on at intensity 8, on to off at intensity 0. Holding the key does not toggle again. A counter named `switches` starts at 0 and counts the presses.",
+  "seed": [],
+  "remove": [],
+  "reference": [
+    {
+      "file": "src/main.rs",
+      "find": "fn update(_scene: &mut GameScene<'_>, _time: &FrameTime) {\n    // Add game behaviour here.\n}",
+      "replace": "fn update(scene: &mut GameScene<'_>, _time: &FrameTime) {\n    if scene.pressed(\"switch\") {\n        scene.add_to_counter(\"switches\", 1);\n        let on = scene.counter_value(\"switches\") % 2 == 1;\n        scene.set_light(\"Lamp\", None, Some(if on { 8.0 } else { 0.0 }), None);\n    }\n}"
+    }
+  ],
+  "reference_patches": [
+    "reference/scene.json"
+  ],
+  "hidden": [
+    "hidden/switch.json"
+  ]
+}
