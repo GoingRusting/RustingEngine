@@ -721,7 +721,7 @@ crate::reflect! {
 }
 
 crate::reflect! {
-    enum FieldKind { Directional, Radial, Vortex, Wind }
+    enum FieldKind { Directional, Radial, Vortex, Wind, Custom }
 }
 
 crate::reflect! {
@@ -731,6 +731,7 @@ crate::reflect! {
         direction: [f32; 3] { doc: "world direction, or the vortex axis" },
         falloff_distance: f32 { unit: "m", min: 0.0, doc: "above 0, the push fades to nothing this far from the centre" },
         turbulence: f32 { min: 0.0, doc: "Wind gusts as a share of strength; 0 is steady" },
+        function: String { doc: "Custom: the name a game registered with App::add_force_field_function" },
     }
 }
 

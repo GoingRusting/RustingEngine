@@ -727,7 +727,7 @@ struct GpuForceFieldUpload {
 
 impl From<&crate::runtime::GpuForceField> for GpuForceFieldUpload {
     fn from(found: &crate::runtime::GpuForceField) -> Self {
-        let field = found.field;
+        let field = &found.field;
         let [x, y, z] = field.direction;
         Self {
             model: found.model,

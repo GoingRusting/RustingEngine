@@ -64,10 +64,11 @@ pub use components::*;
 pub(crate) use cpu_physics::{gpu_shape_words, next_spawn_order};
 pub use cpu_physics::{
     Articulation, AxisMotion, CharacterMove, CollisionEvent, CombineMode,
-    Contact, FellOut, FieldKind, ForceField, GpuCollider, GpuForceField,
-    GravityVolume, GroundSurface, Heightfield, Joint, JointAxis, JointBroken,
-    JointKind, JointMotor, JointSpring, NextSpawnOrder, PhysicsMaterial,
-    PhysicsWorld, RayHit, Sleeping, SpawnOrder, SLEEP_STEPS,
+    Contact, FellOut, FieldFunction, FieldKind, FieldSample, ForceField,
+    ForceFieldFunctions, GpuCollider, GpuForceField, GravityVolume,
+    GroundSurface, Heightfield, Joint, JointAxis, JointBroken, JointKind,
+    JointMotor, JointSpring, NextSpawnOrder, PhysicsMaterial, PhysicsWorld,
+    RayHit, Sleeping, SpawnOrder, SLEEP_STEPS,
 };
 pub use determinism::*;
 pub use effect_presets::*;
@@ -441,6 +442,20 @@ impl App {
         plugin.build(self)?;
         self.plugins.push(name);
         Ok(self)
+    }
+
+    /// Names `function` for `rusting.force_field` fields of kind `Custom`
+    /// whose `function` is `name`.
+    pub fn add_force_field_function(
+        &mut self,
+        name: &str,
+        function: FieldFunction,
+    ) -> &mut Self {
+        self.world
+            .get_resource_or_insert_with(ForceFieldFunctions::default)
+            .0
+            .insert(name.to_owned(), function);
+        self
     }
 
     /// Runs `system` at the start of every frame, before the fixed steps.

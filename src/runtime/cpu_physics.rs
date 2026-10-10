@@ -235,18 +235,39 @@ pub enum FieldKind {
     /// Along `direction` in gusts that vary with time and place by
     /// `turbulence`.
     Wind,
+    /// The [`ForceFieldFunctions`] entry named by `function`, scaled by
+    /// `strength`. CPU bodies only.
+    Custom,
 }
+
+/// What a custom [`ForceField`] function sees of one body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldSample {
+    /// Body centre minus the field's centre, in world axes.
+    pub offset: [f32; 3],
+    pub velocity: [f32; 3],
+    /// Fixed time in seconds.
+    pub seconds: f32,
+    /// The field's `direction`.
+    pub direction: [f32; 3],
+}
+
+/// A custom field's push per unit `strength`. A plain function, so it
+/// keeps no state and replays the same.
+pub type FieldFunction = fn(FieldSample) -> [f32; 3];
+
+/// Named functions for [`FieldKind::Custom`] fields; register them with
+/// [`crate::runtime::App::add_force_field_function`]. A field naming no
+/// entry pushes nothing.
+#[derive(bevy_ecs::prelude::Resource, Clone, Debug, Default)]
+pub struct ForceFieldFunctions(
+    pub std::collections::BTreeMap<String, FieldFunction>,
+);
 
 /// Pushes dynamic CPU bodies overlapping this sensor collider. Fields add
 /// up where they overlap, on top of gravity.
 #[derive(
-    Component,
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
+    Component, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize,
 )]
 #[serde(default)]
 pub struct ForceField {
@@ -260,6 +281,8 @@ pub struct ForceField {
     pub falloff_distance: f32,
     /// Wind gust size as a share of `strength`, 0 for steady wind.
     pub turbulence: f32,
+    /// [`ForceFieldFunctions`] entry of a `Custom` field.
+    pub function: String,
 }
 
 impl Default for ForceField {
@@ -270,14 +293,21 @@ impl Default for ForceField {
             direction: [0.0, 1.0, 0.0],
             falloff_distance: 0.0,
             turbulence: 0.0,
+            function: String::new(),
         }
     }
 }
 
 impl ForceField {
-    /// Acceleration on a body at `offset` from the field's centre, at
-    /// `seconds` of fixed time.
-    fn push(&self, offset: Vector3<f32>, seconds: f32) -> Vector3<f32> {
+    /// Acceleration on a body at `offset` from the field's centre, moving
+    /// at `velocity`, at `seconds` of fixed time.
+    fn push(
+        &self,
+        offset: Vector3<f32>,
+        velocity: Vector3<f32>,
+        seconds: f32,
+        functions: Option<&ForceFieldFunctions>,
+    ) -> Vector3<f32> {
         let direction = Vector3::from(self.direction)
             .try_normalize(1e-6)
             .unwrap_or_default();
@@ -302,6 +332,17 @@ impl ForceField {
                     sim_math::sin_cos(0.6 * seconds + 0.23 * offset.z + 1.3);
                 direction * (1.0 + self.turbulence * 0.5 * (a + b))
             }
+            FieldKind::Custom => functions
+                .and_then(|found| found.0.get(&self.function))
+                .map_or_else(Vector3::zeros, |function| {
+                    function(FieldSample {
+                        offset: offset.into(),
+                        velocity: velocity.into(),
+                        seconds,
+                        direction: self.direction,
+                    })
+                    .into()
+                }),
         };
         toward * self.strength * fade
     }
@@ -812,9 +853,9 @@ pub struct GpuCollider {
     pub layers: CollisionLayers,
 }
 
-/// A [`ForceField`] sensor that pushes GPU bodies whose centre comes
+/// A non-`Custom` [`ForceField`] sensor that pushes GPU bodies whose centre comes
 /// within their bounding radius of its collider, as of the last CPU step.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GpuForceField {
     /// Rotation and position, like [`GpuCollider::model`].
     pub model: [[f32; 4]; 4],
@@ -1160,10 +1201,12 @@ impl PhysicsWorld {
             .iter()
             .filter(|body| body.sensor)
             .filter_map(|body| {
-                Some(GpuForceField {
+                let field = world.get::<ForceField>(body.entity)?;
+                // ponytail: custom Rust functions cannot run in the shader.
+                (field.kind != FieldKind::Custom).then(|| GpuForceField {
                     model: body.gpu_model(),
                     shape: body.shape.gpu_words(),
-                    field: *world.get::<ForceField>(body.entity)?,
+                    field: field.clone(),
                 })
             })
             .collect()
@@ -2266,13 +2309,16 @@ fn field_pushes(
     contacts: &[(usize, usize, Contact)],
     seconds: f32,
 ) -> Vec<Vector3<f32>> {
+    let functions = world.get_resource::<ForceFieldFunctions>();
     let mut pushes = vec![Vector3::zeros(); bodies.len()];
     for (a, b, _) in contacts.iter().filter(|(.., c)| c.sensor) {
         for (field, body) in [(*a, *b), (*b, *a)] {
             if let Some(found) = world.get::<ForceField>(bodies[field].entity) {
                 pushes[body] += found.push(
                     bodies[body].position - bodies[field].position,
+                    bodies[body].velocity,
                     seconds,
+                    functions,
                 );
             }
         }

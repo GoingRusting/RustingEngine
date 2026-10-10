@@ -153,7 +153,10 @@ command takes `--json` for output a program can read.
 - `rusting.force_field` on a Fixed sensor body pushes dynamic CPU bodies
   inside it: `Directional`, `Radial` (negative `strength` pulls in),
   `Vortex` around `direction`, or `Wind` with `turbulence` gusts. GPU
-  bodies inside it are pushed too. Use it for jump pads, fans, whirlpools
+  bodies inside it are pushed too. For any other shape use `Custom` with
+  `"function": "name"` and register
+  `app.add_force_field_function("name", |sample| [..])`, which gets the
+  body's offset from the centre, velocity and time. Use it for jump pads, fans, whirlpools
   and explosions.
 - A dynamic body with a `ConvexMesh` collider collides as the convex hull
   of its mesh: a `Cylinder` mesh makes a rolling barrel.

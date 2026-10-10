@@ -4739,6 +4739,9 @@ fn gravity_volumes_replace_the_scene_gravity_for_bodies_inside() {
 fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
     let run = || {
         let mut app = App::new();
+        app.add_force_field_function("spring", |sample| {
+            [-sample.offset[0], 0.0, 0.0]
+        });
         let world = app.world_mut();
         let sensor = |world: &mut bevy_ecs::world::World, at, half: f32| {
             let entity = cpu_body(
@@ -4763,38 +4766,45 @@ fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
             strength: 4.0,
             ..ForceField::default()
         };
-        field(world, [0.0; 3], up);
+        field(world, [0.0; 3], up.clone());
         field(
             world,
             [0.0; 3],
             ForceField {
                 strength: 1.0,
-                ..up
+                ..up.clone()
             },
         );
         let radial = ForceField {
             kind: FieldKind::Radial,
             strength: -4.0,
-            ..up
+            ..up.clone()
         };
         field(world, [20.0, 0.0, 0.0], radial);
         let vortex = ForceField {
             kind: FieldKind::Vortex,
-            ..up
+            ..up.clone()
         };
         field(world, [40.0, 0.0, 0.0], vortex);
         let faded = ForceField {
             falloff_distance: 4.0,
-            ..up
+            ..up.clone()
         };
         field(world, [60.0, 0.0, 0.0], faded);
         let wind = ForceField {
             kind: FieldKind::Wind,
             direction: [1.0, 0.0, 0.0],
             turbulence: 0.5,
-            ..up
+            ..up.clone()
         };
         field(world, [80.0, 0.0, 0.0], wind);
+        let spring = ForceField {
+            kind: FieldKind::Custom,
+            strength: 1.0,
+            function: "spring".to_owned(),
+            ..up
+        };
+        field(world, [100.0, 0.0, 0.0], spring);
         let ball = ColliderShape::Sphere { radius: 0.25 };
         let balls = [
             [0.0; 3],
@@ -4802,6 +4812,7 @@ fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
             [42.0, 0.0, 0.0],
             [62.0, 0.0, 0.0],
             [80.0, 0.0, 0.0],
+            [102.0, 0.0, 0.0],
         ]
         .map(|at| cpu_body(world, at, ball, RigidBodyKind::Dynamic));
         run_fixed_steps(&mut app, 30);
@@ -4809,7 +4820,7 @@ fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
             app.world().get::<RigidBody>(ball).unwrap().linear_velocity
         })
     };
-    let [summed, pulled, swirled, faded, blown] = run();
+    let [summed, pulled, swirled, faded, blown, sprung] = run();
     let near = |a: [f32; 3], b: [f32; 3], within: f32| {
         a.iter().zip(b).all(|(a, b)| (a - b).abs() < within)
     };
@@ -4825,7 +4836,9 @@ fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
         blown[0] > 1.0 && blown[0] < 3.0 && (blown[0] - 2.0).abs() > 0.05,
         "gusty, not steady {blown:?}"
     );
-    assert_eq!(run(), [summed, pulled, swirled, faded, blown]);
+    // x'' = -x from x = 2: v = -2 sin(0.5 s).
+    assert!(near(sprung, [-0.96, 0.0, 0.0], 0.05), "{sprung:?}");
+    assert_eq!(run(), [summed, pulled, swirled, faded, blown, sprung]);
 }
 
 #[test]
