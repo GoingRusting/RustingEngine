@@ -494,7 +494,7 @@ impl App {
     /// Registers a named signal handler: a system whose input,
     /// `In<Signal<E>>`, says which signal it answers. Entities run it through
     /// their [`Connections`]. Register handlers during setup, like systems;
-    /// see the [`signals`] module.
+    /// see the `signals` module.
     pub fn add_signal_handler<E: SignalEvent, M>(
         &mut self,
         name: impl Into<String>,

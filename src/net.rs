@@ -5,6 +5,7 @@
 //! Every peer talks only to the host (a star). The host has [`HOST`] as its
 //! id; clients get ids from 1 in join order. Messages are byte strings that
 //! arrive whole and in order; put JSON or bincode in them.
+//! [`NetSession::send_unreliable`] sends per-tick state over UDP instead.
 //!
 //! ```no_run
 //! use rusting_engine::net::{NetEvent, NetSession, HOST};
@@ -28,25 +29,35 @@
 //! game but do not hide traffic from someone on the path.
 
 use bevy_ecs::prelude::Resource;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream,
-    ToSocketAddrs,
+    ToSocketAddrs, UdpSocket,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub mod clock;
+pub mod input;
+pub mod limit;
+pub mod lobby;
+pub mod predict;
+pub mod replicate;
+pub mod rpc;
+
 /// A peer in a session. The host is [`HOST`]; clients count up from 1.
 pub type PeerId = u32;
 /// The host's id.
 pub const HOST: PeerId = 0;
 /// Wire protocol version. A host or relay refuses other versions.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 /// Largest message, in bytes. Larger frames close the connection.
 pub const MAX_MESSAGE: usize = 16 << 20;
+/// Largest unreliable message, in bytes, so a datagram fits one packet.
+pub const MAX_UNRELIABLE: usize = 1200;
 
 const EVERYONE: PeerId = u32::MAX;
 // Frame kinds.
@@ -81,6 +92,171 @@ pub enum NetEvent {
     Closed,
 }
 
+/// Network conditions a session pretends to have, for testing a game
+/// against a bad connection on one machine. Set with
+/// [`NetSession::simulate`]; the default is a perfect connection.
+///
+/// They act on what this end receives: each incoming event waits
+/// `latency` plus up to `jitter` before [`NetSession::poll`] returns it.
+/// Set them on both ends for a round trip of twice `latency`. Messages
+/// stay reliable and in order, as on TCP: a message `loss` picks waits one
+/// more round trip (at least 200 ms, Linux's shortest retransmit), and
+/// the messages behind it wait with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NetConditions {
+    /// One-way delay added to every incoming event.
+    pub latency: Duration,
+    /// Extra random delay, up to this much.
+    pub jitter: Duration,
+    /// Share of messages lost and resent, from 0 to 1.
+    pub loss: f32,
+    /// Seed for jitter and loss, so a test repeats.
+    pub seed: u64,
+}
+
+/// Traffic counters since the session started, from [`NetSession::stats`].
+/// Bytes are wire bytes: each message's payload plus its 9-byte frame
+/// header. A host's broadcast counts once per client it reached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetStats {
+    pub messages_sent: u64,
+    pub bytes_sent: u64,
+    pub messages_received: u64,
+    pub bytes_received: u64,
+    /// Events [`NetConditions`] hold back right now.
+    pub held: usize,
+}
+
+/// Wire bytes a frame adds to its payload.
+const FRAME_HEADER: u64 = 9;
+/// Bytes a datagram adds to its payload: the receiver's token and the
+/// sender's id.
+const DATAGRAM_HEADER: usize = 12;
+
+/// Simulated conditions, the events they hold back, and the counters.
+#[derive(Default)]
+struct Lab {
+    conditions: NetConditions,
+    rng: u64,
+    held: VecDeque<(Instant, NetEvent)>,
+    /// Unreliable messages held back; they may pass each other.
+    loose: Vec<(Instant, NetEvent)>,
+    stats: NetStats,
+}
+
+impl Lab {
+    /// Holds `arrived` as the conditions say and returns what is due at
+    /// `now`, in arrival order.
+    // ponytail: delay starts when poll sees an event, not when it arrived,
+    // so it runs up to one poll interval long; timestamp in read_frames
+    // if tests need finer timing.
+    fn deliver(
+        &mut self,
+        arrived: Vec<NetEvent>,
+        now: Instant,
+    ) -> Vec<NetEvent> {
+        for event in arrived {
+            let mut at = now + self.delay();
+            // In order, as on TCP: nothing passes an event held before it.
+            if let Some((last, _)) = self.held.back() {
+                at = at.max(*last);
+            }
+            self.held.push_back((at, event));
+        }
+        let mut due = Vec::new();
+        while self.held.front().is_some_and(|(at, _)| *at <= now) {
+            let (_, event) = self.held.pop_front().unwrap();
+            if let NetEvent::Message { bytes, .. } = &event {
+                self.stats.messages_received += 1;
+                self.stats.bytes_received += bytes.len() as u64 + FRAME_HEADER;
+            }
+            due.push(event);
+        }
+        due
+    }
+
+    /// Like [`Lab::deliver`] for unreliable messages: `loss` drops them
+    /// instead of resending, and they keep no order.
+    fn deliver_loose(
+        &mut self,
+        arrived: Vec<NetEvent>,
+        now: Instant,
+    ) -> Vec<NetEvent> {
+        for event in arrived {
+            let NetConditions {
+                latency,
+                jitter,
+                loss,
+                ..
+            } = self.conditions;
+            let at = now + latency + jitter.mul_f64(self.random());
+            if self.random() >= f64::from(loss) {
+                self.loose.push((at, event));
+            }
+        }
+        self.loose.sort_by_key(|(at, _)| *at);
+        let due = self.loose.partition_point(|(at, _)| *at <= now);
+        self.loose
+            .drain(..due)
+            .map(|(_, event)| {
+                if let NetEvent::Message { bytes, .. } = &event {
+                    self.stats.messages_received += 1;
+                    self.stats.bytes_received +=
+                        (bytes.len() + DATAGRAM_HEADER) as u64;
+                }
+                event
+            })
+            .collect()
+    }
+
+    fn delay(&mut self) -> Duration {
+        let NetConditions {
+            latency,
+            jitter,
+            loss,
+            ..
+        } = self.conditions;
+        let mut delay = latency + jitter.mul_f64(self.random());
+        if self.random() < f64::from(loss) {
+            delay += (latency * 2).max(Duration::from_millis(200));
+        }
+        delay
+    }
+
+    /// SplitMix64, as a number in [0, 1).
+    fn random(&mut self) -> f64 {
+        self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) as f64 / 2f64.powi(64)
+    }
+
+    fn sent(&mut self, bytes: &[u8]) {
+        self.stats.messages_sent += 1;
+        self.stats.bytes_sent += bytes.len() as u64 + FRAME_HEADER;
+    }
+}
+
+/// Present while the game runs as a dedicated server
+/// ([`crate::project::SERVER_ENV`], `rusting run --server`): there is no
+/// window or local player, so game code should host and not join. Its
+/// fields report the tick loop's load, as of the tick before this one.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct DedicatedServer {
+    /// Ticks run.
+    pub ticks: u64,
+    /// Share of the fixed step the last tick's work took: above 1.0 the
+    /// server cannot keep up.
+    pub last_budget: f32,
+    /// `last_budget` smoothed over about the last 20 ticks.
+    pub budget: f32,
+    /// Ticks that started after their deadline.
+    pub late_ticks: u64,
+    /// Ticks skipped to catch up after a stall of more than 10 steps.
+    pub dropped_ticks: u64,
+}
+
 /// One end of a multiplayer session. See the [module docs](self).
 #[derive(Resource)]
 pub struct NetSession {
@@ -88,8 +264,101 @@ pub struct NetSession {
     room: Option<String>,
     route: Route,
     events: Mutex<Receiver<NetEvent>>,
+    lab: Mutex<Lab>,
+    /// The unreliable channel of a direct host or client.
+    datagrams: Option<Datagrams>,
     /// A direct host's listening address and its stop flag.
     listener: Option<(SocketAddr, Arc<AtomicBool>)>,
+}
+
+/// A UDP socket beside a direct session's TCP streams. A datagram is the
+/// receiver's token (u64), the sender's id (u32), both little-endian, and
+/// the payload; the token, sent in WELCOME, keeps strangers from injecting
+/// messages.
+/// By peer: the token its datagrams carry, the IP address they must come
+/// from (the peer's TCP one), and, once one arrived, where to send.
+type UdpPeers = BTreeMap<PeerId, (u64, IpAddr, Option<SocketAddr>)>;
+
+struct Datagrams {
+    socket: UdpSocket,
+    /// A client holds only [`HOST`], with its own token.
+    peers: Arc<Mutex<UdpPeers>>,
+    events: Mutex<Receiver<NetEvent>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Datagrams {
+    fn open(socket: UdpSocket, peers: UdpPeers) -> io::Result<Self> {
+        // The reader wakes this often to see whether the session ended.
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let peers = Arc::new(Mutex::new(peers));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sender, events) = channel();
+        let (reader, known, stopped) =
+            (socket.try_clone()?, Arc::clone(&peers), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            let mut buffer = [0; MAX_UNRELIABLE + DATAGRAM_HEADER];
+            while !stopped.load(Ordering::Relaxed) {
+                let Ok((length, from)) = reader.recv_from(&mut buffer) else {
+                    continue;
+                };
+                let Some((head, bytes)) =
+                    buffer[..length].split_at_checked(DATAGRAM_HEADER)
+                else {
+                    continue;
+                };
+                let token = u64::from_le_bytes(head[..8].try_into().unwrap());
+                let peer = PeerId::from_le_bytes(head[8..].try_into().unwrap());
+                let mut known = known.lock().unwrap();
+                // Pinning the IP keeps someone who saw the token from
+                // turning the host's datagrams on another machine.
+                let Some(entry) = known
+                    .get_mut(&peer)
+                    .filter(|(want, ip, _)| *want == token && *ip == from.ip())
+                else {
+                    continue;
+                };
+                entry.2 = Some(from);
+                let message = NetEvent::Message {
+                    from: peer,
+                    bytes: bytes.to_vec(),
+                };
+                // An empty datagram only says where the peer is.
+                if !bytes.is_empty() && sender.send(message).is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Self {
+            socket,
+            peers,
+            events: Mutex::new(events),
+            stop,
+        })
+    }
+
+    /// Sends `bytes` to `to` and returns true, or returns false when no
+    /// datagram from `to` has arrived yet.
+    fn send(&self, me: PeerId, to: PeerId, bytes: &[u8]) -> io::Result<bool> {
+        let Some((token, address)) = self
+            .peers
+            .lock()
+            .unwrap()
+            .get(&to)
+            .and_then(|(token, _, address)| Some((*token, (*address)?)))
+        else {
+            return Ok(false);
+        };
+        let mut datagram = token.to_le_bytes().to_vec();
+        datagram.extend(me.to_le_bytes());
+        datagram.extend(bytes);
+        self.socket.send_to(&datagram, address)?;
+        Ok(true)
+    }
+}
+
+pub(crate) fn token() -> u64 {
+    u64::from_le_bytes(uuid::Uuid::new_v4().as_bytes()[..8].try_into().unwrap())
 }
 
 enum Route {
@@ -97,6 +366,9 @@ enum Route {
     Direct(Arc<Mutex<BTreeMap<PeerId, TcpStream>>>),
     /// One stream to a relay; frames name the other end.
     Relay(Mutex<TcpStream>),
+    /// In-process sessions made by [`NetSession::loopback`]: every member's
+    /// event queue, host included, by peer.
+    Loopback(Arc<Mutex<BTreeMap<PeerId, Sender<NetEvent>>>>),
 }
 
 impl NetSession {
@@ -110,6 +382,9 @@ impl NetSession {
     /// free port.
     pub fn host_on(listener: TcpListener, password: &str) -> io::Result<Self> {
         let address = listener.local_addr()?;
+        let datagrams =
+            Datagrams::open(UdpSocket::bind(address)?, BTreeMap::new())?;
+        let tokens = Arc::clone(&datagrams.peers);
         let (sender, events) = channel();
         let peers = Arc::new(Mutex::new(BTreeMap::new()));
         let accepted = Arc::clone(&peers);
@@ -130,8 +405,9 @@ impl NetSession {
                     continue;
                 }
                 pending.fetch_add(1, Ordering::Relaxed);
-                let (peers, next, pending, password, sender) = (
+                let (peers, tokens, next, pending, password, sender) = (
                     Arc::clone(&accepted),
+                    Arc::clone(&tokens),
                     Arc::clone(&next),
                     Arc::clone(&pending),
                     Arc::clone(&password),
@@ -141,7 +417,7 @@ impl NetSession {
                 // client delays nobody else.
                 std::thread::spawn(move || {
                     let joined = admit_client(
-                        &stream, &peers, &next, &password, &sender,
+                        &stream, &peers, &tokens, &next, &password, &sender,
                     );
                     pending.fetch_sub(1, Ordering::Relaxed);
                     let Some(peer) = joined else { return };
@@ -156,6 +432,7 @@ impl NetSession {
                         &sender,
                     );
                     peers.lock().unwrap().remove(&peer);
+                    tokens.lock().unwrap().remove(&peer);
                     let _ = sender.send(NetEvent::Disconnected(peer));
                 });
             }
@@ -165,6 +442,8 @@ impl NetSession {
             room: None,
             route: Route::Direct(peers),
             events: Mutex::new(events),
+            lab: Mutex::default(),
+            datagrams: Some(datagrams),
             listener: Some((address, closed)),
         })
     }
@@ -176,7 +455,29 @@ impl NetSession {
         password: &str,
     ) -> io::Result<Self> {
         let stream = TcpStream::connect(address)?;
-        let me = request_join(&stream, "", password)?;
+        let (me, welcome) = request_join(&stream, "", password)?;
+        let host = stream.peer_addr()?;
+        let datagrams = match welcome.try_into() {
+            Ok(token) => {
+                let token = u64::from_le_bytes(token);
+                let any: SocketAddr = if host.is_ipv4() {
+                    ([0, 0, 0, 0], 0).into()
+                } else {
+                    (Ipv6Addr::UNSPECIFIED, 0).into()
+                };
+                let datagrams = Datagrams::open(
+                    UdpSocket::bind(any)?,
+                    BTreeMap::from([(HOST, (token, host.ip(), Some(host)))]),
+                )?;
+                // Tells the host where to send. Repeated in case one is
+                // lost; until one arrives the host sends reliably.
+                for _ in 0..3 {
+                    datagrams.send(me, HOST, &[])?;
+                }
+                Some(datagrams)
+            }
+            Err(_) => None,
+        };
         let (sender, events) = channel();
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -190,6 +491,8 @@ impl NetSession {
                 HOST, stream,
             )])))),
             events: Mutex::new(events),
+            lab: Mutex::default(),
+            datagrams,
             listener: None,
         })
     }
@@ -231,6 +534,8 @@ impl NetSession {
             room: Some(code),
             route: Route::Relay(Mutex::new(stream)),
             events: Mutex::new(events),
+            lab: Mutex::default(),
+            datagrams: None,
             listener: None,
         })
     }
@@ -244,7 +549,7 @@ impl NetSession {
     ) -> io::Result<Self> {
         let stream = TcpStream::connect(relay)?;
         let code = code.trim().to_ascii_uppercase();
-        let me = request_join(&stream, &code, token)?;
+        let (me, _) = request_join(&stream, &code, token)?;
         let (sender, events) = channel();
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -256,8 +561,43 @@ impl NetSession {
             room: Some(code),
             route: Route::Relay(Mutex::new(stream)),
             events: Mutex::new(events),
+            lab: Mutex::default(),
+            datagrams: None,
             listener: None,
         })
+    }
+
+    /// A host and `clients` clients joined to it in this process, with no
+    /// sockets, for tests. They behave like a direct host and its clients:
+    /// the host's first [`NetSession::poll`] reports each client as
+    /// `Connected`, dropping a client reports it `Disconnected`, and
+    /// dropping the host closes every client.
+    #[must_use]
+    pub fn loopback(clients: usize) -> (Self, Vec<Self>) {
+        let group = Arc::new(Mutex::new(BTreeMap::new()));
+        let member = |me: PeerId| {
+            let (sender, events) = channel();
+            group.lock().unwrap().insert(me, sender);
+            Self {
+                me,
+                room: None,
+                route: Route::Loopback(Arc::clone(&group)),
+                events: Mutex::new(events),
+                lab: Mutex::default(),
+                datagrams: None,
+                listener: None,
+            }
+        };
+        let host = member(HOST);
+        let clients = (1..=clients as PeerId)
+            .map(|peer| {
+                let client = member(peer);
+                let group = group.lock().unwrap();
+                let _ = group[&HOST].send(NetEvent::Connected(peer));
+                client
+            })
+            .collect();
+        (host, clients)
     }
 
     /// This end's id: [`HOST`] for the host.
@@ -279,6 +619,13 @@ impl NetSession {
             Route::Direct(peers) if self.me == HOST => {
                 peers.lock().unwrap().keys().copied().collect()
             }
+            Route::Loopback(group) if self.me == HOST => group
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .filter(|&peer| peer != HOST)
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -294,12 +641,26 @@ impl NetSession {
                 let stream = peers
                     .get_mut(&to)
                     .ok_or_else(|| invalid("no such peer"))?;
-                write_frame(stream, DATA, self.me, bytes)
+                write_frame(stream, DATA, self.me, bytes)?;
             }
             Route::Relay(stream) => {
-                write_frame(&mut *stream.lock().unwrap(), DATA, to, bytes)
+                write_frame(&mut *stream.lock().unwrap(), DATA, to, bytes)?;
+            }
+            Route::Loopback(group) => {
+                let message = NetEvent::Message {
+                    from: self.me,
+                    bytes: bytes.to_vec(),
+                };
+                group
+                    .lock()
+                    .unwrap()
+                    .get(&to)
+                    .and_then(|peer| peer.send(message).ok())
+                    .ok_or_else(|| invalid("no such peer"))?;
             }
         }
+        self.lab.lock().unwrap().sent(bytes);
+        Ok(())
     }
 
     /// Sends `bytes` to every client (host), or to the host (client).
@@ -312,19 +673,100 @@ impl NetSession {
             // reader thread, which reports Disconnected.
             Route::Direct(peers) => {
                 for stream in peers.lock().unwrap().values_mut() {
-                    let _ = write_frame(stream, DATA, HOST, bytes);
+                    if write_frame(stream, DATA, HOST, bytes).is_ok() {
+                        self.lab.lock().unwrap().sent(bytes);
+                    }
                 }
                 Ok(())
             }
             Route::Relay(stream) => {
-                write_frame(&mut *stream.lock().unwrap(), DATA, EVERYONE, bytes)
+                write_frame(
+                    &mut *stream.lock().unwrap(),
+                    DATA,
+                    EVERYONE,
+                    bytes,
+                )?;
+                self.lab.lock().unwrap().sent(bytes);
+                Ok(())
+            }
+            Route::Loopback(_) => {
+                for peer in self.peers() {
+                    self.send(peer, bytes)?;
+                }
+                Ok(())
             }
         }
     }
 
-    /// Events since the last call, in arrival order. Never blocks.
+    /// Sends `bytes` to `to` over UDP: faster than [`NetSession::send`]
+    /// under loss, but it may be lost, duplicated or overtaken. Use it for
+    /// state sent every tick, such as positions. At most
+    /// [`MAX_UNRELIABLE`] bytes. It goes reliably instead where there is
+    /// no UDP route: through a relay, in a loopback session, and to a
+    /// client whose first datagram has not reached the host yet.
+    pub fn send_unreliable(&self, to: PeerId, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() > MAX_UNRELIABLE {
+            return Err(invalid(
+                "an unreliable message holds at most 1200 bytes",
+            ));
+        }
+        if self.me != HOST && to != HOST {
+            return Err(invalid("clients send only to the host"));
+        }
+        match &self.datagrams {
+            Some(datagrams) if datagrams.send(self.me, to, bytes)? => {
+                let mut lab = self.lab.lock().unwrap();
+                lab.stats.messages_sent += 1;
+                lab.stats.bytes_sent += (bytes.len() + DATAGRAM_HEADER) as u64;
+                Ok(())
+            }
+            _ => self.send(to, bytes),
+        }
+    }
+
+    /// [`NetSession::send_unreliable`] to every client (host), or to the
+    /// host (client).
+    pub fn broadcast_unreliable(&self, bytes: &[u8]) -> io::Result<()> {
+        if self.me != HOST {
+            return self.send_unreliable(HOST, bytes);
+        }
+        for peer in self.peers() {
+            self.send_unreliable(peer, bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Events since the last call, in arrival order. Never blocks. Under
+    /// [`NetSession::simulate`], events come back once their delay passes.
     pub fn poll(&self) -> Vec<NetEvent> {
-        self.events.lock().unwrap().try_iter().collect()
+        let now = Instant::now();
+        let arrived = self.events.lock().unwrap().try_iter().collect();
+        let mut lab = self.lab.lock().unwrap();
+        let mut events = lab.deliver(arrived, now);
+        if let Some(datagrams) = &self.datagrams {
+            let arrived = datagrams.events.lock().unwrap().try_iter().collect();
+            events.extend(lab.deliver_loose(arrived, now));
+        }
+        events
+    }
+
+    /// Pretends this end has a slow or lossy connection from now on; see
+    /// [`NetConditions`]. `NetConditions::default()` turns it off, and
+    /// events already held still wait out their delay.
+    pub fn simulate(&self, conditions: NetConditions) {
+        let mut lab = self.lab.lock().unwrap();
+        lab.conditions = conditions;
+        lab.rng = conditions.seed;
+    }
+
+    /// Messages and bytes sent and received so far.
+    #[must_use]
+    pub fn stats(&self) -> NetStats {
+        let lab = self.lab.lock().unwrap();
+        NetStats {
+            held: lab.held.len() + lab.loose.len(),
+            ..lab.stats
+        }
     }
 }
 
@@ -339,6 +781,9 @@ impl Drop for NetSession {
             };
             let _ = TcpStream::connect_timeout(&wake, HANDSHAKE_TIMEOUT);
         }
+        if let Some(datagrams) = &self.datagrams {
+            datagrams.stop.store(true, Ordering::Relaxed);
+        }
         // Shutting the sockets down ends the reader threads.
         match &self.route {
             Route::Direct(peers) => {
@@ -348,6 +793,17 @@ impl Drop for NetSession {
             }
             Route::Relay(stream) => {
                 let _ = stream.lock().unwrap().shutdown(Shutdown::Both);
+            }
+            Route::Loopback(group) => {
+                let mut group = group.lock().unwrap();
+                group.remove(&self.me);
+                if self.me == HOST {
+                    for peer in group.values() {
+                        let _ = peer.send(NetEvent::Closed);
+                    }
+                } else if let Some(host) = group.get(&HOST) {
+                    let _ = host.send(NetEvent::Disconnected(self.me));
+                }
             }
         }
     }
@@ -689,6 +1145,7 @@ fn room_code() -> String {
 fn admit_client(
     stream: &TcpStream,
     peers: &Mutex<BTreeMap<PeerId, TcpStream>>,
+    tokens: &Mutex<UdpPeers>,
     next: &AtomicU32,
     password: &str,
     sender: &Sender<NetEvent>,
@@ -711,10 +1168,13 @@ fn admit_client(
         return None;
     }
     let writer = stream.try_clone().ok()?;
+    let ip = stream.peer_addr().ok()?.ip();
     // Ids, WELCOMEs and Connected events follow one order under the lock.
     let mut peers = peers.lock().unwrap();
     let peer = next.fetch_add(1, Ordering::Relaxed);
-    write_frame(&mut stream, WELCOME, peer, &[]).ok()?;
+    let token = token();
+    write_frame(&mut stream, WELCOME, peer, &token.to_le_bytes()).ok()?;
+    tokens.lock().unwrap().insert(peer, (token, ip, None));
     if sender.send(NetEvent::Connected(peer)).is_err() {
         // The session is gone.
         let _ = stream.shutdown(Shutdown::Both);
@@ -724,14 +1184,15 @@ fn admit_client(
     Some(peer)
 }
 
-/// Client side of a join; returns the id the host or relay assigned.
+/// Client side of a join; returns the id the host or relay assigned and
+/// the WELCOME payload: a direct host's datagram token, empty from a relay.
 /// A JOIN carries the version, the room code's length as one byte, the
 /// code and then the password or relay token.
 fn request_join(
     stream: &TcpStream,
     code: &str,
     secret: &str,
-) -> io::Result<PeerId> {
+) -> io::Result<(PeerId, Vec<u8>)> {
     let mut stream = stream;
     stream.set_nodelay(true)?;
     let length =
@@ -741,12 +1202,11 @@ fn request_join(
     payload.extend(code.as_bytes());
     payload.extend(secret.as_bytes());
     write_frame(&mut stream, JOIN, HOST, &payload)?;
-    let me = match read_handshake(stream)? {
-        (WELCOME, me, _) => me,
-        (REJECT, _, reason) => return Err(rejected(&reason)),
-        _ => return Err(invalid("the host did not answer the join")),
-    };
-    Ok(me)
+    match read_handshake(stream)? {
+        (WELCOME, me, payload) => Ok((me, payload)),
+        (REJECT, _, reason) => Err(rejected(&reason)),
+        _ => Err(invalid("the host did not answer the join")),
+    }
 }
 
 fn check_version(payload: &[u8]) -> Result<(), String> {
@@ -873,7 +1333,11 @@ impl Read for Deadline<'_> {
         }
         self.stream.set_read_timeout(Some(left))?;
         let mut stream = self.stream;
-        stream.read(buffer)
+        // Unix reports a read timeout as WouldBlock.
+        stream.read(buffer).map_err(|error| match error.kind() {
+            io::ErrorKind::WouldBlock => io::ErrorKind::TimedOut.into(),
+            _ => error,
+        })
     }
 }
 
@@ -904,6 +1368,39 @@ fn rejected(reason: &[u8]) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loopback_sessions_act_like_a_host_and_its_clients() {
+        let (host, mut clients) = NetSession::loopback(2);
+        assert_eq!(host.peers(), vec![1, 2]);
+        assert_eq!(
+            host.poll(),
+            vec![NetEvent::Connected(1), NetEvent::Connected(2)]
+        );
+        clients[1].send(HOST, b"hi").unwrap();
+        assert!(clients[1].send(1, b"no").is_err());
+        assert_eq!(
+            host.poll(),
+            vec![NetEvent::Message {
+                from: 2,
+                bytes: b"hi".to_vec()
+            }]
+        );
+        host.broadcast(b"all").unwrap();
+        for client in &clients {
+            let all = NetEvent::Message {
+                from: HOST,
+                bytes: b"all".to_vec(),
+            };
+            assert_eq!(client.poll(), vec![all]);
+        }
+        drop(clients.remove(0));
+        assert_eq!(host.poll(), vec![NetEvent::Disconnected(1)]);
+        assert_eq!(host.peers(), vec![2]);
+        assert!(host.send(1, b"gone").is_err());
+        drop(host);
+        assert_eq!(clients[0].poll(), vec![NetEvent::Closed]);
+    }
+
     use super::*;
     use std::time::Instant;
 
@@ -923,6 +1420,145 @@ mod tests {
             from,
             bytes: text.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn unreliable_messages_go_over_udp_and_loss_drops_them() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        let client = NetSession::join(address, "").unwrap();
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+
+        client.send_unreliable(HOST, b"pos").unwrap();
+        assert_eq!(wait(&host, 1), [message(1, "pos")]);
+        // The datagram taught the host the client's address.
+        host.broadcast_unreliable(b"tick").unwrap();
+        assert_eq!(wait(&client, 1), [message(HOST, "tick")]);
+        assert_eq!(host.stats().bytes_sent, 4 + DATAGRAM_HEADER as u64);
+        assert!(host.send_unreliable(1, &[0; MAX_UNRELIABLE + 1]).is_err());
+
+        host.simulate(NetConditions {
+            loss: 1.0,
+            ..NetConditions::default()
+        });
+        client.send_unreliable(HOST, b"lost").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(host.poll().is_empty());
+        assert_eq!(host.stats().held, 0, "lost, not resent");
+
+        // The right token from another IP address is ignored.
+        let datagrams = host.datagrams.as_ref().unwrap();
+        let (token, ..) = datagrams.peers.lock().unwrap()[&1];
+        if let Ok(stranger) = UdpSocket::bind("127.0.0.2:0") {
+            let mut datagram = token.to_le_bytes().to_vec();
+            datagram.extend(1u32.to_le_bytes());
+            datagram.extend(b"evil");
+            stranger.send_to(&datagram, address).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            let peers = datagrams.peers.lock().unwrap();
+            assert_eq!(peers[&1].2.unwrap().ip(), address.ip());
+        }
+
+        // No UDP route in a loopback session: it goes reliably.
+        let (host, clients) = NetSession::loopback(1);
+        host.poll();
+        clients[0].send_unreliable(HOST, b"pos").unwrap();
+        assert_eq!(host.poll(), [message(1, "pos")]);
+    }
+
+    #[test]
+    fn simulated_conditions_delay_events_in_order() {
+        let ms = Duration::from_millis;
+        let mut lab = Lab {
+            conditions: NetConditions {
+                latency: ms(100),
+                jitter: ms(50),
+                loss: 0.0,
+                seed: 7,
+            },
+            ..Lab::default()
+        };
+        let start = Instant::now();
+        let arrived = vec![message(1, "a"), message(1, "b")];
+        assert!(lab.deliver(arrived, start).is_empty());
+        assert!(lab.deliver(Vec::new(), start + ms(99)).is_empty());
+        assert_eq!(
+            lab.deliver(Vec::new(), start + ms(150)),
+            [message(1, "a"), message(1, "b")]
+        );
+        assert_eq!(lab.stats.messages_received, 2);
+        assert_eq!(lab.stats.bytes_received, 2 * 10);
+
+        // Every message lost: each waits one more round trip, and none
+        // passes the one before it.
+        lab.conditions.loss = 1.0;
+        let later = start + ms(1000);
+        let arrived = (0..20).map(|i| message(1, &i.to_string())).collect();
+        assert!(lab.deliver(arrived, later).is_empty());
+        assert!(lab.deliver(Vec::new(), later + ms(299)).is_empty());
+        let due = lab.deliver(Vec::new(), later + ms(350));
+        let expected: Vec<_> =
+            (0..20).map(|i| message(1, &i.to_string())).collect();
+        assert_eq!(due, expected);
+
+        // The same seed gives the same delays.
+        let delays = |seed| {
+            let mut lab = Lab {
+                rng: seed,
+                ..Lab::default()
+            };
+            lab.conditions.jitter = ms(50);
+            lab.conditions.loss = 0.5;
+            (0..8).map(|_| lab.delay()).collect::<Vec<_>>()
+        };
+        assert_eq!(delays(3), delays(3));
+        assert_ne!(delays(3), delays(4));
+    }
+
+    #[test]
+    fn a_session_counts_traffic_and_holds_messages_under_latency() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        let client = NetSession::join(address, "").unwrap();
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+
+        host.simulate(NetConditions {
+            latency: Duration::from_millis(300),
+            ..NetConditions::default()
+        });
+        client.send(HOST, b"hello").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(host.poll().is_empty(), "the message waits out its latency");
+        assert_eq!(host.stats().held, 1);
+        assert_eq!(wait(&host, 1), [message(1, "hello")]);
+
+        host.broadcast(b"tick").unwrap();
+        assert_eq!(wait(&client, 1), [message(HOST, "tick")]);
+        let sent = NetStats {
+            messages_sent: 1,
+            bytes_sent: 14,
+            ..NetStats::default()
+        };
+        assert_eq!(
+            client.stats(),
+            NetStats {
+                messages_received: 1,
+                bytes_received: 13,
+                ..sent
+            }
+        );
+        assert_eq!(
+            host.stats(),
+            NetStats {
+                messages_sent: 1,
+                bytes_sent: 13,
+                messages_received: 1,
+                bytes_received: 14,
+                held: 0,
+            }
+        );
     }
 
     #[test]

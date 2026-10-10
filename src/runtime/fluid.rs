@@ -308,12 +308,12 @@ impl Fluid {
 
 /// Marks the entity that draws one particle of the [`FluidVolume`] on the
 /// given entity. The editor hides these from the Hierarchy and Scene View
-/// picking, and [`sync_fluid_visuals`] despawns them with their volume.
+/// picking, and `sync_fluid_visuals` despawns them with their volume.
 #[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FluidParticle(pub bevy_ecs::prelude::Entity);
 
 /// Marks a surface entity ([`FluidSurface`] or [`super::WaterMesh`]) and the
-/// assets it owns, so [`reap_surfaces`] can free them when the surface goes.
+/// assets it owns, so `reap_surfaces` can free them when the surface goes.
 #[derive(bevy_ecs::prelude::Component, Clone, Copy, Debug)]
 pub struct OwnedSurface {
     pub mesh: crate::assets::Handle<crate::assets::MeshAsset>,
@@ -332,7 +332,7 @@ pub struct FluidVolume {
     /// unit-diameter mesh such as the built-in sphere fits). Without it the
     /// fluid is simulated but not drawn.
     pub visual: Option<super::MeshRenderer>,
-    /// Draws the fluid as one smooth surface mesh that [`sync_fluid_surfaces`]
+    /// Draws the fluid as one smooth surface mesh that `sync_fluid_surfaces`
     /// rebuilds every fixed tick.
     pub surface: Option<FluidSurface>,
     /// One entity per particle, kept by [`sync_fluid_visuals`].

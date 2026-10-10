@@ -57,7 +57,7 @@ impl Rng {
     }
 }
 
-/// Interleaved stereo samples at [`MIX_RATE`] for `preset`, or `None` for
+/// Interleaved stereo samples at `MIX_RATE` for `preset`, or `None` for
 /// an unknown preset. Each preset draws its pitch, slide and envelope from
 /// ranges with `seed`.
 #[must_use]

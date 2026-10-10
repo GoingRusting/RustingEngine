@@ -8,6 +8,8 @@ were run against this version of the engine.
 
 - [Getting started](getting-started.md): install the tools, open the editor,
   create a project, and press Play.
+- [Coming from Godot](godot-migration.md): Godot nodes, scenes, signals,
+  resources and GDScript callbacks mapped to RustingEngine.
 - [Core concepts](concepts.md): projects, scenes, cooking, frames and fixed
   ticks, CPU and GPU physics, and where game code runs.
 
@@ -34,6 +36,11 @@ were run against this version of the engine.
 - `rusting schema`: the full catalog of commands and scene components, with
   each field's default, unit, and valid range. It is generated from the
   engine itself, so it is always current.
+- API reference: `rusting docs show component/<name>` (also `resource/` and
+  `asset/`) prints one reflected type's fields, generated from the same
+  catalog, and `rusting docs show api/GameScene` indexes the gameplay
+  methods. For the Rust crates, `cargo doc --workspace --no-deps --open`
+  builds the full reference; CI fails on a broken link in it.
 - [Determinism](determinism.md): what makes a simulation reproducible, state
   hashes, `rusting determinism`, and replays.
 - [Architecture](../architecture.md): how the runtime, renderer, and editor
@@ -49,6 +56,8 @@ were run against this version of the engine.
   solvers for GPU physics.
 - [WebAssembly scripts](scripting.md): the optional sandboxed scripting
   host for modding and designer logic, its host functions, and its limits.
+- [Writing a plugin](plugin-authoring.md): reusable plugin crates, naming,
+  determinism rules, and testing a plugin without a window.
 - [Development environment](dev-environment.md): iteration speed targets, running GPU tests without a
   GPU (lavapipe).
 - [Changelog](../CHANGELOG.md): what changed in each release.

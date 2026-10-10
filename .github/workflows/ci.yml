@@ -31,3 +31,7 @@ jobs:
         run: cargo test --workspace --all-targets
       - name: Documentation tests
         run: cargo test --workspace --doc
+      - name: API reference builds without broken links
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

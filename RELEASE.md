@@ -1,9 +1,27 @@
 # RustingEngine Release Guide
 
+## Release notes
+
+Release notes are the `CHANGELOG.md` entries contributors add under
+`## [Unreleased]` (see `CONTRIBUTING.md`). To cut a release:
+
+1. Pick the version. New features or a `Changed` line that breaks saved
+   scenes, game code or the wire protocol raise the minor version (2.3.0
+   changed the protocol of 2.2.0); a release with only fixes raises the
+   patch version.
+2. Rename `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD` and add a fresh,
+   empty `## [Unreleased]` above it.
+3. Under the new heading, write one sentence saying what the release is
+   for, such as the game or feedback that drove it.
+4. Keep the sections in this order and drop empty ones: `Added`,
+   `Changed`, `Fixed`, `Performance`, `Known limits`. Merge duplicate lines
+   and remove lines for work that was reverted before the release.
+5. End the entry with a `---` line, like the earlier ones.
+6. Paste the entry into the GitHub Release description when publishing.
+
 ## Before tagging
 
-1. Update the version in `Cargo.toml` and add the same version to
-   `CHANGELOG.md`.
+1. Update the version in `Cargo.toml` to the one in `CHANGELOG.md`.
 2. Run the complete local gate:
 
 ```bash

@@ -78,7 +78,7 @@ pub struct InstanceMember {
 }
 
 /// Marks an instance root whose members were added. See
-/// [`INSTANCE_EXPANDED_KEY`].
+/// `INSTANCE_EXPANDED_KEY`.
 #[derive(Component, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceExpanded {
     /// The source scene at the time the members were added. When the link
@@ -527,7 +527,7 @@ fn place_members(root: Uuid, prefab: SceneDocument) -> Vec<SceneEntity> {
 }
 
 /// A scene file loaded once for placing many times from gameplay code.
-/// Load it with [`AssetServer::load_prefab`] and place it with
+/// Load it with `AssetServer::load_prefab` and place it with
 /// [`spawn_prefab`].
 #[derive(Clone, Debug)]
 pub struct Prefab {

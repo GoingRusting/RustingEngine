@@ -105,6 +105,16 @@ const PAGES: &[(&str, &str, &str)] = &[
         "guide",
         include_str!("../docs/networking.md"),
     ),
+    (
+        "guide/godot-migration",
+        "guide",
+        include_str!("../docs/godot-migration.md"),
+    ),
+    (
+        "guide/plugin-authoring",
+        "guide",
+        include_str!("../docs/plugin-authoring.md"),
+    ),
 ];
 
 /// Sample games shipped with the engine: name, README and game code.
@@ -140,7 +150,8 @@ const SAMPLES: &[(&str, &str, &str)] = samples![
 pub struct DocItem {
     /// `kind/name`, as `rusting docs show` takes it.
     pub id: String,
-    /// `manual`, `tutorial`, `guide`, `command`, `code` or `api`.
+    /// `manual`, `tutorial`, `guide`, `command`, `code`, `api`,
+    /// `component`, `resource` or `asset`.
     pub kind: &'static str,
     pub title: String,
     /// One line for listings and the brief.
@@ -233,6 +244,74 @@ fn scenario_reference() -> DocItem {
     page("reference/scenario", "reference", &text)
 }
 
+/// One item per entity section, registered component, resource and asset
+/// type, generated from the `rusting schema` catalog, so the reference has
+/// every reflected field with its unit, range and doc.
+fn reflected_items() -> Vec<DocItem> {
+    let catalog = crate::schema::catalog();
+    let scene = &catalog["scene"];
+    let groups = [
+        ("component", &scene["entity_sections"]),
+        ("component", &scene["components"]),
+        ("resource", &catalog["resources"]),
+        ("asset", &catalog["asset_types"]),
+    ];
+    let mut items = Vec::new();
+    for (kind, group) in groups {
+        for entry in group.as_array().into_iter().flatten() {
+            let key = entry["key"].as_str().unwrap_or_default();
+            let summary = entry["summary"].as_str().map_or_else(
+                || format!("The `{key}` {kind} type and its fields."),
+                str::to_owned,
+            );
+            let mut text = format!("# {key}\n\n{summary}\n");
+            if let Some(gpu) = entry["gpu_cost"].as_str() {
+                text += &format!("\nGPU: {gpu}\n");
+            }
+            text += "\nFields:\n\n";
+            for field in entry["fields"].as_array().into_iter().flatten() {
+                let path = field["path"].as_str().unwrap_or_default();
+                text += &format!(
+                    "- `{}`",
+                    if path.is_empty() { "/" } else { path }
+                );
+                let hints: Vec<&str> = ["unit", "range"]
+                    .iter()
+                    .filter_map(|hint| field[hint].as_str())
+                    .filter(|hint| !hint.is_empty())
+                    .collect();
+                if !hints.is_empty() {
+                    text += &format!(" ({})", hints.join(", "));
+                }
+                match field["doc"].as_str() {
+                    Some(doc) if !doc.is_empty() => {
+                        text += &format!(": {doc}\n")
+                    }
+                    _ => text.push('\n'),
+                }
+            }
+            for part in ["default", "example"] {
+                if !entry[part].is_null() {
+                    text += &format!(
+                        "\n{}{}: `{}`\n",
+                        part[..1].to_uppercase(),
+                        &part[1..],
+                        entry[part]
+                    );
+                }
+            }
+            items.push(DocItem {
+                id: format!("{kind}/{key}"),
+                kind,
+                title: key.to_owned(),
+                summary: first_sentence(&summary),
+                text,
+            });
+        }
+    }
+    items
+}
+
 /// Every item, in the order the brief lists them.
 #[must_use]
 pub fn items() -> Vec<DocItem> {
@@ -270,6 +349,7 @@ pub fn items() -> Vec<DocItem> {
         });
     }
     items.push(scenario_reference());
+    items.extend(reflected_items());
     for (name, source) in crate::cookbook::COOKBOOK {
         // The snippet's `//!` header is the page; the code follows it.
         let header: Vec<&str> = source
@@ -996,7 +1076,7 @@ fn api_call(item: &DocItem) -> String {
 }
 
 /// The agent guides' API table, built from the API index: one row per
-/// [`API_GROUPS`] need, then the methods of the object `object(name)`
+/// `API_GROUPS` need, then the methods of the object `object(name)`
 /// returns.
 #[must_use]
 pub fn api_table() -> String {
@@ -1151,6 +1231,21 @@ mod tests {
             assert!(page.text.contains(&format!("- `{step}`:")), "{step}");
         }
         assert!(page.text.contains("## budgets"));
+    }
+
+    #[test]
+    fn every_reflected_type_has_a_reference_page() {
+        let items = items();
+        for key in crate::schema::component_summaries().map(|(key, _)| key) {
+            let id = format!("component/{key}");
+            assert!(items.iter().any(|item| item.id == id), "{id}");
+        }
+        let fog = find("component/rusting.fog").unwrap();
+        assert!(fog.text.contains("- `/density` (1/m, 0..1): extinction"));
+        assert!(fog.text.contains("\nDefault: `{"));
+        assert!(find("component/transform").is_some());
+        assert!(find("resource/rusting.physics_settings").is_some());
+        assert!(find("asset/rusting.material").is_some());
     }
 
     #[test]

@@ -474,7 +474,7 @@ impl IntoHint<bool> for bool {
 }
 
 /// Writes [`Reflect`] for a struct, a one-field tuple struct, or an enum.
-/// See the [module docs](crate::reflect).
+/// See the [module docs](mod@crate::reflect).
 #[macro_export]
 macro_rules! reflect {
     (struct $name:ident { $($body:tt)* }) => {

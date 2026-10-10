@@ -8,6 +8,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --all-targets
 cargo test --workspace --doc
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo build --release --bin editor --bin user_main --bin cook_scene
 cargo build --release -p project1
 

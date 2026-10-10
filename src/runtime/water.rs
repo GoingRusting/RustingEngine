@@ -116,7 +116,7 @@ impl WaterBody {
     }
 }
 
-/// The surface entity and mesh a [`WaterBody`] owns, made by [`sync_water`].
+/// The surface entity and mesh a [`WaterBody`] owns, made by `sync_water`.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct WaterMesh {
     mesh: Handle<MeshAsset>,

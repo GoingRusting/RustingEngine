@@ -21,6 +21,9 @@ pub const PROJECT_FORMAT_VERSION: u32 = 1;
 /// Environment variable that makes a game run this many ticks headless and
 /// exit, for smoke tests of built and exported games.
 pub const HEADLESS_TICKS_ENV: &str = "RUSTING_HEADLESS_TICKS";
+/// Environment variable that makes a game run as a dedicated server: no
+/// window or renderer, ticking in real time until game code quits.
+pub const SERVER_ENV: &str = "RUSTING_SERVER";
 /// Where `rusting test` saves its newest folder run, relative to the
 /// project root; the editor's Agent panel reads it.
 pub const TEST_RESULTS_FILE: &str = "build/test-results.json";
