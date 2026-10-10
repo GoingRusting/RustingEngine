@@ -750,6 +750,51 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn a_gpu_soft_body_follows_the_fixed_tick_with_the_cpu_reference_bits() {
+        use crate::runtime::gpu_cloth::{
+            pack_soft_body, step_on_cpu, unpack_soft_body, GpuSoftBody,
+        };
+        use crate::runtime::{
+            FrameTime, SoftBody, SoftBodySettings, SoftBodyVolume,
+        };
+
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let body = SoftBody::block([-0.5, 0.3, -0.5], [3, 3, 3], 0.25, 1000.0)
+            .unwrap();
+        let start = SoftBodyVolume::new(SoftBodySettings::default(), body);
+        let entity = app.spawn((start.clone(), GpuSoftBody::default()));
+        let mut capture = HeadlessCapture::new([16, 16]).unwrap();
+        for _ in 0..12 {
+            capture.frame(&mut app, Duration::from_millis(16)).unwrap();
+        }
+        let reached = app.world().get::<GpuSoftBody>(entity).unwrap().tick;
+        let reached = reached.unwrap();
+        let now = app.world().resource::<FrameTime>().fixed_tick;
+        assert!(reached >= 3 && now - reached <= 4, "{reached} of {now}");
+        let dt = app.world().resource::<FrameTime>().fixed_delta;
+        let mut expected = start.body.clone();
+        let mut words = pack_soft_body(
+            &expected,
+            &start.settings,
+            dt.as_secs_f32(),
+            reached as u32,
+        )
+        .unwrap();
+        step_on_cpu(&mut words);
+        unpack_soft_body(&words, &mut expected);
+        let shown = &app.world().get::<SoftBodyVolume>(entity).unwrap().body;
+        assert_eq!(shown.positions, expected.positions);
+        assert_eq!(shown.velocities, expected.velocities);
+        assert!(shown.positions[0][1] < 0.3, "{:?}", shown.positions[0]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn a_flash_tints_the_drawn_object_and_fades_back() {
         let mut app = App::new();
         app.add_plugin(AssetPlugin).unwrap();

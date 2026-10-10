@@ -22,12 +22,13 @@ use super::hybrid_physics::GpuEventId;
 use super::sim_math::{dot, length, recip};
 use super::soft_body::{SoftBody, SoftBodySettings, MAX_SOFT_BODY_SUBSTEPS};
 
-/// Steps the [`super::ClothVolume`] on this entity on the GPU instead of in
-/// the fixed tick. `rendering::gpu_cloth::service_gpu_cloths` submits it
-/// and writes finished particles back into the volume, so the volume shows
-/// the cloth one to three frames behind the fixed tick, as `tick` records.
-/// Only the kernel's features apply: attachments, wind, self-collision and
-/// tearing are ignored while this is on.
+/// Steps the [`super::ClothVolume`] or [`super::SoftBodyVolume`] on this
+/// entity on the GPU instead of in the fixed tick.
+/// `rendering::gpu_cloth::service_gpu_cloths` submits it and writes
+/// finished particles back into the volume, so the volume shows the body
+/// one to three frames behind the fixed tick, as `tick` records. Only the
+/// kernel's features apply: attachments, obstacles, wind, self-collision
+/// and tearing are ignored while this is on.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuCloth {
     /// Fixed tick the volume's particles show; `None` before the first run.
@@ -41,6 +42,9 @@ pub struct GpuCloth {
     /// A free particle rested on the floor at `tick`.
     pub on_floor: bool,
 }
+
+/// [`GpuCloth`] under the name that reads right on a soft body.
+pub type GpuSoftBody = GpuCloth;
 
 /// Words before the color tables; see the header comment in `cloth.comp`.
 const HEADER_WORDS: usize = 17;

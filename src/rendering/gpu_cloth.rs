@@ -28,10 +28,12 @@ use vulkano::sync::GpuFuture;
 
 use bevy_ecs::prelude::{Entity, World};
 
-use crate::runtime::gpu_cloth::{floor_contact, pack, unpack, GpuCloth};
+use crate::runtime::gpu_cloth::{
+    floor_contact, pack, pack_soft_body, unpack, unpack_soft_body, GpuCloth,
+};
 use crate::runtime::{
     route_gpu_physics_events, ClothVolume, FrameTime, GpuEventPayload,
-    PhysicsId, PhysicsIdRegistry, RawGpuPhysicsEvent,
+    PhysicsId, PhysicsIdRegistry, RawGpuPhysicsEvent, SoftBodyVolume,
 };
 
 mod shader {
@@ -219,16 +221,8 @@ impl GpuClothRunner {
     }
 }
 
-/// Writes finished GPU cloth back into its [`ClothVolume`], then submits
-/// every [`GpuCloth`] with nothing on the GPU from the tick its particles
-/// show up to the current fixed tick. Each cloth has at most one submission
-/// in flight, so the volume never runs behind more than the GPU latency,
-/// and a run of N steps gives the same bits as N runs of one step. Call it
-/// once per frame, with completed rigid readback. Returns how many cloths
-/// it submitted.
-// ponytail: a despawned cloth keeps its PhysicsId slot; release it on
-// removal if scenes churn many GPU cloths.
-/// Writes finished cloth states into their [`ClothVolume`]s and sends each
+/// Writes finished states into their [`ClothVolume`]s or
+/// [`SoftBodyVolume`]s and sends each
 /// cloth's [`GpuCloth::floor_event`] through [`route_gpu_physics_events`]
 /// when a free particle first reaches the floor. States of despawned cloths
 /// are dropped.
@@ -266,6 +260,8 @@ pub fn apply_gpu_cloth_states(world: &mut World, states: &[GpuClothState]) {
         gpu.on_floor = contact.is_some();
         if let Some(mut volume) = entity.get_mut::<ClothVolume>() {
             unpack(&state.words, &mut volume.cloth);
+        } else if let Some(mut volume) = entity.get_mut::<SoftBodyVolume>() {
+            unpack_soft_body(&state.words, &mut volume.body);
         }
     }
     if !events.is_empty() {
@@ -273,6 +269,15 @@ pub fn apply_gpu_cloth_states(world: &mut World, states: &[GpuClothState]) {
     }
 }
 
+/// Applies finished GPU work with [`apply_gpu_cloth_states`], then submits
+/// every [`GpuCloth`] cloth or soft body with nothing on the GPU from the tick its particles
+/// show up to the current fixed tick. Each cloth has at most one submission
+/// in flight, so the volume never runs behind more than the GPU latency,
+/// and a run of N steps gives the same bits as N runs of one step. Call it
+/// once per frame, with completed rigid readback. Returns how many cloths
+/// it submitted.
+// ponytail: a despawned cloth keeps its PhysicsId slot; release it on
+// removal if scenes churn many GPU cloths.
 pub fn service_gpu_cloths(
     world: &mut World,
     runner: &mut GpuClothRunner,
@@ -284,10 +289,10 @@ pub fn service_gpu_cloths(
     let time = world.resource::<FrameTime>();
     let (tick, dt) = (time.fixed_tick, time.fixed_delta.as_secs_f32());
     let mut ready: Vec<(Entity, Option<PhysicsId>)> = world
-        .query::<(Entity, &GpuCloth, &ClothVolume, Option<&PhysicsId>)>()
+        .query::<(Entity, &GpuCloth, Option<&PhysicsId>)>()
         .iter(world)
-        .filter(|(_, gpu, ..)| !gpu.in_flight)
-        .map(|(entity, _, _, id)| (entity, id.copied()))
+        .filter(|(_, gpu, _)| !gpu.in_flight)
+        .map(|(entity, _, id)| (entity, id.copied()))
         .collect();
     ready.sort_unstable_by_key(|&(entity, _)| entity);
     let mut submitted = 0;
@@ -308,8 +313,13 @@ pub fn service_gpu_cloths(
             entity.get_mut::<GpuCloth>().unwrap().tick = Some(tick);
             continue;
         }
-        let volume = entity.get::<ClothVolume>().unwrap();
-        let words = pack(&volume.cloth, &volume.settings, dt, steps as u32)?;
+        let words = if let Some(volume) = entity.get::<ClothVolume>() {
+            pack(&volume.cloth, &volume.settings, dt, steps as u32)?
+        } else if let Some(volume) = entity.get::<SoftBodyVolume>() {
+            pack_soft_body(&volume.body, &volume.settings, dt, steps as u32)?
+        } else {
+            continue;
+        };
         runner.submit(id, tick, words)?;
         entity.get_mut::<GpuCloth>().unwrap().in_flight = true;
         submitted += 1;
