@@ -458,6 +458,17 @@ mod tests {
     }
 
     #[test]
+    fn the_shader_sixth_is_the_reference_sixth() {
+        let shader = include_str!("../shaders/compute/cloth.comp");
+        let literal = shader
+            .lines()
+            .find_map(|line| line.strip_prefix("const float SIXTH = "))
+            .unwrap();
+        let sixth: f32 = literal.trim_end_matches(';').parse().unwrap();
+        assert_eq!(sixth.to_bits(), SIXTH.to_bits());
+    }
+
+    #[test]
     fn the_reference_drops_a_soft_block_that_keeps_its_volume() {
         assert_eq!(SIXTH, 1.0 / 6.0);
         let mut body =

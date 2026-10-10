@@ -19,8 +19,11 @@ layout(set = 0, binding = 0) coherent buffer Data { uint words[]; };
 const uint CONSTRAINT_WORDS = 4u;
 const uint PARTICLE_WORDS = 10u;
 const uint VOLUME_WORDS = 6u;
-// 1 / 6 rounded to float, as `SIXTH` in gpu_cloth.rs.
-const float SIXTH = uintBitsToFloat(0x3E2AAAABu);
+// 1 / 6 rounded to float (bits 0x3E2AAAAB), as `SIXTH` in gpu_cloth.rs.
+// Written as that float's exact decimal value: the glslang that shaderc
+// builds when no Vulkan SDK is installed cannot fold `uintBitsToFloat`
+// in a constant.
+const float SIXTH = 0.16666667163372039794921875;
 const uvec3 OPPOSITE[4] = uvec3[4](uvec3(1u, 3u, 2u), uvec3(0u, 2u, 3u), uvec3(0u, 3u, 1u), uvec3(0u, 1u, 2u));
 
 float word(uint index) { return uintBitsToFloat(words[index]); }
