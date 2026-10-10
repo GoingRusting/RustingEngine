@@ -640,7 +640,30 @@ fn decode_cooked<T: serde::de::DeserializeOwned>(
 }
 
 fn decode_mesh_file(path: &Path) -> Result<MeshAsset, AssetError> {
-    let mesh: MeshAsset = decode_cooked(path)?;
+    let bytes = read_asset_file(path)?;
+    let mesh = match bytes.strip_prefix(MESH_FILE_MAGIC) {
+        Some(body) => deserialize_bounded(body),
+        None => deserialize_bounded(&bytes).map(|legacy: LegacyMeshAsset| {
+            MeshAsset {
+                vertices: legacy
+                    .vertices
+                    .into_iter()
+                    .map(|vertex| MeshVertex {
+                        position: vertex.position,
+                        normal: vertex.normal,
+                        uv: vertex.uv,
+                        tangent: vertex.tangent,
+                        ..MeshVertex::default()
+                    })
+                    .collect(),
+                indices: legacy.indices,
+            }
+        }),
+    }
+    .map_err(|error| AssetError::Load {
+        path: path.to_owned(),
+        message: error.to_string(),
+    })?;
     check_mesh_indices(path, &mesh.indices, mesh.vertices.len())?;
     Ok(mesh)
 }
@@ -903,12 +926,53 @@ fn normalize_path(path: &Path) -> Result<PathBuf, AssetError> {
     Ok(normalized)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
     pub tangent: [f32; 4],
+    /// Linear RGBA multiplied into the material's base color; white
+    /// leaves the material as it is.
+    pub color: [f32; 4],
+}
+
+impl Default for MeshVertex {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 3],
+            normal: [0.0; 3],
+            uv: [0.0; 2],
+            tangent: [0.0; 4],
+            color: [1.0; 4],
+        }
+    }
+}
+
+/// A vertex as `.rmesh` files stored it before vertex colors.
+#[derive(Deserialize)]
+struct LegacyMeshVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    tangent: [f32; 4],
+}
+
+#[derive(Deserialize)]
+struct LegacyMeshAsset {
+    vertices: Vec<LegacyMeshVertex>,
+    indices: Vec<u32>,
+}
+
+/// Starts every `.rmesh` written since vertex colors. Read as a legacy
+/// file's vertex count it is trillions, so the two layouts never mix up.
+const MESH_FILE_MAGIC: &[u8; 8] = b"RMESH\0\0\x02";
+
+/// Encodes a mesh as a `.rmesh` file.
+pub fn encode_mesh_file(mesh: &MeshAsset) -> bincode::Result<Vec<u8>> {
+    let mut bytes = MESH_FILE_MAGIC.to_vec();
+    bytes.extend(bincode::serialize(mesh)?);
+    Ok(bytes)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1530,6 +1594,11 @@ impl AssetServer {
                     .read_tex_coords(0)
                     .map(|values| values.into_f32().collect())
                     .unwrap_or_else(|| vec![[0.0; 2]; positions.len()]);
+                // glTF stores COLOR_0 linear, as the shader wants it.
+                let colors = reader
+                    .read_colors(0)
+                    .map(|values| values.into_rgba_f32().collect())
+                    .unwrap_or_else(|| vec![[1.0; 4]; positions.len()]);
                 let imported_tangents =
                     reader.read_tangents().map(Iterator::collect::<Vec<_>>);
                 let generate = imported_tangents.is_none();
@@ -1562,6 +1631,7 @@ impl AssetServer {
                         },
                     )
                     || uvs.len() != positions.len()
+                    || colors.len() != positions.len()
                     || tangents.len() != positions.len()
                     || skin.as_ref().is_some_and(|skin| {
                         skin.joints.len() != positions.len()
@@ -1583,6 +1653,7 @@ impl AssetServer {
                         normal: normals[index],
                         uv: uvs[index],
                         tangent: tangents[index],
+                        color: colors[index],
                     })
                     .collect::<Vec<_>>();
                 let mut indices: Vec<u32> =
@@ -1645,7 +1716,7 @@ impl AssetServer {
                     )?;
                 }
                 let mesh_asset = MeshAsset { vertices, indices };
-                write_cooked_asset(&mesh_key, &mesh_asset)?;
+                write_cooked_bytes(&mesh_key, encode_mesh_file(&mesh_asset))?;
                 let mesh_handle =
                     self.meshes.insert_with_path(mesh_key, mesh_asset)?;
                 let gltf_material = primitive.material();
@@ -2060,12 +2131,19 @@ fn write_cooked_asset(
     path: &Path,
     asset: &impl Serialize,
 ) -> Result<(), AssetError> {
+    write_cooked_bytes(path, bincode::serialize(asset))
+}
+
+#[cfg(feature = "gltf")]
+fn write_cooked_bytes(
+    path: &Path,
+    bytes: bincode::Result<Vec<u8>>,
+) -> Result<(), AssetError> {
     let error = |message: String| AssetError::Load {
         path: path.to_owned(),
         message,
     };
-    let bytes =
-        bincode::serialize(asset).map_err(|value| error(value.to_string()))?;
+    let bytes = bytes.map_err(|value| error(value.to_string()))?;
     std::fs::write(path, bytes).map_err(|value| error(value.to_string()))
 }
 
@@ -2351,6 +2429,7 @@ pub fn procedural_sphere_mesh(subdivisions: u32) -> MeshAsset {
                 normal: [x * 2.0, y * 2.0, z * 2.0],
                 uv: [horizontal, vertical],
                 tangent: [0.0, 1.0, 0.0, 1.0],
+                color: [1.0; 4],
             });
         }
     }
@@ -2447,6 +2526,7 @@ fn mesh_from_triangles(triangles: &[[[f32; 3]; 3]]) -> MeshAsset {
                 normal,
                 uv,
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2]);
@@ -2664,6 +2744,7 @@ fn lathe_mesh(profile: &[([f32; 2], [f32; 2])], segments: u32) -> MeshAsset {
                     [step as f32 / segments as f32, (top - y) / (top - bottom)]
                 },
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             });
         }
     }
@@ -2773,6 +2854,7 @@ fn rounded_cube_mesh(radius: f32, bevel_steps: u32) -> MeshAsset {
                         j as f32 / (size - 1) as f32,
                     ],
                     tangent: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0; 4],
                 });
             }
         }
@@ -2812,6 +2894,7 @@ fn torus_mesh(major_segments: u32, minor_segments: u32) -> MeshAsset {
                     minor as f32 / minor_segments as f32,
                 ],
                 tangent: [-u.sin(), 0.0, u.cos(), 1.0],
+                color: [1.0; 4],
             });
         }
     }
@@ -2877,6 +2960,7 @@ fn plane_mesh() -> MeshAsset {
                 normal: [0.0, 1.0, 0.0],
                 uv,
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             })
             .collect(),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -2898,6 +2982,7 @@ fn quad_mesh() -> MeshAsset {
                 normal: [0.0, 0.0, 1.0],
                 uv,
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             })
             .collect(),
         indices: vec![0, 1, 2, 0, 2, 3],
@@ -2978,6 +3063,7 @@ fn fallback_cube() -> MeshAsset {
                 normal,
                 uv,
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             });
         }
         indices.extend_from_slice(&[
@@ -3139,7 +3225,7 @@ mod tests {
             vertices: vec![MeshVertex::default(); 3],
             indices: vec![0, 1, 3],
         };
-        std::fs::write(&path, bincode::serialize(&mesh).unwrap()).unwrap();
+        std::fs::write(&path, encode_mesh_file(&mesh).unwrap()).unwrap();
 
         let result = AssetServer::default().load_mesh(&path);
 
@@ -3218,7 +3304,7 @@ mod tests {
                 std::thread::yield_now();
             }
         };
-        write(bincode::serialize(&mesh(3)).unwrap(), 1_000);
+        write(encode_mesh_file(&mesh(3)).unwrap(), 1_000);
         let mut server = AssetServer::default();
         let handle = server.load_mesh(&path).unwrap();
         let first_revision = server.meshes.revision(handle).unwrap();
@@ -3228,7 +3314,7 @@ mod tests {
             "unchanged file is not reloaded"
         );
 
-        write(bincode::serialize(&mesh(6)).unwrap(), 2_000);
+        write(encode_mesh_file(&mesh(6)).unwrap(), 2_000);
         assert_eq!(server.reload_changed(), 1);
         assert_eq!(
             server.meshes.get(handle).unwrap().indices.len(),
@@ -3494,6 +3580,60 @@ mod tests {
         std::fs::remove_dir_all(folder).unwrap();
     }
 
+    #[test]
+    #[cfg(feature = "gltf")]
+    fn gltf_import_keeps_vertex_colors_through_the_cooked_file() {
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-gltf-colors-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let colors = [
+            [1.0f32, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 0.5],
+            [0.0, 0.0, 1.0, 0.25],
+        ];
+        let bytes: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .chain(colors.as_flattened())
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        std::fs::write(folder.join("tri.bin"), &bytes).unwrap();
+        let path = folder.join("tri.gltf");
+        std::fs::write(
+            &path,
+            r#"{
+              "asset": {"version": "2.0"},
+              "buffers": [{"uri": "tri.bin", "byteLength": 84}],
+              "bufferViews": [{"buffer": 0, "byteLength": 36},
+                {"buffer": 0, "byteOffset": 36, "byteLength": 48}],
+              "accessors": [{"bufferView": 0, "componentType": 5126,
+                "count": 3, "type": "VEC3",
+                "min": [0, 0, 0], "max": [1, 1, 0]},
+                {"bufferView": 1, "componentType": 5126,
+                "count": 3, "type": "VEC4"}],
+              "meshes": [{"primitives": [
+                {"attributes": {"POSITION": 0, "COLOR_0": 1}}]}]
+            }"#,
+        )
+        .unwrap();
+        let mut server = AssetServer::default();
+
+        let imported = server.import_gltf(&path).unwrap();
+        let mut fresh = AssetServer::default();
+        let reloaded =
+            fresh.load_mesh(folder.join("tri.mesh-0-0.rmesh")).unwrap();
+
+        let mesh = server.meshes.get(imported[0].mesh).unwrap();
+        // Flat shading unshares the vertices, so read them per corner.
+        let corner_colors = mesh
+            .indices
+            .iter()
+            .map(|&index| mesh.vertices[index as usize].color)
+            .collect::<Vec<_>>();
+        assert_eq!(corner_colors, colors);
+        assert_eq!(fresh.meshes.get(reloaded), Some(mesh));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
     #[cfg(feature = "gltf")]
     #[test]
     fn gltf_scene_import_spawns_hierarchy_cameras_and_lights() {
@@ -3618,6 +3758,7 @@ mod tests {
                     normal: [0.0, 0.0, 1.0],
                     uv: [x * uv_scale, v(y)],
                     tangent: [0.0; 4],
+                    color: [1.0; 4],
                 })
                 .to_vec()
         };
@@ -3673,17 +3814,63 @@ mod tests {
             .join(format!("rusting-mesh-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("triangle.rmesh");
+        let tinted = MeshVertex {
+            color: [0.2, 0.5, 0.9, 0.75],
+            ..MeshVertex::default()
+        };
         let mesh = MeshAsset {
-            vertices: vec![MeshVertex::default(); 3],
+            vertices: vec![tinted, MeshVertex::default(), tinted],
             indices: vec![0, 1, 2],
         };
-        std::fs::write(&path, bincode::serialize(&mesh).unwrap()).unwrap();
+        std::fs::write(&path, encode_mesh_file(&mesh).unwrap()).unwrap();
         let mut server = AssetServer::default();
 
         let handle = server.load_mesh(&path).unwrap();
 
         assert_eq!(server.meshes.get(handle), Some(&mesh));
         assert_eq!(server.load_mesh(&path).unwrap(), handle);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn rmesh_files_cooked_before_vertex_colors_load_white() {
+        #[derive(Serialize)]
+        struct OldVertex {
+            position: [f32; 3],
+            normal: [f32; 3],
+            uv: [f32; 2],
+            tangent: [f32; 4],
+        }
+        let folder = std::env::temp_dir()
+            .join(format!("rusting-mesh-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("old.rmesh");
+        let old = (0..3)
+            .map(|index| OldVertex {
+                position: [index as f32, 2.0, 3.0],
+                normal: [0.0, 1.0, 0.0],
+                uv: [0.5, index as f32],
+                tangent: [1.0, 0.0, 0.0, -1.0],
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            bincode::serialize(&(&old, vec![0u32, 1, 2])).unwrap(),
+        )
+        .unwrap();
+        let mut server = AssetServer::default();
+
+        let handle = server.load_mesh(&path).unwrap();
+
+        let mesh = server.meshes.get(handle).unwrap();
+        assert_eq!(mesh.indices, [0, 1, 2]);
+        for (vertex, old) in mesh.vertices.iter().zip(&old) {
+            assert_eq!(vertex.position, old.position);
+            assert_eq!(vertex.normal, old.normal);
+            assert_eq!(vertex.uv, old.uv);
+            assert_eq!(vertex.tangent, old.tangent);
+            assert_eq!(vertex.color, [1.0; 4]);
+        }
         std::fs::remove_dir_all(folder).unwrap();
     }
 
@@ -3727,7 +3914,7 @@ mod tests {
         let write_mesh = |name: &str, count| {
             std::fs::write(
                 folder.join(name),
-                bincode::serialize(&mesh(count)).unwrap(),
+                encode_mesh_file(&mesh(count)).unwrap(),
             )
             .unwrap();
         };

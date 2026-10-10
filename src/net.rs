@@ -30,11 +30,13 @@
 use bevy_ecs::prelude::Resource;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{
+    IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A peer in a session. The host is [`HOST`]; clients count up from 1.
 pub type PeerId = u32;
@@ -56,6 +58,8 @@ const JOIN: u8 = 5;
 const WELCOME: u8 = 6;
 const REJECT: u8 = 7;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Joins a direct host checks at once; more connections are dropped.
+const MAX_PENDING_JOINS: usize = 64;
 
 /// Something that happened since the last [`NetSession::poll`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,15 +104,16 @@ impl NetSession {
     /// Hosts on an already bound listener, such as one on port 0 for a
     /// free port.
     pub fn host_on(listener: TcpListener, password: &str) -> io::Result<Self> {
-        let password = password.to_owned();
         let address = listener.local_addr()?;
         let (sender, events) = channel();
         let peers = Arc::new(Mutex::new(BTreeMap::new()));
         let accepted = Arc::clone(&peers);
         let closed = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&closed);
+        let password: Arc<str> = password.into();
+        let next = Arc::new(AtomicU32::new(HOST + 1));
+        let pending = Arc::new(AtomicUsize::new(0));
         std::thread::spawn(move || {
-            let mut next = HOST + 1;
             for stream in listener.incoming() {
                 // Dropping the session sets `stop` and connects once to
                 // wake this loop, which frees the port.
@@ -116,22 +121,25 @@ impl NetSession {
                     return;
                 }
                 let Ok(stream) = stream else { continue };
-                // ponytail: handshakes run on the accept thread, so a
-                // silent client delays the next join by up to 5 seconds.
-                if handshake_client(&stream, next, &password).is_err() {
+                if pending.load(Ordering::Relaxed) >= MAX_PENDING_JOINS {
                     continue;
                 }
-                let Ok(writer) = stream.try_clone() else {
-                    continue;
-                };
-                accepted.lock().unwrap().insert(next, writer);
-                if sender.send(NetEvent::Connected(next)).is_err() {
-                    return;
-                }
-                let peers = Arc::clone(&accepted);
-                let sender = sender.clone();
-                let peer = next;
+                pending.fetch_add(1, Ordering::Relaxed);
+                let (peers, next, pending, password, sender) = (
+                    Arc::clone(&accepted),
+                    Arc::clone(&next),
+                    Arc::clone(&pending),
+                    Arc::clone(&password),
+                    sender.clone(),
+                );
+                // Each join shakes hands on its own thread, so a silent
+                // client delays nobody else.
                 std::thread::spawn(move || {
+                    let joined = admit_client(
+                        &stream, &peers, &next, &password, &sender,
+                    );
+                    pending.fetch_sub(1, Ordering::Relaxed);
+                    let Some(peer) = joined else { return };
                     read_frames(
                         stream,
                         |kind, _, bytes| {
@@ -145,7 +153,6 @@ impl NetSession {
                     peers.lock().unwrap().remove(&peer);
                     let _ = sender.send(NetEvent::Disconnected(peer));
                 });
-                next += 1;
             }
         });
         Ok(Self {
@@ -343,25 +350,179 @@ impl Drop for NetSession {
     }
 }
 
-/// Runs a relay on `listener` until it fails: hosts ask it for a room code
-/// with [`NetSession::host_room`] and clients join that code with
-/// [`NetSession::join_room`]. The relay forwards host messages to clients
-/// and client messages to the host. Hosts and clients must give `token`;
-/// an empty one lets anyone in. `rusting relay` runs one.
+/// Runs a relay on `listener` with [`RelayLimits::default`]: hosts ask it
+/// for a room code with [`NetSession::host_room`] and clients join that code
+/// with [`NetSession::join_room`]. The relay forwards host messages to
+/// clients and client messages to the host. Hosts and clients must give
+/// `token`; an empty one lets anyone in. `rusting relay` runs one. It runs
+/// until the process ends; a failed incoming connection is skipped.
 // ponytail: one lock over every room serialises forwarding; per-room locks
-// and a writer thread per socket if one relay serves many busy rooms. No
-// rate limit on wrong tokens either; put the relay behind a firewall rule
-// or fail2ban if someone guesses at it.
+// and a writer thread per socket if one relay serves many busy rooms.
 pub fn run_relay(listener: TcpListener, token: &str) -> io::Result<()> {
+    run_relay_with(listener, token, RelayLimits::default())
+}
+
+/// What a relay lets one address, and everyone together, use. A relay on
+/// the open internet needs them; the defaults suit a small game's relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelayLimits {
+    /// Open connections from everyone; more are closed at once.
+    pub max_connections: usize,
+    /// Open connections from one IP address.
+    pub max_connections_per_address: usize,
+    /// New connections one IP address may open per minute, failed ones
+    /// included, which also slows token guessing.
+    pub connects_per_minute: u32,
+    /// Bytes per second the relay reads from one connection; a faster
+    /// sender is slowed down, not cut off. 0 means no cap.
+    pub bytes_per_second: u64,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 1024,
+            max_connections_per_address: 16,
+            connects_per_minute: 60,
+            bytes_per_second: 1 << 20,
+        }
+    }
+}
+
+/// [`run_relay`] with chosen [`RelayLimits`].
+pub fn run_relay_with(
+    listener: TcpListener,
+    token: &str,
+    limits: RelayLimits,
+) -> io::Result<()> {
     let rooms = Arc::new(Mutex::new(HashMap::<String, RelayRoom>::new()));
     let token: Arc<str> = token.into();
+    let admission = Arc::new(Mutex::new(Admission::default()));
     for stream in listener.incoming() {
-        let stream = stream?;
+        // A connection that failed before accept (reset, or out of file
+        // handles) is skipped; the pause keeps a persistent error from
+        // spinning the loop.
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+        };
+        let Ok(address) = stream.peer_addr() else {
+            continue;
+        };
+        let Some(slot) = Admission::admit(&admission, address.ip(), &limits)
+        else {
+            continue;
+        };
         let rooms = Arc::clone(&rooms);
         let token = Arc::clone(&token);
-        std::thread::spawn(move || relay_connection(stream, &rooms, &token));
+        std::thread::spawn(move || {
+            relay_connection(stream, &rooms, &token, limits.bytes_per_second);
+            drop(slot);
+        });
     }
     Ok(())
+}
+
+/// Open connections and recent connects, overall and per address.
+#[derive(Default)]
+struct Admission {
+    open: usize,
+    /// Per address: open connections, start of the minute counted, and
+    /// connects in that minute.
+    addresses: HashMap<IpAddr, (usize, Instant, u32)>,
+}
+
+impl Admission {
+    /// Counts a new connection from `address`, or refuses it with `None`.
+    /// The slot gives the connection back when dropped.
+    fn admit(
+        this: &Arc<Mutex<Self>>,
+        address: IpAddr,
+        limits: &RelayLimits,
+    ) -> Option<AdmissionSlot> {
+        let mut admission = this.lock().unwrap();
+        let now = Instant::now();
+        let minute = Duration::from_secs(60);
+        if admission.addresses.len() > 4 * limits.max_connections {
+            admission.addresses.retain(|_, (open, start, _)| {
+                *open > 0 || now.duration_since(*start) < minute
+            });
+        }
+        if admission.open >= limits.max_connections {
+            return None;
+        }
+        let (open, start, connects) =
+            admission.addresses.entry(address).or_insert((0, now, 0));
+        if now.duration_since(*start) >= minute {
+            (*start, *connects) = (now, 0);
+        }
+        // Refused connects count too, so hammering never resets the count.
+        *connects = connects.saturating_add(1);
+        if *open >= limits.max_connections_per_address
+            || *connects > limits.connects_per_minute
+        {
+            return None;
+        }
+        *open += 1;
+        admission.open += 1;
+        Some(AdmissionSlot {
+            admission: Arc::clone(this),
+            address,
+        })
+    }
+}
+
+struct AdmissionSlot {
+    admission: Arc<Mutex<Admission>>,
+    address: IpAddr,
+}
+
+impl Drop for AdmissionSlot {
+    fn drop(&mut self) {
+        let mut admission = self.admission.lock().unwrap();
+        admission.open -= 1;
+        if let Some((open, ..)) = admission.addresses.get_mut(&self.address) {
+            *open -= 1;
+        }
+    }
+}
+
+/// Slows a reader to a byte rate, allowing one second's worth in a burst.
+struct Throttle {
+    rate: f64,
+    allowance: f64,
+    last: Instant,
+}
+
+impl Throttle {
+    fn new(bytes_per_second: u64) -> Self {
+        let rate = bytes_per_second as f64;
+        Self {
+            rate,
+            allowance: rate,
+            last: Instant::now(),
+        }
+    }
+
+    /// Spends `bytes`, sleeping until the rate allows them.
+    fn spend(&mut self, bytes: usize) {
+        if self.rate <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        let earned = now.duration_since(self.last).as_secs_f64() * self.rate;
+        self.allowance = (self.allowance + earned).min(self.rate);
+        self.last = now;
+        self.allowance -= bytes as f64;
+        if self.allowance < 0.0 {
+            std::thread::sleep(Duration::from_secs_f64(
+                -self.allowance / self.rate,
+            ));
+        }
+    }
 }
 
 struct RelayRoom {
@@ -372,8 +533,15 @@ struct RelayRoom {
 
 type Rooms = Mutex<HashMap<String, RelayRoom>>;
 
-fn relay_connection(mut stream: TcpStream, rooms: &Rooms, token: &str) {
+fn relay_connection(
+    mut stream: TcpStream,
+    rooms: &Rooms,
+    token: &str,
+    bytes_per_second: u64,
+) {
     let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
+    // Kept after the handshake: a peer that stops reading cannot hold the
+    // room lock for longer than this.
     let _ = stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
     let _ = stream.set_nodelay(true);
     let Ok((kind, _, payload)) = read_frame(&mut stream) else {
@@ -399,13 +567,22 @@ fn relay_connection(mut stream: TcpStream, rooms: &Rooms, token: &str) {
         }
     };
     let _ = stream.set_read_timeout(None);
+    let throttle = Throttle::new(bytes_per_second);
     match code {
-        None => relay_host(stream, rooms),
-        Some(code) => relay_client(stream, rooms, code),
+        None => relay_host(stream, rooms, throttle),
+        Some(code) => relay_client(stream, rooms, code, throttle),
     }
 }
 
-fn relay_host(mut stream: TcpStream, rooms: &Rooms) {
+/// Writes a forwarded frame; a peer that cannot take it whole is cut off,
+/// since a half-written frame would garble everything after it.
+fn forward(stream: &mut TcpStream, kind: u8, peer: PeerId, bytes: &[u8]) {
+    if write_frame(stream, kind, peer, bytes).is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+    }
+}
+
+fn relay_host(mut stream: TcpStream, rooms: &Rooms, mut throttle: Throttle) {
     let Ok(writer) = stream.try_clone() else {
         return;
     };
@@ -429,6 +606,7 @@ fn relay_host(mut stream: TcpStream, rooms: &Rooms) {
     };
     if write_frame(&mut stream, ROOM, HOST, code.as_bytes()).is_ok() {
         while let Ok((kind, to, bytes)) = read_frame(&mut stream) {
+            throttle.spend(9 + bytes.len());
             if kind != DATA {
                 continue;
             }
@@ -438,7 +616,7 @@ fn relay_host(mut stream: TcpStream, rooms: &Rooms) {
             };
             for (&peer, client) in &mut room.clients {
                 if to == EVERYONE || to == peer {
-                    let _ = write_frame(client, DATA, HOST, &bytes);
+                    forward(client, DATA, HOST, &bytes);
                 }
             }
         }
@@ -451,7 +629,12 @@ fn relay_host(mut stream: TcpStream, rooms: &Rooms) {
     }
 }
 
-fn relay_client(mut stream: TcpStream, rooms: &Rooms, code: String) {
+fn relay_client(
+    mut stream: TcpStream,
+    rooms: &Rooms,
+    code: String,
+    mut throttle: Throttle,
+) {
     let Ok(writer) = stream.try_clone() else {
         return;
     };
@@ -465,15 +648,15 @@ fn relay_client(mut stream: TcpStream, rooms: &Rooms, code: String) {
         };
         let peer = room.next;
         room.next += 1;
-        if write_frame(&mut stream, WELCOME, peer, &[]).is_err()
-            || write_frame(&mut room.host, JOINED, peer, &[]).is_err()
-        {
+        if write_frame(&mut stream, WELCOME, peer, &[]).is_err() {
             return;
         }
+        forward(&mut room.host, JOINED, peer, &[]);
         room.clients.insert(peer, writer);
         peer
     };
     while let Ok((kind, _, bytes)) = read_frame(&mut stream) {
+        throttle.spend(9 + bytes.len());
         if kind != DATA {
             continue;
         }
@@ -481,12 +664,12 @@ fn relay_client(mut stream: TcpStream, rooms: &Rooms, code: String) {
         let Some(room) = rooms.get_mut(&code) else {
             break;
         };
-        let _ = write_frame(&mut room.host, DATA, peer, &bytes);
+        forward(&mut room.host, DATA, peer, &bytes);
     }
     let mut rooms = rooms.lock().unwrap();
     if let Some(room) = rooms.get_mut(&code) {
         room.clients.remove(&peer);
-        let _ = write_frame(&mut room.host, LEFT, peer, &[]);
+        forward(&mut room.host, LEFT, peer, &[]);
     }
 }
 
@@ -499,18 +682,21 @@ fn room_code() -> String {
         .collect()
 }
 
-/// Host side of a direct join: reads JOIN, answers WELCOME or REJECT.
-fn handshake_client(
+/// Host side of a direct join: reads JOIN, answers WELCOME or REJECT, and
+/// on WELCOME adds the client to `peers` and reports it. Returns its id.
+fn admit_client(
     stream: &TcpStream,
-    peer: PeerId,
+    peers: &Mutex<BTreeMap<PeerId, TcpStream>>,
+    next: &AtomicU32,
     password: &str,
-) -> io::Result<()> {
+    sender: &Sender<NetEvent>,
+) -> Option<PeerId> {
     let mut stream = stream;
-    stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    let (kind, _, payload) = read_frame(&mut stream)?;
+    stream.set_nodelay(true).ok()?;
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok()?;
+    let (kind, _, payload) = read_frame(&mut stream).ok()?;
     if kind != JOIN {
-        return Err(invalid("expected a join"));
+        return None;
     }
     let checked = parse_join(&payload).and_then(|(_, secret)| {
         if same_secret(secret, password.as_bytes()) {
@@ -520,11 +706,22 @@ fn handshake_client(
         }
     });
     if let Err(reason) = checked {
-        write_frame(&mut stream, REJECT, HOST, reason.as_bytes())?;
-        return Err(invalid(&reason));
+        let _ = write_frame(&mut stream, REJECT, HOST, reason.as_bytes());
+        return None;
     }
-    stream.set_read_timeout(None)?;
-    write_frame(&mut stream, WELCOME, peer, &[])
+    stream.set_read_timeout(None).ok()?;
+    let writer = stream.try_clone().ok()?;
+    // Ids, WELCOMEs and Connected events follow one order under the lock.
+    let mut peers = peers.lock().unwrap();
+    let peer = next.fetch_add(1, Ordering::Relaxed);
+    write_frame(&mut stream, WELCOME, peer, &[]).ok()?;
+    if sender.send(NetEvent::Connected(peer)).is_err() {
+        // The session is gone.
+        let _ = stream.shutdown(Shutdown::Both);
+        return None;
+    }
+    peers.insert(peer, writer);
+    Some(peer)
 }
 
 /// Client side of a join; returns the id the host or relay assigned.
@@ -782,5 +979,63 @@ mod tests {
         let client = NetSession::join_room(relay, &code, "s3cret").unwrap();
         assert_eq!(client.id(), 1);
         assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+    }
+
+    #[test]
+    fn a_silent_connection_does_not_delay_another_join() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        let _silent = TcpStream::connect(address).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let start = Instant::now();
+        let client = NetSession::join(address, "").unwrap();
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert_eq!(client.id(), 1);
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+    }
+
+    #[test]
+    fn a_relay_limits_connections_per_address() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        let limits = RelayLimits {
+            max_connections_per_address: 2,
+            connects_per_minute: 4,
+            ..RelayLimits::default()
+        };
+        std::thread::spawn(move || run_relay_with(listener, "", limits));
+        let host = NetSession::host_room(relay, "").unwrap();
+        let code = host.room_code().unwrap().to_owned();
+        let client = NetSession::join_room(relay, &code, "").unwrap();
+        // A third open connection from the same address is closed.
+        assert!(NetSession::join_room(relay, &code, "").is_err());
+        drop(client);
+        assert_eq!(
+            wait(&host, 2),
+            [NetEvent::Connected(1), NetEvent::Disconnected(1)]
+        );
+        // A slot is free again, but this is the address's fourth connect
+        // this minute and the fifth is over the rate.
+        let client = NetSession::join_room(relay, &code, "").unwrap();
+        drop(client);
+        assert_eq!(
+            wait(&host, 2),
+            [NetEvent::Connected(2), NetEvent::Disconnected(2)]
+        );
+        assert!(NetSession::join_room(relay, &code, "").is_err());
+    }
+
+    #[test]
+    fn a_throttle_holds_a_reader_to_its_rate() {
+        let mut throttle = Throttle::new(100_000);
+        let start = Instant::now();
+        // One second's burst passes at once; the rest waits.
+        throttle.spend(100_000);
+        assert!(start.elapsed() < Duration::from_millis(100));
+        throttle.spend(30_000);
+        let elapsed = start.elapsed();
+        assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(600), "{elapsed:?}");
     }
 }

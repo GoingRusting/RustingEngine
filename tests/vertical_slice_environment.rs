@@ -38,7 +38,8 @@ fn vertical_slice_scene_persists_and_reloads_assets_live() {
     use std::time::{Duration, Instant, SystemTime};
 
     use rusting_engine::assets::{
-        spawn_gltf_nodes_in_world, AssetServer, MeshAsset, MeshVertex,
+        encode_mesh_file, spawn_gltf_nodes_in_world, AssetServer, MeshAsset,
+        MeshVertex,
     };
     use rusting_engine::runtime::{
         load_scene, save_scene, Camera, Children, DirectionalLight,
@@ -133,7 +134,7 @@ fn vertical_slice_scene_persists_and_reloads_assets_live() {
         vertices: vec![MeshVertex::default(); 3],
         indices: vec![0, 1, 2],
     };
-    std::fs::write(&mesh_path, bincode::serialize(&triangle).unwrap()).unwrap();
+    std::fs::write(&mesh_path, encode_mesh_file(&triangle).unwrap()).unwrap();
     std::fs::File::options()
         .write(true)
         .open(&mesh_path)

@@ -2133,7 +2133,26 @@ impl GameScene<'_> {
         max_distance: f32,
         skip_classes: &[&str],
     ) -> Option<RayHit> {
-        self.cast(origin, direction, max_distance, skip_classes, false)
+        self.cast(origin, direction, max_distance, skip_classes, &[], false)
+    }
+
+    /// [`Self::raycast`] that hits only objects in at least one of
+    /// `classes` and passes through everything else:
+    /// `raycast_only(eye, dir, 500.0, &["island"])` finds the island under
+    /// a point even with boats, birds and water in the way. Empty
+    /// `classes` hits nothing.
+    #[must_use]
+    pub fn raycast_only(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        classes: &[&str],
+    ) -> Option<RayHit> {
+        if classes.is_empty() {
+            return None;
+        }
+        self.cast(origin, direction, max_distance, &[], classes, false)
     }
 
     /// [`Self::raycast`] that passes through hidden objects: one whose
@@ -2147,7 +2166,7 @@ impl GameScene<'_> {
         direction: [f32; 3],
         max_distance: f32,
     ) -> Option<RayHit> {
-        self.cast(origin, direction, max_distance, &[], true)
+        self.cast(origin, direction, max_distance, &[], &[], true)
     }
 
     fn cast(
@@ -2156,6 +2175,7 @@ impl GameScene<'_> {
         direction: [f32; 3],
         max_distance: f32,
         skip_classes: &[&str],
+        only_classes: &[&str],
         visible_only: bool,
     ) -> Option<RayHit> {
         // A ragdoll body stands for its bone.
@@ -2164,7 +2184,7 @@ impl GameScene<'_> {
                 .get::<crate::runtime::RagdollPart>(entity)
                 .map_or(entity, |part| part.bone)
         };
-        // No lookups per collider unless classes are skipped.
+        // No lookups per collider unless classes filter the ray.
         let keep = |entity| {
             let entity = owner(entity);
             if visible_only
@@ -2172,14 +2192,18 @@ impl GameScene<'_> {
             {
                 return false;
             }
-            if skip_classes.is_empty() {
+            if skip_classes.is_empty() && only_classes.is_empty() {
                 return true;
             }
-            self.world
-                .get::<crate::runtime::ObjectClasses>(entity)
-                .is_none_or(|classes| {
-                    !skip_classes.iter().any(|class| classes.contains(class))
+            let classes =
+                self.world.get::<crate::runtime::ObjectClasses>(entity);
+            let any_of = |wanted: &[&str]| {
+                classes.is_some_and(|classes| {
+                    wanted.iter().any(|class| classes.contains(class))
                 })
+            };
+            !any_of(skip_classes)
+                && (only_classes.is_empty() || any_of(only_classes))
         };
         let hit = self
             .world

@@ -95,6 +95,13 @@ sessions; only the constructor differs.
 - No encryption. The password and relay token travel in plain text, so
   they keep strangers out but do not hide traffic from someone on the
   path. Do not send other secrets.
-- The relay does not rate-limit wrong tokens. Use a long random token.
+- The relay limits each IP address to 16 open connections and 60 new
+  connections a minute (failed ones count, which slows token guessing),
+  caps everyone together at 1024 connections, and reads at most 1 MiB/s
+  from each connection. Still use a long random token. To change the
+  limits, run the relay from Rust with `net::run_relay_with(listener,
+  token, RelayLimits { .. })`.
+- One player who connects and then sends nothing does not hold up anyone
+  else's join; each handshake runs on its own thread with a timeout.
 - The wire protocol has a version (`PROTOCOL_VERSION`); a host or relay
   refuses clients built with another one.

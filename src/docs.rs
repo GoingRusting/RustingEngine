@@ -747,6 +747,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
         &[
             "raycast",
             "raycast_skipping",
+            "raycast_only",
             "raycast_visible",
             "aim",
             "camera_ray",

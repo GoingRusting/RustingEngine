@@ -124,6 +124,8 @@ struct SceneVertex {
     uv: [f32; 2],
     #[format(R32G32B32A32_SFLOAT)]
     tangent: [f32; 4],
+    #[format(R32G32B32A32_SFLOAT)]
+    color: [f32; 4],
 }
 
 /// One entry of the per-frame visible list: the instance a main-pass draw
@@ -5906,6 +5908,7 @@ impl SceneRenderer {
                 normal: vertex.normal,
                 uv: vertex.uv,
                 tangent: vertex.tangent,
+                color: vertex.color,
             }),
         )
         .map_err(|error| SceneRenderError(error.to_string()))?;
@@ -8570,6 +8573,7 @@ layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec2 uv;
 layout(location = 3) in vec4 tangent;
+layout(location = 5) in vec4 color;
 layout(location = 0) out vec3 v_normal;
 layout(push_constant) uniform Camera {
     mat4 view_projection;
@@ -8632,7 +8636,7 @@ void main() {
             linear[2] / dot(linear[2], linear[2]));
     }
     v_normal = normal_matrix * normal;
-    v_color = instance.color;
+    v_color = instance.color * color;
     v_world_position = world_position.xyz;
     v_alpha = instance.physics.yzw;
     v_uv = uv * instance.uv_transform.xy + instance.uv_transform.zw;
@@ -8887,6 +8891,10 @@ float shadow_factor(vec3 surface_normal) {
 }
 void main() {
     vec4 base_color = v_color * texture(base_color_texture, v_uv);
+    // Flat shading's face normal, taken before any discard or branch:
+    // derivatives are undefined once a pixel of the 2x2 quad has left, and
+    // some drivers then return garbage.
+    vec3 face = cross(dFdx(v_world_position), dFdy(v_world_position));
     if (v_alpha.x == 1u && base_color.a < uintBitsToFloat(v_alpha.y)) {
         discard;
     }
@@ -8910,11 +8918,11 @@ void main() {
         return;
     }
     vec3 normal = normalize(v_normal);
-    if (v_surface.w > 0.5) {
-        // Flat shading: the triangle's face normal from screen-space
-        // derivatives, turned to the side the vertex normal points to.
-        vec3 face = normalize(cross(dFdx(v_world_position),
-            dFdy(v_world_position)));
+    // Flat shading: the triangle's face normal, turned to the side the
+    // vertex normal points to. A sliver too thin to give one keeps the
+    // vertex normal instead of normalizing zero into NaN.
+    if (v_surface.w > 0.5 && dot(face, face) > 1e-20) {
+        face = normalize(face);
         normal = dot(face, normal) < 0.0 ? -face : face;
     }
     if (v_surface.z > 0.5) {
@@ -10827,6 +10835,67 @@ mod tests {
             .unwrap();
         let [b, g, r, _] = scene.center_pixel();
         assert!(r > 200 && g < 30 && b < 30, "red texture, got {b} {g} {r}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn vertex_colors_tint_the_material_color() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let unlit = MaterialAsset {
+            model: MaterialModel::Unlit,
+            ..Default::default()
+        };
+        let mut scene = SlabScene::new(&[(0.0, unlit)]);
+        let mesh = scene.render_world.renderables[0].mesh;
+        for vertex in &mut scene.assets.meshes.get_mut(mesh).unwrap().vertices {
+            vertex.color = [0.0, 0.0, 1.0, 1.0];
+        }
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let [b, g, r, _] = scene.center_pixel();
+        assert!(
+            b > 200 && g < 30 && r < 30,
+            "blue vertices, got {b} {g} {r}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn flat_shading_lights_a_flat_face_like_its_vertex_normals() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // Alpha-tested, so the face normal's derivatives sit next to a
+        // discard in the same shader.
+        let material = |flat_shading| MaterialAsset {
+            flat_shading,
+            alpha_mode: AlphaMode::Mask { cutoff: 0.5 },
+            ..Default::default()
+        };
+        let smooth = render_center_pixel(&[(0.0, material(false))]);
+        let flat = render_center_pixel(&[(0.0, material(true))]);
+        assert!(
+            smooth[..3].iter().any(|&channel| channel > 20),
+            "{smooth:?}"
+        );
+        for (smooth, flat) in smooth.iter().zip(flat) {
+            assert!(smooth.abs_diff(flat) <= 2, "{smooth:?} vs {flat:?}");
+        }
     }
 
     #[test]

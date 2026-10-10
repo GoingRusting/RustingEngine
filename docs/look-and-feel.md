@@ -47,6 +47,10 @@ Do this after the game works and before calling it done.
   such as water. Pair it with `scene.set_hard_shadows(true)` (or Hard
   shadows in the editor's project settings) for crisp one-tap shadow
   edges.
+- **Vertex colors.** Each `MeshVertex` has a linear RGBA `color`
+  (white by default) that multiplies the material's base color, so a
+  generated mesh can fade from shallow to deep water without a gradient
+  texture. glTF models keep their `COLOR_0`.
 - **Shapes.** Use the rounded primitives (below) or real models for
   anything the player looks at closely. Plain cubes are for floors and
   walls.

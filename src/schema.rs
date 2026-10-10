@@ -361,7 +361,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "relay",
         usage: "relay [address]",
-        summary: "Run a multiplayer relay until stopped. A game hosts through it with `NetSession::host_room(relay, token)`, which hands out a six-character room code, and players join with `NetSession::join_room(relay, code, token)`; the relay forwards host messages to clients and client messages to the host, so neither side needs an open port. Messages are reliable and in order (TCP). Set `RUSTING_RELAY_TOKEN` to require that token from hosts and clients before exposing the relay on the internet; unset, anyone can use it. See `guide/networking`.",
+        summary: "Run a multiplayer relay until stopped. A game hosts through it with `NetSession::host_room(relay, token)`, which hands out a six-character room code, and players join with `NetSession::join_room(relay, code, token)`; the relay forwards host messages to clients and client messages to the host, so neither side needs an open port. Messages are reliable and in order (TCP). Set `RUSTING_RELAY_TOKEN` to require that token from hosts and clients before exposing the relay on the internet; unset, anyone can use it. Each IP address may hold 16 connections and open 60 a minute, the relay holds 1024 in all, and each connection is read at up to 1 MiB/s; `net::run_relay_with` takes other `RelayLimits`. See `guide/networking`.",
         gpu: NO_GPU,
         defaults: &[("address", "0.0.0.0:7777")],
         example: "relay 0.0.0.0:7777",
@@ -962,7 +962,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.rope",
-        summary: "A rope of `segments` small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point). Adjacent beads are joined by distance joints, so the rope goes slack but never stretches past length metres, and pulls on both ends. The beads spawn on the straight line between the ends the first fixed step of play; game code can read their transforms from RopeState to draw the rope. This object's body gets the joint to the last bead, so it cannot carry a rusting.joint of its own.",
+        summary: "A rope of `segments` (1 to 256) small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point). Adjacent beads are joined by distance joints, so the rope goes slack but never stretches past length metres, and pulls on both ends. The beads spawn on the straight line between the ends the first fixed step of play; game code can read their transforms from RopeState to draw the rope. This object's body gets the joint to the last bead, so it cannot carry a rusting.joint of its own.",
         gpu: NO_GPU,
         example: || json!({"target": null, "anchor": [0.0, 0.5, 0.0], "target_anchor": [0.0, 5.0, 0.0], "length": 4.0, "segments": 8, "radius": 0.0625, "mass": 0.125}),
     },

@@ -158,6 +158,7 @@ fn build_mesh(water: &WaterBody, center: [f32; 3], time: f32) -> MeshAsset {
                 normal: [n.x, n.y, n.z],
                 uv: [i as f32 / nx as f32, j as f32 / nz as f32],
                 tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
             });
         }
     }

@@ -72,7 +72,8 @@ if let Some([_, _, forward]) = scene.basis("P1 Camera") {
 ```
 
 `raycast_skipping(eye, dir, 50.0, &["glass"])` passes through objects in
-those classes. `raycast_visible(eye, dir, 50.0)` passes through hidden
+those classes. `raycast_only(eye, dir, 50.0, &["island"])` is the reverse:
+it hits only objects in those classes and passes through everything else. `raycast_visible(eye, dir, 50.0)` passes through hidden
 objects and their children, such as templates kept for `spawn_copy`, so it
 answers "can the player see this" where plain `raycast` still hits invisible
 walls.

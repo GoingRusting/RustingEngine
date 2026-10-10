@@ -125,7 +125,9 @@ pub struct PlayerController {
     /// child to place it yourself.
     pub camera_distance: f32,
     /// Added to the camera position, in the body's frame: `[0.6, 0, 0]` is
-    /// an over-the-shoulder camera 0.6 m to the right.
+    /// an over-the-shoulder camera 0.6 m to the right. In third person a
+    /// wall beside the body pulls the offset in, and a wall behind the
+    /// shoulder pulls the camera forward.
     pub camera_offset: [f32; 3],
     /// Height of the third-person orbit center above the body center.
     /// Unused in first person (`camera_distance` 0): there the camera
@@ -362,30 +364,48 @@ pub(super) fn player_look(
         let (sin, cos) = sim_math::sin_cos(player.pitch);
         let orbit = player.camera_distance > 0.0;
         let mut distance = player.camera_distance;
+        // Share of `camera_offset` the camera keeps (third person).
+        let mut shoulder = 1.0;
         if orbit {
-            // Stop a camera-sized sphere at the first solid collider behind
-            // the orbit center, ignoring the player's own body.
+            // Stop a camera-sized sphere at the first solid collider, ignoring
+            // the player's own body: first out from the orbit center along the
+            // offset (the shoulder), then back from there.
+            let cast = |from: [f32; 3], toward: [f32; 3], reach: f32| {
+                physics
+                    .shape_cast(
+                        ColliderShape::Sphere {
+                            radius: CAMERA_RADIUS,
+                        },
+                        from,
+                        toward,
+                        reach,
+                        u32::MAX,
+                        Some(entity),
+                    )
+                    .map_or(reach, |hit| hit.distance)
+            };
             let [x, y, z] = transform.position;
+            let center = [x, y + player.camera_height, z];
             let (yaw_sin, yaw_cos) = sim_math::sin_cos(player.yaw);
-            let back = [cos * yaw_sin, -sin, cos * yaw_cos];
-            if let Some(hit) = physics.shape_cast(
-                ColliderShape::Sphere {
-                    radius: CAMERA_RADIUS,
-                },
-                [x, y + player.camera_height, z],
-                back,
-                distance,
-                u32::MAX,
-                Some(entity),
-            ) {
-                distance = hit.distance;
+            // The offset turned by the body's yaw, like the camera child.
+            let [ox, oy, oz] = player.camera_offset;
+            let side =
+                [ox * yaw_cos + oz * yaw_sin, oy, oz * yaw_cos - ox * yaw_sin];
+            let reach = (ox * ox + oy * oy + oz * oz).sqrt();
+            if reach > 0.0 {
+                shoulder = cast(center, side, reach) / reach;
             }
+            let pivot =
+                [0, 1, 2].map(|axis| center[axis] + side[axis] * shoulder);
+            let back = [cos * yaw_sin, -sin, cos * yaw_cos];
+            distance = cast(pivot, back, distance);
         }
         for child in children.into_iter().flat_map(|children| &children.0) {
             if let Ok(mut camera) = cameras.get_mut(*child) {
                 camera.rotation = [player.pitch, 0.0, 0.0];
                 let [x, y, z] = player.camera_offset;
                 if orbit {
+                    let [x, y, z] = [x, y, z].map(|value| value * shoulder);
                     camera.position = [
                         x,
                         y + player.camera_height - sin * distance,

@@ -2129,6 +2129,58 @@ fn third_person_camera_stops_in_front_of_a_wall_behind_the_body() {
 }
 
 #[test]
+fn over_the_shoulder_camera_stops_at_walls_beside_and_behind_the_shoulder() {
+    // yaw 0 faces -Z with the right shoulder at +X; a quarter turn left
+    // puts the right shoulder at -Z and behind at +X.
+    for (yaw, pillar, wall) in [
+        (0.0, [0.6, 1.5, 2.5], [1.0, 1.5, 0.0]),
+        (
+            std::f32::consts::FRAC_PI_2,
+            [2.5, 1.5, -0.6],
+            [0.0, 1.5, -1.0],
+        ),
+    ] {
+        let camera_at = |obstacle: [f32; 3], half_extents: [f32; 3]| {
+            let mut app = App::new();
+            cpu_body(
+                app.world_mut(),
+                obstacle,
+                ColliderShape::Box { half_extents },
+                RigidBodyKind::Fixed,
+            );
+            let player = cpu_body(
+                app.world_mut(),
+                [0.0, 1.0, 0.0],
+                DEFAULT_PLAYER_SHAPE,
+                RigidBodyKind::Kinematic,
+            );
+            app.world_mut().entity_mut(player).insert(PlayerController {
+                camera_distance: 4.0,
+                camera_height: 0.5,
+                camera_offset: [0.6, 0.0, 0.0],
+                yaw,
+                ..PlayerController::default()
+            });
+            let camera = app.spawn((Transform::default(), Camera::default()));
+            app.set_parent(camera, player).unwrap();
+            run_fixed_steps(&mut app, 1);
+            app.update(Duration::ZERO).unwrap();
+            app.world().get::<Transform>(camera).unwrap().position
+        };
+        // A pillar behind the shoulder but not behind the body: the camera
+        // stops in front of its near face, 2.2 m back.
+        let [x, _, z] = camera_at(pillar, [0.3, 3.0, 0.3]);
+        assert!((x - 0.6).abs() < 1e-4, "{x}");
+        assert!(z > 1.8 && z < 2.2, "{z}");
+        // A post whose near face is 0.7 m to the right pulls the shoulder
+        // in before the camera goes back, so the camera never ends up in it.
+        let [x, _, z] = camera_at(wall, [0.3, 3.0, 0.3]);
+        assert!(x > 0.4 && x < 0.55, "{x}");
+        assert!((z - 4.0).abs() < 1e-3, "{z}");
+    }
+}
+
+#[test]
 fn player_controller_settings_round_trip_through_scene_registry() {
     let mut app = App::new();
     let player = app.spawn((
@@ -6317,6 +6369,42 @@ fn ray_hits_on_ragdoll_bodies_carry_the_bone_name_and_classes() {
 }
 
 #[test]
+fn raycast_only_hits_the_named_classes_and_passes_the_rest() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let named = |world: &mut bevy_ecs::world::World, y: f32, name: &str| {
+        let entity =
+            cpu_body(world, [0.0, y, 0.0], UNIT_BOX, RigidBodyKind::Fixed);
+        world.entity_mut(entity).insert((
+            Name(name.into()),
+            ObjectClasses {
+                names: vec![name.to_lowercase()],
+            },
+        ));
+    };
+    // A bird and a boat above the island.
+    named(world, 0.0, "Island");
+    named(world, 3.0, "Boat");
+    named(world, 6.0, "Bird");
+    run_fixed_steps(&mut app, 1);
+    let scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    let (from, down) = ([0.0, 10.0, 0.0], [0.0, -1.0, 0.0]);
+    let name =
+        |hit: Option<crate::project_runner::RayHit>| hit.map(|hit| hit.name);
+    assert_eq!(name(scene.raycast(from, down, 20.0)), Some("Bird".into()));
+    let island = scene.raycast_only(from, down, 20.0, &["island"]).unwrap();
+    assert_eq!(island.name, "Island");
+    assert!((island.distance - 9.5).abs() < 1e-4, "{}", island.distance);
+    assert_eq!(
+        name(scene.raycast_only(from, down, 20.0, &["island", "boat"])),
+        Some("Boat".into())
+    );
+    assert_eq!(name(scene.raycast_only(from, down, 20.0, &[])), None);
+}
+
+#[test]
 fn ragdolls_go_limp_on_a_hit_fall_and_blend_back_deterministically() {
     let (mut app, hero, hips, _) = ragdoll_scene(0.0);
     let mut steps = 0;
@@ -6565,6 +6653,49 @@ fn raycast_cost_per_ray() {
         "raycast: {per_ray:.2} us per ray over 201 colliders, {hits} hits"
     );
     assert!(hits > rays as usize / 2);
+    assert!(per_ray < 200.0, "{per_ray:.2} us per ray");
+
+    // Island heights: straight down onto a 256 x 256 heightfield, 131,072
+    // triangles, once per metre.
+    let mut app = App::new();
+    let world = app.world_mut();
+    let ground = cpu_body(
+        world,
+        [0.0; 3],
+        ColliderShape::Heightfield,
+        RigidBodyKind::Fixed,
+    );
+    let heights = (0..257)
+        .map(|row| {
+            (0..257)
+                .map(|column| ((row * 7 + column * 13) % 17) as f32 * 0.2)
+                .collect()
+        })
+        .collect();
+    world
+        .entity_mut(ground)
+        .insert(crate::runtime::Heightfield {
+            heights,
+            spacing: 1.0,
+            ..crate::runtime::Heightfield::default()
+        });
+    run_fixed_steps(&mut app, 1);
+    let scene = crate::project_runner::GameScene {
+        world: app.world_mut(),
+    };
+    let start = std::time::Instant::now();
+    let mut hits = 0;
+    for x in -128..128 {
+        for z in -128..128 {
+            let from = [x as f32 + 0.5, 50.0, z as f32 + 0.5];
+            hits += usize::from(
+                scene.raycast(from, [0.0, -1.0, 0.0], 100.0).is_some(),
+            );
+        }
+    }
+    let per_ray = start.elapsed().as_secs_f64() * 1e6 / 65_536.0;
+    println!("heightfield: {per_ray:.2} us per ray over 131,072 triangles");
+    assert_eq!(hits, 65_536);
     assert!(per_ray < 200.0, "{per_ray:.2} us per ray");
 }
 

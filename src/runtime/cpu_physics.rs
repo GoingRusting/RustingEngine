@@ -26,7 +26,7 @@
 //! body wakes the other side of its joints.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity::Entity;
@@ -237,6 +237,7 @@ impl Heightfield {
                         row as f32 / (rows - 1) as f32,
                     ],
                     tangent: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0; 4],
                 });
             }
         }
@@ -302,6 +303,7 @@ impl Polygon2d {
                     normal,
                     uv: [position[0], position[1]],
                     tangent: [1.0, 0.0, 0.0, 1.0],
+                    color: [1.0; 4],
                 }
             }));
             for k in 1..corners.len().saturating_sub(1) as u32 {
@@ -739,6 +741,8 @@ struct MeshData {
     surfaces: Vec<Option<u8>>,
     /// Friction and restitution of each surface.
     surface_values: Vec<[f32; 2]>,
+    /// The triangles' boxes, for ray casts.
+    ray_tree: RayTree,
 }
 
 impl MeshData {
@@ -757,7 +761,7 @@ impl MeshData {
         let center =
             points.iter().sum::<Vector3<f32>>() / points.len().max(1) as f32;
         let mut inner_radius = f32::INFINITY;
-        let triangles = indices
+        let triangles: Vec<_> = indices
             .chunks_exact(3)
             .filter(|chunk| chunk.iter().all(|&i| (i as usize) < points.len()))
             .map(|chunk| [0, 1, 2].map(|k| points[chunk[k] as usize]))
@@ -782,7 +786,16 @@ impl MeshData {
             .fold(Vector3::zeros(), |most: Vector3<f32>, point| {
                 most.sup(&point.abs())
             });
+        let ray_tree = RayTree::new(
+            &triangles
+                .iter()
+                .map(|[a, b, c]: &[Vector3<f32>; 3]| {
+                    [a.inf(&b.inf(c)), a.sup(&b.sup(c))]
+                })
+                .collect::<Vec<_>>(),
+        );
         Self {
+            ray_tree,
             bounding_radius: points
                 .iter()
                 .map(|point| point.norm())
@@ -1202,6 +1215,9 @@ pub struct PhysicsWorld {
     /// Last step's impulse of each joint row, by row key.
     joint_warm: JointWarm,
     meshes: MeshCache,
+    /// The bodies' bounding boxes for ray casts, built by the first cast
+    /// after the bodies change.
+    ray_tree: OnceLock<RayTree>,
 }
 
 /// Contact points of each pair in the first body's local frame, with the
@@ -1309,20 +1325,39 @@ impl PhysicsWorld {
     ) -> Option<RayHit> {
         let origin = Vector3::from(origin);
         let direction = Vector3::from(direction).try_normalize(1e-6)?;
-        self.bodies
-            .iter()
-            .filter(|body| body.layers.memberships & layer_mask != 0)
-            .filter(|body| keep(body.entity))
-            .filter_map(|body| {
-                let (distance, normal) = ray_body(origin, direction, body)?;
-                (distance <= max_distance).then(|| RayHit {
-                    entity: body.entity,
-                    distance,
-                    point: (origin + direction * distance).into(),
-                    normal: normal.into(),
-                })
-            })
-            .min_by(|a, b| a.distance.total_cmp(&b.distance))
+        let tree = self.ray_tree.get_or_init(|| {
+            RayTree::new(
+                &self
+                    .bodies
+                    .iter()
+                    .map(|body| {
+                        let reach = Vector3::repeat(body.bounding_radius());
+                        [body.position - reach, body.position + reach]
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let (index, distance, normal) =
+            tree.cast(origin, direction, max_distance, |index| {
+                let body = &self.bodies[index];
+                if body.layers.memberships & layer_mask == 0 {
+                    return None;
+                }
+                let hit = ray_body(origin, direction, body)?;
+                keep(body.entity).then_some(hit)
+            })?;
+        Some(RayHit {
+            entity: self.bodies[index].entity,
+            distance,
+            point: (origin + direction * distance).into(),
+            normal: normal.into(),
+        })
+    }
+
+    /// Replaces the bodies, dropping the ray tree built over the old ones.
+    fn set_bodies(&mut self, bodies: Vec<Body>) {
+        self.bodies = bodies;
+        self.ray_tree = OnceLock::new();
     }
 
     /// Solid colliders of the last step, for GPU bodies to collide against.
@@ -1910,7 +1945,7 @@ fn substep(
         .chain(resting)
         .collect();
     all_impacts.extend(impacts);
-    physics.bodies = bodies;
+    physics.set_bodies(bodies);
     physics.rest = rest;
     if let Some(kill_y) = settings.kill_y {
         kill_fallen(world, kill_y);
@@ -1936,7 +1971,9 @@ fn kill_fallen(world: &mut World, kill_y: f32) {
         let mut physics = world.resource_mut::<PhysicsWorld>();
         let physics = &mut *physics;
         physics.forget_body(entity);
-        physics.bodies.retain(|body| body.entity != entity);
+        let mut bodies = std::mem::take(&mut physics.bodies);
+        bodies.retain(|body| body.entity != entity);
+        physics.set_bodies(bodies);
         for contacts in [&mut physics.contacts, &mut physics.impacts] {
             contacts
                 .retain(|contact| contact.a != entity && contact.b != entity);
@@ -1977,11 +2014,13 @@ impl PhysicsWorld {
     /// dropped.
     pub(crate) fn rename_bodies(&mut self, renamed: &HashMap<Entity, Entity>) {
         let new = |entity: &Entity| renamed.get(entity).copied();
-        self.bodies.retain_mut(|body| {
+        let mut bodies = std::mem::take(&mut self.bodies);
+        bodies.retain_mut(|body| {
             new(&body.entity)
                 .map(|entity| body.entity = entity)
                 .is_some()
         });
+        self.set_bodies(bodies);
         for contacts in [&mut self.contacts, &mut self.impacts] {
             contacts.retain_mut(|contact| {
                 match (new(&contact.a), new(&contact.b)) {
@@ -3944,6 +3983,169 @@ fn segments_closest(
 }
 
 /// Distance along a unit ray and the surface normal there.
+/// Box tree over items (bodies, or a mesh's triangles) for ray casts, so a
+/// ray visits only the boxes it passes through instead of every item.
+#[derive(Clone, Debug, Default)]
+struct RayTree {
+    nodes: Vec<RayNode>,
+    /// Item indices, leaf after leaf.
+    items: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RayNode {
+    min: Vector3<f32>,
+    max: Vector3<f32>,
+    /// A leaf's first entry in `items`, or an inner node's first child (the
+    /// second follows it).
+    first: u32,
+    /// Items in a leaf; 0 for an inner node.
+    count: u32,
+}
+
+/// Most items in a tree leaf.
+const RAY_LEAF: usize = 4;
+
+impl RayTree {
+    /// A tree over items with these `[min, max]` boxes.
+    fn new(bounds: &[[Vector3<f32>; 2]]) -> Self {
+        let mut tree = Self {
+            nodes: Vec::with_capacity(2 * bounds.len() / RAY_LEAF + 1),
+            items: (0..bounds.len() as u32).collect(),
+        };
+        if !bounds.is_empty() {
+            tree.nodes.push(RayNode {
+                min: Vector3::zeros(),
+                max: Vector3::zeros(),
+                first: 0,
+                count: 0,
+            });
+            tree.build(0, 0, bounds.len(), bounds);
+        }
+        tree
+    }
+
+    fn build(
+        &mut self,
+        node: usize,
+        start: usize,
+        end: usize,
+        bounds: &[[Vector3<f32>; 2]],
+    ) {
+        // Padded so a hit on a box face never falls outside by rounding.
+        let pad = Vector3::repeat(1e-4);
+        let (min, max) = self.items[start..end].iter().fold(
+            (
+                Vector3::repeat(f32::INFINITY),
+                Vector3::repeat(f32::NEG_INFINITY),
+            ),
+            |(min, max), &item| {
+                let [low, high] = bounds[item as usize];
+                (min.inf(&(low - pad)), max.sup(&(high + pad)))
+            },
+        );
+        if end - start <= RAY_LEAF {
+            self.nodes[node] = RayNode {
+                min,
+                max,
+                first: start as u32,
+                count: (end - start) as u32,
+            };
+            return;
+        }
+        // Halve the items at the median center on the longest axis.
+        let axis = (max - min).imax();
+        let middle = (start + end) / 2;
+        let center = |item: u32| {
+            let [low, high] = bounds[item as usize];
+            low[axis] + high[axis]
+        };
+        self.items[start..end]
+            .select_nth_unstable_by(middle - start, |a, b| {
+                center(*a).total_cmp(&center(*b)).then(a.cmp(b))
+            });
+        let child = self.nodes.len();
+        self.nodes.extend([self.nodes[node]; 2]);
+        self.nodes[node] = RayNode {
+            min,
+            max,
+            first: child as u32,
+            count: 0,
+        };
+        self.build(child, start, middle, bounds);
+        self.build(child + 1, middle, end, bounds);
+    }
+
+    /// The nearest hit within `max_distance` that `test` reports for an
+    /// item whose box the ray (unit `direction`) passes through, as item,
+    /// distance and `test`'s value. Ties go to the lowest item, the same
+    /// answer a scan in item order gives.
+    fn cast<T>(
+        &self,
+        origin: Vector3<f32>,
+        direction: Vector3<f32>,
+        max_distance: f32,
+        mut test: impl FnMut(usize) -> Option<(f32, T)>,
+    ) -> Option<(usize, f32, T)> {
+        let inverse = direction.map(|d| 1.0 / d);
+        let mut best: Option<(usize, f32, T)> = None;
+        let mut stack = Vec::with_capacity(64);
+        if !self.nodes.is_empty() {
+            stack.push(0);
+        }
+        while let Some(index) = stack.pop() {
+            let node = self.nodes[index];
+            let limit = best.as_ref().map_or(max_distance, |hit| hit.1);
+            if !ray_box(origin, inverse, node.min, node.max, limit) {
+                continue;
+            }
+            let first = node.first as usize;
+            if node.count == 0 {
+                stack.extend([first + 1, first]);
+                continue;
+            }
+            for &item in &self.items[first..first + node.count as usize] {
+                let item = item as usize;
+                let Some((distance, value)) = test(item) else {
+                    continue;
+                };
+                let better = match &best {
+                    None => distance <= max_distance,
+                    Some((other, nearest, _)) => {
+                        distance < *nearest
+                            || (distance == *nearest && item < *other)
+                    }
+                };
+                if better {
+                    best = Some((item, distance, value));
+                }
+            }
+        }
+        best
+    }
+}
+
+/// Whether a ray enters the box `[min, max]` between 0 and `limit`. A ray
+/// lying in a box face counts as entering it.
+fn ray_box(
+    origin: Vector3<f32>,
+    inverse: Vector3<f32>,
+    min: Vector3<f32>,
+    max: Vector3<f32>,
+    limit: f32,
+) -> bool {
+    let (mut near, mut far) = (0.0_f32, limit);
+    for axis in 0..3 {
+        // A ray parallel to and on a slab gives NaN, which max and min
+        // skip, keeping the box.
+        let t1 = (min[axis] - origin[axis]) * inverse[axis];
+        let t2 = (max[axis] - origin[axis]) * inverse[axis];
+        near = near.max(t1.min(t2));
+        far = far.min(t1.max(t2));
+    }
+    near <= far
+}
+
 fn ray_body(
     origin: Vector3<f32>,
     direction: Vector3<f32>,
@@ -3987,16 +4189,21 @@ fn ray_body(
             let local_direction = inverse * direction;
             // A hull is solid: only faces seen from outside stop the ray.
             let one_sided = matches!(body.shape, Shape::Hull(_));
-            let (t, normal) = mesh
-                .triangles
-                .iter()
-                .filter_map(|triangle| {
-                    ray_triangle(local_origin, local_direction, triangle)
-                })
-                .filter(|(_, normal)| {
-                    !one_sided || normal.dot(&local_direction) < 0.0
-                })
-                .min_by(|a, b| a.0.total_cmp(&b.0))?;
+            let (_, t, normal) = mesh.ray_tree.cast(
+                local_origin,
+                local_direction,
+                f32::INFINITY,
+                |index| {
+                    ray_triangle(
+                        local_origin,
+                        local_direction,
+                        &mesh.triangles[index],
+                    )
+                    .filter(|(_, normal)| {
+                        !one_sided || normal.dot(&local_direction) < 0.0
+                    })
+                },
+            )?;
             let normal = if normal.dot(&local_direction) > 0.0 {
                 -normal
             } else {
@@ -4117,6 +4324,112 @@ mod tests {
 
     fn assert_near(actual: f32, expected: f32) {
         assert!((actual - expected).abs() < 1e-4, "{actual} != {expected}");
+    }
+
+    /// Points in [-1, 1) from a fixed seed, for test layouts.
+    fn noise(seed: &mut u32) -> f32 {
+        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*seed >> 8) as f32 / (1 << 23) as f32 - 1.0
+    }
+
+    /// Nearest hit by scanning every item, the way rays were cast before
+    /// the ray trees.
+    fn scan_ray(
+        origin: Vector3<f32>,
+        direction: Vector3<f32>,
+        bodies: &[Body],
+    ) -> Option<(usize, f32, Vector3<f32>)> {
+        bodies
+            .iter()
+            .enumerate()
+            .filter_map(|(index, body)| {
+                let (distance, normal) = match &body.shape {
+                    Shape::Triangles(mesh) => {
+                        let (t, normal) = mesh
+                            .triangles
+                            .iter()
+                            .filter_map(|triangle| {
+                                ray_triangle(origin, direction, triangle)
+                            })
+                            .min_by(|a, b| a.0.total_cmp(&b.0))?;
+                        let flip = normal.dot(&direction) > 0.0;
+                        (t, if flip { -normal } else { normal })
+                    }
+                    _ => ray_body(origin, direction, body)?,
+                };
+                Some((index, distance, normal))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    #[test]
+    fn ray_trees_find_the_same_hits_as_scanning_every_item() {
+        let mut seed = 7;
+        // A bumpy 64 x 64 heightfield: 8,192 triangles.
+        let heights = (0..65)
+            .map(|_| (0..65).map(|_| noise(&mut seed) * 2.0).collect())
+            .collect();
+        let field = Heightfield {
+            heights,
+            spacing: 1.0,
+            ..Heightfield::default()
+        };
+        let island = Shape::Triangles(Arc::new(MeshData::new(
+            &field.mesh(),
+            [1.0; 3],
+            false,
+        )));
+        let mut bodies = vec![body(island, [0.0; 3])];
+        // 500 spheres and boxes above it.
+        for index in 0..500 {
+            let at = [
+                noise(&mut seed) * 30.0,
+                3.0 + noise(&mut seed).abs() * 10.0,
+                noise(&mut seed) * 30.0,
+            ];
+            let shape = if index % 2 == 0 {
+                Shape::Sphere(0.5)
+            } else {
+                Shape::Box(Vector3::new(0.4, 0.3, 0.6))
+            };
+            bodies.push(body(shape, at));
+        }
+        for (index, body) in bodies.iter_mut().enumerate() {
+            body.entity = Entity::from_raw_u32(index as u32).unwrap();
+        }
+        let mut world = PhysicsWorld::default();
+        world.set_bodies(bodies.clone());
+        let mut hits = 0;
+        for _ in 0..400 {
+            let origin = Vector3::new(
+                noise(&mut seed) * 40.0,
+                20.0,
+                noise(&mut seed) * 40.0,
+            );
+            let direction = Vector3::new(
+                noise(&mut seed),
+                -1.0 - noise(&mut seed).abs(),
+                noise(&mut seed),
+            )
+            .normalize();
+            let actual =
+                world.raycast(origin.into(), direction.into(), 60.0, u32::MAX);
+            // `raycast` normalizes again, which can move the last bit.
+            let direction = direction.try_normalize(1e-6).unwrap();
+            let expected = scan_ray(origin, direction, &bodies)
+                .filter(|hit| hit.1 <= 60.0);
+            match (expected, actual) {
+                (None, None) => {}
+                (Some((index, distance, normal)), Some(hit)) => {
+                    hits += 1;
+                    assert_eq!(hit.entity, bodies[index].entity);
+                    assert_eq!(hit.distance, distance);
+                    assert_eq!(hit.normal, <[f32; 3]>::from(normal));
+                }
+                (expected, actual) => panic!("{expected:?} vs {actual:?}"),
+            }
+        }
+        assert!(hits > 200, "{hits}");
     }
 
     #[test]
@@ -4275,6 +4588,7 @@ mod tests {
             warm: HashMap::new(),
             joint_warm: HashMap::new(),
             meshes: HashMap::new(),
+            ray_tree: OnceLock::new(),
         };
         let hit = world
             .raycast([0.0; 3], [0.0, 0.0, -1.0], 100.0, u32::MAX)
@@ -4555,6 +4869,7 @@ mod tests {
             warm: HashMap::new(),
             joint_warm: HashMap::new(),
             meshes: HashMap::new(),
+            ray_tree: OnceLock::new(),
         });
         crate::runtime::solve_ik(&mut world);
         propagate_transforms(&mut world);
@@ -4613,6 +4928,7 @@ mod tests {
             warm: HashMap::new(),
             joint_warm: HashMap::new(),
             meshes: HashMap::new(),
+            ray_tree: OnceLock::new(),
         });
         let ground = world
             .resource::<PhysicsWorld>()

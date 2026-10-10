@@ -245,7 +245,7 @@ each one's fields, defaults and an example:
 - `rusting.animation`: Keyframe animation: named clips of tracks keyed over time.
 - `rusting.skin`: Skinned mesh: joint paths from this object (child names joined by /, .. for the parent) and one column-major inverse bind matrix per joint.
 - `rusting.ik`: Inverse kinematics on the end of a joint chain, solved each fixed step after the animation pose.
-- `rusting.rope`: A rope of `segments` small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point).
+- `rusting.rope`: A rope of `segments` (1 to 256) small CPU sphere bodies (radius m, mass kg each) from this object's body at anchor (local m) to target's body at target_anchor (target null: a world point).
 - `rusting.ragdoll`: Hands a character's bones from animation to CPU physics and back.
 - `rusting.morph`: Blend shape (morph target) weights for the object's mesh, one per shape, usually 0 to 1.
 - `rusting.fluid_block`: Particle fluid: a block of count_x by count_y by count_z particles resting on the floor of a box centered on the entity.
@@ -340,7 +340,7 @@ works too.
 | state machines | `set_state(name, state)`, `state(name)`, `state_seconds(name)` |
 | health | `damage(name, amount)`, `health(name)`, `same_team(a, b)`, `add_status(object, effect, seconds)`, `has_status(object, effect)`, `status_left(object, effect)`, `clear_status(object, effect)` |
 | input | `pressed(action)`, `held(action)`, `press_tick(action)`, `stick(stick)`, `clicked()`, `cursor()`, `keys_pressed()`, `binding(action)`, `rebind(action, inputs)`, `window_focused()`, `viewport_size()` |
-| rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
+| rays | `raycast(origin, direction, max_distance)`, `raycast_skipping(origin, direction, max_distance, skip_classes)`, `raycast_only(origin, direction, max_distance, classes)`, `raycast_visible(origin, direction, max_distance)`, `aim(max_distance)`, `camera_ray()`, `pointer_ray()`, `on_screen(point)` |
 | cameras | `set_active_camera(name)`, `set_camera(name, active, viewport)`, `set_camera_fov(name, vertical_fov_radians)`, `camera_fov(name)`, `basis(name)`, `set_mouse_look(name, enabled)` |
 | physics | `set_body_kind(name, kind)`, `set_linear_velocity(name, velocity)`, `linear_velocity(name)`, `set_angular_velocity(name, velocity)`, `angular_velocity(name)`, `reset_body(name)` |
 | player | `set_look(name, yaw, pitch)`, `set_player(name, edit)`, `player(name)`, `dash(name, velocity, seconds)` |
@@ -374,6 +374,7 @@ say:
   to look.
 - Rays hit sensors, and a ray starting inside a collider passes it.
   `raycast_skipping(origin, dir, max, &["glass"])` skips classes,
+  `raycast_only(origin, dir, max, &["island"])` hits only those classes,
   `raycast_visible` passes hidden objects and templates, `on_screen(point)`
   gives view fractions or `None`, and `pointer_ray` goes through the mouse.
 - `set_active_camera(name)` makes it the only active camera;
@@ -415,6 +416,8 @@ say:
   nearest filtering for a chunky low scale.
 - `set_hard_shadows(true)` draws crisp one-tap shadow edges for low-poly
   art; materials with `flat_shading` get faceted normals on any mesh.
+- `MeshVertex::color` (linear RGBA, white by default) tints the
+  material per vertex; glTF `COLOR_0` is imported.
 - `watch_gpu_class` and `watch_gpu_object` are GPU condition rules; see
   `guide/gpu-condition-shaders`.
 
