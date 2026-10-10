@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-10
+
+Fixes 2.4.0 builds: without the Vulkan SDK the cloth shader failed to compile, and the crates.io package needed a newer `rusting-core` than the one published.
+
+### Fixed
+
+- `rusting_engine` builds from crates.io again: it depends on `rusting-core` 0.2.0, which carries the 2D, light and render settings types 2.4.0 uses (crates.io still had 0.1.8)
+- The engine builds again without the Vulkan SDK: the cloth shader used a constant the bundled shader compiler cannot work out (`cloth.comp:23: global const initializers must be constant`)
+- `chacha20` is updated from the yanked 0.10.0 to 0.10.2
+
+---
+
 ## [2.4.0] - 2026-10-10
 
 Rendering, deformable physics and multiplayer building blocks for larger games: modern shadows and post effects, soft bodies and cloth on the CPU and GPU, and replication, prediction and dedicated servers.
