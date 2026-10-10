@@ -669,6 +669,7 @@ struct PhysicsPushConstants {
     collider_count: u32,
     grid_cell_size: f32,
     command_first: u32,
+    field_count: u32,
 }
 
 /// A GPU body's own collider (binding 6), in [`crate::runtime::GpuCollider`]
@@ -707,6 +708,36 @@ impl From<&crate::runtime::GpuCollider> for GpuColliderUpload {
                 collider.layers.filters,
                 0,
                 0,
+            ],
+        }
+    }
+}
+
+/// One [`crate::runtime::GpuForceField`] (binding 14), uploaded every frame.
+#[repr(C)]
+#[derive(BufferContents, Clone, Copy, Debug, Default, PartialEq)]
+struct GpuForceFieldUpload {
+    model: [[f32; 4]; 4],
+    shape: [f32; 4],
+    /// xyz = direction, w = strength.
+    direction: [f32; 4],
+    /// x = `FieldKind` index, y = falloff distance, z = turbulence.
+    params: [f32; 4],
+}
+
+impl From<&crate::runtime::GpuForceField> for GpuForceFieldUpload {
+    fn from(found: &crate::runtime::GpuForceField) -> Self {
+        let field = found.field;
+        let [x, y, z] = field.direction;
+        Self {
+            model: found.model,
+            shape: found.shape,
+            direction: [x, y, z, field.strength],
+            params: [
+                field.kind as u8 as f32,
+                field.falloff_distance,
+                field.turbulence,
+                0.0,
             ],
         }
     }
@@ -3009,6 +3040,15 @@ impl SceneRenderer {
             Vec::new()
         };
         let collider_nodes = collider_tree(&colliders);
+        let force_fields = if physics_ran {
+            render_world
+                .gpu_force_fields
+                .iter()
+                .map(GpuForceFieldUpload::from)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let physics_resources = if let Some(event_capacity) = event_capacity {
             let transient = &self.frame_contexts[self.frame_index].transient;
             let event_header = transient
@@ -3087,6 +3127,18 @@ impl SceneRenderer {
                     .copy_from_slice(&collider_nodes);
                 self.counters.upload_bytes += collider_tree_buffer.size();
             }
+            let force_field_buffer = transient
+                .allocate_slice::<GpuForceFieldUpload>(
+                    force_fields.len().max(1) as u64,
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            if !force_fields.is_empty() {
+                force_field_buffer
+                    .write()
+                    .map_err(|error| SceneRenderError(error.to_string()))?
+                    .copy_from_slice(&force_fields);
+                self.counters.upload_bytes += force_field_buffer.size();
+            }
             let physics_set = DescriptorSet::new(
                 self.descriptor_allocator.clone(),
                 self.physics_pipeline.layout().set_layouts()[0].clone(),
@@ -3100,6 +3152,7 @@ impl SceneRenderer {
                     WriteDescriptorSet::buffer(6, physics.shapes.clone()),
                     WriteDescriptorSet::buffer(7, colliders_buffer),
                     WriteDescriptorSet::buffer(12, collider_tree_buffer),
+                    WriteDescriptorSet::buffer(14, force_field_buffer),
                 ],
                 [],
             )
@@ -3305,6 +3358,7 @@ impl SceneRenderer {
                     command_first: command_ranges[step as usize].0,
                     command_count: command_ranges[step as usize].1,
                     collider_count: colliders.len() as u32,
+                    field_count: force_fields.len() as u32,
                     grid_cell_size: physics.grid_cell_size,
                 };
                 let grid = self.physics_contact_grid.as_ref().unwrap();
@@ -13056,6 +13110,95 @@ mod tests {
         // Only the resting box ever touched, and OnEnter fires once.
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!((events[0].body_slot, events[0].event_id), (0, 11));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn force_fields_push_gpu_bodies_inside_them() {
+        use crate::runtime::{
+            Collider, ColliderShape, CollisionLayers, ExtractedGpuPhysicsBody,
+            FieldKind, ForceField, GpuForceField, PhysicsId,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let ball = |slot: u32, x: f32| ExtractedGpuPhysicsBody {
+            entity: bevy_ecs::entity::Entity::from_raw_u32(5000 + slot)
+                .unwrap(),
+            physics_id: PhysicsId {
+                slot,
+                generation: 0,
+            },
+            transform: crate::Transform::new([x, 0.0, 0.0]),
+            rigid_body: Default::default(),
+            solver: Default::default(),
+            collider: Some((
+                Collider {
+                    shape: ColliderShape::Sphere { radius: 0.5 },
+                    ..Collider::default()
+                },
+                CollisionLayers::default(),
+            )),
+            custom_shader: None,
+            rules: Vec::new(),
+            sync: Default::default(),
+        };
+        let field = |x: f32, field| GpuForceField {
+            model: crate::Transform::new([x, 0.0, 0.0]).to_matrix(),
+            shape: [0.0, 5.0, 50.0, 5.0],
+            field,
+        };
+        let mut scene = SlabScene::new(&[]);
+        let world = &mut scene.render_world;
+        // In an up field, beside it, and in gusty sideways wind.
+        world.gpu_physics = vec![ball(0, 0.0), ball(1, 20.0), ball(2, 40.0)];
+        world.gpu_force_fields = vec![
+            field(
+                0.0,
+                ForceField {
+                    strength: 20.0,
+                    ..ForceField::default()
+                },
+            ),
+            field(
+                40.0,
+                ForceField {
+                    kind: FieldKind::Wind,
+                    strength: 3.0,
+                    direction: [1.0, 0.0, 0.0],
+                    turbulence: 1.0,
+                    ..ForceField::default()
+                },
+            ),
+        ];
+        world.gpu_physics_revision = 1;
+        world.physics_enabled = true;
+        world.physics_gravity = [0.0, -9.81, 0.0];
+        world.fixed_delta_seconds = 1.0 / 60.0;
+        for tick in 1..=60 {
+            let world = &mut scene.render_world;
+            world.physics_tick = tick;
+            world.gpu_physics_read_all = tick == 60;
+            world.gpu_physics_commands_serial += u64::from(tick == 60);
+            let before = scene.now();
+            let _in_flight =
+                scene.render(before).then_signal_fence_and_flush().unwrap();
+            scene.renderer.block_until_physics_readbacks_complete();
+        }
+        let mut states = scene.renderer.take_completed_physics_states();
+        states.sort_by_key(|state| state.physics_id.slot);
+        assert_eq!(states.len(), 3);
+        // 20 up - 9.81 down for one second.
+        let lifted = states[0].linear_velocity[1];
+        assert!((lifted - 10.19).abs() < 0.2, "{:?}", states[0]);
+        assert!(states[1].linear_velocity[1] < -9.5, "{:?}", states[1]);
+        // Gusts average near 3 m/s² but never sit exactly on it.
+        let blown = states[2].linear_velocity[0];
+        assert!(blown > 1.0 && (blown - 3.0).abs() > 0.01, "{:?}", states[2]);
     }
 
     #[test]

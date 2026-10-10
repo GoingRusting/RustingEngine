@@ -4,8 +4,8 @@ layout(local_size_x = 64) in;
 layout(set = 0, binding = 0) buffer Data { uint words[]; };
 float word(uint base, uint index) { return uintBitsToFloat(words[base + index]); }
 void main() {
-    uint base = gl_GlobalInvocationID.x * 9u;
-    if (base + 9u > words.length()) return;
+    uint base = gl_GlobalInvocationID.x * 11u;
+    if (base + 11u > words.length()) return;
     vec3 v = vec3(word(base, 0u), word(base, 1u), word(base, 2u));
     vec3 u = vec3(word(base, 3u), word(base, 4u), word(base, 5u));
     float s = word(base, 6u);
@@ -19,4 +19,7 @@ void main() {
     float t = word(base, 7u);
     words[base + 7u] = floatBitsToUint(sim_mul(mat3(v, u, vec3(s)), u).x);
     words[base + 8u] = uint(sim_to_int(t));
+    vec2 sine_cosine = sim_sin_cos(word(base, 9u));
+    words[base + 9u] = floatBitsToUint(sine_cosine.x);
+    words[base + 10u] = floatBitsToUint(sine_cosine.y);
 }

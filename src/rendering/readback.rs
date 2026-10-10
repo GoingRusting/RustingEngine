@@ -273,11 +273,11 @@ mod tests {
         let input: Vec<u32> = cases
             .iter()
             .zip(&ints)
-            .flat_map(|((v, u, s), t)| {
-                v.iter()
+            .flat_map(|(&(v, u, s), &t)| {
+                v.into_iter()
                     .chain(u)
-                    .chain([s, t, &0.0])
-                    .map(|value| value.to_bits())
+                    .chain([s, t, 0.0, v[0] % 8192.0, 0.0])
+                    .map(f32::to_bits)
             })
             .collect();
         let shader = sim_math_shader::load(base.device.clone()).unwrap();
@@ -305,6 +305,10 @@ mod tests {
                 .map(f32::to_bits)
                 .into_iter()
                 .chain([sim_math::to_int(t).cast_unsigned()])
+                .chain({
+                    let (sine, cosine) = sim_math::sin_cos(v[0] % 8192.0);
+                    [sine.to_bits(), cosine.to_bits()]
+                })
             })
             .collect();
         assert_eq!(f32::from_bits(expected[4]), 0.0, "reference must not fuse");

@@ -812,7 +812,24 @@ pub struct GpuCollider {
     pub layers: CollisionLayers,
 }
 
+/// A [`ForceField`] sensor that pushes GPU bodies whose centre comes
+/// within their bounding radius of its collider, as of the last CPU step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GpuForceField {
+    /// Rotation and position, like [`GpuCollider::model`].
+    pub model: [[f32; 4]; 4],
+    /// The sensor's shape, encoded like [`GpuCollider::shape`].
+    pub shape: [f32; 4],
+    pub field: ForceField,
+}
+
 impl Body {
+    fn gpu_model(&self) -> [[f32; 4]; 4] {
+        let mut model = self.rotation.to_homogeneous();
+        model.fixed_view_mut::<3, 1>(0, 3).copy_from(&self.position);
+        model.into()
+    }
+
     /// Query-only sensor body.
     fn probe(shape: Shape, position: Vector3<f32>) -> Self {
         Self {
@@ -1125,17 +1142,29 @@ impl PhysicsWorld {
         self.bodies
             .iter()
             .filter(|body| !body.sensor && !body.proxy)
-            .map(|body| {
-                let mut model = body.rotation.to_homogeneous();
-                model.fixed_view_mut::<3, 1>(0, 3).copy_from(&body.position);
-                GpuCollider {
-                    model: model.into(),
+            .map(|body| GpuCollider {
+                model: body.gpu_model(),
+                shape: body.shape.gpu_words(),
+                velocity: body.velocity.into(),
+                friction: body.friction,
+                restitution: body.restitution,
+                layers: body.layers,
+            })
+            .collect()
+    }
+
+    /// Force-field sensors of the last step, for GPU bodies to feel.
+    #[must_use]
+    pub fn gpu_force_fields(&self, world: &World) -> Vec<GpuForceField> {
+        self.bodies
+            .iter()
+            .filter(|body| body.sensor)
+            .filter_map(|body| {
+                Some(GpuForceField {
+                    model: body.gpu_model(),
                     shape: body.shape.gpu_words(),
-                    velocity: body.velocity.into(),
-                    friction: body.friction,
-                    restitution: body.restitution,
-                    layers: body.layers,
-                }
+                    field: *world.get::<ForceField>(body.entity)?,
+                })
             })
             .collect()
     }

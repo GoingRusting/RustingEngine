@@ -177,6 +177,9 @@ pub struct RenderWorld {
     /// Solid CPU and static colliders from the last CPU physics step, for
     /// GPU bodies to collide against.
     pub gpu_colliders: Vec<super::GpuCollider>,
+    /// Force-field sensors from the last CPU physics step, which push GPU
+    /// bodies too.
+    pub gpu_force_fields: Vec<super::GpuForceField>,
     /// Resolved [`super::GpuConditionShader`]s, in dispatch order.
     pub gpu_condition_shaders: Vec<ExtractedConditionShader>,
     /// Wrapped `PhysicsSolver::Custom` hook files, one per distinct path,
@@ -358,13 +361,13 @@ pub fn extract_render_world(world: &mut World) {
     };
     // ponytail: rebuilt every frame from the CPU step; a revision would skip
     // the upload for static-only scenes if colliders ever number thousands.
-    let gpu_colliders = if gpu_physics.as_ref().is_some_and(Vec::is_empty) {
-        Vec::new()
-    } else {
-        world
-            .get_resource::<super::PhysicsWorld>()
-            .map(super::PhysicsWorld::gpu_colliders)
-            .unwrap_or_default()
+    let (gpu_colliders, gpu_force_fields) = match world
+        .get_resource::<super::PhysicsWorld>()
+    {
+        Some(physics) if !gpu_physics.as_ref().is_some_and(Vec::is_empty) => {
+            (physics.gpu_colliders(), physics.gpu_force_fields(world))
+        }
+        _ => Default::default(),
     };
     let time = *world.resource::<super::FrameTime>();
     let physics_settings = world.resource::<super::PhysicsSettings>().clone();
@@ -501,6 +504,7 @@ pub fn extract_render_world(world: &mut World) {
     }
     render_world.gpu_condition_shaders = condition_shaders;
     render_world.gpu_colliders = gpu_colliders;
+    render_world.gpu_force_fields = gpu_force_fields;
     render_world.physics_tick = time.fixed_tick;
     render_world.fixed_delta_seconds = time.fixed_delta.as_secs_f32();
     render_world.elapsed_seconds = time.elapsed.as_secs_f32();

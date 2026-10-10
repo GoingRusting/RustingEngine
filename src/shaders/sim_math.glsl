@@ -136,4 +136,41 @@ ivec3 sim_to_int(vec3 v) {
     return ivec3(sim_to_int(v.x), sim_to_int(v.y), sim_to_int(v.z));
 }
 
+// (sin x, cos x), as `sim_math::sin_cos`.
+// ponytail: bit-equal to Rust only for |x| <= 8192; past that this reduces
+// by 2 pi with floor where Rust uses `%`. Port an exact fmod if a sim ever
+// feeds such angles to both sides.
+vec2 sim_sin_cos(float x) {
+    precise float magnitude = abs(x);
+    if (magnitude > 8192.0) {
+        precise float turns = floor(magnitude * 0.15915494);
+        magnitude = magnitude - turns * 6.2831855;
+    }
+    precise float scaled = magnitude * 1.2732395;
+    uint octant = uint(scaled);
+    octant += octant & 1u;
+    float octant_float = float(octant);
+    precise float remainder = ((magnitude - octant_float * 0.78515625)
+        - octant_float * 2.4187565e-4)
+        - octant_float * 3.774895e-8;
+    precise float square = remainder * remainder;
+    precise float sine = ((-1.9515296e-4 * square + 8.332161e-3) * square
+        - 1.6666655e-1)
+        * square
+        * remainder
+        + remainder;
+    precise float cosine = ((2.4433157e-5 * square - 1.3887316e-3) * square
+        + 4.1666646e-2)
+        * square
+        * square
+        - 0.5 * square
+        + 1.0;
+    uint turn = octant & 7u;
+    vec2 result = turn == 0u ? vec2(sine, cosine)
+        : turn == 2u ? vec2(cosine, -sine)
+        : turn == 4u ? vec2(-sine, -cosine)
+        : vec2(-cosine, sine);
+    return vec2(x < 0.0 ? -result.x : result.x, result.y);
+}
+
 #endif

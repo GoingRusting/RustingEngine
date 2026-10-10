@@ -9,6 +9,7 @@
 
 ### Added
 
+- `rusting.force_field` now pushes GPU bodies too: the CPU step's field sensors upload each frame and `physics.comp` adds their push next to gravity, with wind gusts from a new bit-exact `sim_sin_cos`
 - The CPU contact solver solves independent islands on all cores, bit-identical to one worker
 - Heightfield `cells` and `surfaces`: each grid cell can have its own friction, restitution and sound material name (an ice patch on grass); `Contact::surface` says which one a contact touched
 - Compound bodies: solid collider children of a dynamic CPU body move with it as one body; contacts and ray hits on them report the parent (they were fixed in place before)

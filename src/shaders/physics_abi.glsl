@@ -63,6 +63,8 @@ layout(push_constant) uniform PhysicsPush {
     float grid_cell_size;
     // Index of this step's first command; see `command_count`.
     uint command_first;
+    // Entries in the force-field list (binding 14).
+    uint field_count;
 } pc;
 
 // Appends one event for `body`. `event_id` is a `GpuEventId` registered on

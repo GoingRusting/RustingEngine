@@ -992,7 +992,7 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
     },
     ComponentSection {
         key: "rusting.force_field",
-        summary: "Pushes dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true) with an acceleration of strength m/s², the same for any mass: Directional along direction, Radial out from the object's centre (negative strength pulls in), Vortex around the direction axis through the centre, Wind along direction in gusts of turbulence times strength. falloff_distance above 0 fades the push to nothing that far from the centre. Fields add up where they overlap and add to gravity. GPU bodies and the player controller are not affected.",
+        summary: "Pushes dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true) with an acceleration of strength m/s², the same for any mass: Directional along direction, Radial out from the object's centre (negative strength pulls in), Vortex around the direction axis through the centre, Wind along direction in gusts of turbulence times strength. falloff_distance above 0 fades the push to nothing that far from the centre. Fields add up where they overlap and add to gravity. GPU bodies whose centre comes within their collider's bounding radius of the sensor are pushed the same way; the player controller is not affected.",
         gpu: NO_GPU,
         example: || json!({"kind": "Wind", "strength": 6.0, "direction": [1.0, 0.0, 0.0], "falloff_distance": 0.0, "turbulence": 0.5}),
     },
