@@ -1086,7 +1086,8 @@ type ColliderEntry = (
 );
 
 /// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`],
-/// then every [`super::ClothVolume`], each in spawn order, with attached
+/// then every [`super::ClothVolume`] not marked
+/// [`super::gpu_cloth::GpuCloth`], each in spawn order, with attached
 /// particles held on their bodies and particles kept out of nearby sphere,
 /// box and capsule colliders, then writes back the pose and velocities of
 /// the dynamic bodies it moved. Attachments to a missing or parented body
@@ -1102,11 +1103,14 @@ pub(super) fn step_soft_bodies(
         Option<&super::SpawnOrder>,
         &mut SoftBodyVolume,
     )>,
-    mut cloths: bevy_ecs::prelude::Query<(
-        bevy_ecs::prelude::Entity,
-        Option<&super::SpawnOrder>,
-        &mut super::ClothVolume,
-    )>,
+    mut cloths: bevy_ecs::prelude::Query<
+        (
+            bevy_ecs::prelude::Entity,
+            Option<&super::SpawnOrder>,
+            &mut super::ClothVolume,
+        ),
+        bevy_ecs::prelude::Without<super::gpu_cloth::GpuCloth>,
+    >,
     mut bodies: CoupledBodies,
 ) {
     let dt = time.fixed_delta.as_secs_f32();

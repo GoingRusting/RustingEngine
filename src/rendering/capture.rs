@@ -46,6 +46,8 @@ pub struct HeadlessCapture {
     alt: Option<(Arc<Image>, Arc<ImageView>)>,
     /// GPU milliseconds of every frame [`Self::frame`] drew.
     gpu_frames: Vec<f64>,
+    /// Steps `GpuCloth` volumes; made on first use.
+    cloth: Option<super::gpu_cloth::GpuClothRunner>,
     #[cfg(feature = "ui")]
     ui: Option<super::egui_painter::EguiPainter>,
     /// A UNORM view of [`Self::image`]: the UI blends in gamma space, as
@@ -164,6 +166,7 @@ impl HeadlessCapture {
             views: Vec::new(),
             alt: None,
             gpu_frames: Vec::new(),
+            cloth: None,
             #[cfg(feature = "ui")]
             ui: None,
             #[cfg(feature = "ui")]
@@ -315,6 +318,21 @@ impl HeadlessCapture {
             apply_gpu_state_samples(world, &states);
         }
         record_gpu_state_hashes(world, &hashes);
+        if self.cloth.is_none() {
+            self.cloth = super::gpu_cloth::GpuClothRunner::new(
+                self.base.device.clone(),
+                self.base.queue.clone(),
+            )
+            .map_err(|error| eprintln!("GPU cloth: {error}"))
+            .ok();
+        }
+        if let Some(runner) = &mut self.cloth {
+            if let Err(error) =
+                super::gpu_cloth::service_gpu_cloths(world, runner)
+            {
+                eprintln!("GPU cloth: {error}");
+            }
+        }
     }
 
     fn draw(&mut self, app: &mut App) -> Result<(), String> {
@@ -666,6 +684,65 @@ mod tests {
                 assert_eq!(pixel(&blocky, x, y), corner, "({x}, {y})");
             }
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn a_gpu_cloth_follows_the_fixed_tick_with_the_cpu_reference_bits() {
+        use crate::runtime::gpu_cloth::{pack, step_on_cpu, unpack, GpuCloth};
+        use crate::runtime::{Cloth, ClothSettings, ClothVolume, FrameTime};
+
+        let mut app = App::new();
+        app.add_plugin(AssetPlugin).unwrap();
+        app.add_plugin(RenderExtractPlugin).unwrap();
+        let mut cloth = Cloth::grid(
+            [0.0, 2.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [6, 6],
+            0.125,
+            0.3,
+        )
+        .unwrap();
+        for i in 0..7 {
+            cloth.pin(i);
+        }
+        let volume = ClothVolume {
+            settings: ClothSettings {
+                substeps: 4,
+                ..ClothSettings::default()
+            },
+            cloth,
+            attachments: Vec::new(),
+            skin: None,
+        };
+        let start = volume.clone();
+        let entity = app.spawn((volume, GpuCloth::default()));
+        let mut capture = HeadlessCapture::new([16, 16]).unwrap();
+        for _ in 0..12 {
+            capture.frame(&mut app, Duration::from_millis(16)).unwrap();
+        }
+        let gpu = *app.world().get::<GpuCloth>(entity).unwrap();
+        let reached = gpu.tick.unwrap();
+        let now = app.world().resource::<FrameTime>().fixed_tick;
+        // The cloth trails the fixed tick by at most a few frames.
+        assert!(reached >= 3 && now - reached <= 4, "{reached} of {now}");
+        // Several uneven GPU runs give the bits of one run from the start.
+        let dt = app.world().resource::<FrameTime>().fixed_delta;
+        let mut expected = start.cloth.clone();
+        let mut words =
+            pack(&expected, &start.settings, dt.as_secs_f32(), reached as u32)
+                .unwrap();
+        step_on_cpu(&mut words);
+        unpack(&words, &mut expected);
+        let shown = &app.world().get::<ClothVolume>(entity).unwrap().cloth;
+        assert_eq!(shown.positions, expected.positions);
+        assert_eq!(shown.velocities, expected.velocities);
+        // The free edge swings down from the flat start.
+        assert!(shown.positions[45][1] < 1.98, "{:?}", shown.positions[45]);
     }
 
     #[test]

@@ -13,9 +13,25 @@
 //! and the floor. Wind, self-collision, tearing and rigid-body anchors stay
 //! CPU-only for now.
 
+use bevy_ecs::prelude::Component;
+
 use super::cloth::{Cloth, ClothSettings, MAX_CLOTH_PARTICLES};
 use super::sim_math::{length, recip};
 use super::soft_body::MAX_SOFT_BODY_SUBSTEPS;
+
+/// Steps the [`super::ClothVolume`] on this entity on the GPU instead of in
+/// the fixed tick. `rendering::gpu_cloth::service_gpu_cloths` submits it
+/// and writes finished particles back into the volume, so the volume shows
+/// the cloth one to three frames behind the fixed tick, as `tick` records.
+/// Only the kernel's features apply: attachments, wind, self-collision and
+/// tearing are ignored while this is on.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuCloth {
+    /// Fixed tick the volume's particles show; `None` before the first run.
+    pub tick: Option<u64>,
+    /// A submission for this cloth is still on the GPU.
+    pub in_flight: bool,
+}
 
 /// Words before the color table; see the header comment in `cloth.comp`.
 const HEADER_WORDS: usize = 16;

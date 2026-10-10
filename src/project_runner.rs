@@ -4583,6 +4583,8 @@ struct WindowRunner {
     applied_fullscreen: bool,
     /// Offscreen image for `RenderSettings::render_scale`.
     scaled: Option<ScaledTarget>,
+    /// Steps `GpuCloth` volumes; made with the renderer.
+    cloth: Option<crate::rendering::gpu_cloth::GpuClothRunner>,
     #[cfg(feature = "ui")]
     ui: Option<RuntimeUiPainter>,
 }
@@ -4599,6 +4601,7 @@ impl WindowRunner {
             applied_cursor_capture: false,
             applied_fullscreen: false,
             scaled: None,
+            cloth: None,
             #[cfg(feature = "ui")]
             ui: None,
         }
@@ -4663,6 +4666,12 @@ impl WindowRunner {
             )
             .expect("failed to create game scene renderer"),
         );
+        self.cloth = crate::rendering::gpu_cloth::GpuClothRunner::new(
+            self.vulkan.device().clone(),
+            renderer.graphics_queue(),
+        )
+        .map_err(|error| eprintln!("GPU cloth: {error}"))
+        .ok();
         self.scaled = SWAPCHAIN_BLIT
             .load(Ordering::Relaxed)
             .then(|| ScaledTarget::new(self.vulkan.memory_allocator().clone()));
@@ -5244,6 +5253,16 @@ impl ApplicationHandler for ProjectApplication {
                     apply_gpu_state_samples(self.runtime.world_mut(), &states);
                 }
                 record_gpu_state_hashes(self.runtime.world_mut(), &hashes);
+                if let Some(runner) = &mut self.window.cloth {
+                    if let Err(error) =
+                        crate::rendering::gpu_cloth::service_gpu_cloths(
+                            self.runtime.world_mut(),
+                            runner,
+                        )
+                    {
+                        eprintln!("GPU cloth: {error}");
+                    }
+                }
                 // Delta time tells gameplay how much real time passed.
                 let now = Instant::now();
                 let delta = now.saturating_duration_since(self.previous_frame);
