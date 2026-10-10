@@ -85,6 +85,36 @@ Codes ignore case and leave out the look-alikes I, O, 0 and 1. The room
 closes when its host leaves. Game code is the same as for direct
 sessions; only the constructor differs.
 
+## Testing a bad connection
+
+`simulate` makes one end act as if its connection were slow or lossy, so a
+game can be tried against lag on one machine:
+
+```rust
+use rusting_engine::net::NetConditions;
+use std::time::Duration;
+
+session.simulate(NetConditions {
+    latency: Duration::from_millis(75), // each way: set it on both ends
+    jitter: Duration::from_millis(20),
+    loss: 0.02,
+    seed: 1,
+});
+```
+
+- It delays what `poll` returns on this end. Set it on the host and on a
+  client for a 150 ms round trip.
+- Messages stay reliable and in order. A lost message is resent after one
+  more round trip (at least 200 ms), and the messages behind it wait too,
+  as on real TCP.
+- The same seed gives the same delays. `NetConditions::default()` turns
+  it off.
+
+`stats()` returns `NetStats`: messages and wire bytes sent and received
+(payload plus a 9-byte frame header each), and `held`, the events the
+simulation is holding back. Show it on a debug HUD to see what a game
+sends per second.
+
 ## Limits
 
 - TCP only: no unreliable UDP channel yet, so a lost packet delays the

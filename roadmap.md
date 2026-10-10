@@ -2709,7 +2709,7 @@ Depends on: Milestones 8 and 9. The Milestone 8 result decides whether rollback 
 - [ ] Client-side prediction and reconciliation for player-controlled entities.
 - [ ] Deterministic rollback netcode for physics-heavy games, using Milestone 8 snapshots and input streams.
 - [ ] Physics-aware replication: replicate commands and events instead of full body state wherever determinism allows.
-- [ ] Network simulation (latency, jitter, loss) for testing, and a network profiler.
+- [x] Network simulation (latency, jitter, loss) for testing, and a network profiler. `NetSession::simulate(NetConditions { latency, jitter, loss, seed })` holds incoming events before `poll` returns them; loss keeps TCP semantics (a lost message waits one more round trip, at least 200 ms, and holds back the ones behind it), and a seeded SplitMix64 makes delays repeat. `NetSession::stats()` returns `NetStats` (messages and wire bytes each way, events held). Docs: `docs/networking.md` "Testing a bad connection". Evidence: unit tests `net::tests::simulated_conditions_delay_events_in_order` (latency and jitter bounds, order under 100% loss, same seed same delays) and `a_session_counts_traffic_and_holds_messages_under_latency` (a real host holds a message 300 ms; byte counts include the 9-byte header). Also fixed: a handshake deadline that expired inside a read reported `WouldBlock` (Unix's read timeout) instead of `TimedOut`, which made `a_handshake_must_arrive_whole_in_time_and_stay_small` flaky under load. Full check 2026-10-10: fmt, clippy (default, no-default-features, gpu-tests), tests (lib 822, 923 with gpu-tests) green. Left open: a profiler panel in the editor; the counters are there for a HUD.
 - [ ] HTTP client for services and downloads.
 
 ### Exit gate

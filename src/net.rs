@@ -28,7 +28,7 @@
 //! game but do not hide traffic from someone on the path.
 
 use bevy_ecs::prelude::Resource;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{
     IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream,
@@ -81,6 +81,113 @@ pub enum NetEvent {
     Closed,
 }
 
+/// Network conditions a session pretends to have, for testing a game
+/// against a bad connection on one machine. Set with
+/// [`NetSession::simulate`]; the default is a perfect connection.
+///
+/// They act on what this end receives: each incoming event waits
+/// `latency` plus up to `jitter` before [`NetSession::poll`] returns it.
+/// Set them on both ends for a round trip of twice `latency`. Messages
+/// stay reliable and in order, as on TCP: a message `loss` picks waits one
+/// more round trip (at least 200 ms, Linux's shortest retransmit), and
+/// the messages behind it wait with it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NetConditions {
+    /// One-way delay added to every incoming event.
+    pub latency: Duration,
+    /// Extra random delay, up to this much.
+    pub jitter: Duration,
+    /// Share of messages lost and resent, from 0 to 1.
+    pub loss: f32,
+    /// Seed for jitter and loss, so a test repeats.
+    pub seed: u64,
+}
+
+/// Traffic counters since the session started, from [`NetSession::stats`].
+/// Bytes are wire bytes: each message's payload plus its 9-byte frame
+/// header. A host's broadcast counts once per client it reached.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetStats {
+    pub messages_sent: u64,
+    pub bytes_sent: u64,
+    pub messages_received: u64,
+    pub bytes_received: u64,
+    /// Events [`NetConditions`] hold back right now.
+    pub held: usize,
+}
+
+/// Wire bytes a frame adds to its payload.
+const FRAME_HEADER: u64 = 9;
+
+/// Simulated conditions, the events they hold back, and the counters.
+#[derive(Default)]
+struct Lab {
+    conditions: NetConditions,
+    rng: u64,
+    held: VecDeque<(Instant, NetEvent)>,
+    stats: NetStats,
+}
+
+impl Lab {
+    /// Holds `arrived` as the conditions say and returns what is due at
+    /// `now`, in arrival order.
+    // ponytail: delay starts when poll sees an event, not when it arrived,
+    // so it runs up to one poll interval long; timestamp in read_frames
+    // if tests need finer timing.
+    fn deliver(
+        &mut self,
+        arrived: Vec<NetEvent>,
+        now: Instant,
+    ) -> Vec<NetEvent> {
+        for event in arrived {
+            let mut at = now + self.delay();
+            // In order, as on TCP: nothing passes an event held before it.
+            if let Some((last, _)) = self.held.back() {
+                at = at.max(*last);
+            }
+            self.held.push_back((at, event));
+        }
+        let mut due = Vec::new();
+        while self.held.front().is_some_and(|(at, _)| *at <= now) {
+            let (_, event) = self.held.pop_front().unwrap();
+            if let NetEvent::Message { bytes, .. } = &event {
+                self.stats.messages_received += 1;
+                self.stats.bytes_received += bytes.len() as u64 + FRAME_HEADER;
+            }
+            due.push(event);
+        }
+        due
+    }
+
+    fn delay(&mut self) -> Duration {
+        let NetConditions {
+            latency,
+            jitter,
+            loss,
+            ..
+        } = self.conditions;
+        let mut delay = latency + jitter.mul_f64(self.random());
+        if self.random() < f64::from(loss) {
+            delay += (latency * 2).max(Duration::from_millis(200));
+        }
+        delay
+    }
+
+    /// SplitMix64, as a number in [0, 1).
+    fn random(&mut self) -> f64 {
+        self.rng = self.rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.rng;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) as f64 / 2f64.powi(64)
+    }
+
+    fn sent(&mut self, bytes: &[u8]) {
+        self.stats.messages_sent += 1;
+        self.stats.bytes_sent += bytes.len() as u64 + FRAME_HEADER;
+    }
+}
+
 /// One end of a multiplayer session. See the [module docs](self).
 #[derive(Resource)]
 pub struct NetSession {
@@ -88,6 +195,7 @@ pub struct NetSession {
     room: Option<String>,
     route: Route,
     events: Mutex<Receiver<NetEvent>>,
+    lab: Mutex<Lab>,
     /// A direct host's listening address and its stop flag.
     listener: Option<(SocketAddr, Arc<AtomicBool>)>,
 }
@@ -165,6 +273,7 @@ impl NetSession {
             room: None,
             route: Route::Direct(peers),
             events: Mutex::new(events),
+            lab: Mutex::default(),
             listener: Some((address, closed)),
         })
     }
@@ -190,6 +299,7 @@ impl NetSession {
                 HOST, stream,
             )])))),
             events: Mutex::new(events),
+            lab: Mutex::default(),
             listener: None,
         })
     }
@@ -231,6 +341,7 @@ impl NetSession {
             room: Some(code),
             route: Route::Relay(Mutex::new(stream)),
             events: Mutex::new(events),
+            lab: Mutex::default(),
             listener: None,
         })
     }
@@ -256,6 +367,7 @@ impl NetSession {
             room: Some(code),
             route: Route::Relay(Mutex::new(stream)),
             events: Mutex::new(events),
+            lab: Mutex::default(),
             listener: None,
         })
     }
@@ -294,12 +406,14 @@ impl NetSession {
                 let stream = peers
                     .get_mut(&to)
                     .ok_or_else(|| invalid("no such peer"))?;
-                write_frame(stream, DATA, self.me, bytes)
+                write_frame(stream, DATA, self.me, bytes)?;
             }
             Route::Relay(stream) => {
-                write_frame(&mut *stream.lock().unwrap(), DATA, to, bytes)
+                write_frame(&mut *stream.lock().unwrap(), DATA, to, bytes)?;
             }
         }
+        self.lab.lock().unwrap().sent(bytes);
+        Ok(())
     }
 
     /// Sends `bytes` to every client (host), or to the host (client).
@@ -312,19 +426,49 @@ impl NetSession {
             // reader thread, which reports Disconnected.
             Route::Direct(peers) => {
                 for stream in peers.lock().unwrap().values_mut() {
-                    let _ = write_frame(stream, DATA, HOST, bytes);
+                    if write_frame(stream, DATA, HOST, bytes).is_ok() {
+                        self.lab.lock().unwrap().sent(bytes);
+                    }
                 }
                 Ok(())
             }
             Route::Relay(stream) => {
-                write_frame(&mut *stream.lock().unwrap(), DATA, EVERYONE, bytes)
+                write_frame(
+                    &mut *stream.lock().unwrap(),
+                    DATA,
+                    EVERYONE,
+                    bytes,
+                )?;
+                self.lab.lock().unwrap().sent(bytes);
+                Ok(())
             }
         }
     }
 
-    /// Events since the last call, in arrival order. Never blocks.
+    /// Events since the last call, in arrival order. Never blocks. Under
+    /// [`NetSession::simulate`], events come back once their delay passes.
     pub fn poll(&self) -> Vec<NetEvent> {
-        self.events.lock().unwrap().try_iter().collect()
+        let arrived = self.events.lock().unwrap().try_iter().collect();
+        self.lab.lock().unwrap().deliver(arrived, Instant::now())
+    }
+
+    /// Pretends this end has a slow or lossy connection from now on; see
+    /// [`NetConditions`]. `NetConditions::default()` turns it off, and
+    /// events already held still wait out their delay.
+    pub fn simulate(&self, conditions: NetConditions) {
+        let mut lab = self.lab.lock().unwrap();
+        lab.conditions = conditions;
+        lab.rng = conditions.seed;
+    }
+
+    /// Messages and bytes sent and received so far.
+    #[must_use]
+    pub fn stats(&self) -> NetStats {
+        let lab = self.lab.lock().unwrap();
+        NetStats {
+            held: lab.held.len(),
+            ..lab.stats
+        }
     }
 }
 
@@ -873,7 +1017,11 @@ impl Read for Deadline<'_> {
         }
         self.stream.set_read_timeout(Some(left))?;
         let mut stream = self.stream;
-        stream.read(buffer)
+        // Unix reports a read timeout as WouldBlock.
+        stream.read(buffer).map_err(|error| match error.kind() {
+            io::ErrorKind::WouldBlock => io::ErrorKind::TimedOut.into(),
+            _ => error,
+        })
     }
 }
 
@@ -923,6 +1071,100 @@ mod tests {
             from,
             bytes: text.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn simulated_conditions_delay_events_in_order() {
+        let ms = Duration::from_millis;
+        let mut lab = Lab {
+            conditions: NetConditions {
+                latency: ms(100),
+                jitter: ms(50),
+                loss: 0.0,
+                seed: 7,
+            },
+            ..Lab::default()
+        };
+        let start = Instant::now();
+        let arrived = vec![message(1, "a"), message(1, "b")];
+        assert!(lab.deliver(arrived, start).is_empty());
+        assert!(lab.deliver(Vec::new(), start + ms(99)).is_empty());
+        assert_eq!(
+            lab.deliver(Vec::new(), start + ms(150)),
+            [message(1, "a"), message(1, "b")]
+        );
+        assert_eq!(lab.stats.messages_received, 2);
+        assert_eq!(lab.stats.bytes_received, 2 * 10);
+
+        // Every message lost: each waits one more round trip, and none
+        // passes the one before it.
+        lab.conditions.loss = 1.0;
+        let later = start + ms(1000);
+        let arrived = (0..20).map(|i| message(1, &i.to_string())).collect();
+        assert!(lab.deliver(arrived, later).is_empty());
+        assert!(lab.deliver(Vec::new(), later + ms(299)).is_empty());
+        let due = lab.deliver(Vec::new(), later + ms(350));
+        let expected: Vec<_> =
+            (0..20).map(|i| message(1, &i.to_string())).collect();
+        assert_eq!(due, expected);
+
+        // The same seed gives the same delays.
+        let delays = |seed| {
+            let mut lab = Lab {
+                rng: seed,
+                ..Lab::default()
+            };
+            lab.conditions.jitter = ms(50);
+            lab.conditions.loss = 0.5;
+            (0..8).map(|_| lab.delay()).collect::<Vec<_>>()
+        };
+        assert_eq!(delays(3), delays(3));
+        assert_ne!(delays(3), delays(4));
+    }
+
+    #[test]
+    fn a_session_counts_traffic_and_holds_messages_under_latency() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let host = NetSession::host_on(listener, "").unwrap();
+        let client = NetSession::join(address, "").unwrap();
+        assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+
+        host.simulate(NetConditions {
+            latency: Duration::from_millis(300),
+            ..NetConditions::default()
+        });
+        client.send(HOST, b"hello").unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(host.poll().is_empty(), "the message waits out its latency");
+        assert_eq!(host.stats().held, 1);
+        assert_eq!(wait(&host, 1), [message(1, "hello")]);
+
+        host.broadcast(b"tick").unwrap();
+        assert_eq!(wait(&client, 1), [message(HOST, "tick")]);
+        let sent = NetStats {
+            messages_sent: 1,
+            bytes_sent: 14,
+            ..NetStats::default()
+        };
+        assert_eq!(
+            client.stats(),
+            NetStats {
+                messages_received: 1,
+                bytes_received: 13,
+                ..sent
+            }
+        );
+        assert_eq!(
+            host.stats(),
+            NetStats {
+                messages_sent: 1,
+                bytes_sent: 13,
+                messages_received: 1,
+                bytes_received: 14,
+                held: 0,
+            }
+        );
     }
 
     #[test]
