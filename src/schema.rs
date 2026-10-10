@@ -760,13 +760,14 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "point_light",
-        summary: "Light radiating from the object's position.",
-        gpu: "shading cost per lit pixel; up to 64 lights per frame (32 at Balanced, 16 at Eco), the rest are dropped; casts no shadows (guide/lighting)",
+        summary: "Light radiating from the object's position. `shadows` gives it six shadow map faces (a lamp in a room); one light per frame casts shadows, and a shadowed directional or spot light wins.",
+        gpu: "shading cost per lit pixel; up to 64 lights per frame (32 at Balanced, 16 at Eco), the rest are dropped; six shadow views when shadows is true, each drawing every caster (guide/lighting)",
         example: || json!({"color": [1.0, 0.8, 0.6], "intensity": 800.0, "range": 8.0}),
         fields: &[
             field("/color", RGB, "0..1", ""),
             field("/intensity", "renderer units, not lumens", ">= 0", "1000 lights a white surface facing it, up close, as brightly as the 100000 lux sun; brightness falls off as (1 - distance/range)^2. A desk lamp in a dark room: 400-1500; a bright party light: 3000-8000"),
             field("/range", METRES, "> 0", "light reaches zero here"),
+            field("/shadows", "", "", "default false"),
         ],
     },
     Section {

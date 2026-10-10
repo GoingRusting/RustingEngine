@@ -6879,6 +6879,7 @@ mod tests {
                     color: [1.0; 3],
                     intensity: 5.0,
                     range: 4.0,
+                    shadows: false,
                 },
             ))
             .id();

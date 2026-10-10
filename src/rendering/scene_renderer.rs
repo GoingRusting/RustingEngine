@@ -527,14 +527,17 @@ struct ShadowUpload {
     /// x is 1 when binding 6 holds this frame's ambient occlusion; y is 1
     /// for single-tap hard shadows.
     ambient_occlusion: [f32; 4],
-    /// Light-space transform of each cascade of the shadowed light.
-    cascades: [[[f32; 4]; 4]; SHADOW_CASCADES],
+    /// Light-space transform of each cascade of the shadowed light, or of
+    /// each cube face of a point light.
+    cascades: [[[f32; 4]; 4]; SHADOW_VIEWS],
     /// Camera depth where each cascade ends.
     cascade_far: [f32; 4],
     /// Camera forward in xyz and `dot(eye, forward)` in w, so
-    /// `dot(p, xyz) - w` is a point's camera depth.
+    /// `dot(p, xyz) - w` is a point's camera depth. For a point light, its
+    /// position in xyz.
     cascade_forward: [f32; 4],
-    /// x is the cascade count, y the atlas tiles per side.
+    /// x is the cascade count, y the atlas tiles per side, z is 1 when the
+    /// views are a point light's cube faces.
     cascade_info: [f32; 4],
 }
 
@@ -2672,8 +2675,9 @@ impl SceneRenderer {
                 shadow_size,
             )?;
         }
-        // A directional light renders one cascade per tile of a 2x2 atlas;
-        // a spot light takes the whole map.
+        // A directional light renders one cascade per tile of a 2x2 atlas,
+        // a point light one cube face per tile of a 3x3 atlas; a spot light
+        // takes the whole map.
         let (cascades, cascade_far, tiles) = match lights.shadow {
             Some((_, ShadowView::Directional(direction))) => {
                 let tile_size = shadow_size / 2;
@@ -2713,7 +2717,16 @@ impl SceneRenderer {
                 [f32::MAX, 0.0, 0.0, 0.0],
                 1,
             ),
+            Some((_, ShadowView::Point { position, range })) => (
+                point_shadow_view_projections(position, range, shadow_size / 3),
+                [f32::MAX, 0.0, 0.0, 0.0],
+                3,
+            ),
             None => (Vec::new(), [0.0; 4], 1),
+        };
+        let point_shadow = match lights.shadow {
+            Some((_, ShadowView::Point { position, .. })) => Some(position),
+            _ => None,
         };
         // Refracting materials and screen-space reflections sample a copy
         // of the opaque scene, so the scene pass splits before blended
@@ -2853,13 +2866,23 @@ impl SceneRenderer {
                         .into()
                 }),
                 cascade_far,
-                cascade_forward: [
-                    forward[0],
-                    forward[1],
-                    forward[2],
-                    Vector3::from(eye).dot(&Vector3::from(forward)),
+                cascade_forward: match point_shadow {
+                    Some(position) => {
+                        [position[0], position[1], position[2], 0.0]
+                    }
+                    None => [
+                        forward[0],
+                        forward[1],
+                        forward[2],
+                        Vector3::from(eye).dot(&Vector3::from(forward)),
+                    ],
+                },
+                cascade_info: [
+                    cascades.len() as f32,
+                    tiles as f32,
+                    f32::from(u8::from(point_shadow.is_some())),
+                    0.0,
                 ],
-                cascade_info: [cascades.len() as f32, tiles as f32, 0.0, 0.0],
             };
         let shadow_set = DescriptorSet::new(
             self.descriptor_allocator.clone(),
@@ -4920,11 +4943,22 @@ impl SceneRenderer {
                 spot_angles: [0.0; 4],
             });
         }
+        // A point light shadows only when no directional or spot light does.
+        let mut point_shadow = None;
         for extracted in &render_world.point_lights {
             if uploads.len() == budget {
                 break;
             }
             let position = light_position(extracted.transform.matrix);
+            if point_shadow.is_none() && extracted.light.shadows {
+                point_shadow = Some((
+                    uploads.len() as u32,
+                    ShadowView::Point {
+                        position,
+                        range: extracted.light.range.max(0.01),
+                    },
+                ));
+            }
             uploads.push(LightUpload {
                 position_kind: [position[0], position[1], position[2], 1.0],
                 direction_range: [
@@ -4981,6 +5015,7 @@ impl SceneRenderer {
                 ],
             });
         }
+        let shadow = shadow.or(point_shadow);
         self.capacity.dropped_lights = render_world.directional_lights.len()
             + render_world.point_lights.len()
             + render_world.spot_lights.len()
@@ -8246,6 +8281,8 @@ fn camera_eye_forward(camera: Option<ExtractedCamera>) -> ([f32; 3], [f32; 3]) {
 
 /// Directional shadow cascades, one per tile of a 2x2 shadow map atlas.
 const SHADOW_CASCADES: usize = 4;
+/// Light views the shadow upload holds: the six cube faces of a point light.
+const SHADOW_VIEWS: usize = 6;
 
 /// Camera depth where cascade `index` ends: mostly logarithmic splits, so
 /// the near cascades are small and sharp, blended with even ones so the
@@ -8346,6 +8383,37 @@ enum ShadowView {
         outer_angle: f32,
         range: f32,
     },
+    /// Six perspective cube faces around the point light.
+    Point { position: [f32; 3], range: f32 },
+}
+
+/// Light matrices of a point light's cube faces, in the order +X, -X, +Y,
+/// -Y, +Z, -Z the fragment shader picks them by.
+fn point_shadow_view_projections(
+    position: [f32; 3],
+    range: f32,
+    texels: u32,
+) -> Vec<Matrix4<f32>> {
+    let eye = Point3::from(position);
+    // Each face reaches two texels past 90 degrees, so the edge PCF taps
+    // stay on the face's own tile.
+    let fov = 2.0 * (1.0 + 4.0 / texels.max(8) as f32).atan();
+    let near = (range * 0.002).max(0.02);
+    let projection = Perspective3::new(1.0, fov, near, range).to_homogeneous();
+    [
+        (Vector3::x(), Vector3::y()),
+        (-Vector3::x(), Vector3::y()),
+        (Vector3::y(), Vector3::z()),
+        (-Vector3::y(), Vector3::z()),
+        (Vector3::z(), Vector3::y()),
+        (-Vector3::z(), Vector3::y()),
+    ]
+    .into_iter()
+    .map(|(direction, up)| {
+        let view = Matrix4::look_at_rh(&eye, &(eye + direction), &up);
+        vulkan_clip_correction() * projection * view
+    })
+    .collect()
 }
 
 /// Perspective light matrix covering a spot light's cone out to its range.
@@ -8846,7 +8914,7 @@ layout(set = 2, binding = 1) readonly buffer Shadow {
     vec4 fog;
     vec4 fog_shape;
     vec4 ambient_occlusion;
-    mat4 cascades[4];
+    mat4 cascades[6];
     vec4 cascade_far;
     vec4 cascade_forward;
     vec4 cascade_info;
@@ -9004,18 +9072,34 @@ vec4 trace_reflection(vec3 direction, float roughness) {
     return vec4(0.0);
 }
 float shadow_factor(vec3 surface_normal) {
-    // Directional lights pick the first cascade that reaches this depth;
-    // each cascade is one tile of the atlas.
+    // Directional lights pick the first cascade that reaches this depth,
+    // point lights the cube face along the major axis away from the light;
+    // each view is one tile of the atlas.
     int count = int(shadow.cascade_info.x);
     int tiles = int(shadow.cascade_info.y);
-    float depth = dot(v_world_position, shadow.cascade_forward.xyz)
-        - shadow.cascade_forward.w;
     int cascade = 0;
-    while (cascade < count - 1 && depth > shadow.cascade_far[cascade]) {
-        cascade += 1;
-    }
-    if (count == 0 || depth > shadow.cascade_far[count - 1]) {
+    if (count == 0) {
         return 1.0;
+    }
+    if (shadow.cascade_info.z > 0.5) {
+        vec3 away = v_world_position - shadow.cascade_forward.xyz;
+        vec3 size = abs(away);
+        if (size.x >= size.y && size.x >= size.z) {
+            cascade = away.x > 0.0 ? 0 : 1;
+        } else if (size.y >= size.z) {
+            cascade = away.y > 0.0 ? 2 : 3;
+        } else {
+            cascade = away.z > 0.0 ? 4 : 5;
+        }
+    } else {
+        float depth = dot(v_world_position, shadow.cascade_forward.xyz)
+            - shadow.cascade_forward.w;
+        while (cascade < count - 1 && depth > shadow.cascade_far[cascade]) {
+            cascade += 1;
+        }
+        if (depth > shadow.cascade_far[count - 1]) {
+            return 1.0;
+        }
     }
     // One texel in the cascade's own 0..1 coordinates.
     vec2 texel = float(tiles) / vec2(textureSize(shadow_map, 0));
@@ -11350,6 +11434,86 @@ mod tests {
             shadowed < 30,
             "the wall shadows the floor behind it, got {shadowed}"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn point_light_shadow_falls_through_each_cube_face() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A point light shines on the floor at z = 0 past an occluder
+        // halfway between them, off the camera's view. The two light
+        // positions put the floor center behind the -X and the -Z cube face.
+        let mut scene = SlabScene::new(&[
+            (0.0, MaterialAsset::default()),
+            (1.0, MaterialAsset::default()),
+        ]);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.point_lights.push(
+            crate::runtime::ExtractedPointLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2002).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::identity().into(),
+                },
+                light: crate::runtime::PointLight {
+                    color: [1.0; 3],
+                    intensity: 40_000.0,
+                    range: 20.0,
+                    shadows: true,
+                },
+            },
+        );
+        let frame = |scene: &mut SlabScene| {
+            scene.render_world.renderables_revision += 1;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.center_pixel()[2]
+        };
+        for light in [Vector3::new(4.0, 0.0, 3.0), Vector3::new(0.0, 3.0, 4.0)]
+        {
+            scene.render_world.point_lights[0].transform.matrix =
+                Matrix4::new_translation(&light).into();
+            scene.render_world.renderables[1].transform.matrix =
+                (Matrix4::new_translation(&(light * 0.5))
+                    * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                        0.5, 0.5, 0.5,
+                    )))
+                .into();
+            scene.render_world.point_lights[0].light.shadows = true;
+            let shadowed = frame(&mut scene);
+            scene.render_world.point_lights[0].light.shadows = false;
+            let lit = frame(&mut scene);
+            assert!(lit > 150, "unshadowed point light lights it, got {lit}");
+            // The floor does not shadow itself.
+            scene.render_world.point_lights[0].light.shadows = true;
+            scene.render_world.renderables[1].cast_shadows = false;
+            let clear = frame(&mut scene);
+            scene.render_world.renderables[1].cast_shadows = true;
+            assert!(
+                u16::from(clear) + 10 > u16::from(lit),
+                "{clear} without caster vs {lit}"
+            );
+            assert!(
+                shadowed < 30,
+                "occluder shadows the floor from {light:?}, got {shadowed}"
+            );
+        }
     }
 
     #[test]
@@ -16427,6 +16591,7 @@ mod tests {
                     color,
                     intensity: 500.0,
                     range,
+                    shadows: false,
                 },
             }
         };
@@ -16761,6 +16926,7 @@ mod tests {
                         color: [0.0, 1.0, 0.0],
                         intensity: 200.0,
                         range: 0.5,
+                        shadows: false,
                     },
                 },
             );
@@ -16894,6 +17060,7 @@ mod tests {
                     color: [0.0, 1.0, 0.0],
                     intensity: 500.0,
                     range: 1.5,
+                    shadows: false,
                 },
             },
         );

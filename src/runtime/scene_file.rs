@@ -3543,6 +3543,7 @@ mod tests {
                 color: [0.4, 0.7, 1.0],
                 intensity: 750.0,
                 range: 12.0,
+                shadows: false,
             },
         ));
         app.spawn((

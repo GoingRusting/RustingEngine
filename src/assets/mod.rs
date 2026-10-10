@@ -1955,6 +1955,7 @@ impl AssetServer {
                                     color,
                                     intensity,
                                     range,
+                                    shadows: false,
                                 })
                             }
                             gltf::khr_lights_punctual::Kind::Spot {

@@ -170,6 +170,10 @@ pub struct PointLight {
     pub color: [f32; 3],
     pub intensity: f32,
     pub range: f32,
+    /// Casts shadows through six cube faces of the shadow map. Only when
+    /// no directional or spot light in the frame casts shadows.
+    #[serde(default)]
+    pub shadows: bool,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -206,6 +210,7 @@ impl Default for PointLight {
             color: [1.0; 3],
             intensity: 1_000.0,
             range: 10.0,
+            shadows: false,
         }
     }
 }

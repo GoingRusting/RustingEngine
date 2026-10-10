@@ -182,6 +182,7 @@ pub fn spawn_render_benchmark(world: &mut World) -> Entity {
                 color,
                 intensity: 400.0,
                 range: 10.0,
+                shadows: false,
             },
         ));
     }

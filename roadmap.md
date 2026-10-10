@@ -2481,7 +2481,7 @@ Depends on: Milestones 3 and 4.
 
 ### Lighting and shadows
 
-- [ ] Cascaded shadow maps for directional lights; shadows for point and spot lights.
+- [x] Cascaded shadow maps for directional lights; shadows for point and spot lights.
   - Partial (cascades, 2026-10-10): the shadowed directional light renders 4
     cascades into the 2x2 tiles of the existing shadow map
     (`scene_renderer.rs` `cascade_end`, `frustum_slice_sphere`,
@@ -2498,7 +2498,23 @@ Depends on: Milestones 3 and 4.
     (`net::tests::a_handshake_must_arrive_whole_in_time_and_stay_small`
     gets `WouldBlock`, not `TimedOut`, under load; outside this item, passes
     alone); gpu-tests run 923 lib tests passed.
-    Open: point-light (cube) shadows, cascade blending, per-cascade culling.
+    Open then: point-light shadows, cascade blending, per-cascade culling.
+  - Done (point lights, 2026-10-10): `PointLight` gains `shadows` (serde
+    default false; schema, inspector checkbox and `docs/lighting.md`
+    updated). A shadowed point light, used when no directional or spot
+    light casts shadows, renders six 90-degree faces (two texels wider, so
+    PCF taps stay on the tile) into a 3x3 atlas of the shadow map
+    (`point_shadow_view_projections`); the fragment shader picks the face by
+    the major axis away from the light. Evidence: GPU test
+    `point_light_shadow_falls_through_each_cube_face` darkens the floor to
+    r < 30 behind an occluder through the -X and the -Z face, leaves it lit
+    without shadows and without a caster (no self-shadowing); forcing every
+    pixel onto face +Z fails it (r=255). Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 819 passed, 1 failed (the same net handshake
+    timing test, `WouldBlock` vs `TimedOut`, outside this lane); gpu-tests
+    run 924 lib tests passed.
+    Not done: blending between cascades, per-cascade or per-face caster
+    culling.
 - [ ] Clustered lighting for many point and spot lights.
 - [ ] Area-light approximation and light cookies.
 

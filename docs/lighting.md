@@ -9,17 +9,19 @@ shadows. `rusting schema point_light` (and `spot_light`,
 | Light | Scene key | Shadows |
 | --- | --- | --- |
 | Sun | `directional_light` | Yes, with `"shadows": true`. Only the first shadowed directional light casts them. |
-| Lamp | `point_light` | No. |
+| Lamp | `point_light` | Yes, with `"shadows": true`, when no directional or spot light casts them. |
 | Cone | `spot_light` | Yes, with `"shadows": true`, when no directional light casts them. |
 | Flat fill | `rusting.ambient_light` | No; it lights everything equally. |
 | Sky and ground fill | `rusting.sky_light` | No; up-facing surfaces get `sky_color`, down-facing ones `ground_color`. |
 
-Point lights pass through walls: a lamp lights the room behind a wall as far
-as its `range` reaches. Keep each `range` inside its room and put lamps near
-room centres. A spot light with `"shadows": true` stops at walls, so a
-flashlight does not light the far side of a door. One light per frame casts
-shadows: the first directional light with `shadows`, or, when there is none,
-the first spot light with `shadows`. A mesh's `cast_shadows` and
+Unshadowed point lights pass through walls: a lamp lights the room behind a
+wall as far as its `range` reaches. Keep each `range` inside its room and put
+lamps near room centres. A spot or point light with `"shadows": true` stops
+at walls, so a flashlight does not light the far side of a door. One light
+per frame casts shadows: the first directional light with `shadows`, or,
+when there is none, the first spot light with `shadows`, then the first
+point light with `shadows`. The sun's shadow uses four cascades, sharp near
+the camera; a point light's shadow renders six cube faces. A mesh's `cast_shadows` and
 `receive_shadows` apply to that one shadow.
 
 ## Brightness and direction

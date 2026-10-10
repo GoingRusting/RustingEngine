@@ -385,6 +385,7 @@ pub(super) fn draw_inspector_area(
                 widgets::section(ui, "Point Light", false, |ui| {
                     widgets::color(ui, "Color", &mut light.color);
                     light_power(ui, &mut light.intensity, &mut light.range);
+                    widgets::checkbox(ui, "Cast Shadows", &mut light.shadows);
                 });
             }
             if let Some(light) = edited_spot_light {
