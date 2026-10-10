@@ -2482,6 +2482,23 @@ Depends on: Milestones 3 and 4.
 ### Lighting and shadows
 
 - [ ] Cascaded shadow maps for directional lights; shadows for point and spot lights.
+  - Partial (cascades, 2026-10-10): the shadowed directional light renders 4
+    cascades into the 2x2 tiles of the existing shadow map
+    (`scene_renderer.rs` `cascade_end`, `frustum_slice_sphere`,
+    `cascade_view_projection`). Splits blend log and even (0.75/0.25) up to
+    the profile's shadow distance; each cascade bounds its frustum slice
+    with a sphere and snaps to whole texels, so edges do not shimmer. The
+    fragment shader picks the cascade by camera depth and clamps taps inside
+    its tile. Spot lights keep one whole-map view; they already had shadows.
+    Evidence: GPU test `near_cascade_resolves_a_thin_shadow` (a 3 cm rod one
+    unit from the camera darkens the floor to r < 30); with every cascade
+    stretched to the full distance (mutation of `cascade_end`) it fails
+    with r=249 and the six older shadow tests still pass. Full check:
+    fmt, clippy x3 clean; `cargo test --workspace` 819 passed, 1 failed
+    (`net::tests::a_handshake_must_arrive_whole_in_time_and_stay_small`
+    gets `WouldBlock`, not `TimedOut`, under load; outside this item, passes
+    alone); gpu-tests run 923 lib tests passed.
+    Open: point-light (cube) shadows, cascade blending, per-cascade culling.
 - [ ] Clustered lighting for many point and spot lights.
 - [ ] Area-light approximation and light cookies.
 

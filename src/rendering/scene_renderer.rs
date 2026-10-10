@@ -502,11 +502,10 @@ const PROBE_FACES: [([f32; 3], [f32; 3]); 6] = [
     ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
 ];
 
-/// Light-space transform of the shadowed directional light, per frame.
+/// Shadow cascades and the rest of the main pass's per-frame state.
 #[repr(C)]
 #[derive(BufferContents, Clone, Copy)]
 struct ShadowUpload {
-    light_view_projection: [[f32; 4]; 4],
     /// Environment map: x is 1 when bound, y its intensity, z its last mip
     /// level.
     environment: [f32; 4],
@@ -528,6 +527,15 @@ struct ShadowUpload {
     /// x is 1 when binding 6 holds this frame's ambient occlusion; y is 1
     /// for single-tap hard shadows.
     ambient_occlusion: [f32; 4],
+    /// Light-space transform of each cascade of the shadowed light.
+    cascades: [[[f32; 4]; 4]; SHADOW_CASCADES],
+    /// Camera depth where each cascade ends.
+    cascade_far: [f32; 4],
+    /// Camera forward in xyz and `dot(eye, forward)` in w, so
+    /// `dot(p, xyz) - w` is a point's camera depth.
+    cascade_forward: [f32; 4],
+    /// x is the cascade count, y the atlas tiles per side.
+    cascade_info: [f32; 4],
 }
 
 /// Side length in texels of the directional shadow map and the view
@@ -2664,22 +2672,49 @@ impl SceneRenderer {
                 shadow_size,
             )?;
         }
-        let light_view_projection = lights.shadow.map(|(_, view)| match view {
-            ShadowView::Directional(direction) => {
-                shadow_view_projection(eye, forward, direction, shadow_distance)
+        // A directional light renders one cascade per tile of a 2x2 atlas;
+        // a spot light takes the whole map.
+        let (cascades, cascade_far, tiles) = match lights.shadow {
+            Some((_, ShadowView::Directional(direction))) => {
+                let tile_size = shadow_size / 2;
+                let mut near = 0.0;
+                let mut cascades = Vec::new();
+                let mut far = [0.0; 4];
+                for (index, end) in far.iter_mut().enumerate() {
+                    *end = cascade_end(index, shadow_distance);
+                    let (center, radius) =
+                        frustum_slice_sphere(&clip, eye, forward, near, *end);
+                    cascades.push(cascade_view_projection(
+                        center,
+                        radius,
+                        direction,
+                        shadow_distance,
+                        tile_size,
+                    ));
+                    near = *end;
+                }
+                (cascades, far, 2)
             }
-            ShadowView::Spot {
-                position,
-                direction,
-                outer_angle,
-                range,
-            } => spot_shadow_view_projection(
-                position,
-                direction,
-                outer_angle,
-                range,
+            Some((
+                _,
+                ShadowView::Spot {
+                    position,
+                    direction,
+                    outer_angle,
+                    range,
+                },
+            )) => (
+                vec![spot_shadow_view_projection(
+                    position,
+                    direction,
+                    outer_angle,
+                    range,
+                )],
+                [f32::MAX, 0.0, 0.0, 0.0],
+                1,
             ),
-        });
+            None => (Vec::new(), [0.0; 4], 1),
+        };
         // Refracting materials and screen-space reflections sample a copy
         // of the opaque scene, so the scene pass splits before blended
         // draws. Debug views skip it; Eco skips reflections.
@@ -2747,9 +2782,6 @@ impl SceneRenderer {
             .write()
             .map_err(|error| SceneRenderError(error.to_string()))? =
             ShadowUpload {
-                light_view_projection: light_view_projection
-                    .unwrap_or_else(Matrix4::identity)
-                    .into(),
                 environment: {
                     let mut row = environment.as_ref().map_or(
                         [0.0; 4],
@@ -2813,6 +2845,21 @@ impl SceneRenderer {
                     0.0,
                     0.0,
                 ],
+                cascades: std::array::from_fn(|index| {
+                    cascades
+                        .get(index)
+                        .copied()
+                        .unwrap_or_else(Matrix4::identity)
+                        .into()
+                }),
+                cascade_far,
+                cascade_forward: [
+                    forward[0],
+                    forward[1],
+                    forward[2],
+                    Vector3::from(eye).dot(&Vector3::from(forward)),
+                ],
+                cascade_info: [cascades.len() as f32, tiles as f32, 0.0, 0.0],
             };
         let shadow_set = DescriptorSet::new(
             self.descriptor_allocator.clone(),
@@ -3615,10 +3662,17 @@ impl SceneRenderer {
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?;
-        if let Some(light_view_projection) = light_view_projection {
+        let tile_size = shadow_size / tiles;
+        for (index, light_view_projection) in cascades.iter().enumerate() {
             // ponytail: masked casters cast as fully opaque and blended ones
             // not at all; add an alpha-tested shadow shader when scenes need
             // foliage shadows.
+            // ponytail: every cascade draws every caster; cull per cascade
+            // when shadow draws show up in profiles (Eco could use 2).
+            let offset = [
+                (index as u32 % tiles) * tile_size,
+                (index as u32 / tiles) * tile_size,
+            ];
             commands
                 .bind_pipeline_graphics(self.shadow_pipeline.clone())
                 .map_err(|error| SceneRenderError(error.to_string()))?
@@ -3633,7 +3687,7 @@ impl SceneRenderer {
                     active.pipeline.layout().clone(),
                     0,
                     CameraUniform {
-                        view_projection: light_view_projection.into(),
+                        view_projection: (*light_view_projection).into(),
                         ..camera
                     },
                 )
@@ -3641,8 +3695,8 @@ impl SceneRenderer {
                 .set_viewport(
                     0,
                     [Viewport {
-                        offset: [0.0, 0.0],
-                        extent: [shadow_size as f32; 2],
+                        offset: [offset[0] as f32, offset[1] as f32],
+                        extent: [tile_size as f32; 2],
                         depth_range: 0.0..=1.0,
                     }]
                     .into_iter()
@@ -3652,8 +3706,8 @@ impl SceneRenderer {
                 .set_scissor(
                     0,
                     [Scissor {
-                        offset: [0, 0],
-                        extent: [shadow_size; 2],
+                        offset,
+                        extent: [tile_size; 2],
                     }]
                     .into_iter()
                     .collect(),
@@ -8190,41 +8244,97 @@ fn camera_eye_forward(camera: Option<ExtractedCamera>) -> ([f32; 3], [f32; 3]) {
     })
 }
 
-/// Orthographic light-space transform whose box covers the first
-/// `distance` in front of the camera. Casters up to another `distance`
-/// toward the light still land in the map.
-// ponytail: one cascade and no texel snapping, so far shadows are coarse and
-// edges shimmer as the camera moves; add cascades and snapping when scenes
-// show it.
-fn shadow_view_projection(
+/// Directional shadow cascades, one per tile of a 2x2 shadow map atlas.
+const SHADOW_CASCADES: usize = 4;
+
+/// Camera depth where cascade `index` ends: mostly logarithmic splits, so
+/// the near cascades are small and sharp, blended with even ones so the
+/// far cascades are not too thin.
+fn cascade_end(index: usize, distance: f32) -> f32 {
+    let near = 0.5_f32.min(distance);
+    let t = (index + 1) as f32 / SHADOW_CASCADES as f32;
+    let logarithmic = near * (distance / near).powf(t);
+    0.75 * logarithmic + 0.25 * distance * t
+}
+
+/// Bounding sphere of the camera frustum between depths `near` and `far`
+/// along `forward`. The radius does not change as the camera turns, so the
+/// cascade's texel size stays fixed.
+fn frustum_slice_sphere(
+    clip: &Matrix4<f32>,
     eye: [f32; 3],
     forward: [f32; 3],
+    near: f32,
+    far: f32,
+) -> (Point3<f32>, f32) {
+    let inverse = clip.try_inverse().unwrap_or_else(Matrix4::identity);
+    let eye = Point3::from(eye);
+    let forward = Vector3::from(forward);
+    let depth = |point: &Point3<f32>| (point - eye).dot(&forward);
+    let mut corners = Vec::with_capacity(8);
+    for [x, y] in [[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]] {
+        let start = inverse.transform_point(&Point3::new(x, y, 0.0));
+        let end = inverse.transform_point(&Point3::new(x, y, 1.0));
+        let (start_depth, end_depth) = (depth(&start), depth(&end));
+        for slice in [near, far] {
+            let t = ((slice - start_depth)
+                / (end_depth - start_depth).max(f32::EPSILON))
+            .clamp(0.0, 1.0);
+            corners.push(start + (end - start) * t);
+        }
+    }
+    let center = Point3::from(
+        corners
+            .iter()
+            .map(|corner| corner.coords)
+            .sum::<Vector3<f32>>()
+            / corners.len() as f32,
+    );
+    let radius = corners
+        .iter()
+        .map(|corner| (corner - center).norm())
+        .fold(0.0, f32::max)
+        .max(0.01);
+    (center, radius)
+}
+
+/// Orthographic light-space transform of one cascade: a box around the
+/// sphere, moved in whole texels so shadow edges do not shimmer as the
+/// camera moves. Casters up to `reach` further toward the light still land
+/// in the map.
+fn cascade_view_projection(
+    center: Point3<f32>,
+    radius: f32,
     direction: [f32; 3],
-    distance: f32,
+    reach: f32,
+    texels: u32,
 ) -> Matrix4<f32> {
-    let radius = distance * 0.5;
-    let direction = Vector3::from(direction);
-    let center = Point3::from(eye) + Vector3::from(forward) * radius;
-    let light_eye = center - direction * (radius + distance);
+    let direction = Vector3::from(direction).normalize();
     let up = if direction.y.abs() > 0.99 {
         Vector3::z()
     } else {
         Vector3::y()
     };
-    let view = Matrix4::look_at_rh(&light_eye, &center, &up);
+    let view =
+        Matrix4::look_at_rh(&Point3::origin(), &Point3::from(direction), &up);
+    let light = view.transform_point(&center);
+    let texel = 2.0 * radius / texels.max(1) as f32;
+    let x = (light.x / texel).round() * texel;
+    let y = (light.y / texel).round() * texel;
+    // The view looks down -z, so distance from the light plane is -z.
     let projection = Orthographic3::new(
-        -radius,
-        radius,
-        -radius,
-        radius,
-        0.0,
-        2.0 * radius + distance,
+        x - radius,
+        x + radius,
+        y - radius,
+        y + radius,
+        -light.z - radius - reach,
+        -light.z + radius,
     )
     .to_homogeneous();
     vulkan_clip_correction() * projection * view
 }
 
-/// What the one shadow map looks along.
+/// What the shadow map looks along.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ShadowView {
     /// Orthographic, along this world direction, around the camera.
@@ -8728,7 +8838,6 @@ layout(set = 0, binding = 2) readonly buffer Lights {
 } lights;
 layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
 layout(set = 2, binding = 1) readonly buffer Shadow {
-    mat4 light_view_projection;
     vec4 environment;
     vec4 scene_color;
     vec4 viewport;
@@ -8737,6 +8846,10 @@ layout(set = 2, binding = 1) readonly buffer Shadow {
     vec4 fog;
     vec4 fog_shape;
     vec4 ambient_occlusion;
+    mat4 cascades[4];
+    vec4 cascade_far;
+    vec4 cascade_forward;
+    vec4 cascade_info;
 } shadow;
 layout(set = 2, binding = 2) uniform sampler2D environment_map;
 layout(set = 2, binding = 3) uniform sampler2D scene_color;
@@ -8891,14 +9004,28 @@ vec4 trace_reflection(vec3 direction, float roughness) {
     return vec4(0.0);
 }
 float shadow_factor(vec3 surface_normal) {
-    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    // Directional lights pick the first cascade that reaches this depth;
+    // each cascade is one tile of the atlas.
+    int count = int(shadow.cascade_info.x);
+    int tiles = int(shadow.cascade_info.y);
+    float depth = dot(v_world_position, shadow.cascade_forward.xyz)
+        - shadow.cascade_forward.w;
+    int cascade = 0;
+    while (cascade < count - 1 && depth > shadow.cascade_far[cascade]) {
+        cascade += 1;
+    }
+    if (count == 0 || depth > shadow.cascade_far[count - 1]) {
+        return 1.0;
+    }
+    // One texel in the cascade's own 0..1 coordinates.
+    vec2 texel = float(tiles) / vec2(textureSize(shadow_map, 0));
     // Normal offset: sample from two shadow texels off the surface. The PCF
     // taps reach one texel sideways, where a sloped surface's own depth is
     // nearer the light; without the offset it shadows itself in stripes.
     // Row 0 of the light matrix scales world units to clip x; dividing by
     // w (1 for the orthographic sun, the distance for a spot light) gives
     // the texel size at this surface.
-    mat4 light = shadow.light_view_projection;
+    mat4 light = shadow.cascades[cascade];
     vec4 surface_clip = light * vec4(v_world_position, 1.0);
     if (surface_clip.w <= 0.0) {
         return 1.0;
@@ -8912,16 +9039,18 @@ float shadow_factor(vec3 surface_normal) {
         return 1.0;
     }
     vec2 uv = coords.xy * 0.5 + 0.5;
+    vec2 tile = vec2(cascade % tiles, cascade / tiles);
+    // Taps stay half a texel inside the tile, off its neighbours.
+    #define SHADOW_TAP(offset) texture(shadow_map, vec3( \
+        (tile + clamp(uv + (offset) * texel, texel * 0.5, 1.0 - texel * 0.5)) \
+            / float(tiles), coords.z))
     if (shadow.ambient_occlusion.y > 0.5) {
-        return texture(shadow_map, vec3(uv, coords.z));
+        return SHADOW_TAP(vec2(0.0));
     }
     float lit = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            lit += texture(
-                shadow_map,
-                vec3(uv + vec2(x, y) * texel, coords.z)
-            );
+            lit += SHADOW_TAP(vec2(x, y));
         }
     }
     return lit / 9.0;
@@ -9522,7 +9651,6 @@ layout(set = 0, binding = 2) readonly buffer Lights {
     Light data[];
 } lights;
 layout(set = 2, binding = 1) readonly buffer Shadow {
-    mat4 light_view_projection;
     vec4 environment;
     vec4 scene_color;
     vec4 viewport;
@@ -11356,6 +11484,76 @@ mod tests {
             assert_eq!(red < 30, shadowed, "{quality:?}, got r={red}");
             assert_eq!(scene.renderer.shadow_framebuffer.extent(), [size; 2]);
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn near_cascade_resolves_a_thin_shadow() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A rod a few centimetres thick shadows the floor one unit below
+        // the camera. One map over the whole 50-unit `Balanced` shadow
+        // distance has texels wider than the rod; the near cascade has
+        // texels a few millimetres wide.
+        let mut scene = SlabScene::new(&[
+            (0.0, MaterialAsset::default()),
+            (0.5, MaterialAsset::default()),
+        ]);
+        scene.render_world.quality = QualityProfile::Balanced;
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(2.5, 0.0, 0.5))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    1.0, 0.03, 0.03,
+                )))
+            .into();
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        camera.transform.matrix =
+            Matrix4::new_translation(&Vector3::new(0.0, 0.0, 1.0)).into();
+        camera.projection = Projection::Orthographic {
+            vertical_size: 0.01,
+            near: 0.1,
+            far: 100.0,
+        };
+        let direction = Vector3::new(-5.0, 0.0, -1.0).normalize();
+        scene.render_world.directional_lights.push(
+            crate::runtime::ExtractedDirectionalLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2000).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: nalgebra::Rotation3::rotation_between(
+                        &-Vector3::z(),
+                        &direction,
+                    )
+                    .unwrap()
+                    .to_homogeneous()
+                    .into(),
+                },
+                light: crate::runtime::DirectionalLight {
+                    color: [1.0; 3],
+                    illuminance: 500_000.0,
+                    shadows: true,
+                },
+            },
+        );
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let red = scene.center_pixel()[2];
+        assert!(red < 30, "rod shadows the floor, got r={red}");
     }
 
     #[test]
