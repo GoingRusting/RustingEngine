@@ -2533,7 +2533,25 @@ Depends on: Milestones 3 and 4.
     now uses 600 lights. Full check: fmt, clippy x3 clean;
     `cargo test --workspace` 821 passed; gpu-tests run 926 lib tests passed.
     Not done: GPU-side binning, per-cluster brightness sorting before the cap.
-- [ ] Area-light approximation and light cookies.
+- [x] Area-light approximation and light cookies.
+  - Done: point and spot lights take a `radius` (sphere source, default 0).
+    Specular uses Karis' representative point on the sphere nearest the
+    reflection ray, with the GGX lobe widened and renormalized by
+    `(a / a')^2`; diffuse is unchanged. New `rusting.light_cookie`
+    component (image path) on a spot light projects the image through the
+    outer cone, top along the light's +Y; up to four cookie images per
+    frame in set 2 binding 8, loaded like the environment map. Schema,
+    reflection, scene file, snapshot, inspector ("Source Radius"), Add
+    Component text and docs/lighting.md follow. Evidence: GPU tests
+    `sphere_light_widens_the_highlight_on_glossy_surfaces` (black glossy
+    floor: 16 bright pixels for a point, 148 for radius 0.4; fails at 16
+    vs 16 when the shader ignores the radius) and
+    `spot_light_cookie_projects_its_image_onto_the_floor` (four colored
+    quadrants land in the matching screen quadrants; fails when the
+    image's up is flipped). Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 820 passed plus the load-flaky net handshake
+    test, which passes alone; gpu-tests run 928 lib tests passed.
+    Not done: rectangle/tube area lights (LTC), cookies on point lights.
 
 ### Geometry and effects
 

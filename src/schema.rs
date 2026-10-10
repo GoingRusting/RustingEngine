@@ -768,11 +768,12 @@ const ENTITY_SECTIONS: &[Section] = &[
             field("/intensity", "renderer units, not lumens", ">= 0", "1000 lights a white surface facing it, up close, as brightly as the 100000 lux sun; brightness falls off as (1 - distance/range)^2. A desk lamp in a dark room: 400-1500; a bright party light: 3000-8000"),
             field("/range", METRES, "> 0", "light reaches zero here"),
             field("/shadows", "", "", "default false"),
+            field("/radius", METRES, ">= 0", "size of the glowing sphere; wider, softer highlights on shiny surfaces. Default 0, a point. A bulb: 0.03; a paper lantern: 0.2"),
         ],
     },
     Section {
         key: "spot_light",
-        summary: "Cone of light along the object's forward direction. `shadows` gives it a shadow map (a flashlight stops at walls); one light per frame casts shadows, and a shadowed directional light wins.",
+        summary: "Cone of light along the object's forward direction. `shadows` gives it a shadow map (a flashlight stops at walls); one light per frame casts shadows, and a shadowed directional light wins. A rusting.light_cookie on the same object projects an image through it.",
         gpu: "as point_light; one shadow pass when shadows is true",
         example: || json!({"color": [1.0, 1.0, 1.0], "intensity": 1200.0, "range": 12.0, "inner_angle": 0.3, "outer_angle": 0.5}),
         fields: &[
@@ -782,6 +783,7 @@ const ENTITY_SECTIONS: &[Section] = &[
             field("/inner_angle", RADIANS, "0..outer_angle", "fully lit cone"),
             field("/outer_angle", RADIANS, "inner_angle..1.57", "light reaches zero here"),
             field("/shadows", "", "", "default false"),
+            field("/radius", METRES, ">= 0", "as point_light"),
         ],
     },
 ];
@@ -822,6 +824,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere. Rough surfaces see it blurred. The first one found is used.",
         gpu: NO_GPU,
         example: || json!({"texture": "sky.png", "intensity": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.light_cookie",
+        summary: "On an object with a spot_light: projects an image under assets/ through the light's outer cone, like a slide in a projector (window frames, leaves, a logo). The light's color is multiplied by the image; its top points along the light's up (+Y). At most four cookie spot lights per frame, the first in entity order; others light without their image.",
+        gpu: "one texture sample per lit pixel for each cookie light that reaches it",
+        example: || json!({"texture": "window_cookie.png"}),
     },
     ComponentSection {
         key: "rusting.reflection_probe",

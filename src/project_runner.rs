@@ -6880,6 +6880,7 @@ mod tests {
                     intensity: 5.0,
                     range: 4.0,
                     shadows: false,
+                    radius: 0.0,
                 },
             ))
             .id();

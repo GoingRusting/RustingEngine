@@ -174,6 +174,10 @@ pub struct PointLight {
     /// no directional or spot light in the frame casts shadows.
     #[serde(default)]
     pub shadows: bool,
+    /// Radius in metres of the glowing sphere. A larger source gives
+    /// wider, softer highlights on shiny surfaces; 0 is a point.
+    #[serde(default)]
+    pub radius: f32,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -189,6 +193,10 @@ pub struct SpotLight {
     /// light: a directional light with shadows wins over spot lights.
     #[serde(default)]
     pub shadows: bool,
+    /// Radius in metres of the glowing sphere. A larger source gives
+    /// wider, softer highlights on shiny surfaces; 0 is a point.
+    #[serde(default)]
+    pub radius: f32,
 }
 
 impl Default for SpotLight {
@@ -200,6 +208,7 @@ impl Default for SpotLight {
             inner_angle: 20.0_f32.to_radians(),
             outer_angle: 35.0_f32.to_radians(),
             shadows: false,
+            radius: 0.0,
         }
     }
 }
@@ -211,6 +220,7 @@ impl Default for PointLight {
             intensity: 1_000.0,
             range: 10.0,
             shadows: false,
+            radius: 0.0,
         }
     }
 }

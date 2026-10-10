@@ -1166,6 +1166,8 @@ pub const PHYSICS_MATERIAL_COMPONENT: &str = "rusting.physics_material";
 pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
 /// Registry name of the built-in reflected sky image.
 pub const ENVIRONMENT_MAP_COMPONENT: &str = "rusting.environment_map";
+/// Registry name of the built-in spot light image.
+pub const LIGHT_COOKIE_COMPONENT: &str = "rusting.light_cookie";
 /// Registry name of the built-in reflection probe.
 pub const REFLECTION_PROBE_COMPONENT: &str = "rusting.reflection_probe";
 /// Registry name of the built-in height fog.
@@ -1320,6 +1322,9 @@ impl Default for SceneComponentRegistry {
             .expect("empty registry has no duplicates");
         registry
             .register::<super::EnvironmentMap>(ENVIRONMENT_MAP_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::LightCookie>(LIGHT_COOKIE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::ReflectionProbe>(REFLECTION_PROBE_COMPONENT)
@@ -3544,6 +3549,7 @@ mod tests {
                 intensity: 750.0,
                 range: 12.0,
                 shadows: false,
+                radius: 0.0,
             },
         ));
         app.spawn((

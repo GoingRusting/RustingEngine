@@ -592,7 +592,11 @@ struct LightUpload {
     position_kind: [f32; 4],
     direction_range: [f32; 4],
     color_intensity: [f32; 4],
+    /// Cosines of the inner and outer cone, source radius, and tangent of
+    /// the outer cone.
     spot_angles: [f32; 4],
+    /// The spot light's right axis and its cookie slot, -1 without one.
+    cookie: [f32; 4],
 }
 
 #[repr(C)]
@@ -1229,6 +1233,27 @@ struct PreparedLights {
     /// Upload index and bounding sphere (center, range) of each point and
     /// spot light, binned into the light clusters every frame.
     local: Vec<(u32, [f32; 4])>,
+    /// Images of the cookie slots, see [`light_cookies`].
+    cookies: Vec<Handle<TextureAsset>>,
+}
+
+/// Cookie slots in the lit pass; see `LightCookie`.
+const MAX_LIGHT_COOKIES: usize = 4;
+
+/// Distinct cookie images of the spot lights, in light order, at most
+/// [`MAX_LIGHT_COOKIES`]; a light's cookie slot is its image's index here.
+fn light_cookies(render_world: &RenderWorld) -> Vec<Handle<TextureAsset>> {
+    let mut cookies = Vec::new();
+    for cookie in render_world
+        .spot_lights
+        .iter()
+        .filter_map(|light| light.cookie)
+    {
+        if cookies.len() < MAX_LIGHT_COOKIES && !cookies.contains(&cookie) {
+            cookies.push(cookie);
+        }
+    }
+    cookies
 }
 
 /// Screen tiles across and down and depth slices of the light clusters.
@@ -2632,7 +2657,12 @@ impl SceneRenderer {
         self.last_culling_path = path;
         self.prepare_materials(
             assets,
-            render_world.environment.map(|(texture, _)| texture),
+            render_world
+                .environment
+                .map(|(texture, _)| texture)
+                .into_iter()
+                .chain(light_cookies(render_world))
+                .collect(),
         )?;
 
         let carry = self.prepared_physics.as_mut().unwrap().carry.take();
@@ -3108,6 +3138,26 @@ impl SceneRenderer {
                     WriteDescriptorSet::image_view_sampler(6, view, sampler)
                 },
                 WriteDescriptorSet::buffer(7, light_clusters),
+                WriteDescriptorSet::image_view_sampler_array(8, 0, {
+                    let cookies = self
+                        .prepared_lights
+                        .as_ref()
+                        .map_or(&[][..], |lights| &lights.cookies);
+                    (0..MAX_LIGHT_COOKIES).map(|slot| {
+                        cookies
+                            .get(slot)
+                            .and_then(|cookie| {
+                                let prepared = self
+                                    .prepared_textures
+                                    .get(&cookie.key())?;
+                                Some((
+                                    prepared.view.clone()?,
+                                    prepared.sampler.clone(),
+                                ))
+                            })
+                            .unwrap_or_else(|| self.white_texture.clone())
+                    })
+                }),
             ],
             [],
         )
@@ -4921,11 +4971,11 @@ impl SceneRenderer {
     /// Uploads the base-color textures of the materials in use. Textures
     /// still loading are skipped and sample white until they publish.
     /// Uploads every map of the materials in use and builds their set 1.
-    /// The environment map uploads with them.
+    /// The environment map and light cookies (`lit`) upload with them.
     fn prepare_materials(
         &mut self,
         assets: &AssetServer,
-        environment: Option<Handle<TextureAsset>>,
+        lit: Vec<Handle<TextureAsset>>,
     ) -> Result<(), SceneRenderError> {
         let materials = self
             .prepared_instances
@@ -4951,7 +5001,7 @@ impl SceneRenderer {
             .iter()
             .filter_map(|material| assets.materials.get(*material))
             .flat_map(|material| slots(material).into_iter().flatten())
-            .chain(environment)
+            .chain(lit)
             .collect::<Vec<_>>();
         for &handle in &used {
             let revision = assets.textures.revision(handle).unwrap_or(0);
@@ -5110,6 +5160,7 @@ impl SceneRenderer {
                         / crate::runtime::DirectionalLight::LUX_PER_UNIT,
                 ],
                 spot_angles: [0.0; 4],
+                cookie: [0.0, 0.0, 0.0, -1.0],
             });
         }
         // A point light shadows only when no directional or spot light does.
@@ -5142,9 +5193,11 @@ impl SceneRenderer {
                     extracted.light.color[2],
                     extracted.light.intensity / 1_000.0,
                 ],
-                spot_angles: [0.0; 4],
+                spot_angles: [0.0, 0.0, extracted.light.radius.max(0.0), 0.0],
+                cookie: [0.0, 0.0, 0.0, -1.0],
             });
         }
+        let cookies = light_cookies(render_world);
         for extracted in &render_world.spot_lights {
             if uploads.len() == budget {
                 break;
@@ -5179,9 +5232,22 @@ impl SceneRenderer {
                 spot_angles: [
                     extracted.light.inner_angle.cos(),
                     extracted.light.outer_angle.cos(),
-                    0.0,
-                    0.0,
+                    extracted.light.radius.max(0.0),
+                    extracted.light.outer_angle.tan(),
                 ],
+                cookie: {
+                    let [x, y, z, _] = extracted.transform.matrix[0];
+                    let length = (x * x + y * y + z * z).sqrt().max(1e-6);
+                    let slot = extracted.cookie.and_then(|cookie| {
+                        cookies.iter().position(|&slot| slot == cookie)
+                    });
+                    [
+                        x / length,
+                        y / length,
+                        z / length,
+                        slot.map_or(-1.0, |slot| slot as f32),
+                    ]
+                },
             });
         }
         let shadow = shadow.or(point_shadow);
@@ -5254,6 +5320,7 @@ impl SceneRenderer {
             shadow,
             directional,
             local,
+            cookies,
         });
         Ok(())
     }
@@ -9084,6 +9151,7 @@ struct Light {
     vec4 direction_range;
     vec4 color_intensity;
     vec4 spot_angles;
+    vec4 cookie;
 };
 layout(set = 0, binding = 2) readonly buffer Lights {
     Light data[];
@@ -9119,6 +9187,17 @@ layout(set = 2, binding = 6) uniform sampler2D ambient_occlusion;
 layout(set = 2, binding = 7) readonly buffer Clusters {
     uint data[];
 } clusters;
+// Spot light cookie images; Light.cookie.w picks one. Matches
+// MAX_LIGHT_COOKIES.
+layout(set = 2, binding = 8) uniform sampler2D cookies[4];
+// The cookie image in `slot` at `uv`. Constant indices only: the slot is
+// not uniform across a draw.
+vec3 cookie_at(int slot, vec2 uv) {
+    if (slot == 0) return texture(cookies[0], uv).rgb;
+    if (slot == 1) return texture(cookies[1], uv).rgb;
+    if (slot == 2) return texture(cookies[2], uv).rgb;
+    return texture(cookies[3], uv).rgb;
+}
 #include "fog.glsl"
 // 0 opaque, 1 blended, 2 screen-space reflection overlay on opaque surfaces.
 layout(constant_id = 0) const uint PASS = 0u;
@@ -9454,8 +9533,15 @@ void main() {
         float kind = light.position_kind.w;
         vec3 to_light;
         float attenuation = 1.0;
+        vec3 tint = vec3(1.0);
+        // Sphere lights light specular from the point of the sphere
+        // nearest the reflection ray, with the lobe widened to keep its
+        // energy (Karis 2013, representative point).
+        vec3 specular_dir;
+        float lobe_energy = 1.0;
         if (kind < 0.5) {
             to_light = normalize(-light.direction_range.xyz);
+            specular_dir = to_light;
         } else {
             vec3 delta = light.position_kind.xyz - v_world_position;
             float distance_to_light = length(delta);
@@ -9468,16 +9554,38 @@ void main() {
                 1.0
             );
             attenuation = range_fade * range_fade;
+            float source_radius = light.spot_angles.z;
+            specular_dir = to_light;
+            if (source_radius > 0.0) {
+                vec3 to_ray = dot(delta, reflected) * reflected - delta;
+                vec3 nearest = delta + to_ray
+                    * clamp(source_radius / max(length(to_ray), 0.0001),
+                        0.0, 1.0);
+                specular_dir = normalize(nearest);
+                float lobe = roughness * roughness;
+                float widened = clamp(
+                    lobe + source_radius / (2.0 * max(distance_to_light, 0.0001)),
+                    0.0, 1.0);
+                lobe_energy = (lobe / widened) * (lobe / widened);
+            }
             if (kind > 1.5) {
-                float cone = dot(
-                    -to_light,
-                    normalize(light.direction_range.xyz)
-                );
+                vec3 axis = normalize(light.direction_range.xyz);
+                float cone = dot(-to_light, axis);
                 attenuation *= smoothstep(
                     light.spot_angles.y,
                     light.spot_angles.x,
                     cone
                 );
+                if (light.cookie.w > -0.5 && cone > 0.0) {
+                    // Projected like a slide: the outer cone spans the
+                    // image, its top along the light's up.
+                    vec3 right = light.cookie.xyz;
+                    vec3 up = cross(right, axis);
+                    vec2 spread = vec2(dot(-to_light, right),
+                        dot(-to_light, up)) / (cone * light.spot_angles.w);
+                    tint = cookie_at(int(light.cookie.w + 0.5),
+                        vec2(0.5 + 0.5 * spread.x, 0.5 - 0.5 * spread.y));
+                }
             }
         }
         if (index + 1u == camera.light_info.y && (v_alpha.z & 2u) != 0u) {
@@ -9489,18 +9597,18 @@ void main() {
         }
         // Cook-Torrance: GGX distribution, Smith-Schlick geometry,
         // Schlick Fresnel.
-        vec3 half_dir = normalize(to_light + view_dir);
+        vec3 half_dir = normalize(specular_dir + view_dir);
         float n_dot_h = max(dot(normal, half_dir), 0.0);
         float v_dot_h = max(dot(view_dir, half_dir), 0.0);
         float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
-        float distribution = a2 / (PI * d * d);
+        float distribution = a2 / (PI * d * d) * lobe_energy;
         float geometry = n_dot_v / (n_dot_v * (1.0 - k) + k)
             * n_dot_l / (n_dot_l * (1.0 - k) + k);
         vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - v_dot_h, 5.0);
         vec3 specular = distribution * geometry * fresnel
             / (4.0 * n_dot_v * n_dot_l + 0.0001);
         vec3 radiance = light.color_intensity.rgb
-            * light.color_intensity.w * attenuation;
+            * light.color_intensity.w * attenuation * tint;
         // Light intensity is scaled so a white Lambert surface facing a
         // unit light reflects 1, hence the PI on the specular lobe.
         result += ((1.0 - fresnel) * diffuse_color + specular * PI)
@@ -9936,6 +10044,7 @@ struct Light {
     vec4 direction_range;
     vec4 color_intensity;
     vec4 spot_angles;
+    vec4 cookie;
 };
 layout(set = 0, binding = 2) readonly buffer Lights {
     Light data[];
@@ -10433,6 +10542,10 @@ mod tests {
         assert_eq!(
             offset_of!(LightUpload, spot_angles),
             offset_of!(ReflectedLight, spot_angles)
+        );
+        assert_eq!(
+            offset_of!(LightUpload, cookie),
+            offset_of!(ReflectedLight, cookie)
         );
     }
 
@@ -11660,7 +11773,9 @@ mod tests {
                     inner_angle: 0.4,
                     outer_angle: 0.6,
                     shadows: true,
+                    radius: 0.0,
                 },
+                cookie: None,
             },
         );
         let frame = |scene: &mut SlabScene| {
@@ -11719,6 +11834,7 @@ mod tests {
                     intensity: 40_000.0,
                     range: 20.0,
                     shadows: true,
+                    radius: 0.0,
                 },
             },
         );
@@ -11763,6 +11879,154 @@ mod tests {
                 "occluder shadows the floor from {light:?}, got {shadowed}"
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn spot_light_cookie_projects_its_image_onto_the_floor() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A spot light straight above the floor projects a cookie of four
+        // colored quadrants; with the light's up along the camera's up,
+        // each screen quadrant shows the matching image quadrant.
+        let extent = [16, 16];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        let quadrant = |x: u32, y: u32| match (x < 8, y < 8) {
+            (true, true) => [255, 0, 0, 255],
+            (false, true) => [0, 255, 0, 255],
+            (true, false) => [0, 0, 255, 255],
+            (false, false) => [255, 255, 255, 255],
+        };
+        let cookie = scene.assets.textures.insert(TextureAsset {
+            size: [16, 16],
+            rgba8: (0..16)
+                .flat_map(|y| (0..16).flat_map(move |x| quadrant(x, y)))
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.spot_lights.push(
+            crate::runtime::ExtractedSpotLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2003).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        0.0, 0.0, 3.0,
+                    ))
+                    .into(),
+                },
+                light: crate::runtime::SpotLight {
+                    color: [1.0; 3],
+                    intensity: 20_000.0,
+                    range: 20.0,
+                    inner_angle: 0.55,
+                    outer_angle: 0.6,
+                    shadows: false,
+                    radius: 0.0,
+                },
+                cookie: Some(cookie),
+            },
+        );
+        scene.render_world.lights_revision += 1;
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let pixels = scene.pixels();
+        // [r, g, b] lit or not, from the [b, g, r, a] readback.
+        let lit = |x: u32, y: u32| {
+            let at = ((y * extent[0] + x) * 4) as usize;
+            [pixels[at + 2], pixels[at + 1], pixels[at]].map(|c| c > 100)
+        };
+        assert_eq!(lit(4, 4), [true, false, false], "top left is red");
+        assert_eq!(lit(11, 4), [false, true, false], "top right is green");
+        assert_eq!(lit(4, 11), [false, false, true], "bottom left is blue");
+        assert_eq!(lit(11, 11), [true, true, true], "bottom right is white");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn sphere_light_widens_the_highlight_on_glossy_surfaces() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A black glossy floor shows only the specular reflection of a
+        // point light just above it. A sphere light of the same intensity
+        // reflects as a disc about its radius wide, not a pinpoint.
+        let extent = [32, 32];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    base_color: [0.0, 0.0, 0.0, 1.0],
+                    roughness: 0.15,
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.point_lights.push(
+            crate::runtime::ExtractedPointLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2004).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        0.0, 0.0, 0.5,
+                    ))
+                    .into(),
+                },
+                light: crate::runtime::PointLight {
+                    color: [1.0; 3],
+                    intensity: 20_000.0,
+                    range: 10.0,
+                    shadows: false,
+                    radius: 0.0,
+                },
+            },
+        );
+        let bright = |scene: &mut SlabScene, radius: f32| {
+            scene.render_world.point_lights[0].light.radius = radius;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene
+                .pixels()
+                .chunks(4)
+                .filter(|pixel| pixel[..3].iter().any(|&c| c > 100))
+                .count()
+        };
+        let point = bright(&mut scene, 0.0);
+        let sphere = bright(&mut scene, 0.4);
+        eprintln!("bright pixels: point {point}, sphere {sphere}");
+        assert!(point > 0, "the point light shows a highlight");
+        assert!(
+            sphere > point * 4,
+            "the sphere light's highlight is wider: {sphere} vs {point}"
+        );
     }
 
     #[test]
@@ -16841,6 +17105,7 @@ mod tests {
                     intensity: 500.0,
                     range,
                     shadows: false,
+                    radius: 0.0,
                 },
             }
         };
@@ -17180,6 +17445,7 @@ mod tests {
                             intensity: 3_000.0,
                             range: 0.18,
                             shadows: false,
+                            radius: 0.0,
                         },
                     },
                 );
@@ -17271,6 +17537,7 @@ mod tests {
                         intensity: 20.0,
                         range: 0.15,
                         shadows: false,
+                        radius: 0.0,
                     },
                 },
             );
@@ -17405,6 +17672,7 @@ mod tests {
                     intensity: 500.0,
                     range: 1.5,
                     shadows: false,
+                    radius: 0.0,
                 },
             },
         );

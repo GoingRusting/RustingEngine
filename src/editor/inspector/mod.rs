@@ -385,6 +385,7 @@ pub(super) fn draw_inspector_area(
                 widgets::section(ui, "Point Light", false, |ui| {
                     widgets::color(ui, "Color", &mut light.color);
                     light_power(ui, &mut light.intensity, &mut light.range);
+                    light_radius(ui, &mut light.radius);
                     widgets::checkbox(ui, "Cast Shadows", &mut light.shadows);
                 });
             }
@@ -406,6 +407,7 @@ pub(super) fn draw_inspector_area(
                     );
                     light.outer_angle =
                         light.outer_angle.max(light.inner_angle);
+                    light_radius(ui, &mut light.radius);
                     widgets::checkbox(ui, "Cast Shadows", &mut light.shadows);
                 });
             }
@@ -673,6 +675,17 @@ fn light_power(ui: &mut egui::Ui, intensity: &mut f32, range: &mut f32) {
         ui,
         "Range",
         DragValue::new(range).range(0.01..=100_000.0).speed(0.1),
+    );
+}
+
+fn light_radius(ui: &mut egui::Ui, radius: &mut f32) {
+    widgets::drag(
+        ui,
+        "Source Radius",
+        DragValue::new(radius)
+            .range(0.0..=100.0)
+            .speed(0.01)
+            .suffix(" m"),
     );
 }
 

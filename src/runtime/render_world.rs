@@ -82,6 +82,9 @@ pub struct ExtractedSpotLight {
     pub entity: Entity,
     pub transform: GlobalTransform,
     pub light: SpotLight,
+    /// The loaded image of a [`LightCookie`](super::LightCookie) on the
+    /// same entity.
+    pub cookie: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -887,15 +890,21 @@ fn collect_point_lights(world: &mut World) -> Vec<ExtractedPointLight> {
 }
 
 fn collect_spot_lights(world: &mut World) -> Vec<ExtractedSpotLight> {
-    let mut query = world.query::<(Entity, &GlobalTransform, &SpotLight)>();
+    let mut query = world.query::<(
+        Entity,
+        &GlobalTransform,
+        &SpotLight,
+        Option<&super::LightCookie>,
+    )>();
     let world = &*world;
     let mut lights = query
         .iter(world)
         .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
-        .map(|(entity, transform, light)| ExtractedSpotLight {
+        .map(|(entity, transform, light, cookie)| ExtractedSpotLight {
             entity,
             transform: *transform,
             light: *light,
+            cookie: cookie.and_then(|cookie| cookie.handle),
         })
         .collect::<Vec<_>>();
     lights.sort_by_key(|light| light.entity.index());

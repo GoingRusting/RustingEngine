@@ -1578,39 +1578,72 @@ impl Default for AmbientOcclusion {
     }
 }
 
-/// Loads the image of each added or changed [`EnvironmentMap`]. A map whose
-/// load failed (file missing or not written yet) is tried again about every
-/// two seconds.
+/// Projects an image through the [`SpotLight`](super::SpotLight) on the
+/// same entity, like a slide in a projector: the light's color is
+/// multiplied by the image, which fills the outer cone with its top
+/// toward the light's up (+Y). Black parts block the light.
+// ponytail: four cookies per frame (the first four cookie spot lights in
+// entity order); move to a texture array if scenes need more.
+#[derive(
+    Component, Clone, Debug, Default, PartialEq, Serialize, Deserialize,
+)]
+#[serde(default)]
+pub struct LightCookie {
+    /// Image path relative to the project's `assets` folder.
+    pub texture: std::path::PathBuf,
+    /// The loaded `texture`, set by the engine.
+    #[serde(skip)]
+    pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+}
+
+/// Loads the image of each added or changed [`EnvironmentMap`] and
+/// [`LightCookie`]. An image whose load failed (file missing or not written
+/// yet) is tried again about every two seconds.
 pub(super) fn load_environment_maps(
     assets: Option<ResMut<crate::assets::AssetServer>>,
     mut maps: Query<&mut EnvironmentMap>,
+    mut cookies: Query<&mut LightCookie>,
     mut frame: bevy_ecs::prelude::Local<u32>,
 ) {
     let Some(mut assets) = assets else {
         return;
     };
     *frame = frame.wrapping_add(1);
-    for mut map in &mut maps {
-        let retry = map.handle.is_none()
-            && !map.texture.as_os_str().is_empty()
-            && (*frame).is_multiple_of(120);
-        if !bevy_ecs::change_detection::DetectChanges::is_changed(&map)
-            && !retry
-        {
-            continue;
+    let retry_frame = (*frame).is_multiple_of(120);
+    let mut load = |changed: bool,
+                    texture: &std::path::Path,
+                    handle: &mut Option<
+        crate::assets::Handle<crate::assets::TextureAsset>,
+    >,
+                    what: &str| {
+        let retry =
+            handle.is_none() && !texture.as_os_str().is_empty() && retry_frame;
+        if !changed && !retry {
+            return;
         }
-        let map = map.bypass_change_detection();
-        map.handle = (!map.texture.as_os_str().is_empty())
+        *handle = (!texture.as_os_str().is_empty())
             .then(|| {
                 assets
                     .textures
-                    .handle_for_path(&map.texture)
+                    .handle_for_path(texture)
                     .map(Ok)
-                    .unwrap_or_else(|| assets.load_texture(&map.texture))
-                    .map_err(|error| eprintln!("environment map: {error}"))
+                    .unwrap_or_else(|| assets.load_texture(texture))
+                    .map_err(|error| eprintln!("{what}: {error}"))
                     .ok()
             })
             .flatten();
+    };
+    for mut map in &mut maps {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&map);
+        let map = map.bypass_change_detection();
+        load(changed, &map.texture, &mut map.handle, "environment map");
+    }
+    for mut cookie in &mut cookies {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&cookie);
+        let cookie = cookie.bypass_change_detection();
+        load(changed, &cookie.texture, &mut cookie.handle, "light cookie");
     }
 }
 

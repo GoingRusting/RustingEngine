@@ -24,6 +24,17 @@ point light with `shadows`. The sun's shadow uses four cascades, sharp near
 the camera; a point light's shadow renders six cube faces. A mesh's `cast_shadows` and
 `receive_shadows` apply to that one shadow.
 
+Point and spot lights have a `radius`: the size of the glowing bulb, in
+metres. At 0 a shiny floor reflects the lamp as a pinpoint; a paper
+lantern at 0.2 reflects as a soft disc. Lighting of matte surfaces does
+not change.
+
+A `rusting.light_cookie` on a spot light's object projects an image
+through the cone, like a slide in a projector: a window frame, leaves, a
+logo. White lets the light through, black blocks it, colors tint it. The
+image's top points along the light's +Y. Four cookie lights draw per
+frame; further ones light without their image.
+
 ## Brightness and direction
 
 A directional light's `illuminance` is in lux: 100000 is the midday sun and

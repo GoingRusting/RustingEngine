@@ -16,14 +16,14 @@ use crate::runtime::{
     Easing, EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
     GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
     InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    LootEntry, LootTable, MeshSurfaces, ObjectState, PhysicsMaterial,
-    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
-    PlayerController, Polygon2d, PostVolume, QualityProfile, RandomSeed,
-    ReflectionProbe, RenderBounds, RenderSettings, ReverbZone, SceneBackground,
-    SceneInstance, ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId,
-    SpawnGrid, Squash, StateAction, StateTransition, TileKind, TileMap,
-    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, Vehicle,
-    WaterBody, Wheel,
+    LightCookie, LootEntry, LootTable, MeshSurfaces, ObjectState,
+    PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
+    PlatformerController, PlayerController, Polygon2d, PostVolume,
+    QualityProfile, RandomSeed, ReflectionProbe, RenderBounds, RenderSettings,
+    ReverbZone, SceneBackground, SceneInstance, ShadowQuality, SkyLight,
+    SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
+    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
+    TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -1006,6 +1006,16 @@ crate::reflect! {
             doc: "equirectangular (2:1) image that surfaces reflect",
         },
         intensity: f32 { unit: "factor", min: 0.0 },
+        #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+    }
+}
+
+crate::reflect! {
+    struct LightCookie {
+        texture: PathBuf {
+            unit: "asset path",
+            doc: "image the spot light on this object projects",
+        },
         #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
     }
 }

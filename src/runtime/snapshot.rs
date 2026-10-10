@@ -485,6 +485,7 @@ pub(super) fn register_engine_types(types: &mut SnapshotTypes) {
     types.register::<RigidBody>();
     types.register::<SceneBackground>();
     types.register::<super::EnvironmentMap>();
+    types.register::<super::LightCookie>();
     types.register::<super::ReflectionProbe>();
     types.register::<super::Fog>();
     types.register::<super::ColorGrading>();
