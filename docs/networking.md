@@ -341,6 +341,42 @@ match replica.apply(world, from, &bytes) {
   copied as saved in a scene; its references are not remapped on the
   client yet. The messages are JSON.
 
+### Snapshots over unreliable messages
+
+To send state every tick without waiting on lost packets, number each
+capture and encode it, per client, against the last snapshot that client
+acknowledged:
+
+```rust
+// Host, every tick:
+replication.snapshot(world)?;
+for peer in session.peers() {
+    if let Some(bytes) = replication.snapshot_for(peer) {
+        session.send_unreliable(peer, &bytes)?;
+    }
+}
+// Host, for each message: acknowledgements.
+if let Some(Err(reason)) = replication.accept(from, &bytes) {
+    eprintln!("{reason}");
+}
+// Host, on NetEvent::Disconnected(peer):
+replication.forget(peer);
+
+// Client, after replica.apply(...) returns Some(Ok(())):
+if let Some(ack) = replica.ack() {
+    session.broadcast_unreliable(&ack)?;
+}
+```
+
+- A snapshot holds only what changed since the acknowledged one, so a
+  lost snapshot costs nothing but a bigger next one. A client with no
+  acknowledgement, or one older than `SNAPSHOT_HISTORY` (64) snapshots,
+  gets a whole snapshot.
+- A snapshot that arrives after a newer one is dropped. One built on a
+  snapshot the client never got is refused; the next one, built on the
+  client's real acknowledgement, fixes it.
+- Use snapshots or deltas for a set of objects, not both.
+
 ## Predicting the player's own object
 
 Waiting a round trip for the host makes a player's own raft feel slow.

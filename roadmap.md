@@ -3405,7 +3405,16 @@ The networking model depends on the Milestone 8 result. Bit-identical determinis
 
 ### State replication
 
-- [ ] Snapshot encoding with delta compression against the last client-acknowledged snapshot.
+- [x] Snapshot encoding with delta compression against the last client-acknowledged snapshot.
+  Evidence 2026-10-10 (lane tools): `Replication::snapshot` numbers each
+  capture and keeps the last `SNAPSHOT_HISTORY` (64); `snapshot_for(peer)`
+  encodes the latest as the changes since that peer's last ack (whole when
+  none is kept); `Replica::ack`/`Replication::accept` carry acks. The
+  client keeps received snapshots, rebuilds each from its base, drops late
+  ones and refuses unknown bases, with the replica's existing checks.
+  `net::replicate::tests::snapshots_encode_against_the_last_acknowledged_one`
+  loses snapshot 2 and still gets its change in 3, smaller than a whole
+  snapshot. `docs/networking.md` "Snapshots over unreliable messages".
 - [ ] Quantize replicated values with documented precision per field.
 - [ ] Interest management: replicate only what a client's team can currently see, using the vision system from Milestone 27.
 - [ ] Per-client bandwidth budget with measured usage and an enforced cap.
