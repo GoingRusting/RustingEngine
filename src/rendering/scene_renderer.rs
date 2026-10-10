@@ -670,6 +670,7 @@ struct PhysicsPushConstants {
     grid_cell_size: f32,
     command_first: u32,
     field_count: u32,
+    lock_mask: u32,
 }
 
 /// A GPU body's own collider (binding 6), in [`crate::runtime::GpuCollider`]
@@ -3359,6 +3360,7 @@ impl SceneRenderer {
                     command_count: command_ranges[step as usize].1,
                     collider_count: colliders.len() as u32,
                     field_count: force_fields.len() as u32,
+                    lock_mask: render_world.physics_lock_mask,
                     grid_cell_size: physics.grid_cell_size,
                 };
                 let grid = self.physics_contact_grid.as_ref().unwrap();
@@ -13199,6 +13201,85 @@ mod tests {
         // Gusts average near 3 m/s² but never sit exactly on it.
         let blown = states[2].linear_velocity[0];
         assert!(blown > 1.0 && (blown - 3.0).abs() > 0.01, "{:?}", states[2]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn gpu_axis_locks_keep_2d_bodies_in_their_plane() {
+        use crate::runtime::{
+            AxisLock, Collider, ColliderShape, CollisionLayers,
+            ExtractedGpuPhysicsBody, PhysicsId,
+        };
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        let ball = |slot: u32, position: [f32; 3]| ExtractedGpuPhysicsBody {
+            entity: bevy_ecs::entity::Entity::from_raw_u32(6000 + slot)
+                .unwrap(),
+            physics_id: PhysicsId {
+                slot,
+                generation: 0,
+            },
+            transform: crate::Transform::new(position),
+            rigid_body: crate::runtime::RigidBody {
+                angular_velocity: [1.0, 2.0, 3.0],
+                ..Default::default()
+            },
+            solver: Default::default(),
+            collider: Some((
+                Collider {
+                    shape: ColliderShape::Sphere { radius: 0.5 },
+                    ..Collider::default()
+                },
+                CollisionLayers::default(),
+            )),
+            custom_shader: None,
+            rules: Vec::new(),
+            sync: Default::default(),
+        };
+        let run = |locks: AxisLock| {
+            let mut scene = SlabScene::new(&[]);
+            let world = &mut scene.render_world;
+            // Two overlapping balls offset in z, under gravity with a
+            // sideways z part: free, both push and fall out of the plane.
+            world.gpu_physics =
+                vec![ball(0, [0.0, 0.0, 0.0]), ball(1, [0.6, 0.0, 0.3])];
+            world.gpu_physics_revision = 1;
+            world.physics_enabled = true;
+            world.physics_gravity = [0.0, -9.81, 2.0];
+            world.physics_lock_mask = locks.mask();
+            world.fixed_delta_seconds = 1.0 / 60.0;
+            for tick in 1..=30 {
+                let world = &mut scene.render_world;
+                world.physics_tick = tick;
+                world.gpu_physics_read_all = tick == 30;
+                world.gpu_physics_commands_serial += u64::from(tick == 30);
+                let before = scene.now();
+                let _in_flight =
+                    scene.render(before).then_signal_fence_and_flush().unwrap();
+                scene.renderer.block_until_physics_readbacks_complete();
+            }
+            let mut states = scene.renderer.take_completed_physics_states();
+            states.sort_by_key(|state| state.physics_id.slot);
+            assert_eq!(states.len(), 2);
+            states
+        };
+        let free = run(AxisLock::default());
+        assert!(free[0].transform.position[2] > 0.1, "{:?}", free[0]);
+        let flat = run(AxisLock::PLANE_XY);
+        for (state, start) in flat.iter().zip([0.0, 0.3]) {
+            assert_eq!(state.transform.position[2], start, "{state:?}");
+            assert_eq!(state.linear_velocity[2], 0.0, "{state:?}");
+            assert_eq!(state.angular_velocity[..2], [0.0, 0.0], "{state:?}");
+            assert!(state.transform.position[1] < -1.0, "{state:?}");
+        }
+        // The balls still push apart in x inside the plane.
+        let gap = flat[1].transform.position[0] - flat[0].transform.position[0];
+        assert!(gap > 0.7, "{flat:?}");
     }
 
     #[test]

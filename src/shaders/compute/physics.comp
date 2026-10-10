@@ -126,7 +126,7 @@ void collide_with_colliders(inout PhysicsState body, BodyShape own) {
         collider_distance(collider, body.model[3].xyz, normal, distance);
         precise float depth = support(own.shape, rotation, normal) - distance;
         if (depth <= 0.0) continue;
-        precise vec3 position = body.model[3].xyz + normal * depth;
+        precise vec3 position = body.model[3].xyz + normal * depth * axis_keep(0u);
         body.model[3].xyz = position;
         // The correction can move the body into a later collider whose tree
         // branch was skipped. Re-query from the root, but do not revisit any
@@ -146,7 +146,7 @@ void collide_with_colliders(inout PhysicsState body, BodyShape own) {
             relative -= sim_div(tangent, tangent_speed) * min(tangent_speed, -friction * closing);
         }
         relative -= normal * closing * (1.0 + restitution);
-        precise vec3 velocity = relative + collider.velocity.xyz;
+        precise vec3 velocity = (relative + collider.velocity.xyz) * axis_keep(0u);
         body.velocity.xyz = velocity;
     }
 }
@@ -313,6 +313,7 @@ void main() {
             float reach = own_shape.x < 2.5 ? bounding_radius(own_shape) : 0.0;
             velocity += field_push(body.model[3].xyz, reach) * pc.dt;
         }
+        velocity *= axis_keep(0u);
         precise vec3 position = body.model[3].xyz + velocity * pc.dt;
         body.velocity.xyz = velocity;
         body.model[3].xyz = position;
@@ -325,6 +326,7 @@ void main() {
             precise vec3 spin = body.angular_velocity.xyz * max(1.0 - CONTACT_SPIN_DAMPING * pc.dt, 0.0);
             body.angular_velocity.xyz = spin;
         }
+        body.angular_velocity.xyz *= axis_keep(3u);
         // Sleep: a body that touched something and stayed slower than
         // REST_SPEED for REST_TICKS ticks in a row stops: its velocity is
         // zeroed and it keeps its settled position, so a pile stops

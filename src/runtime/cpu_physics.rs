@@ -38,7 +38,7 @@ use nalgebra::{
 use crate::assets::{AssetServer, MeshAsset};
 use crate::runtime::sim_math;
 use crate::runtime::{
-    Collider, ColliderShape, CollisionLayers, EventQueue, FrameTime,
+    AxisLock, Collider, ColliderShape, CollisionLayers, EventQueue, FrameTime,
     GlobalTransform, GpuProxyOf, MeshRenderer, Name, Parent, PhysicsBody,
     PhysicsSettings, PhysicsSolver, RigidBody, RigidBodyKind, SimulationClass,
 };
@@ -429,39 +429,11 @@ impl ForceField {
     }
 }
 
-/// Freezes a dynamic CPU body's motion along world axes, like Godot's axis
-/// locks. A 2D body in the XY plane locks linear z and angular x and y.
-#[derive(
-    Component,
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(default)]
-pub struct AxisLock {
-    /// No movement along world x, y, z.
-    pub linear: [bool; 3],
-    /// No turning around world x, y, z.
-    pub angular: [bool; 3],
-}
-
-impl AxisLock {
-    /// The XY-plane lock of a 2D body.
-    pub const PLANE_XY: Self = Self {
-        linear: [false, false, true],
-        angular: [true, true, false],
-    };
-
-    fn clear(mask: [bool; 3], vector: &mut Vector3<f32>) {
-        for (value, locked) in vector.iter_mut().zip(mask) {
-            if locked {
-                *value = 0.0;
-            }
+/// Zeroes the locked components of `vector`.
+fn clear_locked(mask: [bool; 3], vector: &mut Vector3<f32>) {
+    for (value, locked) in vector.iter_mut().zip(mask) {
+        if locked {
+            *value = 0.0;
         }
     }
 }
@@ -1801,8 +1773,8 @@ fn substep(
         }
         for &(index, _) in &locked_at {
             let body = &mut bodies[index];
-            AxisLock::clear(body.locks.linear, &mut body.velocity);
-            AxisLock::clear(body.locks.angular, &mut body.angular_velocity);
+            clear_locked(body.locks.linear, &mut body.velocity);
+            clear_locked(body.locks.angular, &mut body.angular_velocity);
         }
         let mut physics = world.resource_mut::<PhysicsWorld>();
         physics.warm = warm;

@@ -9,6 +9,7 @@
 
 ### Added
 
+- `GameScene::set_gpu_axis_lock` (`PhysicsSettings::gpu_locks`) locks every GPU body to chosen axes, so a 2D game's GPU bodies stay in its plane.
 - 2D joints and queries are covered by a test: a ball socket on an axis-locked body acts as a 2D pin joint, and rays and overlaps hit `Polygon` and `Chain` colliders.
 - `ColliderShape::Polygon` and `ColliderShape::Chain` collide with a `rusting.polygon` 2D outline extruded along Z: a convex polygon any body may use, or a static segment chain for 2D ground.
 - `rusting.axis_lock` locks a CPU body's movement along or rotation around chosen world axes, Godot style; `AxisLock::PLANE_XY` keeps a 2D body in the XY plane exactly.
@@ -48,6 +49,7 @@
 
 ### Migration
 
+- `AxisLock` moved to `rusting_core::components`; `rusting_engine::runtime::AxisLock` still works. A struct literal of `PhysicsSettings` needs the new `gpu_locks` field (or `..PhysicsSettings::default()`).
 - `ColliderShape` has two new variants, `Polygon` and `Chain`; an exhaustive `match` on it needs arms for them.
 - `ForceField` is no longer `Copy` (it gained `function: String`); write `..field.clone()` where you spread one field into another
 - A `.rlod` group may have at most 4 levels; loading one with more fails

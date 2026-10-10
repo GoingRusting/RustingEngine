@@ -3277,6 +3277,14 @@ impl GameScene<'_> {
             .substeps = substeps.max(1);
     }
 
+    /// Locks every GPU body's motion along or around world axes;
+    /// `AxisLock::PLANE_XY` keeps a 2D game's GPU bodies in its plane.
+    pub fn set_gpu_axis_lock(&mut self, locks: crate::runtime::AxisLock) {
+        self.world
+            .resource_mut::<crate::runtime::PhysicsSettings>()
+            .gpu_locks = locks;
+    }
+
     /// Names of the bodies the kill plane despawned since the last frame,
     /// in body order. Unnamed bodies are left out.
     #[must_use]

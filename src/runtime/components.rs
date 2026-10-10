@@ -1,10 +1,11 @@
 pub use rusting_core::components::{
-    AmbientLight, Antialiasing, Camera, Children, Collider, ColliderShape,
-    CollisionLayers, CullingMode, DirectionalLight, GlobalTransform, Name,
-    ObjectClasses, Parent, PhysicsBackendStatus, PhysicsBody, PhysicsSettings,
-    PhysicsSolver, PointLight, Projection, QualityProfile, RenderBounds,
-    RenderSettings, RigidBody, RigidBodyKind, SceneId, ShadowQuality,
-    SimulationClass, SkyLight, SpotLight, ToneMapper, ToneMapping, Visibility,
+    AmbientLight, Antialiasing, AxisLock, Camera, Children, Collider,
+    ColliderShape, CollisionLayers, CullingMode, DirectionalLight,
+    GlobalTransform, Name, ObjectClasses, Parent, PhysicsBackendStatus,
+    PhysicsBody, PhysicsSettings, PhysicsSolver, PointLight, Projection,
+    QualityProfile, RenderBounds, RenderSettings, RigidBody, RigidBodyKind,
+    SceneId, ShadowQuality, SimulationClass, SkyLight, SpotLight, ToneMapper,
+    ToneMapping, Visibility,
 };
 
 use bevy_ecs::component::Component;

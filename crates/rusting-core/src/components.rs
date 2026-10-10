@@ -455,6 +455,46 @@ impl Default for RenderSettings {
     }
 }
 
+/// Freezes a dynamic body's motion along world axes, like Godot's axis
+/// locks. A 2D body in the XY plane locks linear z and angular x and y.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+)]
+#[serde(default)]
+pub struct AxisLock {
+    /// No movement along world x, y, z.
+    pub linear: [bool; 3],
+    /// No turning around world x, y, z.
+    pub angular: [bool; 3],
+}
+
+impl AxisLock {
+    /// The XY-plane lock of a 2D body.
+    pub const PLANE_XY: Self = Self {
+        linear: [false, false, true],
+        angular: [true, true, false],
+    };
+
+    /// Bits 0 to 2 lock linear x, y, z and bits 3 to 5 angular x, y, z.
+    #[must_use]
+    pub fn mask(&self) -> u32 {
+        self.linear
+            .iter()
+            .chain(&self.angular)
+            .enumerate()
+            .map(|(bit, &locked)| u32::from(locked) << bit)
+            .sum()
+    }
+}
+
 #[derive(bevy_ecs::prelude::Resource, Clone, Debug, PartialEq)]
 pub struct PhysicsSettings {
     pub gravity: [f32; 3],
@@ -466,6 +506,10 @@ pub struct PhysicsSettings {
     /// chains and heavy-on-light stacks tighter, at that many times the
     /// solver cost.
     pub substeps: u32,
+    /// Axis locks every GPU body shares; [`AxisLock::PLANE_XY`] keeps a 2D
+    /// game's GPU bodies in its plane. CPU bodies take their own
+    /// `rusting.axis_lock` instead.
+    pub gpu_locks: AxisLock,
 }
 
 /// Reports which physics backends are connected to the ECS scene runner.
@@ -486,6 +530,7 @@ impl Default for PhysicsSettings {
             enabled: true,
             kill_y: None,
             substeps: 1,
+            gpu_locks: AxisLock::default(),
         }
     }
 }

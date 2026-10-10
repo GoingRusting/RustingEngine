@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{
-    App, AppError, BurstEmitter, Collider, ColliderShape, CollisionLayers,
-    Counter, Dialogue, FrameTime, GpuPhysicsCommands, GpuProxyOf, Health,
-    Joint, Name, ObjectState, PhysicsBody, PhysicsIdRegistry, PhysicsSettings,
-    PhysicsWorld, Pickup, PlatformerController, PlayerController, RandomSeed,
-    RigidBody, SceneId, Sleeping, Tween,
+    App, AppError, AxisLock, BurstEmitter, Collider, ColliderShape,
+    CollisionLayers, Counter, Dialogue, FrameTime, GpuPhysicsCommands,
+    GpuProxyOf, Health, Joint, Name, ObjectState, PhysicsBody,
+    PhysicsIdRegistry, PhysicsSettings, PhysicsWorld, Pickup,
+    PlatformerController, PlayerController, RandomSeed, RigidBody, SceneId,
+    Sleeping, Tween,
 };
 
 /// Ticks of history kept in [`StateHashes`] (about 17 seconds at 60 Hz).
@@ -143,6 +144,9 @@ pub fn resource_state_hash(world: &mut World) -> u64 {
         // One substep is the default and leaves older hashes unchanged.
         if settings.substeps != 1 {
             hasher.word(u64::from(settings.substeps));
+        }
+        if settings.gpu_locks != AxisLock::default() {
+            hasher.word(u64::from(settings.gpu_locks.mask()));
         }
     }
     if let Some(physics) = world.get_resource::<PhysicsWorld>() {

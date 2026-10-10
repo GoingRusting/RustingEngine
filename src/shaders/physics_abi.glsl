@@ -65,7 +65,16 @@ layout(push_constant) uniform PhysicsPush {
     uint command_first;
     // Entries in the force-field list (binding 14).
     uint field_count;
+    // Bits 0-2: no movement along world x, y, z; bits 3-5: no turning
+    // about them (`PhysicsSettings::gpu_locks`).
+    uint lock_mask;
 } pc;
+
+// 1.0 for each free axis and 0.0 for each locked one, from bit `first` of
+// `pc.lock_mask`: 0 for linear axes, 3 for angular ones.
+vec3 axis_keep(uint first) {
+    return vec3(equal((uvec3(pc.lock_mask) >> uvec3(first, first + 1u, first + 2u)) & 1u, uvec3(0u)));
+}
 
 // Appends one event for `body`. `event_id` is a `GpuEventId` registered on
 // the CPU; `payload_kind` and `payload` reach Rust unchanged. Events past the

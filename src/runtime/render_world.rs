@@ -190,6 +190,8 @@ pub struct RenderWorld {
     pub fixed_delta_seconds: f32,
     pub elapsed_seconds: f32,
     pub physics_gravity: [f32; 3],
+    /// `AxisLock::mask` of `PhysicsSettings::gpu_locks`.
+    pub physics_lock_mask: u32,
     pub physics_enabled: bool,
     pub background_color: [f32; 4],
     /// Requested profile; the renderer resolves `Auto` from device capabilities.
@@ -509,6 +511,7 @@ pub fn extract_render_world(world: &mut World) {
     render_world.fixed_delta_seconds = time.fixed_delta.as_secs_f32();
     render_world.elapsed_seconds = time.elapsed.as_secs_f32();
     render_world.physics_gravity = physics_settings.gravity;
+    render_world.physics_lock_mask = physics_settings.gpu_locks.mask();
     render_world.physics_enabled = physics_settings.enabled;
     render_world.background_color = background_color;
     render_world.quality = quality;

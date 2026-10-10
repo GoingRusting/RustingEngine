@@ -1237,6 +1237,7 @@ crate::reflect! {
         enabled: bool,
         kill_y: Option<f32> { unit: "m", doc: "Loose dynamic CPU bodies below this height are despawned and send FellOut." },
         substeps: u32 { doc: "CPU solver substeps per fixed step; more hold joint chains and mass ratios tighter at that many times the cost." },
+        gpu_locks: AxisLock { doc: "axis locks every GPU body shares; PLANE_XY keeps a 2D game's GPU bodies in its plane" },
     }
 }
 
