@@ -402,6 +402,8 @@ pub enum CullingMode {
 /// device lacks falls back to the next lower one. `Fxaa` renders one sample
 /// and smooths edges found in the final image instead: cheaper than MSAA,
 /// also smooths edges inside textures and alpha-cut leaves, a little softer.
+/// `Taa` renders one sample from a slightly different spot each frame and
+/// blends the frames: the smoothest edges, with some blur on fast motion.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
 )]
@@ -412,6 +414,7 @@ pub enum Antialiasing {
     Msaa2,
     Msaa4,
     Fxaa,
+    Taa,
 }
 
 /// Shadow map resolution and reach. `Auto` follows the quality profile.

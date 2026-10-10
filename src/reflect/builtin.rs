@@ -1283,7 +1283,7 @@ crate::reflect! {
 }
 
 crate::reflect! {
-    enum Antialiasing { Auto, Off, Msaa2, Msaa4, Fxaa }
+    enum Antialiasing { Auto, Off, Msaa2, Msaa4, Fxaa, Taa }
 }
 
 crate::reflect! {

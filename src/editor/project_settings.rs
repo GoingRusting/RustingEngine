@@ -344,6 +344,7 @@ fn rendering(
                         (Antialiasing::Msaa2, "MSAA 2x"),
                         (Antialiasing::Msaa4, "MSAA 4x"),
                         (Antialiasing::Fxaa, "FXAA"),
+                        (Antialiasing::Taa, "TAA"),
                     ],
                 );
             });

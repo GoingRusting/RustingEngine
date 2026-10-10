@@ -2518,8 +2518,28 @@ Depends on: Milestones 3 and 4.
   edge test that always exits early, and a blend that returns the center
   pixel, both fail the test. Full check: fmt, clippy x3 clean;
   workspace tests 820 passed (flaky net handshake test passes alone);
-  gpu-tests 932 passed. Not started: TAA (history, jitter,
-  reprojection) and FSR-class upscaling.
+  gpu-tests 932 passed.
+  Partial (TAA): `Antialiasing::Taa` ("TAA") renders 1 sample and shifts
+  the projection by a Halton(2,3) sub-pixel offset, cycling every 8
+  frames. Shadow cascades and reprojection use the unshifted matrix. The
+  `TemporalHistory` compute pass (`post_effects.rs`) runs after the scene
+  color copy. It reprojects each pixel into last frame's history using
+  depth and last frame's unshifted view projection, clamps the history to
+  the pixel's 3x3 neighborhood, and blends in 10% of the new frame. The
+  result goes back over the copy, so DOF, motion blur and grading run on
+  top of it. The history starts over after a resize, a viewport change or
+  a frame without TAA. Probe captures turn TAA off. GPU test
+  `taa_smooths_a_still_edge_and_leaves_no_ghost_when_it_moves`: the first
+  TAA frame matches no AA (fewer than 4 in-between pixels). After 24
+  frames, more than 30 pixels are in between, and the background and slab
+  interior are unchanged. Moving the slab off screen leaves no pixel
+  brighter than dark+20. Mutation checks: no jitter, and no history,
+  each give 0 in-between pixels; no clamp leaves a 243 ghost. Full check:
+  fmt, clippy x3 clean; workspace tests 820 passed (the flaky net
+  handshake test passes alone); gpu-tests 933 passed. Limits: no test
+  covers reprojection under camera motion. Split views that share one
+  renderer reset the history every view, so they get no TAA. Not started:
+  FSR-class upscaling.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,
   height_falloff, sun_scatter, sky_affect). `src/shaders/fog.glsl`

@@ -1,7 +1,8 @@
 //! Screen-space effects recorded as compute passes around the main render
 //! pass: bloom over the finished HDR image before tone mapping, and ambient
 //! occlusion traced from a depth prepass before the scene is lit, and the
-//! brightness measurement auto exposure adapts to.
+//! brightness measurement auto exposure adapts to, and the temporal
+//! anti-aliasing history.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use vulkano::buffer::{
     Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
 };
 use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, PrimaryAutoCommandBuffer,
+    AutoCommandBufferBuilder, CopyImageInfo, PrimaryAutoCommandBuffer,
 };
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
 use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
@@ -47,6 +48,7 @@ pub(super) struct PostPipelines {
     occlusion_trace: Arc<ComputePipeline>,
     occlusion_blur: Arc<ComputePipeline>,
     exposure: Arc<ComputePipeline>,
+    temporal: Arc<ComputePipeline>,
     linear: Arc<Sampler>,
     /// Point sampler; the occlusion target has no guaranteed linear
     /// filtering.
@@ -82,6 +84,7 @@ impl PostPipelines {
                 device.clone(),
             ))?,
             exposure: create(exposure_shader::load(device.clone()))?,
+            temporal: create(temporal_shader::load(device.clone()))?,
             linear: sampler(Filter::Linear)?,
             nearest: sampler(Filter::Nearest)?,
         };
@@ -92,6 +95,7 @@ impl PostPipelines {
             (&pipelines.occlusion_trace, "Ambient occlusion trace"),
             (&pipelines.occlusion_blur, "Ambient occlusion blur"),
             (&pipelines.exposure, "Auto exposure"),
+            (&pipelines.temporal, "Temporal anti-aliasing"),
         ] {
             name_object(&**pipeline, name);
         }
@@ -851,6 +855,183 @@ void main() {
         exposure.value = params.blend >= 1.0 ? target
             : exp2(mix(log2(exposure.value), log2(target), params.blend));
     }
+}
+"
+    }
+}
+
+/// Two images temporal anti-aliasing blends frames through, each frame
+/// reading one and writing the other. Rebuilt with the scene color copy.
+pub(super) struct TemporalHistory {
+    /// The scene color copy the sets read; another one means a resize.
+    pub(super) source: Arc<ImageView>,
+    images: [Arc<Image>; 2],
+    /// Reads image 0 and writes image 1, then the other way round.
+    sets: [Arc<DescriptorSet>; 2],
+    written: usize,
+    /// Viewport the history shows, `None` when the last frame drew no
+    /// history: the next frame starts over from its own image.
+    pub(super) view: Option<[u32; 4]>,
+}
+
+impl TemporalHistory {
+    pub(super) fn new(
+        allocator: &Arc<StandardMemoryAllocator>,
+        descriptor_allocator: &Arc<StandardDescriptorSetAllocator>,
+        pipelines: &PostPipelines,
+        scene_color: &Arc<ImageView>,
+        depth: &Arc<ImageView>,
+    ) -> Result<Self, SceneRenderError> {
+        let [width, height, _] = scene_color.image().extent();
+        let image = |name| {
+            storage_image(
+                allocator,
+                name,
+                Format::R16G16B16A16_SFLOAT,
+                [width, height],
+                1,
+            )
+        };
+        let images = [image("TAA history 0")?, image("TAA history 1")?];
+        let set = |read: usize| {
+            DescriptorSet::new(
+                descriptor_allocator.clone(),
+                pipelines.temporal.layout().set_layouts()[0].clone(),
+                [
+                    WriteDescriptorSet::image_view_sampler(
+                        0,
+                        scene_color.clone(),
+                        pipelines.nearest.clone(),
+                    ),
+                    WriteDescriptorSet::image_view_sampler(
+                        1,
+                        ImageView::new_default(images[read].clone())
+                            .map_err(error)?,
+                        pipelines.linear.clone(),
+                    ),
+                    WriteDescriptorSet::image_view_sampler(
+                        2,
+                        depth.clone(),
+                        pipelines.nearest.clone(),
+                    ),
+                    WriteDescriptorSet::image_view(
+                        3,
+                        ImageView::new_default(images[1 - read].clone())
+                            .map_err(error)?,
+                    ),
+                ],
+                [],
+            )
+            .map_err(error)
+        };
+        Ok(Self {
+            source: scene_color.clone(),
+            sets: [set(0)?, set(1)?],
+            images,
+            written: 0,
+            view: None,
+        })
+    }
+
+    /// Blends the scene color copy into the history, then copies the
+    /// result back over the copy for tone mapping. `reproject` takes this
+    /// frame's clip space to the history's.
+    pub(super) fn record(
+        &mut self,
+        commands: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        pipelines: &PostPipelines,
+        reproject: [[f32; 4]; 4],
+        view: [u32; 4],
+    ) -> Result<(), SceneRenderError> {
+        // A frame at another viewport, or after a frame without the
+        // history, starts over from its own image.
+        let blend = if self.view == Some(view) { 0.1 } else { 1.0 };
+        self.view = Some(view);
+        let read = self.written;
+        self.written = 1 - read;
+        let pipeline = &pipelines.temporal;
+        let [width, height, _] = self.source.image().extent();
+        commands
+            .bind_pipeline_compute(pipeline.clone())
+            .map_err(error)?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Compute,
+                pipeline.layout().clone(),
+                0,
+                self.sets[read].clone(),
+            )
+            .map_err(error)?
+            .push_constants(
+                pipeline.layout().clone(),
+                0,
+                temporal_shader::Params { reproject, blend },
+            )
+            .map_err(error)?;
+        unsafe {
+            commands
+                .dispatch([width.div_ceil(8), height.div_ceil(8), 1])
+                .map_err(error)?;
+        }
+        commands
+            .copy_image(CopyImageInfo::images(
+                self.images[self.written].clone(),
+                self.source.image().clone(),
+            ))
+            .map_err(error)?;
+        Ok(())
+    }
+}
+
+/// Temporal anti-aliasing resolve. The history is read where this pixel
+/// was last frame, clamped to the colors around the pixel now so stale
+/// history does not ghost, and blended with the new jittered sample.
+#[rustfmt::skip]
+mod temporal_shader {
+    vulkano_shaders::shader! {
+        ty: "compute",
+        src: r"
+#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D current;
+layout(set = 0, binding = 1) uniform sampler2D history;
+layout(set = 0, binding = 2) uniform sampler2D depth;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D target;
+// blend is the weight of the new frame: 1 ignores the history.
+layout(push_constant) uniform Params {
+    mat4 reproject;
+    float blend;
+} params;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(target);
+    if (any(greaterThanEqual(texel, size))) {
+        return;
+    }
+    vec3 now = texelFetch(current, texel, 0).rgb;
+    vec3 lo = now;
+    vec3 hi = now;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            ivec2 at = clamp(texel + ivec2(x, y), ivec2(0), size - 1);
+            vec3 near = texelFetch(current, at, 0).rgb;
+            lo = min(lo, near);
+            hi = max(hi, near);
+        }
+    }
+    vec2 uv = (vec2(texel) + 0.5) / vec2(size);
+    float d = texelFetch(depth, texel, 0).r;
+    vec4 last = params.reproject * vec4(uv * 2.0 - 1.0, d, 1.0);
+    vec2 back = last.xy / last.w * 0.5 + 0.5;
+    float blend = params.blend;
+    if (blend >= 1.0 || any(lessThan(back, vec2(0.0)))
+        || any(greaterThan(back, vec2(1.0)))) {
+        // Nothing to blend: also skips a history never written.
+        imageStore(target, texel, vec4(now, 1.0));
+        return;
+    }
+    vec3 old = clamp(textureLod(history, back, 0.0).rgb, lo, hi);
+    imageStore(target, texel, vec4(mix(old, now, blend), 1.0));
 }
 "
     }

@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::post_effects::{
-    BloomChain, ExposureMeter, OcclusionParams, OcclusionTargets, PostPipelines,
+    BloomChain, ExposureMeter, OcclusionParams, OcclusionTargets,
+    PostPipelines, TemporalHistory,
 };
 
 use nalgebra::{
@@ -1764,8 +1765,13 @@ pub struct SceneRenderer {
     depth_pyramid_reduce_pipeline: Arc<ComputePipeline>,
     /// Rebuilt with `depth`.
     depth_pyramid: DepthPyramid,
-    /// Last frame's view projection, while motion blur is on.
+    /// Last frame's view projection without jitter, while motion blur or
+    /// TAA is on.
     previous_clip: Option<Matrix4<f32>>,
+    /// Built on the first TAA frame.
+    temporal: Option<TemporalHistory>,
+    /// Picks each TAA frame's jitter.
+    temporal_frame: u32,
     /// Last GPU-culled frame's draw commands, early set first on occlusion
     /// frames, for readback in tests.
     #[cfg(test)]
@@ -2051,6 +2057,8 @@ impl SceneRenderer {
             depth_pyramid_reduce_pipeline,
             depth_pyramid,
             previous_clip: None,
+            temporal: None,
+            temporal_frame: 0,
             shadow_pipeline,
             shadow_framebuffer,
             shadow_map,
@@ -2587,7 +2595,26 @@ impl SceneRenderer {
         self.prepare_lights(render_world)?;
         self.prepare_render_instances(render_world, assets)?;
         let camera = options.camera.or(render_world.active_camera);
-        let clip = view_projection(camera, viewport.extent);
+        let steady_clip = view_projection(camera, viewport.extent);
+        let taa = options.debug_view == SceneDebugView::Lit
+            && render_world.antialiasing == Antialiasing::Taa;
+        // TAA moves the whole view by under a pixel each frame and blends
+        // the frames into smooth edges.
+        let clip = if taa {
+            self.temporal_frame = self.temporal_frame.wrapping_add(1);
+            let index = self.temporal_frame % 8 + 1;
+            let mut jitter = Matrix4::identity();
+            jitter[(0, 3)] = (halton(index, 2) - 0.5) * 2.0
+                / viewport.extent[0].max(1) as f32;
+            jitter[(1, 3)] = (halton(index, 3) - 0.5) * 2.0
+                / viewport.extent[1].max(1) as f32;
+            jitter * steady_clip
+        } else {
+            if let Some(history) = &mut self.temporal {
+                history.view = None;
+            }
+            steady_clip
+        };
         // The projection alone turns stored depth back into distance.
         let lens_depth = {
             let lens = view_projection(
@@ -2871,8 +2898,13 @@ impl SceneRenderer {
                 let mut far = [0.0; 4];
                 for (index, end) in far.iter_mut().enumerate() {
                     *end = cascade_end(index, shadow_distance);
-                    let (center, radius) =
-                        frustum_slice_sphere(&clip, eye, forward, near, *end);
+                    let (center, radius) = frustum_slice_sphere(
+                        &steady_clip,
+                        eye,
+                        forward,
+                        near,
+                        *end,
+                    );
                     cascades.push(cascade_view_projection(
                         center,
                         radius,
@@ -2974,10 +3006,11 @@ impl SceneRenderer {
         // frame nothing moved.
         let reproject = self
             .previous_clip
-            .filter(|_| motion_blur.is_some())
-            .and_then(|previous| Some(previous * clip.try_inverse()?))
+            .filter(|_| motion_blur.is_some() || taa)
+            .and_then(|previous| Some(previous * steady_clip.try_inverse()?))
             .unwrap_or_else(Matrix4::identity);
-        self.previous_clip = motion_blur.map(|_| clip);
+        self.previous_clip =
+            (motion_blur.is_some() || taa).then_some(steady_clip);
         let motion = self
             .instance_allocator
             .allocate_sized::<tonemap_fragment_shader::Motion>()
@@ -2991,6 +3024,7 @@ impl SceneRenderer {
             };
         let fxaa = lit && render_world.antialiasing == Antialiasing::Fxaa;
         let sampled = fxaa
+            || taa
             || grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
             || grade.distortion > 0.0
@@ -4544,9 +4578,9 @@ impl SceneRenderer {
                         self.scene_color.image().clone(),
                     ))
                     .map_err(|error| SceneRenderError(error.to_string()))?;
-                if depth_of_field.is_some() || motion_blur.is_some() {
-                    // Mip 0 of the pyramid is the depth the lens and motion
-                    // blur read.
+                if depth_of_field.is_some() || motion_blur.is_some() || taa {
+                    // Mip 0 of the pyramid is the depth the lens, motion
+                    // blur and TAA read.
                     let (set, size) = &self.depth_pyramid.mips[0];
                     let pipeline = &self.depth_pyramid_copy_pipeline;
                     commands
@@ -4571,6 +4605,37 @@ impl SceneRenderer {
                                 SceneRenderError(error.to_string())
                             })?;
                     }
+                }
+                if taa {
+                    let history = match &mut self.temporal {
+                        Some(history)
+                            if Arc::ptr_eq(
+                                &history.source,
+                                &self.scene_color,
+                            ) =>
+                        {
+                            history
+                        }
+                        stale => stale.insert(TemporalHistory::new(
+                            &self.memory_allocator,
+                            &self.descriptor_allocator,
+                            &self.post_pipelines,
+                            &self.scene_color,
+                            &self.depth_pyramid.view,
+                        )?),
+                    };
+                    history.record(
+                        &mut commands,
+                        &self.post_pipelines,
+                        reproject.into(),
+                        [
+                            viewport.offset[0],
+                            viewport.offset[1],
+                            viewport.extent[0],
+                            viewport.extent[1],
+                        ],
+                    )?;
+                    count_work(&recorded, 0, 1, 0);
                 }
                 passes.end(&mut commands)?;
             }
@@ -4919,6 +4984,10 @@ impl SceneRenderer {
         world.ambient_occlusion = None;
         world.depth_of_field = None;
         world.motion_blur = None;
+        // Each face would blend in the face before it.
+        if world.antialiasing == Antialiasing::Taa {
+            world.antialiasing = Antialiasing::Off;
+        }
         // Occlusion would test each face against the previous face's depth.
         world.culling = CullingMode::Frustum;
         let device = self.queue.device().clone();
@@ -8586,6 +8655,18 @@ fn compile_condition_shader(
     create_compute_pipeline(queue, module).map_err(|error| error.0)
 }
 
+/// Element `index` of the Halton sequence in `base`, in [0, 1).
+fn halton(mut index: u32, base: u32) -> f32 {
+    let mut fraction = 1.0;
+    let mut value = 0.0;
+    while index > 0 {
+        fraction /= base as f32;
+        value += fraction * (index % base) as f32;
+        index /= base;
+    }
+    value
+}
+
 fn view_projection(
     camera: Option<ExtractedCamera>,
     extent: [u32; 2],
@@ -8990,7 +9071,10 @@ pub fn scene_sample_count(
 ) -> u32 {
     let wanted = match antialiasing {
         Antialiasing::Auto if msaa_enabled(profile) => 4,
-        Antialiasing::Auto | Antialiasing::Off | Antialiasing::Fxaa => 1,
+        Antialiasing::Auto
+        | Antialiasing::Off
+        | Antialiasing::Fxaa
+        | Antialiasing::Taa => 1,
         Antialiasing::Msaa2 => 2,
         Antialiasing::Msaa4 => 4,
     };
@@ -12505,6 +12589,90 @@ mod tests {
         assert_eq!(hard[0], smooth[0], "background");
         let inside = (32 * extent[0] + 62) as usize;
         assert_eq!(hard[inside], smooth[inside], "slab");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn taa_smooths_a_still_edge_and_leaves_no_ghost_when_it_moves() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The stair-stepped slab of the FXAA test: TAA's jittered frames
+        // blend into in-between shades along the edge once the camera
+        // holds still. When the slab then leaves, the history is clamped
+        // to the new frame's colors, so no trace of it stays behind.
+        let extent = [64, 64];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0; 4],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        let placed = |x: f32| crate::runtime::GlobalTransform {
+            matrix: (Matrix4::from_axis_angle(&Vector3::z_axis(), 0.3)
+                * Matrix4::new_translation(&Vector3::new(x, 0.0, 0.0))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    2.0, 4.0, 0.1,
+                )))
+            .into(),
+        };
+        scene.render_world.renderables[0].transform = placed(1.5);
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene
+                .pixels()
+                .chunks(4)
+                .map(|pixel| pixel[1])
+                .collect::<Vec<u8>>()
+        };
+        scene.render_world.antialiasing = Antialiasing::Off;
+        let hard = frame(&mut scene);
+        scene.render_world.antialiasing = Antialiasing::Taa;
+        let first = frame(&mut scene);
+        let mut smooth = first.clone();
+        for _ in 0..24 {
+            smooth = frame(&mut scene);
+        }
+        let white = *hard.iter().max().unwrap();
+        let dark = *hard.iter().min().unwrap();
+        let between = |shades: &[u8]| {
+            shades
+                .iter()
+                .filter(|&&g| {
+                    u16::from(g) > u16::from(dark) + 20
+                        && u16::from(g) + 20 < u16::from(white)
+                })
+                .count()
+        };
+        assert!(between(&hard) < 4, "no AA: {}", between(&hard));
+        assert!(between(&first) < 4, "first TAA frame: {}", between(&first));
+        assert!(between(&smooth) > 30, "TAA: {}", between(&smooth));
+        assert_eq!(hard[0], smooth[0], "background");
+        let inside = (32 * extent[0] + 62) as usize;
+        assert_eq!(hard[inside], smooth[inside], "slab");
+        scene.render_world.renderables[0].transform = placed(50.0);
+        scene.render_world.renderables_revision += 1;
+        let gone = frame(&mut scene);
+        let brightest = *gone.iter().max().unwrap();
+        assert!(
+            u16::from(brightest) < u16::from(dark) + 20,
+            "ghost of the slab: {brightest}"
+        );
     }
 
     #[test]
