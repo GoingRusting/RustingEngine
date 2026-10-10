@@ -116,8 +116,8 @@ pub use skinning::{
 };
 pub use snapshot::{SnapshotError, WorldSnapshot};
 pub use soft_body::{
-    Anchor, AnchorBody, SoftAttachment, SoftBody, SoftBodySettings,
-    SoftBodyVolume,
+    Anchor, AnchorBody, Obstacle, ObstacleShape, SoftAttachment, SoftBody,
+    SoftBodySettings, SoftBodyVolume,
 };
 pub use state_hash::*;
 pub use time::{FrameTime, RandomSeed, TimeControl};

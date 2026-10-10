@@ -5835,6 +5835,36 @@ fn a_soft_body_follows_a_moving_kinematic_body() {
 }
 
 #[test]
+fn a_dynamic_box_dropped_on_a_jelly_comes_to_rest_on_it() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    let crate_box = cpu_body(
+        world,
+        [0.0, 1.0, 0.0],
+        ColliderShape::Box {
+            half_extents: [0.15; 3],
+        },
+        RigidBodyKind::Dynamic,
+    );
+    world.get_mut::<RigidBody>(crate_box).unwrap().mass = 2.0;
+    let settings = SoftBodySettings {
+        edge_compliance: 1e-4,
+        damping: 2.0,
+        ..SoftBodySettings::default()
+    };
+    let pad =
+        SoftBody::block([-0.3, 0.0, -0.3], [3, 2, 3], 0.2, 500.0).unwrap();
+    world.spawn(SoftBodyVolume::new(settings, pad));
+    run_fixed_steps(&mut app, 120);
+    let world = app.world();
+    let rest = world.get::<Transform>(crate_box).unwrap().position;
+    let speed = world.get::<RigidBody>(crate_box).unwrap().linear_velocity;
+    assert!(rest[1] > 0.45, "the box sank into the jelly to {rest:?}");
+    assert!(rest[1] < 0.6, "the box floats at {rest:?}");
+    assert!(speed[1].abs() < 0.3, "the box still moves at {speed:?}");
+}
+
+#[test]
 fn fluid_volumes_with_a_visual_own_one_entity_per_particle() {
     use crate::assets::PrimitiveShape;
     let mut app = App::new();

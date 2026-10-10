@@ -8,7 +8,8 @@
 //! index order, nothing is accumulated through atomics and no randomness is
 //! used: the same mesh and settings give the same bits. It is independent of
 //! the ECS; [`SoftBodyVolume`] puts it on an entity and attaches it to rigid
-//! bodies. Overstretched edges tear by removing the tetrahedra around them.
+//! bodies and keeps it out of their sphere, box and capsule colliders.
+//! Overstretched edges tear by removing the tetrahedra around them.
 
 // The particle loops index several parallel arrays at once.
 #![allow(clippy::needless_range_loop)]
@@ -76,6 +77,108 @@ pub struct Anchor {
     pub body: usize,
     /// The point in the body's frame.
     pub local: [f32; 3],
+}
+
+/// A collider shape particles cannot enter, in its body's frame and already
+/// scaled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ObstacleShape {
+    Sphere(f32),
+    Box([f32; 3]),
+    /// Along the body's Y axis, like capsule colliders.
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
+}
+
+impl ObstacleShape {
+    /// The shape of a sphere, box or capsule collider scaled like rigid
+    /// physics scales it; `None` for mesh, heightfield and 2D colliders.
+    pub fn from_collider(
+        shape: super::ColliderShape,
+        scale: [f32; 3],
+    ) -> Option<Self> {
+        let scale = vector(scale).abs();
+        match shape {
+            super::ColliderShape::Sphere { radius } => {
+                Some(Self::Sphere(radius * scale.max()))
+            }
+            super::ColliderShape::Box { half_extents } => Some(Self::Box(
+                vector(half_extents).component_mul(&scale).into(),
+            )),
+            super::ColliderShape::Capsule {
+                half_height,
+                radius,
+            } => Some(Self::Capsule {
+                half_height: half_height * scale.y,
+                radius: radius * scale.x.max(scale.z),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Radius of a sphere around the body's center that holds the shape.
+    pub fn bounding_radius(&self) -> f32 {
+        match *self {
+            Self::Sphere(radius) => radius,
+            Self::Box(half) => vector(half).norm(),
+            Self::Capsule {
+                half_height,
+                radius,
+            } => half_height + radius,
+        }
+    }
+
+    /// For a point inside the shape (body frame), the outward direction to
+    /// the nearest surface and how far it is.
+    fn push_out(&self, point: Vector3<f32>) -> Option<(Vector3<f32>, f32)> {
+        let (from, radius) = match *self {
+            Self::Box(half) => {
+                let depths = vector(half) - point.abs();
+                if depths.min() <= 0.0 {
+                    return None;
+                }
+                let axis = depths.imin();
+                let mut normal = Vector3::zeros();
+                normal[axis] = if point[axis] < 0.0 { -1.0 } else { 1.0 };
+                return Some((normal, depths[axis]));
+            }
+            Self::Sphere(radius) => (Vector3::zeros(), radius),
+            Self::Capsule {
+                half_height,
+                radius,
+            } => (
+                Vector3::new(
+                    0.0,
+                    point.y.clamp(-half_height, half_height),
+                    0.0,
+                ),
+                radius,
+            ),
+        };
+        let offset = point - from;
+        let distance = offset.norm();
+        if distance >= radius {
+            return None;
+        }
+        // A point right on the core goes up.
+        let normal = if distance > 1e-9 {
+            offset / distance
+        } else {
+            Vector3::y()
+        };
+        Some((normal, radius - distance))
+    }
+}
+
+/// An [`ObstacleShape`] carried by one of the bodies of
+/// [`SoftBody::step_coupled`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Obstacle {
+    /// Index into the bodies slice.
+    pub body: usize,
+    pub shape: ObstacleShape,
 }
 
 /// A tetrahedral soft body: particles, their tetrahedra and the edges
@@ -292,7 +395,7 @@ impl SoftBody {
 
     /// Advances the body by `dt` seconds.
     pub fn step(&mut self, settings: &SoftBodySettings, dt: f32) {
-        self.step_coupled(settings, dt, &mut [], &[]);
+        self.step_coupled(settings, dt, &mut [], &[], &[]);
     }
 
     /// Advances the body by `dt` seconds with each anchor's particle held on
@@ -303,6 +406,9 @@ impl SoftBody {
     /// as well as carrying it. Bodies move with their velocities through
     /// the step and come back with the pose and velocities they end it
     /// with. Anchors on pinned particles or missing bodies hold nothing.
+    /// Particles inside an obstacle's shape are pushed out to its surface
+    /// along the nearest way out, and its body is pushed back the same way
+    /// (no friction).
     /// With [`SoftBodySettings::tear_strain`] set, the step ends with
     /// [`SoftBody::tear`].
     pub fn step_coupled(
@@ -311,6 +417,7 @@ impl SoftBody {
         dt: f32,
         bodies: &mut [AnchorBody],
         anchors: &[Anchor],
+        obstacles: &[Obstacle],
     ) {
         let substeps = settings.substeps.clamp(1, MAX_SOFT_BODY_SUBSTEPS);
         let h = dt / substeps as f32;
@@ -351,31 +458,25 @@ impl SoftBody {
                 let arm = body.rotation * vector(anchor.local);
                 let gap = vector(body.position) + arm
                     - vector(self.positions[anchor.particle]);
-                let length = gap.norm();
-                if length < 1e-9 {
+                self.close_gap(anchor.particle, body, arm, gap, h);
+            }
+            for obstacle in obstacles {
+                let Some(body) = bodies.get_mut(obstacle.body) else {
                     continue;
+                };
+                for i in 0..self.positions.len() {
+                    if self.inverse_masses[i] == 0.0 {
+                        continue;
+                    }
+                    let arm = vector(self.positions[i]) - vector(body.position);
+                    let local = body.rotation.inverse() * arm;
+                    if let Some((normal, depth)) =
+                        obstacle.shape.push_out(local)
+                    {
+                        let gap = body.rotation * normal * depth;
+                        self.close_gap(i, body, arm, gap, h);
+                    }
                 }
-                let normal = gap / length;
-                let turn = arm.cross(&normal);
-                let body_weight = body.inverse_mass
-                    + turn.dot(&(body.inverse_inertia * turn));
-                // The correction moves the particle toward the point and
-                // the body the other way.
-                let lambda = length / (weight + body_weight);
-                self.positions[anchor.particle] =
-                    (vector(self.positions[anchor.particle])
-                        + normal * (weight * lambda))
-                        .into();
-                let push = -normal * lambda;
-                body.position =
-                    (vector(body.position) + push * body.inverse_mass).into();
-                body.velocity = (vector(body.velocity)
-                    + push * (body.inverse_mass / h))
-                    .into();
-                let spin = body.inverse_inertia * arm.cross(&push);
-                body.rotation = nalgebra::Rotation3::new(spin) * body.rotation;
-                body.angular_velocity =
-                    (vector(body.angular_velocity) + spin / h).into();
             }
             for i in 0..self.positions.len() {
                 if self.inverse_masses[i] == 0.0 {
@@ -395,6 +496,42 @@ impl SoftBody {
         if let Some(strain) = settings.tear_strain {
             self.tear(strain);
         }
+    }
+
+    /// Moves `particle` by `gap` (to where it should be), shared with
+    /// `body` as one XPBD position constraint: the body is pushed and turned
+    /// the other way at `arm` from its center, as much as its inverse mass
+    /// and inertia allow.
+    fn close_gap(
+        &mut self,
+        particle: usize,
+        body: &mut AnchorBody,
+        arm: Vector3<f32>,
+        gap: Vector3<f32>,
+        h: f32,
+    ) {
+        let weight = self.inverse_masses[particle];
+        let length = gap.norm();
+        if length < 1e-9 || weight == 0.0 {
+            return;
+        }
+        let normal = gap / length;
+        let turn = arm.cross(&normal);
+        let body_weight =
+            body.inverse_mass + turn.dot(&(body.inverse_inertia * turn));
+        let lambda = length / (weight + body_weight);
+        self.positions[particle] = (vector(self.positions[particle])
+            + normal * (weight * lambda))
+            .into();
+        let push = -normal * lambda;
+        body.position =
+            (vector(body.position) + push * body.inverse_mass).into();
+        body.velocity =
+            (vector(body.velocity) + push * (body.inverse_mass / h)).into();
+        let spin = body.inverse_inertia * arm.cross(&push);
+        body.rotation = nalgebra::Rotation3::new(spin) * body.rotation;
+        body.angular_velocity =
+            (vector(body.angular_velocity) + spin / h).into();
     }
 
     fn solve_edges(&mut self, alpha: f32) {
@@ -525,9 +662,13 @@ fn body_rotation(transform: &crate::Transform) -> nalgebra::Rotation3<f32> {
 }
 
 /// Per fixed step, after rigid physics: steps every [`SoftBodyVolume`] in
-/// spawn order with its attached particles held on their bodies, then gives
-/// each dynamic body the impulse the soft body pulled it with. Attachments
-/// to a missing or parented body hold nothing.
+/// spawn order with its attached particles held on their bodies and its
+/// particles kept out of nearby sphere, box and capsule colliders, then
+/// writes back the pose and velocities of the dynamic bodies it moved.
+/// Attachments to a missing or parented body hold nothing; a volume does
+/// not collide with the bodies it is attached to.
+// ponytail: every collider is checked against every volume each tick (a
+// bounding-sphere test); use the broad phase if scenes get many of both.
 #[allow(clippy::type_complexity)]
 pub(super) fn step_soft_bodies(
     time: bevy_ecs::prelude::Res<super::FrameTime>,
@@ -538,9 +679,12 @@ pub(super) fn step_soft_bodies(
     )>,
     mut bodies: bevy_ecs::prelude::Query<
         (
+            bevy_ecs::prelude::Entity,
+            Option<&super::SpawnOrder>,
             &mut crate::Transform,
-            &mut super::RigidBody,
+            Option<&mut super::RigidBody>,
             Option<&super::Collider>,
+            bevy_ecs::prelude::Has<super::PhysicsBody>,
         ),
         bevy_ecs::prelude::Without<super::Parent>,
     >,
@@ -550,82 +694,147 @@ pub(super) fn step_soft_bodies(
     volumes.sort_by_key(|(entity, order, _)| {
         super::fluid::visit_key(*order, *entity)
     });
+    let mut colliders: Vec<_> = bodies
+        .iter()
+        .filter_map(|(entity, order, transform, _, collider, physics)| {
+            let shape = ObstacleShape::from_collider(
+                collider.filter(|_| physics)?.shape,
+                transform.scale,
+            )?;
+            Some((
+                super::fluid::visit_key(order, entity),
+                entity,
+                transform.position,
+                shape,
+            ))
+        })
+        .collect();
+    colliders.sort_by_key(|&(key, ..)| key);
     for (_, _, mut volume) in volumes {
         let volume = &mut *volume;
         let mut entities = Vec::new();
         let mut held = Vec::new();
+        let mut slot = |entity| {
+            if let Some(index) = entities.iter().position(|&e| e == entity) {
+                return Some(index);
+            }
+            let (_, _, transform, rigid, collider, _) =
+                bodies.get(entity).ok()?;
+            entities.push(entity);
+            held.push(anchor_body(transform, rigid, collider, dt));
+            Some(held.len() - 1)
+        };
         let mut anchors = Vec::new();
         for attachment in &volume.attachments {
-            let Ok((transform, rigid, collider)) = bodies.get(attachment.body)
-            else {
-                continue;
-            };
             if attachment.particle >= volume.body.positions.len() {
                 continue;
             }
-            let body = match entities.iter().position(|&e| e == attachment.body)
-            {
-                Some(index) => index,
-                None => {
-                    let dynamic = rigid.kind == super::RigidBodyKind::Dynamic
-                        && rigid.mass > 0.0;
-                    let rotation = body_rotation(transform);
-                    let inverse_inertia = match collider {
-                        Some(collider) if dynamic => {
-                            super::cpu_physics::world_inverse_inertia(
-                                collider,
-                                transform.scale,
-                                &rotation,
-                                rigid.mass,
-                            )
-                        }
-                        _ => nalgebra::Matrix3::zeros(),
-                    };
-                    // Rigid physics already moved the body through this
-                    // tick; the soft step moves it through the tick again
-                    // from where it was, now pulled by its particles.
-                    let velocity = vector(rigid.linear_velocity);
-                    let spin = vector(rigid.angular_velocity);
-                    entities.push(attachment.body);
-                    held.push(AnchorBody {
-                        position: (vector(transform.position) - velocity * dt)
-                            .into(),
-                        rotation: nalgebra::Rotation3::new(-spin * dt)
-                            * rotation,
-                        velocity: rigid.linear_velocity,
-                        angular_velocity: rigid.angular_velocity,
-                        inverse_mass: if dynamic {
-                            1.0 / rigid.mass
-                        } else {
-                            0.0
-                        },
-                        inverse_inertia,
-                    });
-                    held.len() - 1
-                }
-            };
-            anchors.push(Anchor {
-                particle: attachment.particle,
-                body,
-                local: attachment.local,
-            });
+            if let Some(body) = slot(attachment.body) {
+                anchors.push(Anchor {
+                    particle: attachment.particle,
+                    body,
+                    local: attachment.local,
+                });
+            }
         }
-        volume
-            .body
-            .step_coupled(&volume.settings, dt, &mut held, &anchors);
+        let (low, high) = bounds(&volume.body.positions);
+        let center = (low + high) / 2.0;
+        let reach = (high - low).norm() / 2.0;
+        let mut obstacles = Vec::new();
+        for &(_, entity, position, shape) in &colliders {
+            if volume.attachments.iter().any(|a| a.body == entity) {
+                continue;
+            }
+            // Room for a tick of travel at up to 60 m/s either way.
+            let margin = 2.0 * 60.0 * dt;
+            if (vector(position) - center).norm()
+                > reach + shape.bounding_radius() + margin
+            {
+                continue;
+            }
+            if let Some(body) = slot(entity) {
+                obstacles.push(Obstacle { body, shape });
+            }
+        }
+        volume.body.step_coupled(
+            &volume.settings,
+            dt,
+            &mut held,
+            &anchors,
+            &obstacles,
+        );
         for (entity, state) in entities.into_iter().zip(held) {
-            let Ok((mut transform, mut rigid, _)) = bodies.get_mut(entity)
+            if state.inverse_mass == 0.0 {
+                continue;
+            }
+            let Ok((_, _, mut transform, Some(mut rigid), ..)) =
+                bodies.get_mut(entity)
             else {
                 continue;
             };
-            if state.inverse_mass > 0.0 {
-                let (roll, pitch, yaw) = state.rotation.euler_angles();
-                transform.position = state.position;
-                transform.rotation = [roll, pitch, yaw];
-                rigid.linear_velocity = state.velocity;
-                rigid.angular_velocity = state.angular_velocity;
-            }
+            let (roll, pitch, yaw) = state.rotation.euler_angles();
+            transform.position = state.position;
+            transform.rotation = [roll, pitch, yaw];
+            rigid.linear_velocity = state.velocity;
+            rigid.angular_velocity = state.angular_velocity;
         }
+    }
+}
+
+/// The smallest box around some points.
+fn bounds(points: &[[f32; 3]]) -> (Vector3<f32>, Vector3<f32>) {
+    let mut low = Vector3::repeat(f32::MAX);
+    let mut high = Vector3::repeat(f32::MIN);
+    for &point in points {
+        low = low.inf(&vector(point));
+        high = high.sup(&vector(point));
+    }
+    (low, high)
+}
+
+/// The start-of-tick state of a body for [`SoftBody::step_coupled`]. Only a
+/// dynamic body with mass can be moved by the soft body.
+fn anchor_body(
+    transform: &crate::Transform,
+    rigid: Option<&super::RigidBody>,
+    collider: Option<&super::Collider>,
+    dt: f32,
+) -> AnchorBody {
+    let rotation = body_rotation(transform);
+    let (velocity, spin) =
+        rigid.map_or((Vector3::zeros(), Vector3::zeros()), |rigid| {
+            (
+                vector(rigid.linear_velocity),
+                vector(rigid.angular_velocity),
+            )
+        });
+    let dynamic = rigid.is_some_and(|rigid| {
+        rigid.kind == super::RigidBodyKind::Dynamic && rigid.mass > 0.0
+    });
+    let (inverse_mass, inverse_inertia) = match (rigid, collider) {
+        (Some(rigid), Some(collider)) if dynamic => (
+            1.0 / rigid.mass,
+            super::cpu_physics::world_inverse_inertia(
+                collider,
+                transform.scale,
+                &rotation,
+                rigid.mass,
+            ),
+        ),
+        (Some(rigid), None) if dynamic => {
+            (1.0 / rigid.mass, nalgebra::Matrix3::zeros())
+        }
+        _ => (0.0, nalgebra::Matrix3::zeros()),
+    };
+    // Rigid physics already moved the body through this tick; the soft step
+    // moves it through the tick again from where it was.
+    AnchorBody {
+        position: (vector(transform.position) - velocity * dt).into(),
+        rotation: nalgebra::Rotation3::new(-spin * dt) * rotation,
+        velocity: velocity.into(),
+        angular_velocity: spin.into(),
+        inverse_mass,
+        inverse_inertia,
     }
 }
 
@@ -797,5 +1006,85 @@ mod tests {
         }
         assert_eq!(body.edges.len(), body.rest_lengths.len());
         assert_eq!(body.tear(0.5), 0);
+    }
+
+    fn still_body(position: [f32; 3], inverse_mass: f32) -> AnchorBody {
+        AnchorBody {
+            position,
+            rotation: nalgebra::Rotation3::identity(),
+            velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            inverse_mass,
+            inverse_inertia: nalgebra::Matrix3::identity() * inverse_mass,
+        }
+    }
+
+    #[test]
+    fn a_jelly_dropped_on_a_fixed_box_rests_on_its_top() {
+        let settings = SoftBodySettings {
+            edge_compliance: 1e-4,
+            floor: None,
+            ..SoftBodySettings::default()
+        };
+        let mut body =
+            SoftBody::block([-0.2, 1.0, -0.2], [2, 2, 2], 0.2, 1000.0).unwrap();
+        let mut bodies = [still_body([0.0, 0.0, 0.0], 0.0)];
+        let obstacles = [Obstacle {
+            body: 0,
+            shape: ObstacleShape::Box([1.0, 0.5, 1.0]),
+        }];
+        for _ in 0..180 {
+            body.step_coupled(&settings, DT, &mut bodies, &[], &obstacles);
+        }
+        let bottom =
+            body.positions.iter().map(|p| p[1]).fold(f32::MAX, f32::min);
+        assert!((0.49..0.52).contains(&bottom), "bottom {bottom}");
+        assert_eq!(bodies[0], still_body([0.0, 0.0, 0.0], 0.0));
+    }
+
+    #[test]
+    fn a_ball_thrown_into_a_floating_jelly_shares_its_momentum() {
+        let settings = SoftBodySettings {
+            gravity: [0.0; 3],
+            edge_compliance: 1e-4,
+            floor: None,
+            damping: 0.0,
+            ..SoftBodySettings::default()
+        };
+        let mut jelly =
+            SoftBody::block([0.0, -0.2, -0.2], [2, 2, 2], 0.2, 250.0).unwrap();
+        let jelly_mass: f32 =
+            jelly.inverse_masses.iter().map(|w| 1.0 / w).sum();
+        let ball_mass = 2.0;
+        let mut bodies = [still_body([-0.5, 0.0, 0.0], 1.0 / ball_mass)];
+        bodies[0].inverse_inertia =
+            nalgebra::Matrix3::identity() / (0.4 * ball_mass * 0.15 * 0.15);
+        bodies[0].velocity = [3.0, 0.0, 0.0];
+        let obstacles = [Obstacle {
+            body: 0,
+            shape: ObstacleShape::Sphere(0.15),
+        }];
+        for _ in 0..60 {
+            jelly.step_coupled(&settings, DT, &mut bodies, &[], &obstacles);
+        }
+        let jelly_momentum: f32 = jelly
+            .velocities
+            .iter()
+            .zip(&jelly.inverse_masses)
+            .map(|(v, w)| v[0] / w)
+            .sum();
+        let total = jelly_momentum + bodies[0].velocity[0] * ball_mass;
+        assert!(
+            (total - 6.0).abs() < 0.3,
+            "momentum {total} (jelly {jelly_momentum} of {jelly_mass} kg)"
+        );
+        assert!(bodies[0].velocity[0] < 2.0, "ball kept {:?}", bodies[0]);
+        assert!(jelly_momentum > 1.0, "jelly got {jelly_momentum}");
+        let deepest = jelly
+            .positions
+            .iter()
+            .map(|&p| (vector(p) - vector(bodies[0].position)).norm())
+            .fold(f32::MAX, f32::min);
+        assert!(deepest > 0.14, "a particle sits {deepest} inside the ball");
     }
 }
