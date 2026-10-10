@@ -129,7 +129,7 @@ Each Godot feature area has an owning milestone. A feature area is at parity whe
 
 ## Second product target: Sundering
 
-*Sundering* is a 5v5 competitive game whose terrain is made of millions of simulated chunks that come apart permanently. Its design document lives at `~/Sundering/README.md`. It is built after the engine's physics pillars exist and consumes them harder than any other project will.
+*Sundering* is a 5v5 competitive game whose terrain is made of millions of simulated chunks that come apart permanently. Its design document lives at `~/Code/games/Sundering/README.md`. It is built after the engine's physics pillars exist and consumes them harder than any other project will.
 
 Sundering demands four things a general-purpose engine does not provide by default:
 

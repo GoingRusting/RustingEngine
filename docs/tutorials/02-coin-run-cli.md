@@ -12,7 +12,7 @@ any command for machine-readable output.
 ## 1. Create the game
 
 ```bash
-mkdir -p ~/games && cd ~/games
+mkdir -p ~/Code/games && cd ~/Code/games
 rusting new . "Coin Run" --template starter
 ```
 

@@ -71,8 +71,8 @@ the same project made without the editor:
 
 ```bash
 cargo build --bin rusting
-./target/debug/rusting new ~/games "Hello Cube"
-./target/debug/rusting run ~/games/"Hello Cube"
+./target/debug/rusting new ~/Code/games "Hello Cube"
+./target/debug/rusting run ~/Code/games/"Hello Cube"
 ```
 
 `run` opens the game window. Add `--ticks 120` to run 120 simulation ticks
