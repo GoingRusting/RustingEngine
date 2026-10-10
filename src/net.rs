@@ -31,7 +31,8 @@ use bevy_ecs::prelude::Resource;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
 use std::net::{
-    IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+    IpAddr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream,
+    ToSocketAddrs,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -57,7 +58,11 @@ const ROOM: u8 = 4;
 const JOIN: u8 = 5;
 const WELCOME: u8 = 6;
 const REJECT: u8 = 7;
+/// Longest a whole handshake may take, however slowly its bytes arrive.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Largest handshake frame. A JOIN holds a version, a room code and a
+/// password or token, so a bigger one is not a real join.
+const MAX_HANDSHAKE: usize = 64 << 10;
 /// Joins a direct host checks at once; more connections are dropped.
 const MAX_PENDING_JOINS: usize = 64;
 
@@ -198,16 +203,14 @@ impl NetSession {
     ) -> io::Result<Self> {
         let mut stream = TcpStream::connect(relay)?;
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
         let mut payload = PROTOCOL_VERSION.to_le_bytes().to_vec();
         payload.extend(token.as_bytes());
         write_frame(&mut stream, HOST_ROOM, HOST, &payload)?;
-        let code = match read_frame(&mut stream)? {
+        let code = match read_handshake(&stream)? {
             (ROOM, _, code) => String::from_utf8_lossy(&code).into_owned(),
             (REJECT, _, reason) => return Err(rejected(&reason)),
             _ => return Err(invalid("the relay did not answer with a room")),
         };
-        stream.set_read_timeout(None)?;
         let (sender, events) = channel();
         let reader = stream.try_clone()?;
         std::thread::spawn(move || {
@@ -412,7 +415,8 @@ pub fn run_relay_with(
         let Ok(address) = stream.peer_addr() else {
             continue;
         };
-        let Some(slot) = Admission::admit(&admission, address.ip(), &limits)
+        let Some(slot) =
+            Admission::admit(&admission, limit_key(address.ip()), &limits)
         else {
             continue;
         };
@@ -539,12 +543,11 @@ fn relay_connection(
     token: &str,
     bytes_per_second: u64,
 ) {
-    let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
     // Kept after the handshake: a peer that stops reading cannot hold the
     // room lock for longer than this.
     let _ = stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT));
     let _ = stream.set_nodelay(true);
-    let Ok((kind, _, payload)) = read_frame(&mut stream) else {
+    let Ok((kind, _, payload)) = read_handshake(&stream) else {
         return;
     };
     let request = match kind {
@@ -566,7 +569,6 @@ fn relay_connection(
             return;
         }
     };
-    let _ = stream.set_read_timeout(None);
     let throttle = Throttle::new(bytes_per_second);
     match code {
         None => relay_host(stream, rooms, throttle),
@@ -605,7 +607,7 @@ fn relay_host(mut stream: TcpStream, rooms: &Rooms, mut throttle: Throttle) {
         code
     };
     if write_frame(&mut stream, ROOM, HOST, code.as_bytes()).is_ok() {
-        while let Ok((kind, to, bytes)) = read_frame(&mut stream) {
+        while let Ok((kind, to, bytes)) = read_frame(&mut stream, MAX_MESSAGE) {
             throttle.spend(9 + bytes.len());
             if kind != DATA {
                 continue;
@@ -655,7 +657,7 @@ fn relay_client(
         room.clients.insert(peer, writer);
         peer
     };
-    while let Ok((kind, _, bytes)) = read_frame(&mut stream) {
+    while let Ok((kind, _, bytes)) = read_frame(&mut stream, MAX_MESSAGE) {
         throttle.spend(9 + bytes.len());
         if kind != DATA {
             continue;
@@ -693,8 +695,7 @@ fn admit_client(
 ) -> Option<PeerId> {
     let mut stream = stream;
     stream.set_nodelay(true).ok()?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok()?;
-    let (kind, _, payload) = read_frame(&mut stream).ok()?;
+    let (kind, _, payload) = read_handshake(stream).ok()?;
     if kind != JOIN {
         return None;
     }
@@ -709,7 +710,6 @@ fn admit_client(
         let _ = write_frame(&mut stream, REJECT, HOST, reason.as_bytes());
         return None;
     }
-    stream.set_read_timeout(None).ok()?;
     let writer = stream.try_clone().ok()?;
     // Ids, WELCOMEs and Connected events follow one order under the lock.
     let mut peers = peers.lock().unwrap();
@@ -734,7 +734,6 @@ fn request_join(
 ) -> io::Result<PeerId> {
     let mut stream = stream;
     stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     let length =
         u8::try_from(code.len()).map_err(|_| invalid("room code too long"))?;
     let mut payload = PROTOCOL_VERSION.to_le_bytes().to_vec();
@@ -742,12 +741,11 @@ fn request_join(
     payload.extend(code.as_bytes());
     payload.extend(secret.as_bytes());
     write_frame(&mut stream, JOIN, HOST, &payload)?;
-    let me = match read_frame(&mut stream)? {
+    let me = match read_handshake(stream)? {
         (WELCOME, me, _) => me,
         (REJECT, _, reason) => return Err(rejected(&reason)),
         _ => return Err(invalid("the host did not answer the join")),
     };
-    stream.set_read_timeout(None)?;
     Ok(me)
 }
 
@@ -798,7 +796,7 @@ fn read_frames(
     event: impl Fn(u8, PeerId, Vec<u8>) -> Option<NetEvent>,
     sender: &Sender<NetEvent>,
 ) {
-    while let Ok((kind, peer, bytes)) = read_frame(&mut stream) {
+    while let Ok((kind, peer, bytes)) = read_frame(&mut stream, MAX_MESSAGE) {
         if let Some(event) = event(kind, peer, bytes) {
             if sender.send(event).is_err() {
                 break;
@@ -827,17 +825,70 @@ fn write_frame(
     stream.write_all(&frame)
 }
 
-fn read_frame(stream: &mut impl Read) -> io::Result<(u8, PeerId, Vec<u8>)> {
+fn read_frame(
+    stream: &mut impl Read,
+    max: usize,
+) -> io::Result<(u8, PeerId, Vec<u8>)> {
     let mut length = [0; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_le_bytes(length) as usize;
-    if !(5..=MAX_MESSAGE + 5).contains(&length) {
+    if !(5..=max + 5).contains(&length) {
         return Err(invalid("bad frame length"));
     }
-    let mut frame = vec![0; length];
-    stream.read_exact(&mut frame)?;
+    // Grown as bytes arrive, so a length prefix alone cannot reserve
+    // megabytes.
+    let mut frame = Vec::new();
+    stream.take(length as u64).read_to_end(&mut frame)?;
+    if frame.len() < length {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
     let peer = PeerId::from_le_bytes(frame[1..5].try_into().unwrap());
     Ok((frame[0], peer, frame.split_off(5)))
+}
+
+/// Reads one handshake frame, small and whole within `HANDSHAKE_TIMEOUT`,
+/// so a peer trickling bytes cannot hold a join slot. Clears the read
+/// timeout after.
+fn read_handshake(stream: &TcpStream) -> io::Result<(u8, PeerId, Vec<u8>)> {
+    let mut reader = Deadline {
+        stream,
+        until: Instant::now() + HANDSHAKE_TIMEOUT,
+    };
+    let frame = read_frame(&mut reader, MAX_HANDSHAKE);
+    stream.set_read_timeout(None)?;
+    frame
+}
+
+/// A stream whose reads fail once `until` has passed.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buffer)
+    }
+}
+
+/// What the relay's per-address limits count: an IPv4 address, or an IPv6
+/// /64, since one home connection gets a whole /64.
+fn limit_key(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                IpAddr::V6(Ipv6Addr::from(u128::from(v6) & (u128::MAX << 64)))
+            }
+        },
+        v4 => v4,
+    }
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -947,7 +998,7 @@ mod tests {
         let _host = NetSession::host_on(listener, "").unwrap();
         let mut stream = TcpStream::connect(address).unwrap();
         write_frame(&mut stream, JOIN, HOST, &99u16.to_le_bytes()).unwrap();
-        let (kind, _, reason) = read_frame(&mut stream).unwrap();
+        let (kind, _, reason) = read_frame(&mut stream, MAX_MESSAGE).unwrap();
         assert_eq!(kind, REJECT);
         assert!(String::from_utf8_lossy(&reason).contains("99"));
     }
@@ -993,6 +1044,52 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
         assert_eq!(client.id(), 1);
         assert_eq!(wait(&host, 1), [NetEvent::Connected(1)]);
+    }
+
+    #[test]
+    fn a_handshake_must_arrive_whole_in_time_and_stay_small() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        // One byte every 50 ms never trips a per-read timeout; the
+        // deadline still ends the handshake.
+        std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            for byte in 64u32.to_le_bytes().into_iter().cycle() {
+                if stream.write_all(&[byte]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (stream, _) = listener.accept().unwrap();
+        let start = Instant::now();
+        let mut reader = Deadline {
+            stream: &stream,
+            until: start + Duration::from_millis(400),
+        };
+        let error = read_frame(&mut reader, MAX_HANDSHAKE).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(1));
+
+        // A frame longer than a handshake is refused from its length.
+        let mut sender = TcpStream::connect(address).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        sender
+            .write_all(&(MAX_HANDSHAKE as u32 + 6).to_le_bytes())
+            .unwrap();
+        let start = Instant::now();
+        let error = read_handshake(&stream).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn relay_limits_count_an_ipv6_slash_64_as_one_address() {
+        let key = |text: &str| limit_key(text.parse().unwrap());
+        assert_eq!(key("2001:db8:1:2::1"), key("2001:db8:1:2:ffff::9"));
+        assert_ne!(key("2001:db8:1:2::1"), key("2001:db8:1:3::1"));
+        assert_eq!(key("::ffff:203.0.113.7"), key("203.0.113.7"));
+        assert_ne!(key("203.0.113.7"), key("203.0.113.8"));
     }
 
     #[test]

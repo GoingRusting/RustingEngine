@@ -102,6 +102,8 @@ sessions; only the constructor differs.
   limits, run the relay from Rust with `net::run_relay_with(listener,
   token, RelayLimits { .. })`.
 - One player who connects and then sends nothing does not hold up anyone
-  else's join; each handshake runs on its own thread with a timeout.
+  else's join; each handshake runs on its own thread and must finish
+  within 5 seconds. The relay counts an IPv6 /64 as one address.
+- Passwords and relay tokens must fit in a 64 KiB handshake.
 - The wire protocol has a version (`PROTOCOL_VERSION`); a host or relay
   refuses clients built with another one.
