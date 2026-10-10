@@ -1955,6 +1955,8 @@ impl AssetServer {
                                     color,
                                     intensity,
                                     range,
+                                    shadows: false,
+                                    radius: 0.0,
                                 })
                             }
                             gltf::khr_lights_punctual::Kind::Spot {
@@ -1967,6 +1969,7 @@ impl AssetServer {
                                 inner_angle: inner_cone_angle,
                                 outer_angle: outer_cone_angle,
                                 shadows: false,
+                                radius: 0.0,
                             }),
                         }
                     }),
@@ -3715,6 +3718,7 @@ mod tests {
                 inner_angle: 0.2,
                 outer_angle: 0.6,
                 shadows: false,
+                radius: 0.0,
             }))
         );
 

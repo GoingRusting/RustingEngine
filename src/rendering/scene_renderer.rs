@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::post_effects::{
-    BloomChain, OcclusionParams, OcclusionTargets, PostPipelines,
+    BloomChain, ExposureMeter, OcclusionParams, OcclusionTargets,
+    PostPipelines, TemporalHistory,
 };
 
 use nalgebra::{
@@ -502,11 +503,10 @@ const PROBE_FACES: [([f32; 3], [f32; 3]); 6] = [
     ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
 ];
 
-/// Light-space transform of the shadowed directional light, per frame.
+/// Shadow cascades and the rest of the main pass's per-frame state.
 #[repr(C)]
 #[derive(BufferContents, Clone, Copy)]
 struct ShadowUpload {
-    light_view_projection: [[f32; 4]; 4],
     /// Environment map: x is 1 when bound, y its intensity, z its last mip
     /// level.
     environment: [f32; 4],
@@ -528,6 +528,23 @@ struct ShadowUpload {
     /// x is 1 when binding 6 holds this frame's ambient occlusion; y is 1
     /// for single-tap hard shadows.
     ambient_occlusion: [f32; 4],
+    /// Light-space transform of each cascade of the shadowed light, or of
+    /// each cube face of a point light.
+    cascades: [[[f32; 4]; 4]; SHADOW_VIEWS],
+    /// Camera depth where each cascade ends.
+    cascade_far: [f32; 4],
+    /// Camera forward in xyz and `dot(eye, forward)` in w, so
+    /// `dot(p, xyz) - w` is a point's camera depth. For a point light, its
+    /// position in xyz.
+    cascade_forward: [f32; 4],
+    /// x is the cascade count, y the atlas tiles per side, z is 1 when the
+    /// views are a point light's cube faces.
+    cascade_info: [f32; 4],
+    /// Camera forward in xyz and `dot(eye, forward)` in w, for the light
+    /// cluster depth.
+    cluster_view: [f32; 4],
+    /// Cluster near plane in x and `ln(far / near)` in y.
+    cluster_depth: [f32; 4],
 }
 
 /// Side length in texels of the directional shadow map and the view
@@ -576,7 +593,11 @@ struct LightUpload {
     position_kind: [f32; 4],
     direction_range: [f32; 4],
     color_intensity: [f32; 4],
+    /// Cosines of the inner and outer cone, source radius, and tangent of
+    /// the outer cone.
     spot_angles: [f32; 4],
+    /// The spot light's right axis and its cookie slot, -1 without one.
+    cookie: [f32; 4],
 }
 
 #[repr(C)]
@@ -1208,6 +1229,161 @@ struct PreparedLights {
     /// shadows: the first uploaded one with `shadows` enabled, directional
     /// lights before spot lights.
     shadow: Option<(u32, ShadowView)>,
+    /// Uploaded directional lights; they come first and light every pixel.
+    directional: u32,
+    /// Upload index and bounding sphere (center, range) of each point and
+    /// spot light, binned into the light clusters every frame.
+    local: Vec<(u32, [f32; 4])>,
+    /// Images of the cookie slots, see [`light_cookies`].
+    cookies: Vec<Handle<TextureAsset>>,
+}
+
+/// Cookie slots in the lit pass; see `LightCookie`.
+const MAX_LIGHT_COOKIES: usize = 4;
+
+/// Distinct cookie images of the spot lights, in light order, at most
+/// [`MAX_LIGHT_COOKIES`]; a light's cookie slot is its image's index here.
+fn light_cookies(render_world: &RenderWorld) -> Vec<Handle<TextureAsset>> {
+    let mut cookies = Vec::new();
+    for cookie in render_world
+        .spot_lights
+        .iter()
+        .filter_map(|light| light.cookie)
+    {
+        if cookies.len() < MAX_LIGHT_COOKIES && !cookies.contains(&cookie) {
+            cookies.push(cookie);
+        }
+    }
+    cookies
+}
+
+/// Screen tiles across and down and depth slices of the light clusters.
+const CLUSTER_GRID: [usize; 3] = [16, 9, 24];
+const CLUSTER_COUNT: usize =
+    CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2];
+/// Local lights one cluster lists; more are left out of that cluster.
+// ponytail: fixed cap per cluster bounds the upload at about 3.5 MB; sort by
+// brightness before capping if dense light crowds show missing lights.
+const MAX_LIGHTS_PER_CLUSTER: usize = 256;
+
+/// Bins point and spot lights into a view-space grid of screen tiles and
+/// exponential depth slices, so a pixel shades only the lights whose range
+/// reaches its cluster. The list starts with an (offset, count) pair per
+/// cluster; offsets index the same list.
+// ponytail: CPU binning of world-space boxes around each light sphere, rebuilt
+// every frame; move to a compute pass if thousands of lights cost frame time.
+fn build_light_clusters(
+    local: &[(u32, [f32; 4])],
+    clip: &Matrix4<f32>,
+    eye: [f32; 3],
+    forward: [f32; 3],
+    [near, far]: [f32; 2],
+) -> Vec<u32> {
+    let [columns, rows, slices] = CLUSTER_GRID;
+    let eye = Vector3::from(eye);
+    let forward = Vector3::from(forward);
+    let slice = |depth: f32| {
+        if depth <= near {
+            0
+        } else {
+            let t = (depth / near).ln() / (far / near).ln();
+            ((t * slices as f32) as usize).min(slices - 1)
+        }
+    };
+    let cell = |ndc: f32, count: usize| {
+        (((ndc * 0.5 + 0.5) * count as f32).floor().max(0.0) as usize)
+            .min(count - 1)
+    };
+    let mut ranges = Vec::with_capacity(local.len());
+    for &(index, [x, y, z, range]) in local {
+        let center = Vector3::new(x, y, z);
+        let depth = (center - eye).dot(&forward);
+        if depth + range < near.min(0.0) || depth - range > far {
+            continue;
+        }
+        let (mut low, mut high) = ([-1.0_f32; 2], [1.0_f32; 2]);
+        let mut behind = false;
+        let mut bounds = ([f32::MAX; 2], [f32::MIN; 2]);
+        for corner in 0..8 {
+            let offset = Vector3::new(
+                if corner & 1 == 0 { -range } else { range },
+                if corner & 2 == 0 { -range } else { range },
+                if corner & 4 == 0 { -range } else { range },
+            );
+            let point = clip * (center + offset).push(1.0);
+            if point.w <= 1e-4 {
+                behind = true;
+                break;
+            }
+            for axis in 0..2 {
+                let ndc = point[axis] / point.w;
+                bounds.0[axis] = bounds.0[axis].min(ndc);
+                bounds.1[axis] = bounds.1[axis].max(ndc);
+            }
+        }
+        if !behind {
+            if (0..2).any(|axis| bounds.0[axis] > 1.0 || bounds.1[axis] < -1.0)
+            {
+                continue;
+            }
+            (low, high) = bounds;
+        }
+        ranges.push((
+            index,
+            [cell(low[0], columns), cell(high[0], columns)],
+            [cell(low[1], rows), cell(high[1], rows)],
+            [slice(depth - range), slice(depth + range)],
+        ));
+    }
+    let cluster = |x: usize, y: usize, z: usize| (z * rows + y) * columns + x;
+    let mut counts = vec![0_usize; CLUSTER_COUNT];
+    for (_, xs, ys, zs) in &ranges {
+        for z in zs[0]..=zs[1] {
+            for y in ys[0]..=ys[1] {
+                for x in xs[0]..=xs[1] {
+                    let count = &mut counts[cluster(x, y, z)];
+                    *count = (*count + 1).min(MAX_LIGHTS_PER_CLUSTER);
+                }
+            }
+        }
+    }
+    let mut list = vec![0_u32; 2 * CLUSTER_COUNT];
+    let mut offset = list.len();
+    for (index, count) in counts.iter().enumerate() {
+        list[2 * index] = offset as u32;
+        offset += count;
+    }
+    list.resize(offset, 0);
+    let mut filled = vec![0_usize; CLUSTER_COUNT];
+    for (light, xs, ys, zs) in &ranges {
+        for z in zs[0]..=zs[1] {
+            for y in ys[0]..=ys[1] {
+                for x in xs[0]..=xs[1] {
+                    let index = cluster(x, y, z);
+                    if filled[index] < counts[index] {
+                        let at = list[2 * index] as usize + filled[index];
+                        list[at] = *light;
+                        filled[index] += 1;
+                    }
+                }
+            }
+        }
+    }
+    for (index, count) in counts.iter().enumerate() {
+        list[2 * index + 1] = *count as u32;
+    }
+    list
+}
+
+/// Near and far planes the light clusters slice depth between.
+fn cluster_depth_range(camera: Option<ExtractedCamera>) -> [f32; 2] {
+    let [near, far] = match camera.map(|camera| camera.projection) {
+        Some(Projection::Perspective { near, far, .. }) => [near, far],
+        Some(Projection::Orthographic { near, far, .. }) => [near, far],
+        None => [0.1, 1_000.0],
+    };
+    let near = near.max(0.01);
+    [near, far.max(near * 2.0)]
 }
 
 /// Resources reused when one swapchain image comes around again.
@@ -1395,7 +1571,7 @@ impl SceneViewport {
 
 /// Largest number of lights uploaded per frame; extra lights are dropped and
 /// counted in [`RenderCapacityDiagnostics::dropped_lights`].
-pub const MAX_LIGHTS: usize = 64;
+pub const MAX_LIGHTS: usize = 1024;
 
 /// Capacity and asset fallbacks the renderer took instead of failing the
 /// frame.
@@ -1495,6 +1671,8 @@ pub struct SceneRenderer {
     post_pipelines: PostPipelines,
     /// Rebuilt with `hdr`.
     bloom_chain: BloomChain,
+    /// Rebuilt with `hdr`.
+    exposure: ExposureMeter,
     /// Rebuilt with `depth`.
     occlusion: OcclusionTargets,
     /// Depth-only opaque pass into `depth` that ambient occlusion traces;
@@ -1571,6 +1749,11 @@ pub struct SceneRenderer {
     upscale_to: Option<(Arc<ImageView>, Option<SceneViewport>)>,
     /// Nearest-neighbour filtering for the `upscale_to` blit.
     upscale_nearest: bool,
+    /// Strength of the sharp upscale that replaces the linear stretch of
+    /// [`Self::upscale_next_frame`]; 0 keeps the blit.
+    upscale_sharpness: f32,
+    /// Built for the first sharp upscale's target format.
+    sharp_upscale: Option<(Arc<RenderPass>, Arc<GraphicsPipeline>)>,
     last_frame_culled: Option<usize>,
     last_culling_path: CullingPath,
     culling_stats: CullingStats,
@@ -1587,6 +1770,13 @@ pub struct SceneRenderer {
     depth_pyramid_reduce_pipeline: Arc<ComputePipeline>,
     /// Rebuilt with `depth`.
     depth_pyramid: DepthPyramid,
+    /// Last frame's view projection without jitter, while motion blur or
+    /// TAA is on.
+    previous_clip: Option<Matrix4<f32>>,
+    /// Built on the first TAA frame.
+    temporal: Option<TemporalHistory>,
+    /// Picks each TAA frame's jitter.
+    temporal_frame: u32,
     /// Last GPU-culled frame's draw commands, early set first on occlusion
     /// frames, for readback in tests.
     #[cfg(test)]
@@ -1778,6 +1968,12 @@ impl SceneRenderer {
             &post_pipelines,
             &hdr,
         )?;
+        let exposure = ExposureMeter::new(
+            &memory_allocator,
+            &descriptor_allocator,
+            &post_pipelines,
+            &hdr,
+        )?;
         let occlusion =
             OcclusionTargets::new(&memory_allocator, initial_extent)?;
         let depth_prepass_pipeline = create_depth_prepass(&queue, &pipeline)?;
@@ -1788,6 +1984,7 @@ impl SceneRenderer {
             &tonemap_pipeline,
             &hdr,
             &bloom_chain,
+            &exposure,
             &scene_color,
             &scene_color_sampler,
         )?;
@@ -1864,6 +2061,9 @@ impl SceneRenderer {
             depth_pyramid_copy_pipeline,
             depth_pyramid_reduce_pipeline,
             depth_pyramid,
+            previous_clip: None,
+            temporal: None,
+            temporal_frame: 0,
             shadow_pipeline,
             shadow_framebuffer,
             shadow_map,
@@ -1877,6 +2077,7 @@ impl SceneRenderer {
             tonemap_set,
             post_pipelines,
             bloom_chain,
+            exposure,
             occlusion,
             depth_prepass_pipeline,
             depth_prepass_framebuffer,
@@ -1906,6 +2107,8 @@ impl SceneRenderer {
             last_frame_passes: Vec::new(),
             upscale_to: None,
             upscale_nearest: false,
+            upscale_sharpness: 0.0,
+            sharp_upscale: None,
             last_frame_culled: Some(0),
             last_culling_path: CullingPath::Direct,
             culling_stats: CullingStats::default(),
@@ -2066,6 +2269,13 @@ impl SceneRenderer {
     /// [`Self::upscale_next_frame`] and [`Self::blit_next_frame`].
     pub fn set_upscale_nearest(&mut self, nearest: bool) {
         self.upscale_nearest = nearest;
+    }
+
+    /// Above 0, [`Self::upscale_next_frame`] stretches with an
+    /// edge-preserving filter and contrast-adaptive sharpening of this
+    /// strength (up to 1) instead of the linear blit.
+    pub fn set_upscale_sharpness(&mut self, sharpness: f32) {
+        self.upscale_sharpness = sharpness.clamp(0.0, 1.0);
     }
 
     pub fn blit_next_frame(
@@ -2399,7 +2609,38 @@ impl SceneRenderer {
         self.prepare_lights(render_world)?;
         self.prepare_render_instances(render_world, assets)?;
         let camera = options.camera.or(render_world.active_camera);
-        let clip = view_projection(camera, viewport.extent);
+        let steady_clip = view_projection(camera, viewport.extent);
+        let taa = options.debug_view == SceneDebugView::Lit
+            && render_world.antialiasing == Antialiasing::Taa;
+        // TAA moves the whole view by under a pixel each frame and blends
+        // the frames into smooth edges.
+        let clip = if taa {
+            self.temporal_frame = self.temporal_frame.wrapping_add(1);
+            let index = self.temporal_frame % 8 + 1;
+            let mut jitter = Matrix4::identity();
+            jitter[(0, 3)] = (halton(index, 2) - 0.5) * 2.0
+                / viewport.extent[0].max(1) as f32;
+            jitter[(1, 3)] = (halton(index, 3) - 0.5) * 2.0
+                / viewport.extent[1].max(1) as f32;
+            jitter * steady_clip
+        } else {
+            if let Some(history) = &mut self.temporal {
+                history.view = None;
+            }
+            steady_clip
+        };
+        // The projection alone turns stored depth back into distance.
+        let lens_depth = {
+            let lens = view_projection(
+                camera.map(|camera| ExtractedCamera {
+                    transform: Default::default(),
+                    ..camera
+                }),
+                viewport.extent,
+            );
+            [lens[(2, 2)], lens[(2, 3)], lens[(3, 2)], lens[(3, 3)]]
+        };
+        let cluster_range = cluster_depth_range(camera);
         let prepared = self.prepared_instances.as_ref().unwrap();
         let quality = resolve_quality(render_world.quality, &self.capabilities);
         let path = select_culling_path(
@@ -2471,7 +2712,13 @@ impl SceneRenderer {
         self.last_culling_path = path;
         self.prepare_materials(
             assets,
-            render_world.environment.map(|(texture, _)| texture),
+            render_world
+                .environment
+                .map(|(texture, _)| texture)
+                .into_iter()
+                .chain(light_cookies(render_world))
+                .chain(render_world.color_lut.map(|(texture, _)| texture))
+                .collect(),
         )?;
 
         let carry = self.prepared_physics.as_mut().unwrap().carry.take();
@@ -2577,7 +2824,7 @@ impl SceneRenderer {
                 lights.count,
                 lights.shadow.map_or(0, |(index, _)| index + 1),
                 options.debug_view as u32,
-                0,
+                lights.directional,
             ],
         };
         // The GPU paths leave `visibility` as the last CPU-culled frame's.
@@ -2654,22 +2901,64 @@ impl SceneRenderer {
                 shadow_size,
             )?;
         }
-        let light_view_projection = lights.shadow.map(|(_, view)| match view {
-            ShadowView::Directional(direction) => {
-                shadow_view_projection(eye, forward, direction, shadow_distance)
+        // A directional light renders one cascade per tile of a 2x2 atlas,
+        // a point light one cube face per tile of a 3x3 atlas; a spot light
+        // takes the whole map.
+        let (cascades, cascade_far, tiles) = match lights.shadow {
+            Some((_, ShadowView::Directional(direction))) => {
+                let tile_size = shadow_size / 2;
+                let mut near = 0.0;
+                let mut cascades = Vec::new();
+                let mut far = [0.0; 4];
+                for (index, end) in far.iter_mut().enumerate() {
+                    *end = cascade_end(index, shadow_distance);
+                    let (center, radius) = frustum_slice_sphere(
+                        &steady_clip,
+                        eye,
+                        forward,
+                        near,
+                        *end,
+                    );
+                    cascades.push(cascade_view_projection(
+                        center,
+                        radius,
+                        direction,
+                        shadow_distance,
+                        tile_size,
+                    ));
+                    near = *end;
+                }
+                (cascades, far, 2)
             }
-            ShadowView::Spot {
-                position,
-                direction,
-                outer_angle,
-                range,
-            } => spot_shadow_view_projection(
-                position,
-                direction,
-                outer_angle,
-                range,
+            Some((
+                _,
+                ShadowView::Spot {
+                    position,
+                    direction,
+                    outer_angle,
+                    range,
+                },
+            )) => (
+                vec![spot_shadow_view_projection(
+                    position,
+                    direction,
+                    outer_angle,
+                    range,
+                )],
+                [f32::MAX, 0.0, 0.0, 0.0],
+                1,
             ),
-        });
+            Some((_, ShadowView::Point { position, range })) => (
+                point_shadow_view_projections(position, range, shadow_size / 3),
+                [f32::MAX, 0.0, 0.0, 0.0],
+                3,
+            ),
+            None => (Vec::new(), [0.0; 4], 1),
+        };
+        let point_shadow = match lights.shadow {
+            Some((_, ShadowView::Point { position, .. })) => Some(position),
+            _ => None,
+        };
         // Refracting materials and screen-space reflections sample a copy
         // of the opaque scene, so the scene pass splits before blended
         // draws. Debug views skip it; Eco skips reflections.
@@ -2693,6 +2982,10 @@ impl SceneRenderer {
         let bloom = render_world
             .bloom
             .filter(|bloom| lit && effects.bloom && bloom.intensity > 0.0);
+        let auto_exposure = render_world.auto_exposure.filter(|_| lit);
+        if auto_exposure.is_none() {
+            self.exposure.reset();
+        }
         let grade = if lit {
             options
                 .grading
@@ -2701,11 +2994,59 @@ impl SceneRenderer {
         } else {
             crate::runtime::ColorGrading::default()
         };
+        // A camera screen's own grading replaces the scene's look, LUT
+        // included. A strip that is not N squares of N x N is skipped.
+        let color_lut = render_world
+            .color_lut
+            .filter(|(_, intensity)| {
+                lit && options.grading.is_none() && *intensity > 0.0
+            })
+            .and_then(|(handle, intensity)| {
+                let view =
+                    self.prepared_textures.get(&handle.key())?.view.clone()?;
+                let [width, height, _] = view.image().extent();
+                (height >= 2 && width == height * height)
+                    .then_some((view, intensity.min(1.0)))
+            });
         // Effects that read neighboring pixels sample a copy of the HDR
         // image, made after the render pass is split as for bloom.
-        let sampled = grade.chromatic_aberration > 0.0
+        let depth_of_field = render_world
+            .depth_of_field
+            .filter(|lens| lit && lens.blur > 0.0 && lens.focus_distance > 0.0);
+        let motion_blur = render_world
+            .motion_blur
+            .filter(|blur| lit && blur.intensity > 0.0);
+        // Maps this frame's clip space to last frame's; without a last
+        // frame nothing moved.
+        let reproject = self
+            .previous_clip
+            .filter(|_| motion_blur.is_some() || taa)
+            .and_then(|previous| Some(previous * steady_clip.try_inverse()?))
+            .unwrap_or_else(Matrix4::identity);
+        self.previous_clip =
+            (motion_blur.is_some() || taa).then_some(steady_clip);
+        let motion = self
+            .instance_allocator
+            .allocate_sized::<tonemap_fragment_shader::Motion>()
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+        *motion
+            .write()
+            .map_err(|error| SceneRenderError(error.to_string()))? =
+            tonemap_fragment_shader::Motion {
+                reproject: reproject.into(),
+                strength: motion_blur.map_or(0.0, |blur| blur.intensity),
+            };
+        let fxaa = lit && render_world.antialiasing == Antialiasing::Fxaa;
+        let sampled = fxaa
+            || taa
+            || grade.chromatic_aberration > 0.0
             || grade.color_bleed > 0.0
-            || grade.distortion > 0.0;
+            || grade.distortion > 0.0
+            || depth_of_field.is_some()
+            || motion_blur.is_some();
+        // Bloom, the copy and auto exposure read the finished HDR outside
+        // the render pass.
+        let post = bloom.is_some() || sampled || auto_exposure.is_some();
         let ambient_occlusion =
             render_world.ambient_occlusion.filter(|occlusion| {
                 lit && effects.ambient_occlusion
@@ -2730,9 +3071,6 @@ impl SceneRenderer {
             .write()
             .map_err(|error| SceneRenderError(error.to_string()))? =
             ShadowUpload {
-                light_view_projection: light_view_projection
-                    .unwrap_or_else(Matrix4::identity)
-                    .into(),
                 environment: {
                     let mut row = environment.as_ref().map_or(
                         [0.0; 4],
@@ -2796,7 +3134,60 @@ impl SceneRenderer {
                     0.0,
                     0.0,
                 ],
+                cascades: std::array::from_fn(|index| {
+                    cascades
+                        .get(index)
+                        .copied()
+                        .unwrap_or_else(Matrix4::identity)
+                        .into()
+                }),
+                cascade_far,
+                cascade_forward: match point_shadow {
+                    Some(position) => {
+                        [position[0], position[1], position[2], 0.0]
+                    }
+                    None => [
+                        forward[0],
+                        forward[1],
+                        forward[2],
+                        Vector3::from(eye).dot(&Vector3::from(forward)),
+                    ],
+                },
+                cascade_info: [
+                    cascades.len() as f32,
+                    tiles as f32,
+                    f32::from(u8::from(point_shadow.is_some())),
+                    0.0,
+                ],
+                cluster_view: [
+                    forward[0],
+                    forward[1],
+                    forward[2],
+                    Vector3::from(eye).dot(&Vector3::from(forward)),
+                ],
+                cluster_depth: [
+                    cluster_range[0],
+                    (cluster_range[1] / cluster_range[0]).ln(),
+                    0.0,
+                    0.0,
+                ],
             };
+        let cluster_list = build_light_clusters(
+            &self.prepared_lights.as_ref().unwrap().local,
+            &clip,
+            eye,
+            forward,
+            cluster_range,
+        );
+        let light_clusters = self.frame_contexts[self.frame_index]
+            .transient
+            .allocate_slice::<u32>(cluster_list.len() as DeviceSize)
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+        self.counters.upload_bytes += light_clusters.size();
+        light_clusters
+            .write()
+            .map_err(|error| SceneRenderError(error.to_string()))?
+            .copy_from_slice(&cluster_list);
         let shadow_set = DescriptorSet::new(
             self.descriptor_allocator.clone(),
             active.pipeline.layout().set_layouts()[2].clone(),
@@ -2852,6 +3243,27 @@ impl SceneRenderer {
                     };
                     WriteDescriptorSet::image_view_sampler(6, view, sampler)
                 },
+                WriteDescriptorSet::buffer(7, light_clusters),
+                WriteDescriptorSet::image_view_sampler_array(8, 0, {
+                    let cookies = self
+                        .prepared_lights
+                        .as_ref()
+                        .map_or(&[][..], |lights| &lights.cookies);
+                    (0..MAX_LIGHT_COOKIES).map(|slot| {
+                        cookies
+                            .get(slot)
+                            .and_then(|cookie| {
+                                let prepared = self
+                                    .prepared_textures
+                                    .get(&cookie.key())?;
+                                Some((
+                                    prepared.view.clone()?,
+                                    prepared.sampler.clone(),
+                                ))
+                            })
+                            .unwrap_or_else(|| self.white_texture.clone())
+                    })
+                }),
             ],
             [],
         )
@@ -3598,10 +4010,17 @@ impl SceneRenderer {
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?;
-        if let Some(light_view_projection) = light_view_projection {
+        let tile_size = shadow_size / tiles;
+        for (index, light_view_projection) in cascades.iter().enumerate() {
             // ponytail: masked casters cast as fully opaque and blended ones
             // not at all; add an alpha-tested shadow shader when scenes need
             // foliage shadows.
+            // ponytail: every cascade draws every caster; cull per cascade
+            // when shadow draws show up in profiles (Eco could use 2).
+            let offset = [
+                (index as u32 % tiles) * tile_size,
+                (index as u32 / tiles) * tile_size,
+            ];
             commands
                 .bind_pipeline_graphics(self.shadow_pipeline.clone())
                 .map_err(|error| SceneRenderError(error.to_string()))?
@@ -3616,7 +4035,7 @@ impl SceneRenderer {
                     active.pipeline.layout().clone(),
                     0,
                     CameraUniform {
-                        view_projection: light_view_projection.into(),
+                        view_projection: (*light_view_projection).into(),
                         ..camera
                     },
                 )
@@ -3624,8 +4043,8 @@ impl SceneRenderer {
                 .set_viewport(
                     0,
                     [Viewport {
-                        offset: [0.0, 0.0],
-                        extent: [shadow_size as f32; 2],
+                        offset: [offset[0] as f32, offset[1] as f32],
+                        extent: [tile_size as f32; 2],
                         depth_range: 0.0..=1.0,
                     }]
                     .into_iter()
@@ -3635,8 +4054,8 @@ impl SceneRenderer {
                 .set_scissor(
                     0,
                     [Scissor {
-                        offset: [0, 0],
-                        extent: [shadow_size; 2],
+                        offset,
+                        extent: [tile_size; 2],
                     }]
                     .into_iter()
                     .collect(),
@@ -3896,23 +4315,22 @@ impl SceneRenderer {
         // Frames that split for the scene color copy, or end the pass for
         // bloom, keep HDR and depth after the draws and continue them in the
         // late pass.
-        let (main_pass, clear_values) =
-            match (occlusion, split || bloom.is_some()) {
-                (true, false) => {
-                    (active.late_render_pass.clone(), clears(None, None))
-                }
-                (true, true) => {
-                    (active.middle_render_pass.clone(), clears(None, None))
-                }
-                (false, false) => (
-                    active.render_pass.clone(),
-                    clears(background, Some(1.0_f32.into())),
-                ),
-                (false, true) => (
-                    active.early_render_pass.clone(),
-                    clears(background, Some(1.0_f32.into())),
-                ),
-            };
+        let (main_pass, clear_values) = match (occlusion, split || post) {
+            (true, false) => {
+                (active.late_render_pass.clone(), clears(None, None))
+            }
+            (true, true) => {
+                (active.middle_render_pass.clone(), clears(None, None))
+            }
+            (false, false) => (
+                active.render_pass.clone(),
+                clears(background, Some(1.0_f32.into())),
+            ),
+            (false, true) => (
+                active.early_render_pass.clone(),
+                clears(background, Some(1.0_f32.into())),
+            ),
+        };
         commands
             .begin_render_pass(
                 RenderPassBeginInfo {
@@ -3993,7 +4411,7 @@ impl SceneRenderer {
                 .begin_render_pass(
                     RenderPassBeginInfo {
                         // Bloom ends this pass again after the blended draws.
-                        render_pass: if bloom.is_some() || sampled {
+                        render_pass: if post {
                             active.middle_render_pass.clone()
                         } else {
                             active.late_render_pass.clone()
@@ -4134,7 +4552,7 @@ impl SceneRenderer {
         // The whole target is tone mapped, so area outside the viewport shows
         // the background like the old clear did.
         passes.end(&mut commands)?;
-        if bloom.is_some() || sampled {
+        if post {
             // Bloom samples the finished HDR outside the render pass, then
             // an empty late pass continues to tone mapping.
             commands
@@ -4156,6 +4574,16 @@ impl SceneRenderer {
                 count_work(&recorded, 0, dispatches, 0);
                 passes.end(&mut commands)?;
             }
+            if let Some(settings) = auto_exposure {
+                passes.begin(&mut commands, FramePass::Exposure)?;
+                self.exposure.record(
+                    &mut commands,
+                    &self.post_pipelines,
+                    &settings,
+                )?;
+                count_work(&recorded, 0, 1, 0);
+                passes.end(&mut commands)?;
+            }
             if sampled {
                 passes.begin(&mut commands, FramePass::SceneColor)?;
                 commands
@@ -4164,6 +4592,65 @@ impl SceneRenderer {
                         self.scene_color.image().clone(),
                     ))
                     .map_err(|error| SceneRenderError(error.to_string()))?;
+                if depth_of_field.is_some() || motion_blur.is_some() || taa {
+                    // Mip 0 of the pyramid is the depth the lens, motion
+                    // blur and TAA read.
+                    let (set, size) = &self.depth_pyramid.mips[0];
+                    let pipeline = &self.depth_pyramid_copy_pipeline;
+                    commands
+                        .bind_pipeline_compute(pipeline.clone())
+                        .map_err(|error| SceneRenderError(error.to_string()))?
+                        .bind_descriptor_sets(
+                            PipelineBindPoint::Compute,
+                            pipeline.layout().clone(),
+                            0,
+                            set.clone(),
+                        )
+                        .map_err(|error| SceneRenderError(error.to_string()))?;
+                    count_work(&recorded, 0, 1, 0);
+                    unsafe {
+                        commands
+                            .dispatch([
+                                size[0].div_ceil(8),
+                                size[1].div_ceil(8),
+                                1,
+                            ])
+                            .map_err(|error| {
+                                SceneRenderError(error.to_string())
+                            })?;
+                    }
+                }
+                if taa {
+                    let history = match &mut self.temporal {
+                        Some(history)
+                            if Arc::ptr_eq(
+                                &history.source,
+                                &self.scene_color,
+                            ) =>
+                        {
+                            history
+                        }
+                        stale => stale.insert(TemporalHistory::new(
+                            &self.memory_allocator,
+                            &self.descriptor_allocator,
+                            &self.post_pipelines,
+                            &self.scene_color,
+                            &self.depth_pyramid.view,
+                        )?),
+                    };
+                    history.record(
+                        &mut commands,
+                        &self.post_pipelines,
+                        reproject.into(),
+                        [
+                            viewport.offset[0],
+                            viewport.offset[1],
+                            viewport.extent[0],
+                            viewport.extent[1],
+                        ],
+                    )?;
+                    count_work(&recorded, 0, 1, 0);
+                }
                 passes.end(&mut commands)?;
             }
             commands
@@ -4192,6 +4679,34 @@ impl SceneRenderer {
                 active.tonemap_pipeline.layout().clone(),
                 0,
                 self.tonemap_set.clone(),
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                active.tonemap_pipeline.layout().clone(),
+                1,
+                DescriptorSet::new(
+                    self.descriptor_allocator.clone(),
+                    active.tonemap_pipeline.layout().set_layouts()[1].clone(),
+                    [
+                        WriteDescriptorSet::image_view_sampler(
+                            0,
+                            color_lut.as_ref().map_or_else(
+                                || self.white_texture.0.clone(),
+                                |(view, ..)| view.clone(),
+                            ),
+                            self.scene_color_sampler.clone(),
+                        ),
+                        WriteDescriptorSet::image_view_sampler(
+                            1,
+                            self.depth_pyramid.view.clone(),
+                            self.depth_pyramid.sampler.clone(),
+                        ),
+                        WriteDescriptorSet::buffer(2, motion),
+                    ],
+                    [],
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?,
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
             .push_constants(
@@ -4235,7 +4750,16 @@ impl SceneRenderer {
                             * render_world.fixed_delta_seconds,
                         (render_world.physics_tick % (1 << 24)) as f32,
                     ],
-                    sampled: u32::from(sampled),
+                    flags: u32::from(sampled)
+                        | u32::from(auto_exposure.is_some()) << 1
+                        | u32::from(fxaa) << 2,
+                    lut: color_lut
+                        .as_ref()
+                        .map_or(0.0, |(_, intensity)| *intensity),
+                    focus: depth_of_field
+                        .map_or(0.0, |lens| lens.focus_distance),
+                    blur: depth_of_field.map_or(0.0, |lens| lens.blur),
+                    depth: lens_depth,
                 },
             )
             .map_err(|error| SceneRenderError(error.to_string()))?
@@ -4330,7 +4854,108 @@ impl SceneRenderer {
         commands
             .end_render_pass(Default::default())
             .map_err(|error| SceneRenderError(error.to_string()))?;
-        if let Some((upscaled, region)) = self.upscale_to.take() {
+        let upscale = self.upscale_to.take();
+        let sharp = upscale.as_ref().is_some_and(|(_, region)| {
+            region.is_none()
+                && !self.upscale_nearest
+                && self.upscale_sharpness > 0.0
+        });
+        if let Some((upscaled, _)) = upscale.as_ref().filter(|_| sharp) {
+            let format = upscaled.format();
+            let (render_pass, pipeline) = match &self.sharp_upscale {
+                Some((pass, pipeline))
+                    if pass.attachments()[0].format == format =>
+                {
+                    (pass.clone(), pipeline.clone())
+                }
+                _ => {
+                    let built = create_sharp_upscale(&self.queue, format)?;
+                    self.sharp_upscale = Some(built.clone());
+                    built
+                }
+            };
+            // ponytail: a framebuffer per frame; cache per target view if
+            // its creation shows up in recording time.
+            let framebuffer = Framebuffer::new(
+                render_pass,
+                FramebufferCreateInfo {
+                    attachments: vec![upscaled.clone()],
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+            let [width, height, _] = upscaled.image().extent();
+            let set = DescriptorSet::new(
+                self.descriptor_allocator.clone(),
+                pipeline.layout().set_layouts()[0].clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    target.clone(),
+                    self.scene_color_sampler.clone(),
+                )],
+                [],
+            )
+            .map_err(|error| SceneRenderError(error.to_string()))?;
+            commands
+                .begin_render_pass(
+                    RenderPassBeginInfo {
+                        clear_values: vec![None],
+                        ..RenderPassBeginInfo::framebuffer(framebuffer)
+                    },
+                    SubpassBeginInfo {
+                        contents: SubpassContents::Inline,
+                        ..Default::default()
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_pipeline_graphics(pipeline.clone())
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .set_viewport(
+                    0,
+                    [Viewport {
+                        offset: [0.0, 0.0],
+                        extent: [width as f32, height as f32],
+                        depth_range: 0.0..=1.0,
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .set_scissor(
+                    0,
+                    [Scissor {
+                        offset: [0, 0],
+                        extent: [width, height],
+                    }]
+                    .into_iter()
+                    .collect(),
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Graphics,
+                    pipeline.layout().clone(),
+                    0,
+                    set,
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?
+                .push_constants(
+                    pipeline.layout().clone(),
+                    0,
+                    sharp_upscale_shader::Params {
+                        inv_target: [1.0 / width as f32, 1.0 / height as f32],
+                        sharpness: self.upscale_sharpness,
+                    },
+                )
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+            unsafe {
+                commands
+                    .draw(3, 1, 0, 0)
+                    .map_err(|error| SceneRenderError(error.to_string()))?;
+            }
+            commands
+                .end_render_pass(Default::default())
+                .map_err(|error| SceneRenderError(error.to_string()))?;
+        } else if let Some((upscaled, region)) = upscale {
             let mut info = BlitImageInfo {
                 filter: if self.upscale_nearest {
                     Filter::Nearest
@@ -4470,7 +5095,14 @@ impl SceneRenderer {
         // at the probe's viewpoint would not match the reflected surface.
         // Fog stays: it is part of what the surroundings look like.
         world.bloom = None;
+        world.auto_exposure = None;
         world.ambient_occlusion = None;
+        world.depth_of_field = None;
+        world.motion_blur = None;
+        // Each face would blend in the face before it.
+        if world.antialiasing == Antialiasing::Taa {
+            world.antialiasing = Antialiasing::Off;
+        }
         // Occlusion would test each face against the previous face's depth.
         world.culling = CullingMode::Frustum;
         let device = self.queue.device().clone();
@@ -4647,11 +5279,11 @@ impl SceneRenderer {
     /// Uploads the base-color textures of the materials in use. Textures
     /// still loading are skipped and sample white until they publish.
     /// Uploads every map of the materials in use and builds their set 1.
-    /// The environment map uploads with them.
+    /// The environment map and light cookies (`lit`) upload with them.
     fn prepare_materials(
         &mut self,
         assets: &AssetServer,
-        environment: Option<Handle<TextureAsset>>,
+        lit: Vec<Handle<TextureAsset>>,
     ) -> Result<(), SceneRenderError> {
         let materials = self
             .prepared_instances
@@ -4677,7 +5309,7 @@ impl SceneRenderer {
             .iter()
             .filter_map(|material| assets.materials.get(*material))
             .flat_map(|material| slots(material).into_iter().flatten())
-            .chain(environment)
+            .chain(lit)
             .collect::<Vec<_>>();
         for &handle in &used {
             let revision = assets.textures.revision(handle).unwrap_or(0);
@@ -4836,13 +5468,25 @@ impl SceneRenderer {
                         / crate::runtime::DirectionalLight::LUX_PER_UNIT,
                 ],
                 spot_angles: [0.0; 4],
+                cookie: [0.0, 0.0, 0.0, -1.0],
             });
         }
+        // A point light shadows only when no directional or spot light does.
+        let mut point_shadow = None;
         for extracted in &render_world.point_lights {
             if uploads.len() == budget {
                 break;
             }
             let position = light_position(extracted.transform.matrix);
+            if point_shadow.is_none() && extracted.light.shadows {
+                point_shadow = Some((
+                    uploads.len() as u32,
+                    ShadowView::Point {
+                        position,
+                        range: extracted.light.range.max(0.01),
+                    },
+                ));
+            }
             uploads.push(LightUpload {
                 position_kind: [position[0], position[1], position[2], 1.0],
                 direction_range: [
@@ -4857,9 +5501,11 @@ impl SceneRenderer {
                     extracted.light.color[2],
                     extracted.light.intensity / 1_000.0,
                 ],
-                spot_angles: [0.0; 4],
+                spot_angles: [0.0, 0.0, extracted.light.radius.max(0.0), 0.0],
+                cookie: [0.0, 0.0, 0.0, -1.0],
             });
         }
+        let cookies = light_cookies(render_world);
         for extracted in &render_world.spot_lights {
             if uploads.len() == budget {
                 break;
@@ -4894,11 +5540,38 @@ impl SceneRenderer {
                 spot_angles: [
                     extracted.light.inner_angle.cos(),
                     extracted.light.outer_angle.cos(),
-                    0.0,
-                    0.0,
+                    extracted.light.radius.max(0.0),
+                    extracted.light.outer_angle.tan(),
                 ],
+                cookie: {
+                    let [x, y, z, _] = extracted.transform.matrix[0];
+                    let length = (x * x + y * y + z * z).sqrt().max(1e-6);
+                    let slot = extracted.cookie.and_then(|cookie| {
+                        cookies.iter().position(|&slot| slot == cookie)
+                    });
+                    [
+                        x / length,
+                        y / length,
+                        z / length,
+                        slot.map_or(-1.0, |slot| slot as f32),
+                    ]
+                },
             });
         }
+        let shadow = shadow.or(point_shadow);
+        let directional = uploads
+            .iter()
+            .take_while(|upload| upload.position_kind[3] == 0.0)
+            .count() as u32;
+        let local = uploads
+            .iter()
+            .enumerate()
+            .skip(directional as usize)
+            .map(|(index, upload)| {
+                let [x, y, z, _] = upload.position_kind;
+                (index as u32, [x, y, z, upload.direction_range[3]])
+            })
+            .collect();
         self.capacity.dropped_lights = render_world.directional_lights.len()
             + render_world.point_lights.len()
             + render_world.spot_lights.len()
@@ -4953,6 +5626,9 @@ impl SceneRenderer {
             ambient,
             ground_ambient,
             shadow,
+            directional,
+            local,
+            cookies,
         });
         Ok(())
     }
@@ -5983,6 +6659,12 @@ impl SceneRenderer {
                 &self.post_pipelines,
                 &self.hdr,
             )?;
+            self.exposure = ExposureMeter::new(
+                &self.memory_allocator,
+                &self.descriptor_allocator,
+                &self.post_pipelines,
+                &self.hdr,
+            )?;
             self.occlusion =
                 OcclusionTargets::new(&self.memory_allocator, extent)?;
             self.depth_prepass_framebuffer = create_depth_prepass_framebuffer(
@@ -5994,6 +6676,7 @@ impl SceneRenderer {
                 &self.passes.tonemap_pipeline,
                 &self.hdr,
                 &self.bloom_chain,
+                &self.exposure,
                 &self.scene_color,
                 &self.scene_color_sampler,
             )?;
@@ -6914,6 +7597,7 @@ fn create_tonemap_set(
     pipeline: &Arc<GraphicsPipeline>,
     hdr: &Arc<ImageView>,
     bloom: &BloomChain,
+    exposure: &ExposureMeter,
     scene_color: &Arc<ImageView>,
     scene_color_sampler: &Arc<Sampler>,
 ) -> Result<Arc<DescriptorSet>, SceneRenderError> {
@@ -6932,6 +7616,7 @@ fn create_tonemap_set(
                 scene_color.clone(),
                 scene_color_sampler.clone(),
             ),
+            WriteDescriptorSet::buffer(3, exposure.buffer.clone()),
         ],
         [],
     )
@@ -7271,6 +7956,82 @@ fn create_tonemap_pipeline(
         },
     )
     .map_err(|error| SceneRenderError(error.to_string()))
+}
+
+/// Render pass into a `format` target and the pipeline of the sharp
+/// upscale drawn in it.
+fn create_sharp_upscale(
+    queue: &Arc<Queue>,
+    format: Format,
+) -> Result<(Arc<RenderPass>, Arc<GraphicsPipeline>), SceneRenderError> {
+    let error = |error: &dyn Display| SceneRenderError(error.to_string());
+    let device = queue.device().clone();
+    let render_pass = vulkano::single_pass_renderpass!(
+        device.clone(),
+        attachments: {
+            color: {
+                format: format,
+                samples: 1,
+                load_op: DontCare,
+                store_op: Store,
+            }
+        },
+        pass: {
+            color: [color],
+            depth_stencil: {}
+        }
+    )
+    .map_err(|e| error(&e))?;
+    name_object(&*render_pass, "Sharp upscale");
+    let entry = |module: Result<Arc<vulkano::shader::ShaderModule>, _>| {
+        module
+            .map_err(|e: vulkano::Validated<vulkano::VulkanError>| error(&e))?
+            .entry_point("main")
+            .ok_or_else(|| {
+                SceneRenderError("sharp upscale entry point is missing".into())
+            })
+    };
+    let stages = [
+        PipelineShaderStageCreateInfo::new(entry(
+            tonemap_vertex_shader::load(device.clone()),
+        )?),
+        PipelineShaderStageCreateInfo::new(entry(sharp_upscale_shader::load(
+            device.clone(),
+        ))?),
+    ];
+    let layout = PipelineLayout::new(
+        device.clone(),
+        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
+            .into_pipeline_layout_create_info(device.clone())
+            .map_err(|e| error(&e))?,
+    )
+    .map_err(|e| error(&e))?;
+    let subpass = Subpass::from(render_pass.clone(), 0)
+        .ok_or_else(|| SceneRenderError("sharp upscale subpass".into()))?;
+    let pipeline = GraphicsPipeline::new(
+        device,
+        None,
+        GraphicsPipelineCreateInfo {
+            stages: stages.into_iter().collect(),
+            vertex_input_state: Some(Default::default()),
+            input_assembly_state: Some(InputAssemblyState::default()),
+            viewport_state: Some(ViewportState::default()),
+            rasterization_state: Some(RasterizationState::default()),
+            multisample_state: Some(MultisampleState::default()),
+            color_blend_state: Some(ColorBlendState::with_attachment_states(
+                1,
+                ColorBlendAttachmentState::default(),
+            )),
+            dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                .into_iter()
+                .collect(),
+            subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+            ..GraphicsPipelineCreateInfo::layout(layout)
+        },
+    )
+    .map_err(|e| error(&e))?;
+    name_object(&*pipeline, "Sharp upscale");
+    Ok((render_pass, pipeline))
 }
 
 /// Sky fog over the background in subpass 0: drawn at the far plane with
@@ -8085,6 +8846,18 @@ fn compile_condition_shader(
     create_compute_pipeline(queue, module).map_err(|error| error.0)
 }
 
+/// Element `index` of the Halton sequence in `base`, in [0, 1).
+fn halton(mut index: u32, base: u32) -> f32 {
+    let mut fraction = 1.0;
+    let mut value = 0.0;
+    while index > 0 {
+        fraction /= base as f32;
+        value += fraction * (index % base) as f32;
+        index /= base;
+    }
+    value
+}
+
 fn view_projection(
     camera: Option<ExtractedCamera>,
     extent: [u32; 2],
@@ -8153,41 +8926,99 @@ fn camera_eye_forward(camera: Option<ExtractedCamera>) -> ([f32; 3], [f32; 3]) {
     })
 }
 
-/// Orthographic light-space transform whose box covers the first
-/// `distance` in front of the camera. Casters up to another `distance`
-/// toward the light still land in the map.
-// ponytail: one cascade and no texel snapping, so far shadows are coarse and
-// edges shimmer as the camera moves; add cascades and snapping when scenes
-// show it.
-fn shadow_view_projection(
+/// Directional shadow cascades, one per tile of a 2x2 shadow map atlas.
+const SHADOW_CASCADES: usize = 4;
+/// Light views the shadow upload holds: the six cube faces of a point light.
+const SHADOW_VIEWS: usize = 6;
+
+/// Camera depth where cascade `index` ends: mostly logarithmic splits, so
+/// the near cascades are small and sharp, blended with even ones so the
+/// far cascades are not too thin.
+fn cascade_end(index: usize, distance: f32) -> f32 {
+    let near = 0.5_f32.min(distance);
+    let t = (index + 1) as f32 / SHADOW_CASCADES as f32;
+    let logarithmic = near * (distance / near).powf(t);
+    0.75 * logarithmic + 0.25 * distance * t
+}
+
+/// Bounding sphere of the camera frustum between depths `near` and `far`
+/// along `forward`. The radius does not change as the camera turns, so the
+/// cascade's texel size stays fixed.
+fn frustum_slice_sphere(
+    clip: &Matrix4<f32>,
     eye: [f32; 3],
     forward: [f32; 3],
+    near: f32,
+    far: f32,
+) -> (Point3<f32>, f32) {
+    let inverse = clip.try_inverse().unwrap_or_else(Matrix4::identity);
+    let eye = Point3::from(eye);
+    let forward = Vector3::from(forward);
+    let depth = |point: &Point3<f32>| (point - eye).dot(&forward);
+    let mut corners = Vec::with_capacity(8);
+    for [x, y] in [[-1.0, -1.0], [1.0, -1.0], [-1.0, 1.0], [1.0, 1.0]] {
+        let start = inverse.transform_point(&Point3::new(x, y, 0.0));
+        let end = inverse.transform_point(&Point3::new(x, y, 1.0));
+        let (start_depth, end_depth) = (depth(&start), depth(&end));
+        for slice in [near, far] {
+            let t = ((slice - start_depth)
+                / (end_depth - start_depth).max(f32::EPSILON))
+            .clamp(0.0, 1.0);
+            corners.push(start + (end - start) * t);
+        }
+    }
+    let center = Point3::from(
+        corners
+            .iter()
+            .map(|corner| corner.coords)
+            .sum::<Vector3<f32>>()
+            / corners.len() as f32,
+    );
+    let radius = corners
+        .iter()
+        .map(|corner| (corner - center).norm())
+        .fold(0.0, f32::max)
+        .max(0.01);
+    (center, radius)
+}
+
+/// Orthographic light-space transform of one cascade: a box around the
+/// sphere, moved in whole texels so shadow edges do not shimmer as the
+/// camera moves. Casters up to `reach` further toward the light still land
+/// in the map.
+fn cascade_view_projection(
+    center: Point3<f32>,
+    radius: f32,
     direction: [f32; 3],
-    distance: f32,
+    reach: f32,
+    texels: u32,
 ) -> Matrix4<f32> {
-    let radius = distance * 0.5;
-    let direction = Vector3::from(direction);
-    let center = Point3::from(eye) + Vector3::from(forward) * radius;
-    let light_eye = center - direction * (radius + distance);
+    let direction = Vector3::from(direction).normalize();
     let up = if direction.y.abs() > 0.99 {
         Vector3::z()
     } else {
         Vector3::y()
     };
-    let view = Matrix4::look_at_rh(&light_eye, &center, &up);
+    let view =
+        Matrix4::look_at_rh(&Point3::origin(), &Point3::from(direction), &up);
+    let light = view.transform_point(&center);
+    let texel = 2.0 * radius / texels.max(1) as f32;
+    let x = (light.x / texel).round() * texel;
+    let y = (light.y / texel).round() * texel;
+    // The view looks down -z, so distance from the light plane is -z.
     let projection = Orthographic3::new(
-        -radius,
-        radius,
-        -radius,
-        radius,
-        0.0,
-        2.0 * radius + distance,
+        x - radius,
+        x + radius,
+        y - radius,
+        y + radius,
+        -light.z - radius - reach,
+        -light.z + radius,
     )
     .to_homogeneous();
     vulkan_clip_correction() * projection * view
 }
 
-/// What the one shadow map looks along.
+/// What the shadow map looks along.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ShadowView {
     /// Orthographic, along this world direction, around the camera.
@@ -8199,6 +9030,37 @@ enum ShadowView {
         outer_angle: f32,
         range: f32,
     },
+    /// Six perspective cube faces around the point light.
+    Point { position: [f32; 3], range: f32 },
+}
+
+/// Light matrices of a point light's cube faces, in the order +X, -X, +Y,
+/// -Y, +Z, -Z the fragment shader picks them by.
+fn point_shadow_view_projections(
+    position: [f32; 3],
+    range: f32,
+    texels: u32,
+) -> Vec<Matrix4<f32>> {
+    let eye = Point3::from(position);
+    // Each face reaches two texels past 90 degrees, so the edge PCF taps
+    // stay on the face's own tile.
+    let fov = 2.0 * (1.0 + 4.0 / texels.max(8) as f32).atan();
+    let near = (range * 0.002).max(0.02);
+    let projection = Perspective3::new(1.0, fov, near, range).to_homogeneous();
+    [
+        (Vector3::x(), Vector3::y()),
+        (-Vector3::x(), Vector3::y()),
+        (Vector3::y(), Vector3::z()),
+        (-Vector3::y(), Vector3::z()),
+        (Vector3::z(), Vector3::y()),
+        (-Vector3::z(), Vector3::y()),
+    ]
+    .into_iter()
+    .map(|(direction, up)| {
+        let view = Matrix4::look_at_rh(&eye, &(eye + direction), &up);
+        vulkan_clip_correction() * projection * view
+    })
+    .collect()
 }
 
 /// Perspective light matrix covering a spot light's cone out to its range.
@@ -8400,7 +9262,10 @@ pub fn scene_sample_count(
 ) -> u32 {
     let wanted = match antialiasing {
         Antialiasing::Auto if msaa_enabled(profile) => 4,
-        Antialiasing::Auto | Antialiasing::Off => 1,
+        Antialiasing::Auto
+        | Antialiasing::Off
+        | Antialiasing::Fxaa
+        | Antialiasing::Taa => 1,
         Antialiasing::Msaa2 => 2,
         Antialiasing::Msaa4 => 4,
     };
@@ -8685,13 +9550,13 @@ struct Light {
     vec4 direction_range;
     vec4 color_intensity;
     vec4 spot_angles;
+    vec4 cookie;
 };
 layout(set = 0, binding = 2) readonly buffer Lights {
     Light data[];
 } lights;
 layout(set = 2, binding = 0) uniform sampler2DShadow shadow_map;
 layout(set = 2, binding = 1) readonly buffer Shadow {
-    mat4 light_view_projection;
     vec4 environment;
     vec4 scene_color;
     vec4 viewport;
@@ -8700,6 +9565,12 @@ layout(set = 2, binding = 1) readonly buffer Shadow {
     vec4 fog;
     vec4 fog_shape;
     vec4 ambient_occlusion;
+    mat4 cascades[6];
+    vec4 cascade_far;
+    vec4 cascade_forward;
+    vec4 cascade_info;
+    vec4 cluster_view;
+    vec4 cluster_depth;
 } shadow;
 layout(set = 2, binding = 2) uniform sampler2D environment_map;
 layout(set = 2, binding = 3) uniform sampler2D scene_color;
@@ -8710,6 +9581,22 @@ layout(set = 2, binding = 5) uniform sampler2DArray probe_maps;
 // Screen-space ambient occlusion per target pixel when
 // shadow.ambient_occlusion.x is 1.
 layout(set = 2, binding = 6) uniform sampler2D ambient_occlusion;
+// Per light cluster an (offset, count) pair, then the light indices; see
+// `build_light_clusters`.
+layout(set = 2, binding = 7) readonly buffer Clusters {
+    uint data[];
+} clusters;
+// Spot light cookie images; Light.cookie.w picks one. Matches
+// MAX_LIGHT_COOKIES.
+layout(set = 2, binding = 8) uniform sampler2D cookies[4];
+// The cookie image in `slot` at `uv`. Constant indices only: the slot is
+// not uniform across a draw.
+vec3 cookie_at(int slot, vec2 uv) {
+    if (slot == 0) return texture(cookies[0], uv).rgb;
+    if (slot == 1) return texture(cookies[1], uv).rgb;
+    if (slot == 2) return texture(cookies[2], uv).rgb;
+    return texture(cookies[3], uv).rgb;
+}
 #include "fog.glsl"
 // 0 opaque, 1 blended, 2 screen-space reflection overlay on opaque surfaces.
 layout(constant_id = 0) const uint PASS = 0u;
@@ -8854,14 +9741,44 @@ vec4 trace_reflection(vec3 direction, float roughness) {
     return vec4(0.0);
 }
 float shadow_factor(vec3 surface_normal) {
-    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    // Directional lights pick the first cascade that reaches this depth,
+    // point lights the cube face along the major axis away from the light;
+    // each view is one tile of the atlas.
+    int count = int(shadow.cascade_info.x);
+    int tiles = int(shadow.cascade_info.y);
+    int cascade = 0;
+    if (count == 0) {
+        return 1.0;
+    }
+    if (shadow.cascade_info.z > 0.5) {
+        vec3 away = v_world_position - shadow.cascade_forward.xyz;
+        vec3 size = abs(away);
+        if (size.x >= size.y && size.x >= size.z) {
+            cascade = away.x > 0.0 ? 0 : 1;
+        } else if (size.y >= size.z) {
+            cascade = away.y > 0.0 ? 2 : 3;
+        } else {
+            cascade = away.z > 0.0 ? 4 : 5;
+        }
+    } else {
+        float depth = dot(v_world_position, shadow.cascade_forward.xyz)
+            - shadow.cascade_forward.w;
+        while (cascade < count - 1 && depth > shadow.cascade_far[cascade]) {
+            cascade += 1;
+        }
+        if (depth > shadow.cascade_far[count - 1]) {
+            return 1.0;
+        }
+    }
+    // One texel in the cascade's own 0..1 coordinates.
+    vec2 texel = float(tiles) / vec2(textureSize(shadow_map, 0));
     // Normal offset: sample from two shadow texels off the surface. The PCF
     // taps reach one texel sideways, where a sloped surface's own depth is
     // nearer the light; without the offset it shadows itself in stripes.
     // Row 0 of the light matrix scales world units to clip x; dividing by
     // w (1 for the orthographic sun, the distance for a spot light) gives
     // the texel size at this surface.
-    mat4 light = shadow.light_view_projection;
+    mat4 light = shadow.cascades[cascade];
     vec4 surface_clip = light * vec4(v_world_position, 1.0);
     if (surface_clip.w <= 0.0) {
         return 1.0;
@@ -8875,16 +9792,18 @@ float shadow_factor(vec3 surface_normal) {
         return 1.0;
     }
     vec2 uv = coords.xy * 0.5 + 0.5;
+    vec2 tile = vec2(cascade % tiles, cascade / tiles);
+    // Taps stay half a texel inside the tile, off its neighbours.
+    #define SHADOW_TAP(offset) texture(shadow_map, vec3( \
+        (tile + clamp(uv + (offset) * texel, texel * 0.5, 1.0 - texel * 0.5)) \
+            / float(tiles), coords.z))
     if (shadow.ambient_occlusion.y > 0.5) {
-        return texture(shadow_map, vec3(uv, coords.z));
+        return SHADOW_TAP(vec2(0.0));
     }
     float lit = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            lit += texture(
-                shadow_map,
-                vec3(uv + vec2(x, y) * texel, coords.z)
-            );
+            lit += SHADOW_TAP(vec2(x, y));
         }
     }
     return lit / 9.0;
@@ -8990,16 +9909,38 @@ void main() {
             * diffuse_color * (1.0 - env_fresnel)
         + reflection * env_fresnel)
         * occlusion;
-    // ponytail: every fragment loops over every uploaded light, bounded by
-    // the quality profile's light budget; add clustered or tiled culling if
-    // scenes need more local lights than the budget.
-    for (uint index = 0; index < camera.light_info.x; ++index) {
+    // Directional lights (the first light_info.w) light every pixel; point
+    // and spot lights come from this pixel's cluster.
+    vec2 cell = (gl_FragCoord.xy - shadow.viewport.xy) / shadow.viewport.zw;
+    uvec2 tile = min(uvec2(max(cell, 0.0) * vec2(16.0, 9.0)), uvec2(15u, 8u));
+    float view_depth = dot(v_world_position, shadow.cluster_view.xyz)
+        - shadow.cluster_view.w;
+    uint slice = view_depth <= shadow.cluster_depth.x ? 0u : min(
+        uint(log(view_depth / shadow.cluster_depth.x)
+            / shadow.cluster_depth.y * 24.0),
+        23u
+    );
+    uint cluster = (slice * 9u + tile.y) * 16u + tile.x;
+    uint cluster_first = clusters.data[2u * cluster];
+    uint directional = camera.light_info.w;
+    uint light_count = directional + clusters.data[2u * cluster + 1u];
+    for (uint step = 0; step < light_count; ++step) {
+        uint index = step < directional
+            ? step
+            : clusters.data[cluster_first + step - directional];
         Light light = lights.data[index];
         float kind = light.position_kind.w;
         vec3 to_light;
         float attenuation = 1.0;
+        vec3 tint = vec3(1.0);
+        // Sphere lights light specular from the point of the sphere
+        // nearest the reflection ray, with the lobe widened to keep its
+        // energy (Karis 2013, representative point).
+        vec3 specular_dir;
+        float lobe_energy = 1.0;
         if (kind < 0.5) {
             to_light = normalize(-light.direction_range.xyz);
+            specular_dir = to_light;
         } else {
             vec3 delta = light.position_kind.xyz - v_world_position;
             float distance_to_light = length(delta);
@@ -9012,16 +9953,38 @@ void main() {
                 1.0
             );
             attenuation = range_fade * range_fade;
+            float source_radius = light.spot_angles.z;
+            specular_dir = to_light;
+            if (source_radius > 0.0) {
+                vec3 to_ray = dot(delta, reflected) * reflected - delta;
+                vec3 nearest = delta + to_ray
+                    * clamp(source_radius / max(length(to_ray), 0.0001),
+                        0.0, 1.0);
+                specular_dir = normalize(nearest);
+                float lobe = roughness * roughness;
+                float widened = clamp(
+                    lobe + source_radius / (2.0 * max(distance_to_light, 0.0001)),
+                    0.0, 1.0);
+                lobe_energy = (lobe / widened) * (lobe / widened);
+            }
             if (kind > 1.5) {
-                float cone = dot(
-                    -to_light,
-                    normalize(light.direction_range.xyz)
-                );
+                vec3 axis = normalize(light.direction_range.xyz);
+                float cone = dot(-to_light, axis);
                 attenuation *= smoothstep(
                     light.spot_angles.y,
                     light.spot_angles.x,
                     cone
                 );
+                if (light.cookie.w > -0.5 && cone > 0.0) {
+                    // Projected like a slide: the outer cone spans the
+                    // image, its top along the light's up.
+                    vec3 right = light.cookie.xyz;
+                    vec3 up = cross(right, axis);
+                    vec2 spread = vec2(dot(-to_light, right),
+                        dot(-to_light, up)) / (cone * light.spot_angles.w);
+                    tint = cookie_at(int(light.cookie.w + 0.5),
+                        vec2(0.5 + 0.5 * spread.x, 0.5 - 0.5 * spread.y));
+                }
             }
         }
         if (index + 1u == camera.light_info.y && (v_alpha.z & 2u) != 0u) {
@@ -9033,18 +9996,18 @@ void main() {
         }
         // Cook-Torrance: GGX distribution, Smith-Schlick geometry,
         // Schlick Fresnel.
-        vec3 half_dir = normalize(to_light + view_dir);
+        vec3 half_dir = normalize(specular_dir + view_dir);
         float n_dot_h = max(dot(normal, half_dir), 0.0);
         float v_dot_h = max(dot(view_dir, half_dir), 0.0);
         float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
-        float distribution = a2 / (PI * d * d);
+        float distribution = a2 / (PI * d * d) * lobe_energy;
         float geometry = n_dot_v / (n_dot_v * (1.0 - k) + k)
             * n_dot_l / (n_dot_l * (1.0 - k) + k);
         vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - v_dot_h, 5.0);
         vec3 specular = distribution * geometry * fresnel
             / (4.0 * n_dot_v * n_dot_l + 0.0001);
         vec3 radiance = light.color_intensity.rgb
-            * light.color_intensity.w * attenuation;
+            * light.color_intensity.w * attenuation * tint;
         // Light intensity is scaled so a white Lambert surface facing a
         // unit light reflects 1, hence the PI on the specular lobe.
         result += ((1.0 - fresnel) * diffuse_color + specular * PI)
@@ -9303,6 +10266,80 @@ void main() {
     }
 }
 
+/// Upscale in the spirit of FSR 1: Catmull-Rom filtering, kept inside the
+/// four nearest source texels so edges do not ring, then contrast-adaptive
+/// sharpening from the source texels around the pixel.
+#[rustfmt::skip]
+mod sharp_upscale_shader {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r"
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(push_constant) uniform Params {
+    vec2 inv_target;
+    float sharpness;
+} params;
+layout(location = 0) out vec4 color;
+
+vec3 at(vec2 uv) {
+    return textureLod(source, uv, 0.0).rgb;
+}
+
+// Catmull-Rom from nine bilinear taps (Jimenez 2016).
+vec3 catmull_rom(vec2 uv, vec2 size) {
+    vec2 pos = uv * size;
+    vec2 center = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - center;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0 = (center - 1.0) / size;
+    vec2 t12 = (center + w2 / w12) / size;
+    vec2 t3 = (center + 2.0) / size;
+    return at(vec2(t0.x, t0.y)) * w0.x * w0.y
+        + at(vec2(t12.x, t0.y)) * w12.x * w0.y
+        + at(vec2(t3.x, t0.y)) * w3.x * w0.y
+        + at(vec2(t0.x, t12.y)) * w0.x * w12.y
+        + at(vec2(t12.x, t12.y)) * w12.x * w12.y
+        + at(vec2(t3.x, t12.y)) * w3.x * w12.y
+        + at(vec2(t0.x, t3.y)) * w0.x * w3.y
+        + at(vec2(t12.x, t3.y)) * w12.x * w3.y
+        + at(vec2(t3.x, t3.y)) * w3.x * w3.y;
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy * params.inv_target;
+    vec2 size = vec2(textureSize(source, 0));
+    vec2 texel = 1.0 / size;
+    // The four source texels around the pixel bound the result.
+    vec2 base = (floor(uv * size - 0.5) + 0.5) * texel;
+    vec3 a = at(base);
+    vec3 b = at(base + vec2(texel.x, 0.0));
+    vec3 c = at(base + vec2(0.0, texel.y));
+    vec3 d = at(base + texel);
+    vec3 lo = min(min(a, b), min(c, d));
+    vec3 hi = max(max(a, b), max(c, d));
+    vec3 middle = clamp(catmull_rom(uv, size), lo, hi);
+    // AMD CAS: a negative lobe on the cross neighbors, weaker where the
+    // neighborhood already spans much of the range.
+    vec3 n = at(uv - vec2(0.0, texel.y));
+    vec3 s = at(uv + vec2(0.0, texel.y));
+    vec3 e = at(uv + vec2(texel.x, 0.0));
+    vec3 w = at(uv - vec2(texel.x, 0.0));
+    vec3 low = min(middle, min(min(n, s), min(e, w)));
+    vec3 high = max(middle, max(max(n, s), max(e, w)));
+    vec3 amount = sqrt(clamp(min(low, 1.0 - high) / max(high, 1e-4), 0.0, 1.0));
+    vec3 lobe = -amount / mix(8.0, 5.0, params.sharpness);
+    vec3 sharp = (middle + lobe * (n + s + e + w)) / (1.0 + 4.0 * lobe);
+    color = vec4(clamp(sharp, 0.0, 1.0), 1.0);
+}
+"
+    }
+}
+
 #[rustfmt::skip]
 mod tonemap_fragment_shader {
     vulkano_shaders::shader! {
@@ -9320,9 +10357,25 @@ layout(set = 0, binding = 1) uniform sampler2D bloom;
 // A copy of the HDR image in `scene`, for effects that read other pixels;
 // up to date only when `sampled` is 1.
 layout(set = 0, binding = 2) uniform sampler2D scene_image;
+// Factor auto exposure adapted to; read only when auto_exposure is 1.
+layout(set = 0, binding = 3) readonly buffer Exposure { float value; } adapted;
+// The ColorLut strip, lut_size squares of lut_size x lut_size texels; read
+// only when lut > 0, its intensity.
+layout(set = 1, binding = 0) uniform sampler2D lut_strip;
+// Opaque depth, up to date only when blur or motion strength is above 0.
+layout(set = 1, binding = 1) uniform sampler2D scene_depth;
+// MotionBlur: reproject takes this frame's clip space to last frame's;
+// strength is the intensity, 0 when off.
+layout(set = 1, binding = 2) readonly buffer Motion {
+    mat4 reproject;
+    float strength;
+} motion;
 // film: grain, chromatic aberration, scanlines, color bleed. tape: noise
-// band, distortion, seconds and frame number from the fixed tick. sampled is
-// 1 when scene_image may be read.
+// band, distortion, seconds and frame number from the fixed tick. flags bit
+// 0 is set when scene_image may be read, bit 1 for auto exposure, bit 2 for
+// FXAA. focus and
+// blur follow DepthOfField; depth holds the projection entries [2][2],
+// [2][3], [3][2] and [3][3] (row, column) that undo stored depth.
 layout(push_constant) uniform ToneMap {
     float exposure;
     uint mapper;
@@ -9335,7 +10388,11 @@ layout(push_constant) uniform ToneMap {
     vec4 highlights;
     vec4 film;
     vec4 tape;
-    uint sampled;
+    uint flags;
+    float lut;
+    float focus;
+    float blur;
+    vec4 depth;
 } tone;
 layout(location = 0) out vec4 f_color;
 // Uniform 0..1 from a pixel and a frame number, the same on every GPU.
@@ -9358,13 +10415,79 @@ vec3 hdr_at(vec2 uv) {
     }
     return c;
 }
+// Blur radius at uv as a fraction of the screen height.
+float blur_at(vec2 uv) {
+    float d = textureLod(scene_depth, uv, 0.0).r;
+    float z = (tone.depth.y - d * tone.depth.w) / (d * tone.depth.z - tone.depth.x);
+    return min(tone.blur * abs(1.0 - tone.focus / max(-z, 1e-4)), tone.blur);
+}
+// Gathers a disc the size of this pixel's blur. Nearer samples sharper than
+// it would reach this pixel stay out, so focused edges do not smear over a
+// blurred background.
+// ponytail: blurred foreground does not spread over a sharp background;
+// a scatter or tiled max-blur pass would add that.
+vec3 defocus(vec2 uv) {
+    float radius = blur_at(uv);
+    float depth = textureLod(scene_depth, uv, 0.0).r;
+    vec2 to_uv = vec2(tone.inv_extent.x / tone.inv_extent.y, 1.0);
+    vec3 sum = hdr_at(uv);
+    float weight = 1.0;
+    if (radius / tone.inv_extent.y < 0.5) {
+        return sum;
+    }
+    for (int i = 0; i < 32; i++) {
+        // Golden-angle spiral, evenly covering the disc.
+        float r = sqrt((float(i) + 0.5) / 32.0) * radius;
+        float a = float(i) * 2.39996;
+        vec2 at = uv + vec2(cos(a), sin(a)) * r * to_uv;
+        float reach = blur_at(at);
+        float w = textureLod(scene_depth, at, 0.0).r < depth
+            ? clamp((reach - r) / tone.inv_extent.y + 1.0, 0.0, 1.0)
+            : 1.0;
+        sum += hdr_at(at) * w;
+        weight += w;
+    }
+    return sum / weight;
+}
 float luma_of(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+// Perceived brightness after exposure, roughly as the tone curve shows it,
+// so edges between bright areas count as much as dark ones.
+float edge_luma(vec2 uv) {
+    float l = luma_of(hdr_at(uv)) * tone.exposure;
+    return sqrt(l / (1.0 + l));
+}
+// FXAA in the style of Lottes' console version: four diagonal lumas give
+// the edge direction, then two short and two long taps along the edge
+// blend it; the long blend is dropped when it leaves the local luma range.
+vec3 fxaa(vec2 uv) {
+    vec2 px = tone.inv_extent;
+    float nw = edge_luma(uv + vec2(-0.5, -0.5) * px);
+    float ne = edge_luma(uv + vec2(0.5, -0.5) * px);
+    float sw = edge_luma(uv + vec2(-0.5, 0.5) * px);
+    float se = edge_luma(uv + vec2(0.5, 0.5) * px);
+    vec3 center = hdr_at(uv);
+    float m = sqrt(luma_of(center) * tone.exposure / (1.0 + luma_of(center) * tone.exposure));
+    float lo = min(m, min(min(nw, ne), min(sw, se)));
+    float hi = max(m, max(max(nw, ne), max(sw, se)));
+    if (hi - lo < max(0.0625, hi * 0.125)) {
+        return center;
+    }
+    vec2 dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+    float reduce = max((nw + ne + sw + se) * 0.03125, 1.0 / 128.0);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8.0, 8.0) * px;
+    vec3 near = 0.5 * (hdr_at(uv + dir * (1.0 / 3.0 - 0.5))
+        + hdr_at(uv + dir * (2.0 / 3.0 - 0.5)));
+    vec3 far = near * 0.5 + 0.25 * (hdr_at(uv - dir * 0.5) + hdr_at(uv + dir * 0.5));
+    float l = luma_of(far) * tone.exposure;
+    l = sqrt(l / (1.0 + l));
+    return l < lo || l > hi ? near : far;
 }
 void main() {
     vec4 hdr = subpassLoad(scene);
     vec2 uv = gl_FragCoord.xy * tone.inv_extent;
-    if (tone.sampled == 1u) {
+    if ((tone.flags & 1u) != 0u) {
         if (tone.tape.y > 0.0) {
             // Tube bulge, plus rows that sway slowly with time.
             vec2 centered = uv - 0.5;
@@ -9373,12 +10496,28 @@ void main() {
             uv.x += tone.tape.y * 0.004
                 * sin(uv.y * 60.0 + tone.tape.z * 5.0);
         }
-        vec2 split = (uv - 0.5) * tone.film.y * 0.02;
-        hdr.rgb = vec3(
-            hdr_at(uv + split).r,
-            hdr_at(uv).g,
-            hdr_at(uv - split).b
-        );
+        hdr.rgb = tone.blur > 0.0 ? defocus(uv)
+            : (tone.flags & 4u) != 0u ? fxaa(uv) : hdr_at(uv);
+        if (motion.strength > 0.0) {
+            // Screen motion since last frame, in uv, centered on the pixel.
+            float d = textureLod(scene_depth, uv, 0.0).r;
+            vec4 last = motion.reproject * vec4(uv * 2.0 - 1.0, d, 1.0);
+            vec2 moved = (uv - (last.xy / last.w * 0.5 + 0.5)) * motion.strength;
+            float pixels = length(moved / tone.inv_extent);
+            // Longer than a sixth of the height is a cut, not motion.
+            if (pixels > 0.5 && pixels * tone.inv_extent.y < 0.17) {
+                vec3 sum = vec3(0.0);
+                for (int i = 0; i < 16; i++) {
+                    sum += hdr_at(uv + moved * (float(i) / 15.0 - 0.5));
+                }
+                hdr.rgb = sum / 16.0;
+            }
+        }
+        if (tone.film.y > 0.0) {
+            vec2 split = (uv - 0.5) * tone.film.y * 0.02;
+            hdr.r = hdr_at(uv + split).r;
+            hdr.b = hdr_at(uv - split).b;
+        }
         if (tone.film.w > 0.0) {
             // Color smears to the right; brightness stays sharp.
             vec2 step_x = vec2(tone.film.w * 8.0 * tone.inv_extent.x, 0.0);
@@ -9389,7 +10528,11 @@ void main() {
     } else if (tone.bloom > 0.0) {
         hdr.rgb += textureLod(bloom, uv, 0.0).rgb * tone.bloom;
     }
-    vec3 c = max(hdr.rgb * tone.exposure, 0.0);
+    float exposure = tone.exposure;
+    if ((tone.flags & 2u) != 0u) {
+        exposure *= adapted.value;
+    }
+    vec3 c = max(hdr.rgb * exposure, 0.0);
     if (tone.mapper == 1u) {
         c = c / (1.0 + c);
     } else if (tone.mapper == 2u) {
@@ -9407,6 +10550,23 @@ void main() {
     if (tone.vignette > 0.0) {
         vec2 centered = gl_FragCoord.xy * tone.inv_extent - 0.5;
         c *= 1.0 - tone.vignette * smoothstep(0.25, 0.75, length(centered));
+    }
+    if (tone.lut > 0.0) {
+        // Look up in sRGB, as the strip was authored; the texture decodes
+        // back to linear. Blue blends two neighboring squares.
+        float n = float(textureSize(lut_strip, 0).y);
+        vec3 encoded = mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
+            step(0.0031308, c));
+        vec3 at = clamp(encoded, 0.0, 1.0) * (n - 1.0);
+        float square = min(floor(at.b), n - 2.0);
+        vec2 texel = 1.0 / vec2(n * n, n);
+        vec2 uv = (vec2(at.r + square * n, at.g) + 0.5) * texel;
+        vec3 graded = mix(
+            textureLod(lut_strip, uv, 0.0).rgb,
+            textureLod(lut_strip, uv + vec2(n * texel.x, 0.0), 0.0).rgb,
+            at.b - square
+        );
+        c = mix(c, graded, tone.lut);
     }
     uint frame = uint(tone.tape.w);
     if (tone.film.z > 0.0) {
@@ -9473,12 +10633,12 @@ struct Light {
     vec4 direction_range;
     vec4 color_intensity;
     vec4 spot_angles;
+    vec4 cookie;
 };
 layout(set = 0, binding = 2) readonly buffer Lights {
     Light data[];
 } lights;
 layout(set = 2, binding = 1) readonly buffer Shadow {
-    mat4 light_view_projection;
     vec4 environment;
     vec4 scene_color;
     vec4 viewport;
@@ -9972,6 +11132,10 @@ mod tests {
             offset_of!(LightUpload, spot_angles),
             offset_of!(ReflectedLight, spot_angles)
         );
+        assert_eq!(
+            offset_of!(LightUpload, cookie),
+            offset_of!(ReflectedLight, cookie)
+        );
     }
 
     #[test]
@@ -10429,6 +11593,89 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn auto_exposure_brings_the_scene_to_its_key() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        use crate::runtime::{AutoExposure, ToneMapping};
+        let mut scene = SlabScene::new(&[(
+            0.0,
+            MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color: [0.02, 0.02, 0.02, 1.0],
+                ..MaterialAsset::default()
+            },
+        )]);
+        // The slab fills the whole view, so the average is 0.02.
+        scene.render_world.renderables[0].transform.matrix =
+            Matrix4::new_nonuniform_scaling(&Vector3::new(10.0, 10.0, 0.1))
+                .into();
+        let center = [4, 4];
+        let fixed = |scene: &mut SlabScene, exposure: f32| {
+            scene.render_world.auto_exposure = None;
+            scene.render_world.tone_mapping = Some(ToneMapping {
+                exposure,
+                ..ToneMapping::default()
+            });
+            let pixel = render_pixel(scene, center);
+            scene.render_world.tone_mapping = None;
+            pixel
+        };
+        let unexposed = fixed(&mut scene, 1.0);
+        let times_three = fixed(&mut scene, 3.0);
+        let times_six = fixed(&mut scene, 6.0);
+        assert!(unexposed[0] < times_three[0] && times_three[0] < times_six[0]);
+        let close = |a: [u8; 3], b: [u8; 3]| {
+            a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1)
+        };
+        // The first frame adapts at once: 0.06 / 0.02.
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.06,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let adapted = render_pixel(&mut scene, center);
+        assert!(close(adapted, times_three), "{adapted:?} {times_three:?}");
+        assert!(scene
+            .renderer
+            .last_frame_passes()
+            .contains(&FramePass::Exposure));
+        // At speed 0 a new key does not move the adapted exposure.
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let held = render_pixel(&mut scene, center);
+        assert!(close(held, times_three), "{held:?} {times_three:?}");
+        // A frame without it starts over, and the limits clamp.
+        assert!(close(fixed(&mut scene, 1.0), unexposed));
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            speed: 0.0,
+            max_exposure: 10.0,
+            ..AutoExposure::default()
+        });
+        let readapted = render_pixel(&mut scene, center);
+        assert!(close(readapted, times_six), "{readapted:?} {times_six:?}");
+        fixed(&mut scene, 1.0);
+        scene.render_world.auto_exposure = Some(AutoExposure {
+            key: 0.12,
+            max_exposure: 3.0,
+            ..AutoExposure::default()
+        });
+        let clamped = render_pixel(&mut scene, center);
+        assert!(close(clamped, times_three), "{clamped:?} {times_three:?}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn bloom_spreads_bright_light_into_its_surroundings() {
         if vulkano::VulkanLibrary::new().is_err() {
             eprintln!("skipping: no Vulkan driver present");
@@ -10720,6 +11967,49 @@ mod tests {
         );
         let none = device(1, false);
         assert_eq!(count(Antialiasing::Msaa4, QualityProfile::High, &none), 1);
+    }
+
+    #[test]
+    fn light_clusters_list_only_the_lights_that_reach_them() {
+        // Camera at the origin looking down -Z, 90 degree view, square.
+        let clip = vulkan_clip_correction()
+            * Perspective3::new(1.0, std::f32::consts::FRAC_PI_2, 1.0, 100.0)
+                .to_homogeneous();
+        let eye = [0.0; 3];
+        let forward = [0.0, 0.0, -1.0];
+        let lights = [
+            (5, [-8.0, 0.0, -10.0, 1.0]), // left of center, near
+            (6, [0.0, 0.0, -60.0, 2.0]),  // center, far
+            (7, [0.0, 0.0, 20.0, 3.0]),   // behind the camera
+            (8, [0.0, 0.0, 0.0, 2.0]),    // around the camera
+            (9, [500.0, 0.0, -10.0, 1.0]), // far off to the right
+        ];
+        let list =
+            build_light_clusters(&lights, &clip, eye, forward, [1.0, 100.0]);
+        let [columns, rows, slices] = CLUSTER_GRID;
+        let at = |x: usize, y: usize, z: usize| {
+            let cluster = (z * rows + y) * columns + x;
+            let first = list[2 * cluster] as usize;
+            let count = list[2 * cluster + 1] as usize;
+            list[first..first + count].to_vec()
+        };
+        let slice = |depth: f32| {
+            ((depth.ln() / 100.0_f32.ln() * slices as f32) as usize)
+                .min(slices - 1)
+        };
+        // The near-left light: x = -8 at depth 10 is ndc -0.8, column 1.
+        assert_eq!(at(1, rows / 2, slice(10.0)), [5]);
+        assert!(at(columns - 2, rows / 2, slice(10.0)).is_empty());
+        assert!(at(1, rows / 2, slice(60.0)).is_empty());
+        // The far light only in its own depth slice, at the center.
+        assert_eq!(at(columns / 2, rows / 2, slice(60.0)), [6]);
+        assert!(at(columns / 2, rows / 2, slice(30.0)).is_empty());
+        // The light around the eye reaches every tile of the first slice;
+        // the ones behind and off screen reach nothing.
+        assert_eq!(at(0, 0, 0), [8]);
+        assert_eq!(at(columns - 1, rows - 1, 0), [8]);
+        assert!(!list[2 * CLUSTER_COUNT..].contains(&7));
+        assert!(!list[2 * CLUSTER_COUNT..].contains(&9));
     }
 
     #[test]
@@ -11072,7 +12362,9 @@ mod tests {
                     inner_angle: 0.4,
                     outer_angle: 0.6,
                     shadows: true,
+                    radius: 0.0,
                 },
+                cookie: None,
             },
         );
         let frame = |scene: &mut SlabScene| {
@@ -11094,6 +12386,630 @@ mod tests {
         assert!(
             shadowed < 30,
             "the wall shadows the floor behind it, got {shadowed}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn point_light_shadow_falls_through_each_cube_face() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A point light shines on the floor at z = 0 past an occluder
+        // halfway between them, off the camera's view. The two light
+        // positions put the floor center behind the -X and the -Z cube face.
+        let mut scene = SlabScene::new(&[
+            (0.0, MaterialAsset::default()),
+            (1.0, MaterialAsset::default()),
+        ]);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.point_lights.push(
+            crate::runtime::ExtractedPointLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2002).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::identity().into(),
+                },
+                light: crate::runtime::PointLight {
+                    color: [1.0; 3],
+                    intensity: 40_000.0,
+                    range: 20.0,
+                    shadows: true,
+                    radius: 0.0,
+                },
+            },
+        );
+        let frame = |scene: &mut SlabScene| {
+            scene.render_world.renderables_revision += 1;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.center_pixel()[2]
+        };
+        for light in [Vector3::new(4.0, 0.0, 3.0), Vector3::new(0.0, 3.0, 4.0)]
+        {
+            scene.render_world.point_lights[0].transform.matrix =
+                Matrix4::new_translation(&light).into();
+            scene.render_world.renderables[1].transform.matrix =
+                (Matrix4::new_translation(&(light * 0.5))
+                    * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                        0.5, 0.5, 0.5,
+                    )))
+                .into();
+            scene.render_world.point_lights[0].light.shadows = true;
+            let shadowed = frame(&mut scene);
+            scene.render_world.point_lights[0].light.shadows = false;
+            let lit = frame(&mut scene);
+            assert!(lit > 150, "unshadowed point light lights it, got {lit}");
+            // The floor does not shadow itself.
+            scene.render_world.point_lights[0].light.shadows = true;
+            scene.render_world.renderables[1].cast_shadows = false;
+            let clear = frame(&mut scene);
+            scene.render_world.renderables[1].cast_shadows = true;
+            assert!(
+                u16::from(clear) + 10 > u16::from(lit),
+                "{clear} without caster vs {lit}"
+            );
+            assert!(
+                shadowed < 30,
+                "occluder shadows the floor from {light:?}, got {shadowed}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn spot_light_cookie_projects_its_image_onto_the_floor() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A spot light straight above the floor projects a cookie of four
+        // colored quadrants; with the light's up along the camera's up,
+        // each screen quadrant shows the matching image quadrant.
+        let extent = [16, 16];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        let quadrant = |x: u32, y: u32| match (x < 8, y < 8) {
+            (true, true) => [255, 0, 0, 255],
+            (false, true) => [0, 255, 0, 255],
+            (true, false) => [0, 0, 255, 255],
+            (false, false) => [255, 255, 255, 255],
+        };
+        let cookie = scene.assets.textures.insert(TextureAsset {
+            size: [16, 16],
+            rgba8: (0..16)
+                .flat_map(|y| (0..16).flat_map(move |x| quadrant(x, y)))
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.spot_lights.push(
+            crate::runtime::ExtractedSpotLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2003).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        0.0, 0.0, 3.0,
+                    ))
+                    .into(),
+                },
+                light: crate::runtime::SpotLight {
+                    color: [1.0; 3],
+                    intensity: 20_000.0,
+                    range: 20.0,
+                    inner_angle: 0.55,
+                    outer_angle: 0.6,
+                    shadows: false,
+                    radius: 0.0,
+                },
+                cookie: Some(cookie),
+            },
+        );
+        scene.render_world.lights_revision += 1;
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let pixels = scene.pixels();
+        // [r, g, b] lit or not, from the [b, g, r, a] readback.
+        let lit = |x: u32, y: u32| {
+            let at = ((y * extent[0] + x) * 4) as usize;
+            [pixels[at + 2], pixels[at + 1], pixels[at]].map(|c| c > 100)
+        };
+        assert_eq!(lit(4, 4), [true, false, false], "top left is red");
+        assert_eq!(lit(11, 4), [false, true, false], "top right is green");
+        assert_eq!(lit(4, 11), [false, false, true], "bottom left is blue");
+        assert_eq!(lit(11, 11), [true, true, true], "bottom right is white");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn color_lut_remaps_the_final_image() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A 4-square strip that swaps red and blue turns a red slab blue;
+        // at half intensity it shows both.
+        let extent = [16, 16];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0, 0.0, 0.0, 1.0],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        let level = |i: u32| (i * 255 / 3) as u8;
+        let strip = scene.assets.textures.insert(TextureAsset {
+            size: [16, 4],
+            rgba8: (0..4)
+                .flat_map(|g| {
+                    (0..16).flat_map(move |x| {
+                        [level(x / 4), level(g), level(x % 4), 255]
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        let center = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            let pixels = scene.pixels();
+            let at = ((8 * extent[0] + 8) * 4) as usize;
+            // [r, b] from the [b, g, r, a] readback.
+            [pixels[at + 2], pixels[at]]
+        };
+        let [red, blue] = center(&mut scene);
+        assert!(red > 150 && blue < 30, "plain slab is red: {red}, {blue}");
+        scene.render_world.color_lut = Some((strip, 1.0));
+        let [red, blue] = center(&mut scene);
+        assert!(
+            red < 30 && blue > 150,
+            "full lut turns it blue: {red}, {blue}"
+        );
+        scene.render_world.color_lut = Some((strip, 0.5));
+        let [red, blue] = center(&mut scene);
+        assert!(red > 60 && blue > 60, "half lut mixes both: {red}, {blue}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn depth_of_field_blurs_only_away_from_the_focus() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // An unlit slab 5 m from the camera, white on the left half and
+        // black on the right. In focus it matches the frame without lens
+        // blur; nearer or farther focus softens the edge.
+        let extent = [64, 64];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        let edge = scene.assets.textures.insert(TextureAsset {
+            size: [128, 4],
+            rgba8: (0..4)
+                .flat_map(|_| {
+                    (0..128).flat_map(|x| {
+                        if x < 64 {
+                            [255; 4]
+                        } else {
+                            [0, 0, 0, 255]
+                        }
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.renderables[0].material =
+            scene.assets.materials.insert(MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color_texture: Some(edge),
+                ..MaterialAsset::default()
+            });
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        // Pixels on the middle row neither black nor white.
+        let soft = |pixels: &[u8]| {
+            (0..extent[0])
+                .filter(|x| {
+                    let green = pixels[((32 * extent[0] + x) * 4 + 1) as usize];
+                    (30..=225).contains(&green)
+                })
+                .count()
+        };
+        for projection in [
+            Projection::Orthographic {
+                vertical_size: 2.0,
+                near: 0.1,
+                far: 100.0,
+            },
+            Projection::Perspective {
+                vertical_fov_radians: 2.0 * (1.0f32 / 5.0).atan(),
+                near: 0.1,
+                far: 100.0,
+            },
+        ] {
+            scene
+                .render_world
+                .active_camera
+                .as_mut()
+                .unwrap()
+                .projection = projection;
+            scene.render_world.depth_of_field = None;
+            let sharp = frame(&mut scene);
+            assert!(soft(&sharp) <= 3, "{projection:?}: {}", soft(&sharp));
+            let mut lens = crate::runtime::DepthOfField {
+                focus_distance: 5.0,
+                blur: 0.05,
+            };
+            scene.render_world.depth_of_field = Some(lens);
+            assert_eq!(frame(&mut scene), sharp, "{projection:?} in focus");
+            for focus in [2.5, 50.0] {
+                lens.focus_distance = focus;
+                scene.render_world.depth_of_field = Some(lens);
+                let blurred = soft(&frame(&mut scene));
+                assert!(
+                    blurred >= 4,
+                    "{projection:?} focus {focus}: {blurred}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn motion_blur_smears_only_while_the_camera_moves() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The black and white edge of an unlit slab stays sharp while the
+        // camera holds still and softens on the frame it slides sideways.
+        let extent = [64, 64];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        let edge = scene.assets.textures.insert(TextureAsset {
+            size: [128, 4],
+            rgba8: (0..4)
+                .flat_map(|_| {
+                    (0..128).flat_map(|x| {
+                        if x < 64 {
+                            [255; 4]
+                        } else {
+                            [0, 0, 0, 255]
+                        }
+                    })
+                })
+                .collect(),
+            color_space: TextureColorSpace::Srgb,
+            sampler: TextureSampler::default(),
+        });
+        scene.render_world.renderables[0].material =
+            scene.assets.materials.insert(MaterialAsset {
+                model: MaterialModel::Unlit,
+                base_color_texture: Some(edge),
+                ..MaterialAsset::default()
+            });
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        let soft = |pixels: &[u8]| {
+            (0..extent[0])
+                .filter(|x| {
+                    let green = pixels[((32 * extent[0] + x) * 4 + 1) as usize];
+                    (30..=225).contains(&green)
+                })
+                .count()
+        };
+        let slide = |scene: &mut SlabScene, x: f32| {
+            scene.render_world.active_camera.as_mut().unwrap().transform =
+                crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        x, 0.0, 5.0,
+                    ))
+                    .into(),
+                };
+        };
+        let sharp = frame(&mut scene);
+        assert!(soft(&sharp) <= 3, "{}", soft(&sharp));
+        scene.render_world.motion_blur =
+            Some(crate::runtime::MotionBlur { intensity: 1.0 });
+        // The first frame has no last frame to move from.
+        assert_eq!(frame(&mut scene), sharp, "first frame");
+        assert_eq!(frame(&mut scene), sharp, "still camera");
+        slide(&mut scene, 0.2);
+        let moving = soft(&frame(&mut scene));
+        assert!(moving >= 4, "sliding camera: {moving}");
+        let held = frame(&mut scene);
+        assert!(soft(&held) <= 3, "held again: {}", soft(&held));
+        // A jump of half the screen is a cut.
+        slide(&mut scene, -0.8);
+        let cut = soft(&frame(&mut scene));
+        assert!(cut <= 3, "cut: {cut}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn fxaa_smooths_a_stair_stepped_edge() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A white unlit slab turned slightly shows a stair-stepped edge
+        // against the dark background. FXAA puts in-between shades along
+        // it and leaves flat areas alone.
+        let extent = [64, 64];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0; 4],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        scene.render_world.renderables[0].transform =
+            crate::runtime::GlobalTransform {
+                matrix: (Matrix4::from_axis_angle(&Vector3::z_axis(), 0.3)
+                    * Matrix4::new_translation(&Vector3::new(1.5, 0.0, 0.0))
+                    * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                        2.0, 4.0, 0.1,
+                    )))
+                .into(),
+            };
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene.pixels()
+        };
+        let greens = |pixels: &[u8]| -> Vec<u8> {
+            pixels.chunks(4).map(|pixel| pixel[1]).collect()
+        };
+        scene.render_world.antialiasing = Antialiasing::Off;
+        let hard = greens(&frame(&mut scene));
+        scene.render_world.antialiasing = Antialiasing::Fxaa;
+        let smooth = greens(&frame(&mut scene));
+        let white = *hard.iter().max().unwrap();
+        let dark = *hard.iter().min().unwrap();
+        let between = |shades: &[u8]| {
+            shades
+                .iter()
+                .filter(|&&g| {
+                    u16::from(g) > u16::from(dark) + 20
+                        && u16::from(g) + 20 < u16::from(white)
+                })
+                .count()
+        };
+        assert!(between(&hard) < 4, "no AA: {}", between(&hard));
+        assert!(between(&smooth) > 30, "FXAA: {}", between(&smooth));
+        // Far from the edge nothing changes.
+        assert_eq!(hard[0], smooth[0], "background");
+        let inside = (32 * extent[0] + 62) as usize;
+        assert_eq!(hard[inside], smooth[inside], "slab");
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn taa_smooths_a_still_edge_and_leaves_no_ghost_when_it_moves() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // The stair-stepped slab of the FXAA test: TAA's jittered frames
+        // blend into in-between shades along the edge once the camera
+        // holds still. When the slab then leaves, the history is clamped
+        // to the new frame's colors, so no trace of it stays behind.
+        let extent = [64, 64];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    model: MaterialModel::Unlit,
+                    base_color: [1.0; 4],
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        let placed = |x: f32| crate::runtime::GlobalTransform {
+            matrix: (Matrix4::from_axis_angle(&Vector3::z_axis(), 0.3)
+                * Matrix4::new_translation(&Vector3::new(x, 0.0, 0.0))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    2.0, 4.0, 0.1,
+                )))
+            .into(),
+        };
+        scene.render_world.renderables[0].transform = placed(1.5);
+        let frame = |scene: &mut SlabScene| {
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene
+                .pixels()
+                .chunks(4)
+                .map(|pixel| pixel[1])
+                .collect::<Vec<u8>>()
+        };
+        scene.render_world.antialiasing = Antialiasing::Off;
+        let hard = frame(&mut scene);
+        scene.render_world.antialiasing = Antialiasing::Taa;
+        let first = frame(&mut scene);
+        let mut smooth = first.clone();
+        for _ in 0..24 {
+            smooth = frame(&mut scene);
+        }
+        let white = *hard.iter().max().unwrap();
+        let dark = *hard.iter().min().unwrap();
+        let between = |shades: &[u8]| {
+            shades
+                .iter()
+                .filter(|&&g| {
+                    u16::from(g) > u16::from(dark) + 20
+                        && u16::from(g) + 20 < u16::from(white)
+                })
+                .count()
+        };
+        assert!(between(&hard) < 4, "no AA: {}", between(&hard));
+        assert!(between(&first) < 4, "first TAA frame: {}", between(&first));
+        assert!(between(&smooth) > 30, "TAA: {}", between(&smooth));
+        assert_eq!(hard[0], smooth[0], "background");
+        let inside = (32 * extent[0] + 62) as usize;
+        assert_eq!(hard[inside], smooth[inside], "slab");
+        scene.render_world.renderables[0].transform = placed(50.0);
+        scene.render_world.renderables_revision += 1;
+        let gone = frame(&mut scene);
+        let brightest = *gone.iter().max().unwrap();
+        assert!(
+            u16::from(brightest) < u16::from(dark) + 20,
+            "ghost of the slab: {brightest}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn sphere_light_widens_the_highlight_on_glossy_surfaces() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A black glossy floor shows only the specular reflection of a
+        // point light just above it. A sphere light of the same intensity
+        // reflects as a disc about its radius wide, not a pinpoint.
+        let extent = [32, 32];
+        let mut scene = SlabScene::with_extent(
+            &[(
+                0.0,
+                MaterialAsset {
+                    base_color: [0.0, 0.0, 0.0, 1.0],
+                    roughness: 0.15,
+                    ..MaterialAsset::default()
+                },
+            )],
+            extent,
+        );
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.point_lights.push(
+            crate::runtime::ExtractedPointLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2004).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: Matrix4::new_translation(&Vector3::new(
+                        0.0, 0.0, 0.5,
+                    ))
+                    .into(),
+                },
+                light: crate::runtime::PointLight {
+                    color: [1.0; 3],
+                    intensity: 20_000.0,
+                    range: 10.0,
+                    shadows: false,
+                    radius: 0.0,
+                },
+            },
+        );
+        let bright = |scene: &mut SlabScene, radius: f32| {
+            scene.render_world.point_lights[0].light.radius = radius;
+            scene.render_world.lights_revision += 1;
+            let before = scene.now();
+            scene
+                .render(before)
+                .then_signal_fence_and_flush()
+                .unwrap()
+                .wait(None)
+                .unwrap();
+            scene
+                .pixels()
+                .chunks(4)
+                .filter(|pixel| pixel[..3].iter().any(|&c| c > 100))
+                .count()
+        };
+        let point = bright(&mut scene, 0.0);
+        let sphere = bright(&mut scene, 0.4);
+        eprintln!("bright pixels: point {point}, sphere {sphere}");
+        assert!(point > 0, "the point light shows a highlight");
+        assert!(
+            sphere > point * 4,
+            "the sphere light's highlight is wider: {sphere} vs {point}"
         );
     }
 
@@ -11229,6 +13145,76 @@ mod tests {
             assert_eq!(red < 30, shadowed, "{quality:?}, got r={red}");
             assert_eq!(scene.renderer.shadow_framebuffer.extent(), [size; 2]);
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
+    fn near_cascade_resolves_a_thin_shadow() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A rod a few centimetres thick shadows the floor one unit below
+        // the camera. One map over the whole 50-unit `Balanced` shadow
+        // distance has texels wider than the rod; the near cascade has
+        // texels a few millimetres wide.
+        let mut scene = SlabScene::new(&[
+            (0.0, MaterialAsset::default()),
+            (0.5, MaterialAsset::default()),
+        ]);
+        scene.render_world.quality = QualityProfile::Balanced;
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        scene.render_world.renderables[0].receive_shadows = true;
+        scene.render_world.renderables[1].cast_shadows = true;
+        scene.render_world.renderables[1].transform.matrix =
+            (Matrix4::new_translation(&Vector3::new(2.5, 0.0, 0.5))
+                * Matrix4::new_nonuniform_scaling(&Vector3::new(
+                    1.0, 0.03, 0.03,
+                )))
+            .into();
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        camera.transform.matrix =
+            Matrix4::new_translation(&Vector3::new(0.0, 0.0, 1.0)).into();
+        camera.projection = Projection::Orthographic {
+            vertical_size: 0.01,
+            near: 0.1,
+            far: 100.0,
+        };
+        let direction = Vector3::new(-5.0, 0.0, -1.0).normalize();
+        scene.render_world.directional_lights.push(
+            crate::runtime::ExtractedDirectionalLight {
+                entity: bevy_ecs::entity::Entity::from_raw_u32(2000).unwrap(),
+                transform: crate::runtime::GlobalTransform {
+                    matrix: nalgebra::Rotation3::rotation_between(
+                        &-Vector3::z(),
+                        &direction,
+                    )
+                    .unwrap()
+                    .to_homogeneous()
+                    .into(),
+                },
+                light: crate::runtime::DirectionalLight {
+                    color: [1.0; 3],
+                    illuminance: 500_000.0,
+                    shadows: true,
+                },
+            },
+        );
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let red = scene.center_pixel()[2];
+        assert!(red < 30, "rod shadows the floor, got r={red}");
     }
 
     #[test]
@@ -16102,6 +18088,8 @@ mod tests {
                     color,
                     intensity: 500.0,
                     range,
+                    shadows: false,
+                    radius: 0.0,
                 },
             }
         };
@@ -16389,12 +18377,108 @@ mod tests {
         not(feature = "gpu-tests"),
         ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
     )]
+    fn clustered_point_lights_each_light_their_own_spot() {
+        if vulkano::VulkanLibrary::new().is_err() {
+            eprintln!("skipping: no Vulkan driver present");
+            return;
+        }
+        // A perspective camera looks down at the floor at a slant, so the
+        // 49 small lights spread over many screen tiles and depth slices.
+        // Each light's spot must be lit and the gaps between them dark.
+        let extent = [96, 96];
+        let mut scene =
+            SlabScene::with_extent(&[(0.0, MaterialAsset::default())], extent);
+        scene.render_world.ambient_light = Some(crate::runtime::AmbientLight {
+            color: [0.0; 3],
+            intensity: 0.0,
+        });
+        let eye = Point3::new(0.0, -2.5, 2.5);
+        let camera = scene.render_world.active_camera.as_mut().unwrap();
+        camera.transform.matrix =
+            Matrix4::look_at_rh(&eye, &Point3::origin(), &Vector3::z())
+                .try_inverse()
+                .unwrap()
+                .into();
+        camera.projection = Projection::Perspective {
+            vertical_fov_radians: 1.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let camera = scene.render_world.active_camera;
+        let spacing = 0.4;
+        let spot = |column: i32, row: i32| {
+            Vector3::new(column as f32 * spacing, row as f32 * spacing, 0.05)
+        };
+        for column in -3..=3 {
+            for row in -3..=3 {
+                let index = scene.render_world.point_lights.len() as u32;
+                scene.render_world.point_lights.push(
+                    crate::runtime::ExtractedPointLight {
+                        entity: bevy_ecs::entity::Entity::from_raw_u32(
+                            3000 + index,
+                        )
+                        .unwrap(),
+                        transform: crate::runtime::GlobalTransform {
+                            matrix: Matrix4::new_translation(
+                                &(spot(column, row) + Vector3::z() * 0.1),
+                            )
+                            .into(),
+                        },
+                        light: crate::runtime::PointLight {
+                            color: [0.0, 1.0, 0.0],
+                            intensity: 3_000.0,
+                            range: 0.18,
+                            shadows: false,
+                            radius: 0.0,
+                        },
+                    },
+                );
+            }
+        }
+        scene.render_world.lights_revision += 1;
+        let before = scene.now();
+        scene
+            .render(before)
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+        let pixels = scene.pixels();
+        let clip = view_projection(camera, extent);
+        let green = |point: Vector3<f32>| {
+            let clip = clip * point.push(1.0);
+            let x = ((clip.x / clip.w * 0.5 + 0.5) * extent[0] as f32) as usize;
+            let y = ((clip.y / clip.w * 0.5 + 0.5) * extent[1] as f32) as usize;
+            pixels[(y * extent[0] as usize + x) * 4 + 1]
+        };
+        for column in -3..=3 {
+            for row in -3..=3 {
+                let lit = green(spot(column, row));
+                assert!(
+                    lit > 60,
+                    "light {column},{row} lights its spot: {lit}"
+                );
+                let gap =
+                    green(spot(column, row) + Vector3::new(0.2, 0.2, 0.0));
+                assert!(
+                    gap < 5,
+                    "gap next to {column},{row} stays dark: {gap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "gpu-tests"),
+        ignore = "run with `--features gpu-tests` on a machine with a Vulkan driver"
+    )]
     fn quality_profiles_compare_on_one_scene() {
         if vulkano::VulkanLibrary::new().is_err() {
             eprintln!("skipping: no Vulkan driver present");
             return;
         }
-        // A floor under a red shadowed sun and 40 small green point lights,
+        // A floor under a red shadowed sun and 600 small green point lights,
         // more than the Eco and Balanced light budgets.
         let mut scene = SlabScene::with_extent(
             &[(0.0, MaterialAsset::default())],
@@ -16416,8 +18500,8 @@ mod tests {
                 },
             },
         );
-        for index in 0..40u32 {
-            let (column, row) = ((index % 8) as f32, (index / 8) as f32);
+        for index in 0..600u32 {
+            let (column, row) = ((index % 25) as f32, (index / 25) as f32);
             scene.render_world.point_lights.push(
                 crate::runtime::ExtractedPointLight {
                     entity: bevy_ecs::entity::Entity::from_raw_u32(
@@ -16426,16 +18510,18 @@ mod tests {
                     .unwrap(),
                     transform: crate::runtime::GlobalTransform {
                         matrix: Matrix4::new_translation(&Vector3::new(
-                            -0.875 + column * 0.25,
-                            -0.8 + row * 0.4,
-                            0.3,
+                            -0.96 + column * 0.08,
+                            -0.96 + row * 0.08,
+                            0.1,
                         ))
                         .into(),
                     },
                     light: crate::runtime::PointLight {
                         color: [0.0, 1.0, 0.0],
-                        intensity: 200.0,
-                        range: 0.5,
+                        intensity: 20.0,
+                        range: 0.15,
+                        shadows: false,
+                        radius: 0.0,
                     },
                 },
             );
@@ -16443,9 +18529,9 @@ mod tests {
         let msaa = scene.renderer.capabilities().msaa_samples;
         let mut rows = Vec::new();
         for (quality, lights, shadow_map, samples) in [
-            (QualityProfile::Eco, 16, 1024, 1),
-            (QualityProfile::Balanced, 32, 2048, msaa),
-            (QualityProfile::High, 41, 4096, msaa),
+            (QualityProfile::Eco, 256, 1024, 1),
+            (QualityProfile::Balanced, 512, 2048, msaa),
+            (QualityProfile::High, 601, 4096, msaa),
         ] {
             scene.render_world.quality = quality;
             scene.render_world.lights_revision += 1;
@@ -16464,7 +18550,7 @@ mod tests {
             let (red, green) = (mean(2), mean(1));
             let dropped = scene.renderer.capacity_diagnostics().dropped_lights;
             // The sun counts toward the budget too.
-            assert_eq!(dropped, 41 - lights, "{quality:?}");
+            assert_eq!(dropped, 601 - lights, "{quality:?}");
             assert_eq!(
                 scene.renderer.shadow_framebuffer.extent(),
                 [shadow_map; 2]
@@ -16569,6 +18655,8 @@ mod tests {
                     color: [0.0, 1.0, 0.0],
                     intensity: 500.0,
                     range: 1.5,
+                    shadows: false,
+                    radius: 0.0,
                 },
             },
         );

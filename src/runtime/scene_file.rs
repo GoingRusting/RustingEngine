@@ -1166,13 +1166,23 @@ pub const PHYSICS_MATERIAL_COMPONENT: &str = "rusting.physics_material";
 pub const HUD_ELEMENT_COMPONENT: &str = "rusting.hud";
 /// Registry name of the built-in reflected sky image.
 pub const ENVIRONMENT_MAP_COMPONENT: &str = "rusting.environment_map";
+/// Registry name of the built-in spot light image.
+pub const LIGHT_COOKIE_COMPONENT: &str = "rusting.light_cookie";
 /// Registry name of the built-in reflection probe.
 pub const REFLECTION_PROBE_COMPONENT: &str = "rusting.reflection_probe";
 /// Registry name of the built-in height fog.
 pub const FOG_COMPONENT: &str = "rusting.fog";
 /// Registry name of the built-in bloom.
 pub const BLOOM_COMPONENT: &str = "rusting.bloom";
+/// Registry name of the built-in eye adaptation.
+pub const AUTO_EXPOSURE_COMPONENT: &str = "rusting.auto_exposure";
 pub const COLOR_GRADING_COMPONENT: &str = "rusting.color_grading";
+/// Registry name of the built-in color lookup table.
+pub const COLOR_LUT_COMPONENT: &str = "rusting.color_lut";
+/// Registry name of the built-in lens blur.
+pub const DEPTH_OF_FIELD_COMPONENT: &str = "rusting.depth_of_field";
+/// Registry name of the built-in camera motion blur.
+pub const MOTION_BLUR_COMPONENT: &str = "rusting.motion_blur";
 /// Registry name of the built-in fog and grading area.
 pub const POST_VOLUME_COMPONENT: &str = "rusting.post_volume";
 pub const CAMERA_SCREEN_COMPONENT: &str = "rusting.camera_screen";
@@ -1320,6 +1330,9 @@ impl Default for SceneComponentRegistry {
             .register::<super::EnvironmentMap>(ENVIRONMENT_MAP_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
+            .register::<super::LightCookie>(LIGHT_COOKIE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
             .register::<super::ReflectionProbe>(REFLECTION_PROBE_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
@@ -1329,7 +1342,19 @@ impl Default for SceneComponentRegistry {
             .register::<super::Bloom>(BLOOM_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
+            .register::<super::AutoExposure>(AUTO_EXPOSURE_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
             .register::<super::ColorGrading>(COLOR_GRADING_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::ColorLut>(COLOR_LUT_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::DepthOfField>(DEPTH_OF_FIELD_COMPONENT)
+            .expect("empty registry has no duplicates");
+        registry
+            .register::<super::MotionBlur>(MOTION_BLUR_COMPONENT)
             .expect("empty registry has no duplicates");
         registry
             .register::<super::PostVolume>(POST_VOLUME_COMPONENT)
@@ -3538,6 +3563,8 @@ mod tests {
                 color: [0.4, 0.7, 1.0],
                 intensity: 750.0,
                 range: 12.0,
+                shadows: false,
+                radius: 0.0,
             },
         ));
         app.spawn((

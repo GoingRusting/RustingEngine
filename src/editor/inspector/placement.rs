@@ -12,12 +12,13 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::prelude::World;
 
 use crate::runtime::{
-    AmbientLight, AmbientOcclusion, Bloom, Camera, DirectionalLight, Fog,
-    MeshRenderer, Name, PointLight, SceneBackground, SkyLight, SpotLight,
-    ToneMapping, AMBIENT_LIGHT_COMPONENT, AMBIENT_OCCLUSION_COMPONENT,
-    BACKGROUND_COMPONENT, BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT,
-    FOG_COMPONENT, HUD_ELEMENT_COMPONENT, POST_VOLUME_COMPONENT,
-    SKY_LIGHT_COMPONENT, TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
+    AmbientLight, AmbientOcclusion, AutoExposure, Bloom, Camera,
+    DirectionalLight, Fog, MeshRenderer, Name, PointLight, SceneBackground,
+    SkyLight, SpotLight, ToneMapping, AMBIENT_LIGHT_COMPONENT,
+    AMBIENT_OCCLUSION_COMPONENT, AUTO_EXPOSURE_COMPONENT, BACKGROUND_COMPONENT,
+    BLOOM_COMPONENT, ENVIRONMENT_MAP_COMPONENT, FOG_COMPONENT,
+    HUD_ELEMENT_COMPONENT, POST_VOLUME_COMPONENT, SKY_LIGHT_COMPONENT,
+    TILE_MAP_COMPONENT, TONE_MAPPING_COMPONENT,
 };
 use crate::runtime::{
     ANIMATION_COMPONENT, ARTICULATION_COMPONENT, AUTO_SIMULATION_COMPONENT,
@@ -25,18 +26,20 @@ use crate::runtime::{
     COUNTER_COMPONENT, DIALOGUE_COMPONENT, FLUID_BLOCK_COMPONENT,
     FORCE_FIELD_COMPONENT, GRAVITY_VOLUME_COMPONENT, HEALTH_COMPONENT,
     HEIGHTFIELD_COMPONENT, IK_COMPONENT, INPUT_ACTION_COMPONENT,
-    JOINT_COMPONENT, LOOT_TABLE_COMPONENT, MESH_SURFACES_COMPONENT,
-    MORPH_COMPONENT, OBJECT_STATE_COMPONENT, PARTICLE_EMITTER_COMPONENT,
-    PHYSICS_MATERIAL_COMPONENT, PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT,
-    PLATFORMER_CONTROLLER_COMPONENT, PLAYER_CONTROLLER_COMPONENT,
-    POLYGON_COMPONENT, RAGDOLL_COMPONENT, REFLECTION_PROBE_COMPONENT,
-    RENDER_BOUNDS_COMPONENT, REVERB_ZONE_COMPONENT, ROPE_COMPONENT,
-    SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT, SLIDE_SOUND_COMPONENT,
-    SOUND_CUE_COMPONENT, TWEEN_COMPONENT, VEHICLE_COMPONENT, WATER_COMPONENT,
+    JOINT_COMPONENT, LIGHT_COOKIE_COMPONENT, LOOT_TABLE_COMPONENT,
+    MESH_SURFACES_COMPONENT, MORPH_COMPONENT, OBJECT_STATE_COMPONENT,
+    PARTICLE_EMITTER_COMPONENT, PHYSICS_MATERIAL_COMPONENT,
+    PHYSICS_SYNC_COMPONENT, PICKUP_COMPONENT, PLATFORMER_CONTROLLER_COMPONENT,
+    PLAYER_CONTROLLER_COMPONENT, POLYGON_COMPONENT, RAGDOLL_COMPONENT,
+    REFLECTION_PROBE_COMPONENT, RENDER_BOUNDS_COMPONENT, REVERB_ZONE_COMPONENT,
+    ROPE_COMPONENT, SCENE_INSTANCE_COMPONENT, SKIN_COMPONENT,
+    SLIDE_SOUND_COMPONENT, SOUND_CUE_COMPONENT, TWEEN_COMPONENT,
+    VEHICLE_COMPONENT, WATER_COMPONENT,
 };
 use crate::runtime::{
     CAMERA_SCREEN_COMPONENT, CAMERA_SHAKE_COMPONENT, COLOR_GRADING_COMPONENT,
-    FLASH_COMPONENT, SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
+    COLOR_LUT_COMPONENT, DEPTH_OF_FIELD_COMPONENT, FLASH_COMPONENT,
+    MOTION_BLUR_COMPONENT, SPAWN_GRID_COMPONENT, SQUASH_COMPONENT,
 };
 
 /// Components that together make a World Environment object.
@@ -63,7 +66,11 @@ fn kind(name: &str) -> Kind {
         | ENVIRONMENT_MAP_COMPONENT
         | FOG_COMPONENT
         | BLOOM_COMPONENT
+        | AUTO_EXPOSURE_COMPONENT
         | COLOR_GRADING_COMPONENT
+        | COLOR_LUT_COMPONENT
+        | DEPTH_OF_FIELD_COMPONENT
+        | MOTION_BLUR_COMPONENT
         | POST_VOLUME_COMPONENT
         | AMBIENT_OCCLUSION_COMPONENT => Kind::Environment,
         HUD_ELEMENT_COMPONENT => Kind::Hud,
@@ -125,8 +132,16 @@ pub(in crate::editor) fn placement(
         }
         FOG_COMPONENT => first_with::<Fog>(world),
         BLOOM_COMPONENT => first_with::<Bloom>(world),
+        AUTO_EXPOSURE_COMPONENT => first_with::<AutoExposure>(world),
         COLOR_GRADING_COMPONENT => {
             first_with::<crate::runtime::ColorGrading>(world)
+        }
+        COLOR_LUT_COMPONENT => first_with::<crate::runtime::ColorLut>(world),
+        DEPTH_OF_FIELD_COMPONENT => {
+            first_with::<crate::runtime::DepthOfField>(world)
+        }
+        MOTION_BLUR_COMPONENT => {
+            first_with::<crate::runtime::MotionBlur>(world)
         }
         AMBIENT_OCCLUSION_COMPONENT => first_with::<AmbientOcclusion>(world),
         _ => None,
@@ -352,6 +367,22 @@ pub(in crate::editor) fn component_help(
             "Uses an image of the surroundings for reflections and sky light.",
             "Shiny materials that need realistic reflections.",
         ),
+        MOTION_BLUR_COMPONENT => (
+            "Smears the image while the camera moves or turns.",
+            "Fast vehicles, quick camera turns, a sense of speed.",
+        ),
+        DEPTH_OF_FIELD_COMPONENT => (
+            "Blurs what is nearer or farther than the focus distance.",
+            "Draw the eye to a subject, or a cinematic close-up.",
+        ),
+        COLOR_LUT_COMPONENT => (
+            "Recolors the final image through a lookup table image.",
+            "A film look graded in an image editor.",
+        ),
+        LIGHT_COOKIE_COMPONENT => (
+            "Projects an image through this object's spot light.",
+            "Window-frame shadows, leaf patterns, a flashlight logo.",
+        ),
         REFLECTION_PROBE_COMPONENT => (
             "Captures reflections of a local area.",
             "Indoor rooms with shiny floors or glass.",
@@ -363,6 +394,10 @@ pub(in crate::editor) fn component_help(
         BLOOM_COMPONENT => (
             "Makes very bright areas glow.",
             "Lamps, sun, magic, neon.",
+        ),
+        AUTO_EXPOSURE_COMPONENT => (
+            "Brightens dark scenes and darkens bright ones, like an eye adapting.",
+            "Walking from a dark cave into sunlight.",
         ),
         AMBIENT_OCCLUSION_COMPONENT => (
             "Darkens creases and contact points for depth.",

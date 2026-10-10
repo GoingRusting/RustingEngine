@@ -999,6 +999,7 @@ const API_GROUPS: &[(&str, &[&str])] = &[
             "set_render_scale",
             "render_scale",
             "set_pixelated",
+            "set_upscale_sharpness",
             "set_vsync",
             "set_max_fps",
             "set_fullscreen",
@@ -1156,7 +1157,7 @@ mod tests {
         assert!(api.len() > 30, "only {} api items", api.len());
         assert!(api.iter().all(|i| !i.summary.is_empty()), "undocumented");
         let lighting = super::find("guide/lighting").expect("lighting");
-        for wanted in ["64", "Eco", "4 GiB", "shadows", "dropped_lights"] {
+        for wanted in ["1024", "Eco", "4 GiB", "shadows", "dropped_lights"] {
             assert!(lighting.text.contains(wanted), "{wanted}");
         }
         let graph = super::find("api/WaypointGraph").expect("waypoints");

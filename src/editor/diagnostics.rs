@@ -47,6 +47,8 @@ pub(super) fn draw_render_settings_area(
                         (Antialiasing::Off, "Off"),
                         (Antialiasing::Msaa2, "MSAA 2x"),
                         (Antialiasing::Msaa4, "MSAA 4x"),
+                        (Antialiasing::Fxaa, "FXAA"),
+                        (Antialiasing::Taa, "TAA"),
                     ],
                 );
                 choice(

@@ -1403,6 +1403,77 @@ impl Default for Bloom {
     }
 }
 
+/// Exposure that follows the scene's brightness, like an eye adapting. The
+/// renderer measures the average brightness of the lit image every frame
+/// and moves the exposure toward `key / average`, within the limits. It
+/// multiplies the `ToneMapping` exposure, which stays as compensation. The
+/// one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutoExposure {
+    /// Average linear brightness the image is brought to; 0.18 is mid grey.
+    pub key: f32,
+    /// Lowest exposure, reached in very bright scenes.
+    pub min_exposure: f32,
+    /// Highest exposure, reached in very dark scenes.
+    pub max_exposure: f32,
+    /// How fast the exposure follows a change, per second. The first
+    /// frame adapts at once.
+    pub speed: f32,
+}
+
+impl Default for AutoExposure {
+    fn default() -> Self {
+        Self {
+            key: 0.18,
+            min_exposure: 0.25,
+            max_exposure: 4.0,
+            speed: 1.5,
+        }
+    }
+}
+
+/// Camera lens blur: objects away from `focus_distance` blur, the more the
+/// farther from it, up to `blur`, the blur radius far behind the focus as a
+/// fraction of the screen height. An object at half the focus distance
+/// blurs as much. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DepthOfField {
+    /// Distance from the camera in metres that stays sharp.
+    pub focus_distance: f32,
+    /// Largest blur radius as a fraction of the screen height.
+    pub blur: f32,
+}
+
+impl Default for DepthOfField {
+    fn default() -> Self {
+        Self {
+            focus_distance: 10.0,
+            blur: 0.01,
+        }
+    }
+}
+
+/// Camera motion blur: the image smears along the screen motion of each
+/// pixel since the last frame, from the camera moving or turning. Objects
+/// moving on their own do not blur. A jump of more than about a sixth of
+/// the screen in one frame counts as a cut and does not blur. The one on
+/// the entity with the lowest ID is used.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MotionBlur {
+    /// Fraction of the last frame's motion the smear covers, like a
+    /// camera's shutter: 0.5 is a 180-degree shutter, 1 the whole frame.
+    pub intensity: f32,
+}
+
+impl Default for MotionBlur {
+    fn default() -> Self {
+        Self { intensity: 0.5 }
+    }
+}
+
 /// Shows what a camera sees on this object's mesh, like a CCTV monitor. The
 /// camera's image replaces the base color and emissive maps of the object's
 /// material, so a material with black base color and emissive `[1, 1, 1]`
@@ -1548,39 +1619,107 @@ impl Default for AmbientOcclusion {
     }
 }
 
-/// Loads the image of each added or changed [`EnvironmentMap`]. A map whose
-/// load failed (file missing or not written yet) is tried again about every
-/// two seconds.
+/// Projects an image through the [`SpotLight`](super::SpotLight) on the
+/// same entity, like a slide in a projector: the light's color is
+/// multiplied by the image, which fills the outer cone with its top
+/// toward the light's up (+Y). Black parts block the light.
+// ponytail: four cookies per frame (the first four cookie spot lights in
+// entity order); move to a texture array if scenes need more.
+#[derive(
+    Component, Clone, Debug, Default, PartialEq, Serialize, Deserialize,
+)]
+#[serde(default)]
+pub struct LightCookie {
+    /// Image path relative to the project's `assets` folder.
+    pub texture: std::path::PathBuf,
+    /// The loaded `texture`, set by the engine.
+    #[serde(skip)]
+    pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+}
+
+/// Color lookup table applied after tone mapping and [`ColorGrading`]: an
+/// image strip of N squares of N x N pixels side by side (for example
+/// 256 x 16 or 1024 x 32). Red runs across each square, green down it, and
+/// blue from square to square; an identity strip changes nothing. Grade a
+/// screenshot with an identity strip pasted in, in any image editor, then
+/// save the strip. The one on the entity with the lowest ID is used.
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorLut {
+    /// Image path relative to the project's `assets` folder.
+    pub texture: std::path::PathBuf,
+    /// 0 leaves the image as is, 1 applies the table fully.
+    pub intensity: f32,
+    /// The loaded `texture`, set by the engine.
+    #[serde(skip)]
+    pub handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+}
+
+impl Default for ColorLut {
+    fn default() -> Self {
+        Self {
+            texture: std::path::PathBuf::new(),
+            intensity: 1.0,
+            handle: None,
+        }
+    }
+}
+
+/// Loads the image of each added or changed [`EnvironmentMap`],
+/// [`LightCookie`] and [`ColorLut`]. An image whose load failed (file missing or not written
+/// yet) is tried again about every two seconds.
 pub(super) fn load_environment_maps(
     assets: Option<ResMut<crate::assets::AssetServer>>,
     mut maps: Query<&mut EnvironmentMap>,
+    mut cookies: Query<&mut LightCookie>,
+    mut luts: Query<&mut ColorLut>,
     mut frame: bevy_ecs::prelude::Local<u32>,
 ) {
     let Some(mut assets) = assets else {
         return;
     };
     *frame = frame.wrapping_add(1);
-    for mut map in &mut maps {
-        let retry = map.handle.is_none()
-            && !map.texture.as_os_str().is_empty()
-            && (*frame).is_multiple_of(120);
-        if !bevy_ecs::change_detection::DetectChanges::is_changed(&map)
-            && !retry
-        {
-            continue;
+    let retry_frame = (*frame).is_multiple_of(120);
+    let mut load = |changed: bool,
+                    texture: &std::path::Path,
+                    handle: &mut Option<
+        crate::assets::Handle<crate::assets::TextureAsset>,
+    >,
+                    what: &str| {
+        let retry =
+            handle.is_none() && !texture.as_os_str().is_empty() && retry_frame;
+        if !changed && !retry {
+            return;
         }
-        let map = map.bypass_change_detection();
-        map.handle = (!map.texture.as_os_str().is_empty())
+        *handle = (!texture.as_os_str().is_empty())
             .then(|| {
                 assets
                     .textures
-                    .handle_for_path(&map.texture)
+                    .handle_for_path(texture)
                     .map(Ok)
-                    .unwrap_or_else(|| assets.load_texture(&map.texture))
-                    .map_err(|error| eprintln!("environment map: {error}"))
+                    .unwrap_or_else(|| assets.load_texture(texture))
+                    .map_err(|error| eprintln!("{what}: {error}"))
                     .ok()
             })
             .flatten();
+    };
+    for mut map in &mut maps {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&map);
+        let map = map.bypass_change_detection();
+        load(changed, &map.texture, &mut map.handle, "environment map");
+    }
+    for mut cookie in &mut cookies {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&cookie);
+        let cookie = cookie.bypass_change_detection();
+        load(changed, &cookie.texture, &mut cookie.handle, "light cookie");
+    }
+    for mut lut in &mut luts {
+        let changed =
+            bevy_ecs::change_detection::DetectChanges::is_changed(&lut);
+        let lut = lut.bypass_change_detection();
+        load(changed, &lut.texture, &mut lut.handle, "color lut");
     }
 }
 

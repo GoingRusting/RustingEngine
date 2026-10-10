@@ -9,21 +9,21 @@ use super::TypeRegistry;
 use crate::assets::{AlphaMode, MaterialAsset, MaterialModel};
 use crate::runtime::Rope;
 use crate::runtime::{
-    AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoSimulation,
-    AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake,
-    ColorGrading, CombineMode, Connection, Connections, Counter, CullingMode,
-    DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
-    EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
-    GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
-    InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
-    LootEntry, LootTable, MeshSurfaces, ObjectState, PhysicsMaterial,
-    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
-    PlayerController, Polygon2d, PostVolume, QualityProfile, RandomSeed,
-    ReflectionProbe, RenderBounds, RenderSettings, ReverbZone, SceneBackground,
-    SceneInstance, ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId,
-    SpawnGrid, Squash, StateAction, StateTransition, TileKind, TileMap,
-    ToneMapper, ToneMapping, Tween, TweenProperty, TweenRepeat, Vehicle,
-    WaterBody, Wheel,
+    AmbientLight, AmbientOcclusion, Antialiasing, Articulation, AutoExposure,
+    AutoSimulation, AxisLock, AxisMotion, Bloom, BurstEmitter, CameraScreen,
+    CameraShake, ColorGrading, ColorLut, CombineMode, Connection, Connections,
+    Counter, CullingMode, DepthOfField, DeterminismMode, Dialogue,
+    DialogueChoice, DialogueLine, Easing, EnvironmentMap, FieldKind, Flash,
+    FluidBlock, Fog, ForceField, GravityVolume, GroundSurface, Health,
+    Heightfield, HudAnchor, HudElement, InputAction, Joint, JointAxis,
+    JointKind, JointMotor, JointSpring, LightCookie, LootEntry, LootTable,
+    MeshSurfaces, MotionBlur, ObjectState, PhysicsMaterial, PhysicsSettings,
+    PhysicsSyncMode, Pickup, PlatformerController, PlayerController, Polygon2d,
+    PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
+    RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
+    SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
+    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
+    TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -1011,6 +1011,27 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    struct ColorLut {
+        texture: PathBuf {
+            unit: "asset path",
+            doc: "strip of N squares of N x N pixels; blue picks the square",
+        },
+        intensity: f32 { unit: "factor", min: 0.0, max: 1.0 },
+        #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+    }
+}
+
+crate::reflect! {
+    struct LightCookie {
+        texture: PathBuf {
+            unit: "asset path",
+            doc: "image the spot light on this object projects",
+        },
+        #[skip] handle: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
+    }
+}
+
+crate::reflect! {
     struct ReflectionProbe {
         extents: [f32; 3] {
             unit: "m", min: 0.0,
@@ -1135,6 +1156,49 @@ crate::reflect! {
 }
 
 crate::reflect! {
+    struct AutoExposure {
+        key: f32 {
+            unit: "linear", min: 0.001, max: 1.0,
+            doc: "average brightness the image is brought to; 0.18 is mid grey",
+        },
+        min_exposure: f32 {
+            unit: "factor", min: 0.001,
+            doc: "lowest exposure, for very bright scenes",
+        },
+        max_exposure: f32 {
+            unit: "factor", min: 0.001,
+            doc: "highest exposure, for very dark scenes",
+        },
+        speed: f32 {
+            unit: "1/s", min: 0.0,
+            doc: "how fast exposure follows a change in brightness",
+        },
+    }
+}
+
+crate::reflect! {
+    struct DepthOfField {
+        focus_distance: f32 {
+            unit: "m", min: 0.01,
+            doc: "distance from the camera that stays sharp",
+        },
+        blur: f32 {
+            unit: "fraction", min: 0.0, max: 0.05,
+            doc: "largest blur radius as a fraction of the screen height",
+        },
+    }
+}
+
+crate::reflect! {
+    struct MotionBlur {
+        intensity: f32 {
+            unit: "fraction", min: 0.0, max: 1.0,
+            doc: "fraction of the last frame's camera motion the smear covers",
+        },
+    }
+}
+
+crate::reflect! {
     struct Bloom {
         intensity: f32 {
             unit: "factor", min: 0.0, max: 4.0,
@@ -1219,7 +1283,7 @@ crate::reflect! {
 }
 
 crate::reflect! {
-    enum Antialiasing { Auto, Off, Msaa2, Msaa4 }
+    enum Antialiasing { Auto, Off, Msaa2, Msaa4, Fxaa, Taa }
 }
 
 crate::reflect! {
@@ -1238,6 +1302,10 @@ crate::reflect! {
         },
         pixelated: bool {
             doc: "Stretch a scaled frame with nearest-neighbour filtering: square pixels instead of blur.",
+        },
+        upscale_sharpness: f32 {
+            unit: "factor", min: 0.0, max: 1.0,
+            doc: "Above 0, a render scale below 1 is stretched with an edge-preserving filter and contrast-adaptive sharpening of this strength (FSR 1 style) instead of blur.",
         },
         background_color: [f32; 4] {
             unit: "linear RGBA", min: 0.0, max: 1.0, color: true,

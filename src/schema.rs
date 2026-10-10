@@ -281,7 +281,7 @@ pub const OPERATIONS: &[Operation] = &[
     Operation {
         name: "lint",
         usage: "lint [project-root] [--json]",
-        summary: "Presentation and design checks on the main scene, as warnings with codes: a player body outside 0.5 to 3 m tall (LINT_PLAYER_SCALE), a zero scale axis (LINT_ZERO_SCALE), a camera that starts inside another entity's box, sphere or capsule collider other than a player body (LINT_CAMERA_INSIDE), a sensor (pickup, goal or trigger) whose centre is inside another entity's solid box, sphere or capsule collider (LINT_GOAL_INSIDE), a sensor at the player's height that no walk or jump from the player's start reaches past fixed walls (LINT_GOAL_UNREACHABLE; walls named as strings in game code count as doors), HUD text below 14 px (LINT_TEXT_SMALL) anchored outside a 1280 x 720 view (LINT_TEXT_OFFSCREEN) or measured to run past its edge (LINT_TEXT_OVERFLOW, with the ui feature), HUD button text below WCAG contrast against the button fill (egui's dark one, or `button_fill` in assets/ui/theme.json), 4.5:1 or 3:1 from 24 px (LINT_TEXT_CONTRAST, with the ui feature), a solid collider more than twice or less than half the size of its entity's built-in cube, sphere, cylinder or capsule mesh on some axis (LINT_COLLIDER_MISMATCH), lights that can never light anything: negative intensity, zero range or black color (LINT_LIGHT_OFF), and visible lights past the quality profile's light budget (Eco 16, Balanced 32, High and Auto 64), which the renderer drops (LINT_LIGHT_BUDGET), and counters that can never end a round: none has a target and game code never calls counter_complete, load_scene or quit (LINT_NO_ENDING; a scene with no counters is not judged), and a literal object name in game code, such as `scene.flash(\"Stairz\")`, that no scene or prefab has, with close names (LINT_MISSING_OBJECT; names built at run time and names a spawn call creates are skipped), and a literal action in `pressed`, `held`, `press_tick` or `binding` that no `rusting.input_action`, `rebind` call or built-in `player.*` action defines (LINT_MISSING_ACTION), and a literal class in `in_class` that no entity has and no other string in game code names (LINT_MISSING_CLASS); a literal `gpu_events` name that no rule in game code or a scene names (LINT_MISSING_EVENT); a literal scene path, prefab path or sound clip with no file there (LINT_MISSING_FILE); and a HUD element whose colour game code changes with `set_hud` while its text never changes and holds no counter readout (LINT_COLOR_ONLY_STATUS); and a counter with a target that nothing reacts to: no HUD element requires or shows it, no pickup requires it, and game code never names it (LINT_SILENT_GOAL); and a literal `tr(\"key\")` or `tr_count(\"key\", ..)` key in game code, or a `{tr:key}` in the main scene's HUD text, that a locale file in `assets/locales/` lacks; `tr_count` needs `key.one` and `key.other` (LINT_MISSING_TRANSLATION). Fails when any check warns.",
+        summary: "Presentation and design checks on the main scene, as warnings with codes: a player body outside 0.5 to 3 m tall (LINT_PLAYER_SCALE), a zero scale axis (LINT_ZERO_SCALE), a camera that starts inside another entity's box, sphere or capsule collider other than a player body (LINT_CAMERA_INSIDE), a sensor (pickup, goal or trigger) whose centre is inside another entity's solid box, sphere or capsule collider (LINT_GOAL_INSIDE), a sensor at the player's height that no walk or jump from the player's start reaches past fixed walls (LINT_GOAL_UNREACHABLE; walls named as strings in game code count as doors), HUD text below 14 px (LINT_TEXT_SMALL) anchored outside a 1280 x 720 view (LINT_TEXT_OFFSCREEN) or measured to run past its edge (LINT_TEXT_OVERFLOW, with the ui feature), HUD button text below WCAG contrast against the button fill (egui's dark one, or `button_fill` in assets/ui/theme.json), 4.5:1 or 3:1 from 24 px (LINT_TEXT_CONTRAST, with the ui feature), a solid collider more than twice or less than half the size of its entity's built-in cube, sphere, cylinder or capsule mesh on some axis (LINT_COLLIDER_MISMATCH), lights that can never light anything: negative intensity, zero range or black color (LINT_LIGHT_OFF), and visible lights past the quality profile's light budget (Eco 256, Balanced 512, High and Auto 1024), which the renderer drops (LINT_LIGHT_BUDGET), and counters that can never end a round: none has a target and game code never calls counter_complete, load_scene or quit (LINT_NO_ENDING; a scene with no counters is not judged), and a literal object name in game code, such as `scene.flash(\"Stairz\")`, that no scene or prefab has, with close names (LINT_MISSING_OBJECT; names built at run time and names a spawn call creates are skipped), and a literal action in `pressed`, `held`, `press_tick` or `binding` that no `rusting.input_action`, `rebind` call or built-in `player.*` action defines (LINT_MISSING_ACTION), and a literal class in `in_class` that no entity has and no other string in game code names (LINT_MISSING_CLASS); a literal `gpu_events` name that no rule in game code or a scene names (LINT_MISSING_EVENT); a literal scene path, prefab path or sound clip with no file there (LINT_MISSING_FILE); and a HUD element whose colour game code changes with `set_hud` while its text never changes and holds no counter readout (LINT_COLOR_ONLY_STATUS); and a counter with a target that nothing reacts to: no HUD element requires or shows it, no pickup requires it, and game code never names it (LINT_SILENT_GOAL); and a literal `tr(\"key\")` or `tr_count(\"key\", ..)` key in game code, or a `{tr:key}` in the main scene's HUD text, that a locale file in `assets/locales/` lacks; `tr_count` needs `key.one` and `key.other` (LINT_MISSING_TRANSLATION). Fails when any check warns.",
         gpu: NO_GPU,
         defaults: &[("project-root", "the current folder")],
         example: "lint my_game --json",
@@ -760,18 +760,20 @@ const ENTITY_SECTIONS: &[Section] = &[
     },
     Section {
         key: "point_light",
-        summary: "Light radiating from the object's position.",
-        gpu: "shading cost per lit pixel; up to 64 lights per frame (32 at Balanced, 16 at Eco), the rest are dropped; casts no shadows (guide/lighting)",
+        summary: "Light radiating from the object's position. `shadows` gives it six shadow map faces (a lamp in a room); one light per frame casts shadows, and a shadowed directional or spot light wins.",
+        gpu: "shading cost per lit pixel; each pixel shades only the point and spot lights whose range reaches its screen cluster; up to 1024 lights per frame (512 at Balanced, 256 at Eco), the rest are dropped; six shadow views when shadows is true, each drawing every caster (guide/lighting)",
         example: || json!({"color": [1.0, 0.8, 0.6], "intensity": 800.0, "range": 8.0}),
         fields: &[
             field("/color", RGB, "0..1", ""),
             field("/intensity", "renderer units, not lumens", ">= 0", "1000 lights a white surface facing it, up close, as brightly as the 100000 lux sun; brightness falls off as (1 - distance/range)^2. A desk lamp in a dark room: 400-1500; a bright party light: 3000-8000"),
             field("/range", METRES, "> 0", "light reaches zero here"),
+            field("/shadows", "", "", "default false"),
+            field("/radius", METRES, ">= 0", "size of the glowing sphere; wider, softer highlights on shiny surfaces. Default 0, a point. A bulb: 0.03; a paper lantern: 0.2"),
         ],
     },
     Section {
         key: "spot_light",
-        summary: "Cone of light along the object's forward direction. `shadows` gives it a shadow map (a flashlight stops at walls); one light per frame casts shadows, and a shadowed directional light wins.",
+        summary: "Cone of light along the object's forward direction. `shadows` gives it a shadow map (a flashlight stops at walls); one light per frame casts shadows, and a shadowed directional light wins. A rusting.light_cookie on the same object projects an image through it.",
         gpu: "as point_light; one shadow pass when shadows is true",
         example: || json!({"color": [1.0, 1.0, 1.0], "intensity": 1200.0, "range": 12.0, "inner_angle": 0.3, "outer_angle": 0.5}),
         fields: &[
@@ -781,6 +783,7 @@ const ENTITY_SECTIONS: &[Section] = &[
             field("/inner_angle", RADIANS, "0..outer_angle", "fully lit cone"),
             field("/outer_angle", RADIANS, "inner_angle..1.57", "light reaches zero here"),
             field("/shadows", "", "", "default false"),
+            field("/radius", METRES, ">= 0", "as point_light"),
         ],
     },
 ];
@@ -823,6 +826,18 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"texture": "sky.png", "intensity": 1.0}),
     },
     ComponentSection {
+        key: "rusting.color_lut",
+        summary: "Color lookup table under assets/, applied after tone mapping and rusting.color_grading: an image strip of N squares of N x N pixels side by side (256 x 16 or 1024 x 32). Red runs across each square, green down it, blue from square to square; an identity strip changes nothing, so paste one into a screenshot, grade it in any image editor and save the strip. intensity 0..1 blends it in. The first one found is used.",
+        gpu: "one texture sample per pixel in tone mapping",
+        example: || json!({"texture": "grades/teal_orange.png", "intensity": 1.0}),
+    },
+    ComponentSection {
+        key: "rusting.light_cookie",
+        summary: "On an object with a spot_light: projects an image under assets/ through the light's outer cone, like a slide in a projector (window frames, leaves, a logo). The light's color is multiplied by the image; its top points along the light's up (+Y). At most four cookie spot lights per frame, the first in entity order; others light without their image.",
+        gpu: "one texture sample per lit pixel for each cookie light that reaches it",
+        example: || json!({"texture": "window_cookie.png"}),
+    },
+    ComponentSection {
         key: "rusting.reflection_probe",
         summary: "Box of half size extents around the object's position. Surfaces inside reflect the scene as seen from that position, projected onto the box walls, in place of the environment map. Captured when added or changed; up to four are used.",
         gpu: "each probe renders the scene six times when captured",
@@ -845,6 +860,24 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         summary: "Glow around pixels brighter than threshold (linear, before exposure), spread over the screen before tone mapping. The first one found is used.",
         gpu: "a half-resolution blur chain of about 12 compute passes",
         example: || json!({"intensity": 0.5, "threshold": 1.0, "spread": 0.7}),
+    },
+    ComponentSection {
+        key: "rusting.auto_exposure",
+        summary: "Eye adaptation: every frame the renderer measures the average brightness of the lit image and moves exposure toward key / average, clamped to min_exposure..max_exposure, at speed per second (the first frame adapts at once). It multiplies the rusting.tone_mapping exposure. The first one found is used.",
+        gpu: "one single-workgroup compute pass reading 4096 samples",
+        example: || json!({"key": 0.18, "min_exposure": 0.25, "max_exposure": 4.0, "speed": 1.5}),
+    },
+    ComponentSection {
+        key: "rusting.depth_of_field",
+        summary: "Lens blur: objects nearer or farther than focus_distance metres blur, up to blur (a fraction of the screen height) far behind the focus or at half its distance. Reads the opaque depth, so transparent objects blur with what is behind them. The first one found is used.",
+        gpu: "a copy of the HDR image and depth, and 32 taps per pixel in tone mapping",
+        example: || json!({"focus_distance": 10.0, "blur": 0.01}),
+    },
+    ComponentSection {
+        key: "rusting.motion_blur",
+        summary: "Camera motion blur: each pixel smears along its screen motion since the last frame, scaled by intensity (0.5 is a 180-degree shutter). Only camera movement blurs; a jump of more than a sixth of the screen counts as a cut. The first one found is used.",
+        gpu: "a copy of the HDR image and depth, and 16 taps per moving pixel in tone mapping",
+        example: || json!({"intensity": 0.5}),
     },
     ComponentSection {
         key: "rusting.ambient_occlusion",

@@ -526,8 +526,8 @@ mod tests {
             report.physics_bodies,
             1 + crate::runtime::RENDER_BENCHMARK_BODIES
         );
-        // 1 sun + 24 point lights against Eco's 16.
-        assert_eq!(report.dropped_lights, 9);
+        // 1 sun + 24 point lights fit Eco's 256.
+        assert_eq!(report.dropped_lights, 0);
         assert!(report.regressions(&report).is_empty());
     }
 }

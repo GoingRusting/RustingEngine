@@ -82,6 +82,9 @@ pub struct ExtractedSpotLight {
     pub entity: Entity,
     pub transform: GlobalTransform,
     pub light: SpotLight,
+    /// The loaded image of a [`LightCookie`](super::LightCookie) on the
+    /// same entity.
+    pub cookie: Option<crate::assets::Handle<crate::assets::TextureAsset>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -144,7 +147,14 @@ pub struct RenderWorld {
     pub tone_mapping: Option<ToneMapping>,
     pub fog: Option<super::Fog>,
     pub bloom: Option<super::Bloom>,
+    pub auto_exposure: Option<super::AutoExposure>,
+    pub depth_of_field: Option<super::DepthOfField>,
+    pub motion_blur: Option<super::MotionBlur>,
     pub color_grading: Option<super::ColorGrading>,
+    /// Loaded image and intensity of the first loaded
+    /// [`ColorLut`](super::ColorLut).
+    pub color_lut:
+        Option<(crate::assets::Handle<crate::assets::TextureAsset>, f32)>,
     /// Meshes that show a camera's image, in entity order.
     pub screens: Vec<ExtractedScreen>,
     pub ambient_occlusion: Option<super::AmbientOcclusion>,
@@ -312,12 +322,25 @@ pub fn extract_render_world(world: &mut World) {
         super::Fog::lerp,
     );
     let bloom = collect_first::<super::Bloom>(world);
+    let auto_exposure = collect_first::<super::AutoExposure>(world);
+    let depth_of_field = collect_first::<super::DepthOfField>(world);
+    let motion_blur = collect_first::<super::MotionBlur>(world);
     let color_grading = collect_blended(
         world,
         eye,
         super::ColorGrading::DEFAULT,
         super::ColorGrading::lerp,
     );
+    let color_lut = {
+        let mut query = world.query::<(Entity, &super::ColorLut)>();
+        query
+            .iter(world)
+            .filter_map(|(entity, lut)| {
+                Some((entity.index(), lut.handle?, lut.intensity))
+            })
+            .min_by_key(|(entity, ..)| *entity)
+            .map(|(_, handle, intensity)| (handle, intensity))
+    };
     let screens = collect_screens(world);
     let ambient_occlusion = collect_first::<super::AmbientOcclusion>(world);
     let particles = collect_particles(world);
@@ -462,7 +485,11 @@ pub fn extract_render_world(world: &mut World) {
     render_world.tone_mapping = tone_mapping;
     render_world.fog = fog;
     render_world.bloom = bloom;
+    render_world.auto_exposure = auto_exposure;
+    render_world.depth_of_field = depth_of_field;
+    render_world.motion_blur = motion_blur;
     render_world.color_grading = color_grading;
+    render_world.color_lut = color_lut;
     render_world.screens = screens;
     render_world.ambient_occlusion = ambient_occlusion;
     render_world.particles = particles;
@@ -884,15 +911,21 @@ fn collect_point_lights(world: &mut World) -> Vec<ExtractedPointLight> {
 }
 
 fn collect_spot_lights(world: &mut World) -> Vec<ExtractedSpotLight> {
-    let mut query = world.query::<(Entity, &GlobalTransform, &SpotLight)>();
+    let mut query = world.query::<(
+        Entity,
+        &GlobalTransform,
+        &SpotLight,
+        Option<&super::LightCookie>,
+    )>();
     let world = &*world;
     let mut lights = query
         .iter(world)
         .filter(|(entity, ..)| visible_in_hierarchy(world, *entity))
-        .map(|(entity, transform, light)| ExtractedSpotLight {
+        .map(|(entity, transform, light, cookie)| ExtractedSpotLight {
             entity,
             transform: *transform,
             light: *light,
+            cookie: cookie.and_then(|cookie| cookie.handle),
         })
         .collect::<Vec<_>>();
     lights.sort_by_key(|light| light.entity.index());

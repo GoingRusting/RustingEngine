@@ -2423,7 +2423,7 @@ Depends on: Milestones 3 and 4.
   occlusion culling, MSAA off and 4x, opaque and glossy); pass table
   `transitions_list_every_layout_change_between_passes`. Screen-space
   indirect lighting is not started.
-- [ ] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
+- [x] Bloom/glow, depth of field, motion blur, auto-exposure, color grading LUTs, vignette, and chromatic aberration.
   Partial (bloom): `rusting.bloom` (intensity, threshold, spread). After the
   transparent pass, the `Bloom` compute pass prefilters the HDR target to
   half resolution (13-tap with Karis weights against fireflies, soft knee
@@ -2433,9 +2433,128 @@ Depends on: Milestones 3 and 4.
   refraction frames. Off in probe captures and non-Lit views. Evidence: GPU
   tests `bloom_spreads_bright_light_into_its_surroundings` (dark pixels
   beside an emissive quad brighten only with bloom on) and
-  `atmosphere_effects_combine_with_every_scene_path`. The other effects
-  are not started.
-- [ ] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
+  `atmosphere_effects_combine_with_every_scene_path`.
+  Done elsewhere: vignette and chromatic aberration are `ColorGrading`
+  fields (art direction C and the CRT/VHS item).
+  Partial (auto-exposure): `rusting.auto_exposure` (key, min_exposure,
+  max_exposure, speed). After the transparent pass, the `Exposure` compute
+  pass takes 4096 bilinear taps of the HDR target in one workgroup, sums
+  log luminance with a fixed-order reduction, and moves a persistent
+  exposure factor toward `key / average` in log space by
+  `1 - exp(-speed * dt)` (wall-clock dt; the first frame after a frame
+  without it snaps). Tone mapping multiplies the `ToneMapping` exposure by
+  it. Off in probe captures and non-Lit views; camera screens adapt in
+  their own renderer. Limits: plain average with no histogram or center
+  weighting; a bright spot between taps is missed. Evidence: GPU test
+  `auto_exposure_brings_the_scene_to_its_key` (a 0.02 slab at key 0.06
+  matches a fixed exposure of 3; speed 0 holds it when the key changes; a
+  frame without it resets; `max_exposure` clamps), which fails when the
+  meter writes 1.0; pass table `transitions_list_every_layout_change_between_passes`;
+  unit test `atmosphere_settings_come_from_the_lowest_entity`. Full check:
+  fmt, clippy three ways, `cargo test --workspace` (820 passed, 105
+  ignored) and GPU tests (922 passed). Depth of field, motion blur and
+  color grading LUTs are not started.
+  Partial (color grading LUTs): `rusting.color_lut` (texture, intensity).
+  The texture is a strip of N squares of N x N texels (256x16, 1024x32);
+  the lowest entity with a loaded strip wins. Tone mapping, after
+  `ColorGrading` and before the film effects, sRGB-encodes the color, reads
+  two neighboring squares and blends them by blue, then mixes by
+  intensity. Lit view only; a camera screen's own grading skips it; a strip
+  whose width is not its height squared is ignored. Docs in
+  `docs/look-and-feel.md`. Evidence: GPU test
+  `color_lut_remaps_the_final_image` (a red-blue swap strip turns a red
+  unlit slab blue at intensity 1 and shows both at 0.5), which fails when
+  the shader drops the lookup. Full check: fmt, clippy three ways,
+  `cargo test --workspace` (821 passed, 111 ignored) and GPU tests (929
+  passed). Depth of field and motion blur are not started.
+  Partial (depth of field): `rusting.depth_of_field` (focus_distance,
+  blur). Frames with it take the scene-color copy path and also copy the
+  opaque depth into depth-pyramid mip 0. Tone mapping turns depth back into
+  distance with four projection entries (perspective and orthographic),
+  sets the blur radius to `blur * |1 - focus / distance|` capped at `blur`
+  (a fraction of the screen height), and gathers 32 golden-angle taps;
+  nearer taps sharper than their distance stay out, so sharp edges do not
+  smear over a blurred background. Push constants packed to 128 bytes
+  (sampled and auto-exposure flags in one word; LUT size from the texture).
+  Lit view only. Limits: a blurred foreground keeps a hard outline over a
+  sharp background (no scatter or max-blur tiles); transparent objects blur
+  with what is behind them. Evidence: GPU test
+  `depth_of_field_blurs_only_away_from_the_focus` (an edge slab 5 m away
+  matches the plain frame at focus 5 and softens at 2.5 and 50, for both
+  projections); it fails when the gather is skipped, the distance sign is
+  flipped, or the depth formula is scaled. Full check: fmt, clippy three
+  ways, `cargo test --workspace` (821 passed, 112 ignored; the tools
+  lane's `a_handshake_must_arrive_whole_in_time_and_stay_small` failed once
+  under load and passes alone) and GPU tests (930 passed). Motion blur is
+  not started.
+  Done (motion blur): `rusting.motion_blur` (intensity, the shutter
+  share). The renderer keeps last frame's view projection while it is on;
+  tone mapping reprojects each pixel's opaque depth through `previous *
+  inverse(current)` (a small storage buffer at set 1, binding 2) and
+  averages 16 taps along the screen motion times intensity, centered on the
+  pixel. No last frame means no blur; motion longer than a sixth of the
+  screen height is a cut. Off in probe captures and non-Lit views. Limits:
+  camera motion only (no per-object velocity buffer); where motion blur
+  applies it replaces depth of field for that pixel. Evidence: GPU test
+  `motion_blur_smears_only_while_the_camera_moves` (sharp on the first and
+  still frames, soft edge on a 0.2-unit slide, sharp again when held, sharp
+  on a 1-unit jump); it fails when the cut limit is lifted, the gather is
+  skipped, or the last frame stops updating. Full check: fmt, clippy three
+  ways, `cargo test --workspace` (821 passed, 113 ignored; the tools lane's
+  flaky handshake test failed once under load and passes alone) and GPU
+  tests (931 passed). With bloom, auto exposure, LUTs, depth of field and
+  motion blur in, and vignette and chromatic aberration in `ColorGrading`,
+  the item is done.
+- [x] Temporal anti-aliasing and FXAA; optional upscaling (FSR-class) behind capability checks.
+  Partial (FXAA): `Antialiasing::Fxaa` (Project Settings and Render
+  Settings list it as "FXAA") renders the scene at 1 sample and runs a
+  console-style FXAA (Lottes) in the tone-mapping pass. It reads the HDR
+  copy and finds edges on the exposed, compressed luma. Flat areas exit
+  early, and the far tap falls back to the near tap when it leaves the
+  local luma range. GPU test `fxaa_smooths_a_stair_stepped_edge` draws a
+  tilted white slab at 64x64. Without FXAA, fewer than 4 pixels fall
+  between the dark and white levels; with it, more than 30 do. The
+  background and the slab interior stay unchanged. Mutation checks: an
+  edge test that always exits early, and a blend that returns the center
+  pixel, both fail the test. Full check: fmt, clippy x3 clean;
+  workspace tests 820 passed (flaky net handshake test passes alone);
+  gpu-tests 932 passed.
+  Partial (TAA): `Antialiasing::Taa` ("TAA") renders 1 sample and shifts
+  the projection by a Halton(2,3) sub-pixel offset, cycling every 8
+  frames. Shadow cascades and reprojection use the unshifted matrix. The
+  `TemporalHistory` compute pass (`post_effects.rs`) runs after the scene
+  color copy. It reprojects each pixel into last frame's history using
+  depth and last frame's unshifted view projection, clamps the history to
+  the pixel's 3x3 neighborhood, and blends in 10% of the new frame. The
+  result goes back over the copy, so DOF, motion blur and grading run on
+  top of it. The history starts over after a resize, a viewport change or
+  a frame without TAA. Probe captures turn TAA off. GPU test
+  `taa_smooths_a_still_edge_and_leaves_no_ghost_when_it_moves`: the first
+  TAA frame matches no AA (fewer than 4 in-between pixels). After 24
+  frames, more than 30 pixels are in between, and the background and slab
+  interior are unchanged. Moving the slab off screen leaves no pixel
+  brighter than dark+20. Mutation checks: no jitter, and no history,
+  each give 0 in-between pixels; no clamp leaves a 243 ghost. Full check:
+  fmt, clippy x3 clean; workspace tests 820 passed (the flaky net
+  handshake test passes alone); gpu-tests 933 passed. Limits: no test
+  covers reprojection under camera motion. Split views that share one
+  renderer reset the history every view, so they get no TAA.
+  Upscaling: `RenderSettings::upscale_sharpness` (0 to 1, default 0; game
+  API `set_upscale_sharpness`). Above 0, a `render_scale` below 1 is
+  stretched by a full-screen pass, not the linear blit. The pass does a
+  9-tap Catmull-Rom filter, clamped to the 4 nearest source texels so
+  edges do not ring, then AMD CAS-style contrast-adaptive sharpening. The
+  capability check is the existing render-scale one: the scaled image's
+  format must support blit and linear filtering, else the frame renders
+  at scale 1. Pixelated and split-viewport blits keep the old path. GPU
+  test `sharp_upscale_keeps_edges_steeper_than_the_linear_stretch`, at
+  render scale 0.5 on 64x64: summed squared neighbor steps are 30056
+  linear vs 62520 sharp (the test requires more than 1.5x). Center and
+  corners match within 8. Mutation checks: with the sharp path off, both
+  give 30056; with no sharpening lobe, 33448; both fail. Limit: the test
+  cannot tell Catmull-Rom from bilinear in the center tap, because
+  sharpening dominates. Full check: fmt, clippy x3 clean; workspace tests
+  821 passed; gpu-tests 934 passed.
 - [ ] Volumetric fog with light scattering and fog volumes.
   Partial (height fog): `rusting.fog` (color, density, height,
   height_falloff, sun_scatter, sky_affect). `src/shaders/fog.glsl`
@@ -2462,9 +2581,77 @@ Depends on: Milestones 3 and 4.
 
 ### Lighting and shadows
 
-- [ ] Cascaded shadow maps for directional lights; shadows for point and spot lights.
-- [ ] Clustered lighting for many point and spot lights.
-- [ ] Area-light approximation and light cookies.
+- [x] Cascaded shadow maps for directional lights; shadows for point and spot lights.
+  - Partial (cascades, 2026-10-10): the shadowed directional light renders 4
+    cascades into the 2x2 tiles of the existing shadow map
+    (`scene_renderer.rs` `cascade_end`, `frustum_slice_sphere`,
+    `cascade_view_projection`). Splits blend log and even (0.75/0.25) up to
+    the profile's shadow distance; each cascade bounds its frustum slice
+    with a sphere and snaps to whole texels, so edges do not shimmer. The
+    fragment shader picks the cascade by camera depth and clamps taps inside
+    its tile. Spot lights keep one whole-map view; they already had shadows.
+    Evidence: GPU test `near_cascade_resolves_a_thin_shadow` (a 3 cm rod one
+    unit from the camera darkens the floor to r < 30); with every cascade
+    stretched to the full distance (mutation of `cascade_end`) it fails
+    with r=249 and the six older shadow tests still pass. Full check:
+    fmt, clippy x3 clean; `cargo test --workspace` 819 passed, 1 failed
+    (`net::tests::a_handshake_must_arrive_whole_in_time_and_stay_small`
+    gets `WouldBlock`, not `TimedOut`, under load; outside this item, passes
+    alone); gpu-tests run 923 lib tests passed.
+    Open then: point-light shadows, cascade blending, per-cascade culling.
+  - Done (point lights, 2026-10-10): `PointLight` gains `shadows` (serde
+    default false; schema, inspector checkbox and `docs/lighting.md`
+    updated). A shadowed point light, used when no directional or spot
+    light casts shadows, renders six 90-degree faces (two texels wider, so
+    PCF taps stay on the tile) into a 3x3 atlas of the shadow map
+    (`point_shadow_view_projections`); the fragment shader picks the face by
+    the major axis away from the light. Evidence: GPU test
+    `point_light_shadow_falls_through_each_cube_face` darkens the floor to
+    r < 30 behind an occluder through the -X and the -Z face, leaves it lit
+    without shadows and without a caster (no self-shadowing); forcing every
+    pixel onto face +Z fails it (r=255). Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 819 passed, 1 failed (the same net handshake
+    timing test, `WouldBlock` vs `TimedOut`, outside this lane); gpu-tests
+    run 924 lib tests passed.
+    Not done: blending between cascades, per-cascade or per-face caster
+    culling.
+- [x] Clustered lighting for many point and spot lights.
+  - Done (2026-10-10): `build_light_clusters` (`scene_renderer.rs`) bins
+    each point and spot light's range sphere into a 16x9 screen-tile by 24
+    exponential-depth-slice grid every frame, on the CPU, into one
+    transient buffer (an offset/count pair per cluster, then light
+    indices, at most 256 per cluster). The fragment shader shades every
+    directional light, then only its cluster's lights. `MAX_LIGHTS` rises
+    from 64 to 1024 (budgets Eco 256, Balanced 512, High 1024); docs,
+    schema, lint text and the lint test follow. Evidence: unit test
+    `light_clusters_list_only_the_lights_that_reach_them` (near, far,
+    behind-camera, around-camera and off-screen lights land in the right
+    clusters only); GPU test `clustered_point_lights_each_light_their_own_spot`
+    (49 lights under a slanted perspective camera: every spot lit, every
+    gap dark); it fails when the shader's slice count (24 to 12) or tile
+    grid (16x9 to 9x16) disagrees with the CPU. `quality_profiles_compare_on_one_scene`
+    now uses 600 lights. Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 821 passed; gpu-tests run 926 lib tests passed.
+    Not done: GPU-side binning, per-cluster brightness sorting before the cap.
+- [x] Area-light approximation and light cookies.
+  - Done: point and spot lights take a `radius` (sphere source, default 0).
+    Specular uses Karis' representative point on the sphere nearest the
+    reflection ray, with the GGX lobe widened and renormalized by
+    `(a / a')^2`; diffuse is unchanged. New `rusting.light_cookie`
+    component (image path) on a spot light projects the image through the
+    outer cone, top along the light's +Y; up to four cookie images per
+    frame in set 2 binding 8, loaded like the environment map. Schema,
+    reflection, scene file, snapshot, inspector ("Source Radius"), Add
+    Component text and docs/lighting.md follow. Evidence: GPU tests
+    `sphere_light_widens_the_highlight_on_glossy_surfaces` (black glossy
+    floor: 16 bright pixels for a point, 148 for radius 0.4; fails at 16
+    vs 16 when the shader ignores the radius) and
+    `spot_light_cookie_projects_its_image_onto_the_floor` (four colored
+    quadrants land in the matching screen quadrants; fails when the
+    image's up is flipped). Full check: fmt, clippy x3 clean;
+    `cargo test --workspace` 820 passed plus the load-flaky net handshake
+    test, which passes alone; gpu-tests run 928 lib tests passed.
+    Not done: rectangle/tube area lights (LTC), cookies on point lights.
 
 ### Geometry and effects
 

@@ -84,8 +84,10 @@ impl ScaledTarget {
                 ImageCreateInfo {
                     format,
                     extent: [size[0], size[1], 1],
+                    // Sampled by the sharp upscale.
                     usage: ImageUsage::COLOR_ATTACHMENT
-                        | ImageUsage::TRANSFER_SRC,
+                        | ImageUsage::TRANSFER_SRC
+                        | ImageUsage::SAMPLED,
                     ..Default::default()
                 },
                 AllocationCreateInfo::default(),
@@ -157,6 +159,7 @@ pub fn render_game(
     let failed = |error: SceneRenderError| format!("render: {error}");
     let scale = settings.render_scale;
     renderer.set_upscale_nearest(settings.pixelated);
+    renderer.set_upscale_sharpness(settings.upscale_sharpness);
     let format = target.format();
     let [width, height, _] = target.image().extent();
     let extent = [width, height];

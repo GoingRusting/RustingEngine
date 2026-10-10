@@ -36,8 +36,8 @@ Do this after the game works and before calling it done.
   in a warm color, and a weaker sky or ambient light (the fill) in a cool
   color, or the reverse for night. Equal light from every side looks flat.
   One light casts shadows: the directional light, or a spot light with
-  `shadows` when there is no shadowed directional light. At most 64 lights
-  draw a frame at `High` quality, 32 at `Balanced` and 16 at `Eco`;
+  `shadows` when there is no shadowed directional light. At most 1024 lights
+  draw a frame at `High` quality, 512 at `Balanced` and 256 at `Eco`;
   `rusting docs show guide/lighting` says which one `Auto` picks.
 - **Materials.** Not everything has roughness 0.5. Metal is metallic and
   smoother; cloth, wood and stone are rough. Emissive is for lights,
@@ -98,6 +98,41 @@ everything.
 - `shadows` and `highlights` tint the dark and bright parts. Cool shadows
   with warm highlights is the classic film look.
 - `vignette` 0..1 darkens the corners and leads the eye to the center.
+
+For a look made in a paint or grading program, use `rusting.color_lut`. Its
+`texture` is a strip of N squares of N x N pixels, 256x16 or 1024x32: red
+goes across a square, green goes down, and blue steps from square to square.
+Grade a neutral strip like that in the program, save it, and point the
+component at it. `intensity` 0..1 blends from the plain image to the graded
+one. The lookup runs after `rusting.color_grading` and does not follow
+`rusting.post_volume`:
+
+```json
+"rusting.color_lut": {"texture": "looks/warm_film.png", "intensity": 0.8}
+```
+
+`rusting.depth_of_field` blurs what is nearer or farther than
+`focus_distance` metres, like a camera lens. `blur` is the largest blur
+radius as a fraction of the screen height: 0.005 is subtle, 0.02 is strong.
+Objects at half the focus distance, or far behind it, get the full blur.
+Move `focus_distance` from a script for focus pulls in cutscenes:
+
+```json
+"rusting.depth_of_field": {"focus_distance": 4.0, "blur": 0.01}
+```
+
+A blurred object in front of a sharp one keeps a hard outline; it does not
+spread over the sharp one.
+
+`rusting.motion_blur` smears the image while the camera moves or turns.
+`intensity` is the share of the last frame's motion the smear covers, like
+a camera shutter: 0.5 is the film look, 1 is heavy. Objects moving on their
+own do not blur, and a camera jump of more than a sixth of the screen counts
+as a cut, so teleports stay sharp:
+
+```json
+"rusting.motion_blur": {"intensity": 0.5}
+```
 
 ### Film and CRT/VHS effects
 

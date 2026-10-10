@@ -170,6 +170,14 @@ pub struct PointLight {
     pub color: [f32; 3],
     pub intensity: f32,
     pub range: f32,
+    /// Casts shadows through six cube faces of the shadow map. Only when
+    /// no directional or spot light in the frame casts shadows.
+    #[serde(default)]
+    pub shadows: bool,
+    /// Radius in metres of the glowing sphere. A larger source gives
+    /// wider, softer highlights on shiny surfaces; 0 is a point.
+    #[serde(default)]
+    pub radius: f32,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -185,6 +193,10 @@ pub struct SpotLight {
     /// light: a directional light with shadows wins over spot lights.
     #[serde(default)]
     pub shadows: bool,
+    /// Radius in metres of the glowing sphere. A larger source gives
+    /// wider, softer highlights on shiny surfaces; 0 is a point.
+    #[serde(default)]
+    pub radius: f32,
 }
 
 impl Default for SpotLight {
@@ -196,6 +208,7 @@ impl Default for SpotLight {
             inner_angle: 20.0_f32.to_radians(),
             outer_angle: 35.0_f32.to_radians(),
             shadows: false,
+            radius: 0.0,
         }
     }
 }
@@ -206,6 +219,8 @@ impl Default for PointLight {
             color: [1.0; 3],
             intensity: 1_000.0,
             range: 10.0,
+            shadows: false,
+            radius: 0.0,
         }
     }
 }
@@ -382,9 +397,13 @@ pub enum CullingMode {
     FrustumAndOcclusion,
 }
 
-/// Multisample anti-aliasing. `Auto` follows the quality profile: off on
-/// `Eco`, the most samples the device offers (up to 4) otherwise. A count
-/// the device lacks falls back to the next lower one.
+/// Anti-aliasing. `Auto` follows the quality profile: off on `Eco`, the
+/// most multisamples the device offers (up to 4) otherwise. A count the
+/// device lacks falls back to the next lower one. `Fxaa` renders one sample
+/// and smooths edges found in the final image instead: cheaper than MSAA,
+/// also smooths edges inside textures and alpha-cut leaves, a little softer.
+/// `Taa` renders one sample from a slightly different spot each frame and
+/// blends the frames: the smoothest edges, with some blur on fast motion.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
 )]
@@ -394,6 +413,8 @@ pub enum Antialiasing {
     Off,
     Msaa2,
     Msaa4,
+    Fxaa,
+    Taa,
 }
 
 /// Shadow map resolution and reach. `Auto` follows the quality profile.
@@ -423,6 +444,10 @@ pub struct RenderSettings {
     /// Stretch a scaled frame with nearest-neighbour filtering, so a low
     /// `render_scale` shows square pixels instead of blur.
     pub pixelated: bool,
+    /// Above 0, a `render_scale` below 1 is stretched with an
+    /// edge-preserving filter and contrast-adaptive sharpening of this
+    /// strength (up to 1), like FSR 1, instead of a plain linear stretch.
+    pub upscale_sharpness: f32,
     /// RGBA color used to clear the game render target before drawing.
     pub background_color: [f32; 4],
     pub culling: CullingMode,
@@ -445,6 +470,7 @@ impl Default for RenderSettings {
             max_fps: 120,
             render_scale: 1.0,
             pixelated: false,
+            upscale_sharpness: 0.0,
             background_color: [0.025, 0.04, 0.07, 1.0],
             culling: CullingMode::Auto,
             antialiasing: Antialiasing::Auto,

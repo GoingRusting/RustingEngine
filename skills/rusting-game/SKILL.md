@@ -222,10 +222,15 @@ each one's fields, defaults and an example:
 - `rusting.color_grading`: Runs after tone mapping: contrast around mid grey, saturation (0 grey, 1 unchanged), shadows and highlights color tints, vignette (0..1) darkening the corners, and film/CRT effects (0..1, off at 0): grain, chromatic_aberration, scanlines, color_bleed, noise_band, distortion.
 - `rusting.camera_screen`: On an object with a mesh: shows what the camera entity named camera sees, at size [w, h] pixels, in place of the material's base color and emissive maps.
 - `rusting.environment_map`: Equirectangular (2:1) sky image under assets/ that surfaces reflect and are lit by, replacing the sky_light hemisphere.
+- `rusting.color_lut`: Color lookup table under assets/, applied after tone mapping and rusting.color_grading: an image strip of N squares of N x N pixels side by side (256 x 16 or 1024 x 32).
+- `rusting.light_cookie`: On an object with a spot_light: projects an image under assets/ through the light's outer cone, like a slide in a projector (window frames, leaves, a logo).
 - `rusting.reflection_probe`: Box of half size extents around the object's position.
 - `rusting.fog`: Exponential height fog: the scene fades into color with distance, thinning above height by height_falloff per metre.
 - `rusting.post_volume`: Makes the rusting.fog and rusting.color_grading on the same object apply only near it: fully while the active camera is inside the box of half size extents (world axes, metres), fading out over blend metres outside.
 - `rusting.bloom`: Glow around pixels brighter than threshold (linear, before exposure), spread over the screen before tone mapping.
+- `rusting.auto_exposure`: Eye adaptation: every frame the renderer measures the average brightness of the lit image and moves exposure toward key / average, clamped to min_exposure..max_exposure, at speed per second (the first frame adapts at once).
+- `rusting.depth_of_field`: Lens blur: objects nearer or farther than focus_distance metres blur, up to blur (a fraction of the screen height) far behind the focus or at half its distance.
+- `rusting.motion_blur`: Camera motion blur: each pixel smears along its screen motion since the last frame, scaled by intensity (0.5 is a 180-degree shutter).
 - `rusting.ambient_occlusion`: Screen-space ambient occlusion: darkens ambient, sky and environment light in creases within radius metres.
 - `rusting.background`: Clear color behind the scene.
 - `rusting.render_bounds`: Render-only visibility bounds in local space, separate from the collider.
@@ -352,7 +357,7 @@ works too.
 | animation | `play_animation(name, clip)`, `crossfade(name, clip, seconds)`, `stop_animation(name)`, `is_playing(name, clip)`, `set_animation_speed(name, speed)`, `set_animation_parameter(name, parameter, value)`, `animation_events()`, `take_root_motion(name)`, `set_ragdoll(name, limp)`, `set_ragdoll_muscle(name, hz)`, `reset_ragdoll(name)`, `is_limp(name)` |
 | rounds, levels | `once(key, action)`, `restart()`, `load_scene(path)`, `initial(name)`, `snapshot()`, `restore(snapshot)`, `state_hash(class)`, `seed()`, `random(stream)`, `roll_loot(table, stream)`, `roll_loot_table(name, stream)` |
 | menus, saves | `ui()`, `set_text_scale(scale)`, `text_scale()`, `set_paused(paused)`, `paused()`, `set_time_scale(scale)`, `time_scale()`, `quit()`, `save_data(key, text)`, `load_data(key)`, `delete_data(key)`, `saved_keys(folder)`, `save_counters(key, version, names)`, `save_objects(key, version, objects, components)`, `load_objects(key)`, `load_counters(key)`, `load_text(path)` |
-| video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)`, `set_window_title(title)` |
+| video settings | `set_render_scale(scale)`, `render_scale()`, `set_pixelated(pixelated)`, `set_upscale_sharpness(sharpness)`, `set_vsync(enabled)`, `set_max_fps(fps)`, `set_fullscreen(fullscreen)`, `fullscreen()`, `set_window_size(size)`, `set_window_title(title)` |
 | translations | `set_locale(locale)`, `locale()`, `tr(key)`, `tr_count(key, count)` |
 | dialogue | `start_dialogue(name)`, `dialogue_line(name)`, `advance_dialogue(name, choice)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
@@ -413,7 +418,8 @@ say:
 - `window_focused()` is false after alt-tab, and `clicked()` lists HUD
   buttons clicked; see `guide/menus-and-ui`.
 - `set_render_scale(0.25..=2.0)`; `set_pixelated(true)` upscales with
-  nearest filtering for a chunky low scale.
+  nearest filtering for a chunky low scale; `set_upscale_sharpness(0..=1)`
+  keeps a low scale crisp instead (FSR 1 style).
 - `set_hard_shadows(true)` draws crisp one-tap shadow edges for low-poly
   art; materials with `flat_shading` get faceted normals on any mesh.
 - `MeshVertex::color` (linear RGBA, white by default) tints the

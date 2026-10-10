@@ -52,6 +52,9 @@ pub enum FramePass {
     /// Bright parts of the finished HDR blurred through a mip chain. Only
     /// frames with bloom.
     Bloom,
+    /// Average brightness of the finished HDR, adapting the exposure. Only
+    /// frames with auto exposure.
+    Exposure,
     /// HDR target mapped into the output (main render pass, subpass 1).
     ToneMap,
     /// Editor debug lines over the output (main render pass, subpass 1).
@@ -75,6 +78,8 @@ pub enum FrameResource {
     AmbientOcclusion,
     /// Glow that tone mapping adds to the HDR color.
     Bloom,
+    /// Adapted auto exposure factor, kept from frame to frame.
+    Exposure,
     /// The caller's output image (swapchain image or offscreen target).
     Target,
 }
@@ -97,7 +102,7 @@ pub struct LayoutTransition {
 }
 
 impl FramePass {
-    pub const ALL: [FramePass; 15] = [
+    pub const ALL: [FramePass; 16] = [
         FramePass::Uploads,
         FramePass::Physics,
         FramePass::Culling,
@@ -111,6 +116,7 @@ impl FramePass {
         FramePass::SceneColor,
         FramePass::Transparent,
         FramePass::Bloom,
+        FramePass::Exposure,
         FramePass::ToneMap,
         FramePass::DebugOverlay,
     ];
@@ -131,6 +137,7 @@ impl FramePass {
             FramePass::SceneColor => "SceneColor",
             FramePass::Transparent => "Transparent",
             FramePass::Bloom => "Bloom",
+            FramePass::Exposure => "Exposure",
             FramePass::ToneMap => "ToneMap",
             FramePass::DebugOverlay => "DebugOverlay",
         }
@@ -258,11 +265,20 @@ impl FramePass {
                     ]
                 }
             }
+            FramePass::Exposure => {
+                const {
+                    &[
+                        read(HdrColor, Some(ShaderReadOnlyOptimal)),
+                        write(Exposure, None),
+                    ]
+                }
+            }
             FramePass::ToneMap => {
                 const {
                     &[
                         read(HdrColor, Some(ShaderReadOnlyOptimal)),
                         read(Bloom, Some(ShaderReadOnlyOptimal)),
+                        read(Exposure, None),
                         write(Target, Some(ColorAttachmentOptimal)),
                     ]
                 }

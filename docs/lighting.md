@@ -9,18 +9,31 @@ shadows. `rusting schema point_light` (and `spot_light`,
 | Light | Scene key | Shadows |
 | --- | --- | --- |
 | Sun | `directional_light` | Yes, with `"shadows": true`. Only the first shadowed directional light casts them. |
-| Lamp | `point_light` | No. |
+| Lamp | `point_light` | Yes, with `"shadows": true`, when no directional or spot light casts them. |
 | Cone | `spot_light` | Yes, with `"shadows": true`, when no directional light casts them. |
 | Flat fill | `rusting.ambient_light` | No; it lights everything equally. |
 | Sky and ground fill | `rusting.sky_light` | No; up-facing surfaces get `sky_color`, down-facing ones `ground_color`. |
 
-Point lights pass through walls: a lamp lights the room behind a wall as far
-as its `range` reaches. Keep each `range` inside its room and put lamps near
-room centres. A spot light with `"shadows": true` stops at walls, so a
-flashlight does not light the far side of a door. One light per frame casts
-shadows: the first directional light with `shadows`, or, when there is none,
-the first spot light with `shadows`. A mesh's `cast_shadows` and
+Unshadowed point lights pass through walls: a lamp lights the room behind a
+wall as far as its `range` reaches. Keep each `range` inside its room and put
+lamps near room centres. A spot or point light with `"shadows": true` stops
+at walls, so a flashlight does not light the far side of a door. One light
+per frame casts shadows: the first directional light with `shadows`, or,
+when there is none, the first spot light with `shadows`, then the first
+point light with `shadows`. The sun's shadow uses four cascades, sharp near
+the camera; a point light's shadow renders six cube faces. A mesh's `cast_shadows` and
 `receive_shadows` apply to that one shadow.
+
+Point and spot lights have a `radius`: the size of the glowing bulb, in
+metres. At 0 a shiny floor reflects the lamp as a pinpoint; a paper
+lantern at 0.2 reflects as a soft disc. Lighting of matte surfaces does
+not change.
+
+A `rusting.light_cookie` on a spot light's object projects an image
+through the cone, like a slide in a projector: a window frame, leaves, a
+logo. White lets the light through, black blocks it, colors tint it. The
+image's top points along the light's +Y. Four cookie lights draw per
+frame; further ones light without their image.
 
 ## Brightness and direction
 
@@ -52,10 +65,13 @@ matter.
 
 ## How many lights draw
 
-The renderer draws at most 64 lights a frame at `High` quality, 32 at
-`Balanced` and 16 at `Eco` (`/render/quality` in the scene). `Auto` picks
+The renderer draws at most 1024 lights a frame at `High` quality, 512 at
+`Balanced` and 256 at `Eco` (`/render/quality` in the scene). `Auto` picks
 `Eco` on an integrated GPU, `Balanced` on a discrete GPU with less than
-4 GiB of video memory, and `High` otherwise (64 on an RTX 3060). Budget for
+4 GiB of video memory, and `High` otherwise (1024 on an RTX 3060). Each
+pixel shades every directional light but only the point and spot lights
+whose `range` reaches its screen cluster, so many small lamps cost little;
+a few lamps with huge ranges cost as much as before. Budget for
 the lowest quality the game supports. Ambient and sky light do not count.
 
 Past the cap, lights are dropped in this order: directional lights are kept
