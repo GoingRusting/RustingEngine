@@ -17,7 +17,7 @@ use crate::runtime::{
 use crate::Transform;
 use bevy_ecs::prelude::*;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use uuid::Uuid;
 
@@ -221,9 +221,15 @@ impl Replica {
         // Check the whole message before changing anything.
         let mut changes = Vec::with_capacity(patch.len());
         let mut tracked = self.entities.len();
+        let mut seen = BTreeSet::new();
         for (key, change) in patch {
             let id =
                 Uuid::parse_str(&key).map_err(|error| error.to_string())?;
+            // One id in two spellings (case, braces, urn:) would pass the
+            // checks twice against the same world state.
+            if !seen.insert(id) {
+                return Err(format!("{id} appears twice"));
+            }
             let entity = self.find(world, id)?;
             match &change {
                 Value::Object(fields) => {
@@ -509,6 +515,14 @@ mod tests {
             .collect();
         let refused = replica.apply(&mut client, HOST, &encode(&flood));
         assert!(refused.unwrap().is_err());
+        assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
+
+        let id = Uuid::new_v4();
+        let twice = message(json!({
+            id.to_string(): {},
+            id.to_string().to_uppercase(): {},
+        }));
+        assert!(replica.apply(&mut client, HOST, &twice).unwrap().is_err());
         assert_eq!(client.query::<&SceneId>().iter(&client).count(), 1);
     }
 }
