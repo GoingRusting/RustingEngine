@@ -6534,3 +6534,31 @@ fn ragdolls_generate_from_skinned_joints_and_go_limp() {
         .position;
     assert!(end[1] < 1.2, "head body stayed at {end:?}");
 }
+
+#[test]
+fn tall_box_stacks_settle_and_sleep_with_cached_contacts() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    cpu_ground(world);
+    // Ten unit boxes, each dropped 1 cm above the one below.
+    let boxes: Vec<_> = (0..10)
+        .map(|level| {
+            let y = 0.5 + level as f32 * 1.01;
+            cpu_body(world, [0.0, y, 0.0], UNIT_BOX, RigidBodyKind::Dynamic)
+        })
+        .collect();
+    run_fixed_steps(&mut app, 300);
+    for (level, &entity) in boxes.iter().enumerate() {
+        assert!(
+            app.world().get::<Sleeping>(entity).is_some(),
+            "box {level} never settled"
+        );
+        let at = app.world().get::<Transform>(entity).unwrap().position;
+        // Each contact rests about the penetration slop deep.
+        let height = 0.5 + level as f32 * 0.995;
+        assert!(
+            at[0].hypot(at[2]) < 0.025 && (at[1] - height).abs() < 0.01,
+            "box {level} at {at:?}"
+        );
+    }
+}

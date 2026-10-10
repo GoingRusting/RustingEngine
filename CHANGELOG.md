@@ -9,6 +9,7 @@
 
 ### Added
 
+- Regression test for ten-box stacks settling with cached contacts.
 - `GameScene::generate_ragdoll(name, total_mass)` and `runtime::ragdoll_bones` build ragdoll bones from a character's skinned joints.
 - A `PlayerController` on a dynamic `RigidBody` is moved by the solver: walking steers it with a bounded force, jumps set its vertical speed, and it never tips over.
 - Ground snapping for `PlayerController`: a walking player stays on the ground down ramps and steps no taller than `max_step_height` instead of hopping off them, so it can jump all the way down. `PhysicsWorld::snap_to_floor` gives the same snap to custom character code.
