@@ -140,6 +140,10 @@ pub fn resource_state_hash(world: &mut World) -> u64 {
         if let Some(kill_y) = settings.kill_y {
             hasher.floats(&[kill_y]);
         }
+        // One substep is the default and leaves older hashes unchanged.
+        if settings.substeps != 1 {
+            hasher.word(u64::from(settings.substeps));
+        }
     }
     if let Some(physics) = world.get_resource::<PhysicsWorld>() {
         physics.hash_state(&mut hasher);

@@ -1019,9 +1019,35 @@ impl PhysicsWorld {
     }
 }
 
-/// Runs one fixed CPU physics step; see the module docs.
+/// Runs one fixed CPU physics step as [`PhysicsSettings::substeps`] equal
+/// substeps; see the module docs. A pair touching in several substeps
+/// sends one [`CollisionEvent`], and bodies fall asleep only on the last.
 pub(super) fn step_cpu_physics(world: &mut World) {
     let dt = world.resource::<FrameTime>().fixed_delta.as_secs_f32();
+    let substeps = world.resource::<PhysicsSettings>().substeps.max(1);
+    let mut events = Vec::new();
+    let mut impacts = Vec::new();
+    for index in 0..substeps {
+        let last = index + 1 == substeps;
+        substep(world, dt / substeps as f32, last, &mut events, &mut impacts);
+    }
+    let mut seen = HashSet::new();
+    let mut queue = world.resource_mut::<EventQueue<CollisionEvent>>();
+    for event in events {
+        if seen.insert((event.a, event.b)) {
+            queue.send(event);
+        }
+    }
+    world.resource_mut::<PhysicsWorld>().impacts = impacts;
+}
+
+fn substep(
+    world: &mut World,
+    dt: f32,
+    last: bool,
+    sent: &mut Vec<CollisionEvent>,
+    all_impacts: &mut Vec<Contact>,
+) {
     let settings = world.resource::<PhysicsSettings>().clone();
     let mut rest =
         std::mem::take(&mut world.resource_mut::<PhysicsWorld>().rest);
@@ -1192,12 +1218,13 @@ pub(super) fn step_cpu_physics(world: &mut World) {
             .collect();
         correct_positions(&mut bodies, &pushed_out, dt);
         write_back(world, &bodies);
-        fall_asleep(world, &bodies, &mut rest);
+        if last {
+            fall_asleep(world, &bodies, &mut rest);
+        }
     }
 
-    let mut events = world.resource_mut::<EventQueue<CollisionEvent>>();
     for (a, b, contact) in &contacts {
-        events.send(CollisionEvent {
+        sent.push(CollisionEvent {
             a: bodies[*a].entity,
             b: bodies[*b].entity,
             sensor: contact.sensor,
@@ -1227,7 +1254,7 @@ pub(super) fn step_cpu_physics(world: &mut World) {
         .map(|(.., contact)| contact)
         .chain(resting)
         .collect();
-    physics.impacts = impacts;
+    all_impacts.extend(impacts);
     physics.bodies = bodies;
     physics.rest = rest;
     if let Some(kill_y) = settings.kill_y {

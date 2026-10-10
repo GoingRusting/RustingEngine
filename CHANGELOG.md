@@ -9,6 +9,7 @@
 
 ### Added
 
+- `PhysicsSettings::substeps` and `ProjectRunner::set_physics_substeps` split each CPU physics step into equal substeps. Eight substeps hold a 20-link joint chain with a 50:1 tip within 2 cm, where one stretched it by metres; four rest 100 kg on 1 kg. Trade-off table in docs/concepts.md.
 - `rusting.gravity_volume`: a sensor body that replaces gravity for CPU bodies inside it (zero-g rooms, wind tunnels, `toward_center` planets), with `priority` for overlaps
 - Scenario reports give the game process's memory: `perf.rss_mb` at the end and `perf.rss_mb_peak` (Linux)
 - Agent benchmark new-game tasks `lift-new-game` (a lift moving up and down that counts trips), `seed-planter-new-game` (numbered copies of a template, one a second) and `lamp-switch-new-game` (a key toggles a point light)

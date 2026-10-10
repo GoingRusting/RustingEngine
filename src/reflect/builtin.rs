@@ -1141,6 +1141,7 @@ crate::reflect! {
         gravity: [f32; 3] { unit: "m/s²" },
         enabled: bool,
         kill_y: Option<f32> { unit: "m", doc: "Loose dynamic CPU bodies below this height are despawned and send FellOut." },
+        substeps: u32 { doc: "CPU solver substeps per fixed step; more hold joint chains and mass ratios tighter at that many times the cost." },
     }
 }
 

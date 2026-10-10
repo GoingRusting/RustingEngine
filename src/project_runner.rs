@@ -3246,6 +3246,15 @@ impl GameScene<'_> {
             .kill_y = y;
     }
 
+    /// Splits each CPU physics step into `substeps` (at least 1). More
+    /// substeps hold long joint chains and heavy-on-light stacks tighter, at
+    /// that many times the solver cost.
+    pub fn set_physics_substeps(&mut self, substeps: u32) {
+        self.world
+            .resource_mut::<crate::runtime::PhysicsSettings>()
+            .substeps = substeps.max(1);
+    }
+
     /// Names of the bodies the kill plane despawned since the last frame,
     /// in body order. Unnamed bodies are left out.
     #[must_use]

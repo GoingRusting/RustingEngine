@@ -462,6 +462,10 @@ pub struct PhysicsSettings {
     /// Loose dynamic CPU bodies below this height are despawned and send
     /// `FellOut`; `None` keeps them falling.
     pub kill_y: Option<f32>,
+    /// CPU solver substeps per fixed step. More substeps hold long joint
+    /// chains and heavy-on-light stacks tighter, at that many times the
+    /// solver cost.
+    pub substeps: u32,
 }
 
 /// Reports which physics backends are connected to the ECS scene runner.
@@ -481,6 +485,7 @@ impl Default for PhysicsSettings {
             gravity: [0.0, -9.81, 0.0],
             enabled: true,
             kill_y: None,
+            substeps: 1,
         }
     }
 }

@@ -349,7 +349,7 @@ works too.
 | dialogue | `start_dialogue(name)`, `dialogue_line(name)`, `advance_dialogue(name, choice)` |
 | tiles, fields | `tile(map, position)`, `set_tile(map, position, character)`, `set_field(name, path, value)` |
 | GPU bodies | `apply_gpu_physics_to_class(class, settings)`, `watch_gpu_class(class, rule)`, `watch_gpu_object(name, rule)`, `set_gpu_condition_shaders(shaders)`, `gpu_events(name)`, `gpu_state(name)`, `count_gpu_bodies_in_box(class, min, max)`, `gpu_command(name, command)` |
-| other | `rebind_device(action, inputs)`, `set_kill_y(y)`, `fell_out()` |
+| other | `rebind_device(action, inputs)`, `set_kill_y(y)`, `set_physics_substeps(substeps)`, `fell_out()` |
 | on `object(name)` | `entity()`, `position()`, `set_position(position)`, `move_by(offset)`, `move_x(distance)`, `move_y(distance)`, `move_z(distance)`, `rotation()`, `scale()`, `set_rotation(rotation)`, `look_at(target)`, `rotate_by(rotation)`, `rotate_x(rotation)`, `rotate_y(rotation)`, `rotate_z(rotation)`, `set_scale(scale)` |
 <!-- api-table:end -->
 

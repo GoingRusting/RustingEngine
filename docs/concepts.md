@@ -384,6 +384,27 @@ object's centre at that many m/s², so a sphere sensor becomes a small planet.
 Where volumes overlap, the highest `priority` wins. `gravity_scale` still
 applies. GPU bodies and the player controller keep the scene gravity.
 
+### Substeps: long joint chains and heavy-on-light stacks
+
+The CPU solver runs each fixed step as `PhysicsSettings::substeps` equal
+substeps (default 1; `ProjectRunner::set_physics_substeps(n)` in a game).
+More substeps hold joints and stacks tighter, at about that many times the
+solver cost. Measured on a 20-ball joint chain whose tip is 50 times heavier
+than each link, 300 steps in release:
+
+| Substeps | Largest link stretch | Stretch at rest | Time |
+| --- | --- | --- | --- |
+| 1 | 6.6 m | 0.41 m | 29 ms |
+| 4 | 0.024 m | 0.001 m | 74 ms |
+| 8 | 0.009 m | 0.0004 m | 124 ms |
+
+A 100 kg box on a 1 kg box sinks 6 cm into it with 1 substep and under 1 cm
+with 4. For a chain or ragdoll that must never stretch, put
+`rusting.articulation` on its root instead: the joints then hold exactly at
+any mass ratio, at a cost that grows with the cube of the link count.
+Substeps are a scene setting, not part of the render quality profile, so
+the simulation is the same on every machine.
+
 ### Many GPU bodies: keep the contact grid uncrowded
 
 GPU contacts use a grid. Each cell is as wide as the largest GPU body and

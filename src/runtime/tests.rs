@@ -6197,3 +6197,99 @@ fn raycast_cost_per_ray() {
     assert!(hits > rays as usize / 2);
     assert!(per_ray < 200.0, "{per_ray:.2} us per ray");
 }
+
+/// A 20-ball chain held out level from a fixed anchor, each ball 0.3 m
+/// from the last, whose tip ball is 50 times heavier than the rest. Returns
+/// the anchor and the balls.
+fn heavy_tipped_chain(app: &mut App, articulated: bool) -> Vec<Entity> {
+    let world = app.world_mut();
+    let sphere = |radius| ColliderShape::Sphere { radius };
+    let anchor =
+        cpu_body(world, [0.0, 10.0, 0.0], sphere(0.05), RigidBodyKind::Fixed);
+    if articulated {
+        world.entity_mut(anchor).insert(Articulation {});
+    }
+    let mut chain = vec![anchor];
+    for index in 1..=20 {
+        let ball = cpu_body(
+            world,
+            [0.3 * index as f32, 10.0, 0.0],
+            sphere(0.1),
+            RigidBodyKind::Dynamic,
+        );
+        if index == 20 {
+            world.get_mut::<RigidBody>(ball).unwrap().mass = 50.0;
+        }
+        world.entity_mut(ball).insert(Joint::new(
+            JointKind::BallSocket,
+            chain[index - 1],
+            [-0.3, 0.0, 0.0],
+            [0.0; 3],
+        ));
+        chain.push(ball);
+    }
+    chain
+}
+
+/// Largest and final link stretch of `chain` over `steps` fixed steps.
+fn chain_stretch(app: &mut App, chain: &[Entity], steps: u32) -> (f32, f32) {
+    let mut worst = 0.0_f32;
+    let mut last = 0.0;
+    for _ in 0..steps {
+        run_fixed_steps(app, 1);
+        last = chain
+            .windows(2)
+            .map(|pair| (distance(app, pair[0], pair[1]) - 0.3).abs())
+            .fold(0.0, f32::max);
+        worst = worst.max(last);
+    }
+    (worst, last)
+}
+
+#[test]
+fn long_chains_with_a_heavy_tip_hold_with_substeps_or_an_articulation() {
+    // One substep stretches this chain by metres while it whips down and
+    // leaves it 0.4 m long at rest; eight hold it within centimetres.
+    let mut app = App::new();
+    app.world_mut().resource_mut::<PhysicsSettings>().substeps = 8;
+    let chain = heavy_tipped_chain(&mut app, false);
+    let (worst, last) = chain_stretch(&mut app, &chain, 300);
+    assert!(worst < 0.02, "substepped chain stretched {worst}");
+    assert!(last < 0.002, "substepped chain ended {last} long");
+
+    let mut app = App::new();
+    let chain = heavy_tipped_chain(&mut app, true);
+    let (worst, _) = chain_stretch(&mut app, &chain, 300);
+    assert!(worst < 1e-4, "articulated chain stretched {worst}");
+}
+
+#[test]
+fn heavy_boxes_rest_on_light_ones_with_substeps() {
+    let mut app = App::new();
+    app.world_mut().resource_mut::<PhysicsSettings>().substeps = 4;
+    let world = app.world_mut();
+    cpu_ground(world);
+    let light =
+        cpu_body(world, [0.0, 0.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    let heavy =
+        cpu_body(world, [0.0, 1.5, 0.0], UNIT_BOX, RigidBodyKind::Dynamic);
+    world.get_mut::<RigidBody>(heavy).unwrap().mass = 100.0;
+    let position = |app: &App, entity| {
+        app.world().get::<Transform>(entity).unwrap().position
+    };
+    for _ in 0..180 {
+        run_fixed_steps(&mut app, 1);
+        let (low, high) = (position(&app, light), position(&app, heavy));
+        // 100:1 on one substep sinks 6 cm into the light box and slides
+        // the stack 0.2 m sideways.
+        assert!(high[1] - low[1] > 0.99, "sank to {low:?} {high:?}");
+        for drift in [low[0], low[2], high[0], high[2]] {
+            assert!(drift.abs() < 0.01, "slid to {low:?} {high:?}");
+        }
+        // Pairs touching in several substeps send one event per step.
+        let events = app.world().resource::<EventQueue<CollisionEvent>>();
+        let pairs: Vec<_> = events.iter().map(|e| (e.a, e.b)).collect();
+        let unique: std::collections::HashSet<_> = pairs.iter().collect();
+        assert_eq!(pairs.len(), unique.len(), "repeated events {pairs:?}");
+    }
+}
