@@ -141,6 +141,10 @@ command takes `--json` for output a program can read.
   friction and restitution combine (`Min` on ice keeps it slippery); a
   `rusting.sound_cue` with `with_material` plays only on touches of that
   surface, for per-surface impact sounds.
+- `rusting.force_field` on a Fixed sensor body pushes dynamic CPU bodies
+  inside it: `Directional`, `Radial` (negative `strength` pulls in),
+  `Vortex` around `direction`, or `Wind` with `turbulence` gusts. Use it
+  for jump pads, fans, whirlpools and explosions.
 - A dynamic body with a `ConvexMesh` collider collides as the convex hull
   of its mesh: a `Cylinder` mesh makes a rolling barrel.
 - `rusting.animation` plays keyframe clips (position, rotation, scale,

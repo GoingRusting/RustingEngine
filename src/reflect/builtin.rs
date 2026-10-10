@@ -12,15 +12,16 @@ use crate::runtime::{
     AxisMotion, Bloom, BurstEmitter, CameraScreen, CameraShake, ColorGrading,
     CombineMode, Connection, Connections, Counter, CullingMode,
     DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
-    EnvironmentMap, Flash, FluidBlock, Fog, GravityVolume, Health, HudAnchor,
-    HudElement, InputAction, Joint, JointAxis, JointKind, JointMotor,
-    JointSpring, LootEntry, LootTable, ObjectState, PhysicsMaterial,
-    PhysicsSettings, PhysicsSyncMode, Pickup, PlatformerController,
-    PlayerController, PostVolume, QualityProfile, RandomSeed, ReflectionProbe,
-    RenderBounds, RenderSettings, ReverbZone, SceneBackground, SceneInstance,
-    ShadowQuality, SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash,
-    StateAction, StateTransition, TileKind, TileMap, ToneMapper, ToneMapping,
-    Tween, TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
+    EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
+    GravityVolume, Health, HudAnchor, HudElement, InputAction, Joint,
+    JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
+    ObjectState, PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
+    PlatformerController, PlayerController, PostVolume, QualityProfile,
+    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, ReverbZone,
+    SceneBackground, SceneInstance, ShadowQuality, SkyLight, SlideSound,
+    SoundCue, SoundId, SpawnGrid, Squash, StateAction, StateTransition,
+    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
+    TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -699,6 +700,20 @@ crate::reflect! {
             doc: "above 0, pulls toward the volume's centre instead, for a planet",
         },
         priority: i32 { doc: "the highest wins where volumes overlap" },
+    }
+}
+
+crate::reflect! {
+    enum FieldKind { Directional, Radial, Vortex, Wind }
+}
+
+crate::reflect! {
+    struct ForceField {
+        kind: FieldKind { doc: "Directional and Wind push along direction, Radial out from the centre, Vortex around direction" },
+        strength: f32 { unit: "m/s²", doc: "the same for light and heavy bodies; negative Radial pulls in" },
+        direction: [f32; 3] { doc: "world direction, or the vortex axis" },
+        falloff_distance: f32 { unit: "m", min: 0.0, doc: "above 0, the push fades to nothing this far from the centre" },
+        turbulence: f32 { min: 0.0, doc: "Wind gusts as a share of strength; 0 is steady" },
     }
 }
 

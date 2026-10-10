@@ -985,6 +985,12 @@ const COMPONENT_SECTIONS: &[ComponentSection] = &[
         example: || json!({"gravity": [0.0, 0.0, 0.0], "toward_center": 0.0, "priority": 0}),
     },
     ComponentSection {
+        key: "rusting.force_field",
+        summary: "Pushes dynamic CPU bodies overlapping this object's sensor collider (it needs a CPU physics body, usually Fixed, with sensor true) with an acceleration of strength m/s², the same for any mass: Directional along direction, Radial out from the object's centre (negative strength pulls in), Vortex around the direction axis through the centre, Wind along direction in gusts of turbulence times strength. falloff_distance above 0 fades the push to nothing that far from the centre. Fields add up where they overlap and add to gravity. GPU bodies and the player controller are not affected.",
+        gpu: NO_GPU,
+        example: || json!({"kind": "Wind", "strength": 6.0, "direction": [1.0, 0.0, 0.0], "falloff_distance": 0.0, "turbulence": 0.5}),
+    },
+    ComponentSection {
         key: "rusting.physics_material",
         summary: "Names the surface of this object's CPU collider and sets how its collider friction and restitution combine with the other side's in a contact: Default (friction geometric mean, restitution the larger), Average, Min, Multiply or Max. Where the two sides' modes differ, the later one in that list wins, so Min on ice keeps it slippery against anything without Multiply or Max. A sound_cue with with_material set to this name plays only on touches of this surface. GPU bodies ignore it.",
         gpu: NO_GPU,

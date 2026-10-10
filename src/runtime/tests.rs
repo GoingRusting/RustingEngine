@@ -4736,6 +4736,99 @@ fn gravity_volumes_replace_the_scene_gravity_for_bodies_inside() {
 }
 
 #[test]
+fn force_fields_push_one_way_out_around_and_in_gusts_and_add_up() {
+    let run = || {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let sensor = |world: &mut bevy_ecs::world::World, at, half: f32| {
+            let entity = cpu_body(
+                world,
+                at,
+                ColliderShape::Box {
+                    half_extents: [half; 3],
+                },
+                RigidBodyKind::Fixed,
+            );
+            world.get_mut::<Collider>(entity).unwrap().sensor = true;
+            entity
+        };
+        // Zero g everywhere, so only the fields move the balls.
+        let room = sensor(world, [40.0, 0.0, 0.0], 100.0);
+        world.entity_mut(room).insert(GravityVolume::default());
+        let field = |world: &mut bevy_ecs::world::World, at, field| {
+            let entity = sensor(world, at, 3.0);
+            world.entity_mut(entity).insert(field);
+        };
+        let up = ForceField {
+            strength: 4.0,
+            ..ForceField::default()
+        };
+        field(world, [0.0; 3], up);
+        field(
+            world,
+            [0.0; 3],
+            ForceField {
+                strength: 1.0,
+                ..up
+            },
+        );
+        let radial = ForceField {
+            kind: FieldKind::Radial,
+            strength: -4.0,
+            ..up
+        };
+        field(world, [20.0, 0.0, 0.0], radial);
+        let vortex = ForceField {
+            kind: FieldKind::Vortex,
+            ..up
+        };
+        field(world, [40.0, 0.0, 0.0], vortex);
+        let faded = ForceField {
+            falloff_distance: 4.0,
+            ..up
+        };
+        field(world, [60.0, 0.0, 0.0], faded);
+        let wind = ForceField {
+            kind: FieldKind::Wind,
+            direction: [1.0, 0.0, 0.0],
+            turbulence: 0.5,
+            ..up
+        };
+        field(world, [80.0, 0.0, 0.0], wind);
+        let ball = ColliderShape::Sphere { radius: 0.25 };
+        let balls = [
+            [0.0; 3],
+            [22.0, 0.0, 0.0],
+            [42.0, 0.0, 0.0],
+            [62.0, 0.0, 0.0],
+            [80.0, 0.0, 0.0],
+        ]
+        .map(|at| cpu_body(world, at, ball, RigidBodyKind::Dynamic));
+        run_fixed_steps(&mut app, 30);
+        balls.map(|ball| {
+            app.world().get::<RigidBody>(ball).unwrap().linear_velocity
+        })
+    };
+    let [summed, pulled, swirled, faded, blown] = run();
+    let near = |a: [f32; 3], b: [f32; 3], within: f32| {
+        a.iter().zip(b).all(|(a, b)| (a - b).abs() < within)
+    };
+    // Half a second of 4 + 1 m/s² up.
+    assert!(near(summed, [0.0, 2.5, 0.0], 0.05), "{summed:?}");
+    assert!(near(pulled, [-2.0, 0.0, 0.0], 0.05), "{pulled:?}");
+    // Up × +x is -z: counterclockwise seen from above.
+    assert!(near(swirled, [0.0, 0.0, -2.0], 0.3), "{swirled:?}");
+    assert!(swirled[0] < 0.0, "turning toward the axis {swirled:?}");
+    // 2 m out of a 4 m falloff: about half strength.
+    assert!(near(faded, [0.0, 1.0, 0.0], 0.15), "{faded:?}");
+    assert!(
+        blown[0] > 1.0 && blown[0] < 3.0 && (blown[0] - 2.0).abs() > 0.05,
+        "gusty, not steady {blown:?}"
+    );
+    assert_eq!(run(), [summed, pulled, swirled, faded, blown]);
+}
+
+#[test]
 fn joints_break_past_their_force_or_torque_and_send_an_event() {
     // A ball hanging 1 m under the pivot, and a box held out 1 m from it.
     let hang = |break_force| {

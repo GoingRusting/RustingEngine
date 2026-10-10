@@ -88,6 +88,101 @@ impl Default for GravityVolume {
     }
 }
 
+/// Shape of a [`ForceField`]'s push.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum FieldKind {
+    /// Along `direction`.
+    #[default]
+    Directional,
+    /// Away from the field's centre; a negative strength pulls in.
+    Radial,
+    /// Around `direction` through the field's centre, counterclockwise
+    /// seen from where `direction` points.
+    Vortex,
+    /// Along `direction` in gusts that vary with time and place by
+    /// `turbulence`.
+    Wind,
+}
+
+/// Pushes dynamic CPU bodies overlapping this sensor collider. Fields add
+/// up where they overlap, on top of gravity.
+#[derive(
+    Component,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(default)]
+pub struct ForceField {
+    pub kind: FieldKind,
+    /// Acceleration in m/s², the same for light and heavy bodies.
+    pub strength: f32,
+    /// World direction of a directional field or wind; the axis of a
+    /// vortex.
+    pub direction: [f32; 3],
+    /// Above 0, the push fades to nothing this far from the centre.
+    pub falloff_distance: f32,
+    /// Wind gust size as a share of `strength`, 0 for steady wind.
+    pub turbulence: f32,
+}
+
+impl Default for ForceField {
+    fn default() -> Self {
+        Self {
+            kind: FieldKind::Directional,
+            strength: 10.0,
+            direction: [0.0, 1.0, 0.0],
+            falloff_distance: 0.0,
+            turbulence: 0.0,
+        }
+    }
+}
+
+impl ForceField {
+    /// Acceleration on a body at `offset` from the field's centre, at
+    /// `seconds` of fixed time.
+    fn push(&self, offset: Vector3<f32>, seconds: f32) -> Vector3<f32> {
+        let direction = Vector3::from(self.direction)
+            .try_normalize(1e-6)
+            .unwrap_or_default();
+        let distance = offset.norm();
+        let fade = if self.falloff_distance > 0.0 {
+            (1.0 - distance / self.falloff_distance).max(0.0)
+        } else {
+            1.0
+        };
+        let toward = match self.kind {
+            FieldKind::Directional => direction,
+            FieldKind::Radial => offset.try_normalize(1e-6).unwrap_or_default(),
+            FieldKind::Vortex => direction
+                .cross(&offset)
+                .try_normalize(1e-6)
+                .unwrap_or_default(),
+            FieldKind::Wind => {
+                // Two slow sine gusts that drift through space; no RNG, so
+                // every run sees the same wind.
+                let (a, _) = sim_math::sin_cos(1.7 * seconds + 0.31 * offset.x);
+                let (b, _) =
+                    sim_math::sin_cos(0.6 * seconds + 0.23 * offset.z + 1.3);
+                direction * (1.0 + self.turbulence * 0.5 * (a + b))
+            }
+        };
+        toward * self.strength * fade
+    }
+}
+
 /// How two touching colliders' friction or restitution become the pair's.
 /// Where the two sides differ, the later variant in this list wins.
 #[derive(
@@ -1266,6 +1361,10 @@ fn substep(
     let mut impacts = Vec::new();
     if settings.enabled {
         let gravities = body_gravity(world, &bodies, &contacts, gravity);
+        let time = world.resource::<FrameTime>();
+        let seconds =
+            (time.fixed_tick as f64 * time.fixed_delta.as_secs_f64()) as f32;
+        let pushes = field_pushes(world, &bodies, &contacts, seconds);
         for (index, body) in bodies
             .iter_mut()
             .enumerate()
@@ -1274,7 +1373,7 @@ fn substep(
             let scale = world
                 .get::<RigidBody>(body.entity)
                 .map_or(1.0, |rigid| rigid.gravity_scale);
-            body.velocity += gravities[index] * scale * dt;
+            body.velocity += (gravities[index] * scale + pushes[index]) * dt;
         }
     }
     if settings.enabled {
@@ -1824,6 +1923,28 @@ fn body_gravity(
             Some((.., found)) => Vector3::from(found.gravity),
         })
         .collect()
+}
+
+/// Each body's summed [`ForceField`] acceleration, from the sensors it
+/// overlaps in contact order (stable, so the sum is too).
+fn field_pushes(
+    world: &World,
+    bodies: &[Body],
+    contacts: &[(usize, usize, Contact)],
+    seconds: f32,
+) -> Vec<Vector3<f32>> {
+    let mut pushes = vec![Vector3::zeros(); bodies.len()];
+    for (a, b, _) in contacts.iter().filter(|(.., c)| c.sensor) {
+        for (field, body) in [(*a, *b), (*b, *a)] {
+            if let Some(found) = world.get::<ForceField>(bodies[field].entity) {
+                pushes[body] += found.push(
+                    bodies[body].position - bodies[field].position,
+                    seconds,
+                );
+            }
+        }
+    }
+    pushes
 }
 
 fn find_contacts(bodies: &[Body]) -> Vec<(usize, usize, Contact)> {
