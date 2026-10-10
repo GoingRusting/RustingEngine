@@ -100,6 +100,12 @@ impl Default for GravityVolume {
 pub struct Heightfield {
     pub heights: Vec<Vec<f32>>,
     pub spacing: f32,
+    /// Surface of each cell, `cells[row][column]` (one row and column fewer
+    /// than `heights`), as an index into `surfaces`. A missing cell, or an
+    /// index past the end, uses the collider's own friction, restitution
+    /// and [`PhysicsMaterial`].
+    pub cells: Vec<Vec<u8>>,
+    pub surfaces: Vec<GroundSurface>,
 }
 
 impl Default for Heightfield {
@@ -107,11 +113,45 @@ impl Default for Heightfield {
         Self {
             heights: vec![vec![0.0; 2]; 2],
             spacing: 1.0,
+            cells: Vec::new(),
+            surfaces: Vec::new(),
         }
     }
 }
 
+/// A patch of [`Heightfield`] ground (ice, mud) with its own friction,
+/// restitution and material name for `SoundCue::with_material`. The
+/// collider's [`PhysicsMaterial`] combine modes still apply.
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct GroundSurface {
+    pub name: String,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
 impl Heightfield {
+    /// Surface of each triangle of [`Self::mesh`], in its order.
+    fn triangle_surfaces(&self) -> Vec<Option<u8>> {
+        let rows = self.heights.len();
+        let columns = self.heights.iter().map(Vec::len).max().unwrap_or(0);
+        let mut surfaces = Vec::new();
+        for row in 0..rows.saturating_sub(1) {
+            for column in 0..columns.saturating_sub(1) {
+                let surface = self
+                    .cells
+                    .get(row)
+                    .and_then(|cells| cells.get(column))
+                    .copied()
+                    .filter(|&index| usize::from(index) < self.surfaces.len());
+                surfaces.extend([surface; 2]);
+            }
+        }
+        surfaces
+    }
+
     /// Two triangles per grid cell, facing up, with smooth normals and UVs
     /// spanning the grid. Short rows count as 0 past their end.
     pub fn mesh(&self) -> crate::assets::MeshAsset {
@@ -350,6 +390,9 @@ pub struct Contact {
     /// How fast the bodies were closing along `normal` before the solve,
     /// in m/s; 0 when they were not.
     pub speed: f32,
+    /// Index into the touched [`Heightfield::surfaces`] where that cell has
+    /// one; `None` otherwise.
+    pub surface: Option<u8>,
 }
 
 /// First collider a ray reaches.
@@ -515,6 +558,10 @@ struct MeshData {
     inner_radius: f32,
     /// Largest absolute coordinate on each axis.
     half_extents: Vector3<f32>,
+    /// Surface index of each triangle (heightfields only).
+    surfaces: Vec<Option<u8>>,
+    /// Friction and restitution of each surface.
+    surface_values: Vec<[f32; 2]>,
 }
 
 impl MeshData {
@@ -571,6 +618,8 @@ impl MeshData {
             points,
             triangles,
             half_extents,
+            surfaces: Vec::new(),
+            surface_values: Vec::new(),
         }
     }
 }
@@ -1893,11 +1942,24 @@ fn gather_bodies(world: &mut World, meshes: &mut MeshCache) -> Vec<Body> {
                         );
                         let mesh = match meshes.get(&key) {
                             Some(mesh) => mesh.clone(),
-                            None => Arc::new(MeshData::new(
-                                &field.mesh(),
-                                pose.scale,
-                                false,
-                            )),
+                            None => Arc::new(MeshData {
+                                surfaces: field.triangle_surfaces(),
+                                surface_values: field
+                                    .surfaces
+                                    .iter()
+                                    .map(|surface| {
+                                        [
+                                            surface.friction.max(0.0),
+                                            surface.restitution.clamp(0.0, 1.0),
+                                        ]
+                                    })
+                                    .collect(),
+                                ..MeshData::new(
+                                    &field.mesh(),
+                                    pose.scale,
+                                    false,
+                                )
+                            }),
                         };
                         used.insert(key, mesh.clone());
                         Shape::Triangles(mesh)
@@ -2282,6 +2344,14 @@ fn solve_velocities(
             .try_normalize(1e-3)
             .unwrap_or_else(|| normal.cross(&Vector3::z()).normalize());
         let tangents = [tangent, normal.cross(&tangent)];
+        // A heightfield cell with its own surface replaces that side's
+        // friction and restitution.
+        let [first_friction, first_restitution] =
+            surface_values(first, contact)
+                .unwrap_or([first.friction, first.restitution]);
+        let [second_friction, second_restitution] =
+            surface_values(second, contact)
+                .unwrap_or([second.friction, second.restitution]);
         for point in manifold(first, second, contact) {
             let (ra, rb) = (point - first.position, point - second.position);
             let articulated = first.articulated || second.articulated;
@@ -2309,8 +2379,8 @@ fn solve_velocities(
             let closing = point_velocity(bodies, a, b, ra, rb).dot(&normal);
             let restitution = first.combine[1].combine(
                 second.combine[1],
-                first.restitution,
-                second.restitution,
+                first_restitution,
+                second_restitution,
                 f32::max,
             );
             // correct_positions leaves articulations alone, so their
@@ -2336,8 +2406,8 @@ fn solve_velocities(
                 .max(push_out),
                 friction: first.combine[0].combine(
                     second.combine[0],
-                    first.friction,
-                    second.friction,
+                    first_friction,
+                    second_friction,
                     |a, b| (a * b).sqrt(),
                 ),
                 impulses: warm
@@ -2428,6 +2498,17 @@ fn solve_velocities(
         );
     }
     broken
+}
+
+/// Friction and restitution of the heightfield cell `contact` touched on
+/// `body`, when that cell has a surface of its own.
+fn surface_values(body: &Body, contact: &Contact) -> Option<[f32; 2]> {
+    let Shape::Triangles(ref mesh) = body.shape else {
+        return None;
+    };
+    mesh.surface_values
+        .get(usize::from(contact.surface?))
+        .copied()
 }
 
 /// Contact points of a pair in world space. Two boxes touching face to face
@@ -2709,6 +2790,7 @@ fn sweep_fast_bodies(bodies: &mut [Body], dt: f32) -> Vec<Contact> {
                 point: body.position.into(),
                 sensor: false,
                 speed: -into,
+                surface: None,
             });
         }
     }
@@ -2806,6 +2888,7 @@ fn write_back(world: &mut World, bodies: &[Body]) {
 /// Contact from `a` to `b`, or `None` when they do not touch.
 fn collide(a: &Body, b: &Body) -> Option<Contact> {
     let sensor = a.sensor || b.sensor;
+    let mut surface = None;
     let (normal, depth, point) = match (&a.shape, &b.shape) {
         (Shape::Compound(_), _) | (_, Shape::Compound(_)) => {
             // The deepest touching pair of parts.
@@ -2819,8 +2902,16 @@ fn collide(a: &Body, b: &Body) -> Option<Contact> {
                 .max_by(|x, y| x.depth.total_cmp(&y.depth));
         }
         (Shape::Triangles(_), Shape::Triangles(_)) => return None,
-        (_, Shape::Triangles(mesh)) => triangles(a, b, mesh)?,
-        (Shape::Triangles(mesh), _) => flip(triangles(b, a, mesh)?),
+        (_, Shape::Triangles(mesh)) => {
+            let hit;
+            (hit, surface) = triangles(a, b, mesh)?;
+            hit
+        }
+        (Shape::Triangles(mesh), _) => {
+            let hit;
+            (hit, surface) = triangles(b, a, mesh)?;
+            flip(hit)
+        }
         (Shape::Hull(_), _) | (_, Shape::Hull(_)) => convex(
             |direction| a.support(direction),
             |direction| b.support(direction),
@@ -2853,6 +2944,7 @@ fn collide(a: &Body, b: &Body) -> Option<Contact> {
         }
         (_, Shape::Capsule { .. }) => {
             let contact = collide(b, a)?;
+            surface = contact.surface;
             flip((contact.normal.into(), contact.depth, contact.point.into()))
         }
     };
@@ -2864,6 +2956,7 @@ fn collide(a: &Body, b: &Body) -> Option<Contact> {
         point: point.into(),
         sensor,
         speed: 0.0,
+        surface,
     })
 }
 
@@ -3001,12 +3094,18 @@ fn boxes(
 /// triangle contact wins. The normal points from `other` to the mesh.
 // ponytail: every triangle is tested against a bounding sphere; add a BVH
 // when meshes get large.
-fn triangles(other: &Body, body: &Body, mesh: &MeshData) -> Option<Hit> {
+fn triangles(
+    other: &Body,
+    body: &Body,
+    mesh: &MeshData,
+) -> Option<(Hit, Option<u8>)> {
     let reach = other.bounding_radius();
-    mesh.triangles
+    let (hit, index) = mesh
+        .triangles
         .iter()
         .map(|triangle| triangle.map(|v| body.position + body.rotation * v))
-        .filter(|[a, b, c]| {
+        .enumerate()
+        .filter(|(_, [a, b, c])| {
             let center = (a + b + c) / 3.0;
             let radius = [a, b, c]
                 .iter()
@@ -3014,8 +3113,8 @@ fn triangles(other: &Body, body: &Body, mesh: &MeshData) -> Option<Hit> {
                 .fold(0.0, f32::max);
             (other.position - center).norm() <= reach + radius
         })
-        .filter_map(|triangle| {
-            convex(
+        .filter_map(|(index, triangle)| {
+            let hit = convex(
                 |direction| other.support(direction),
                 |direction| {
                     triangle
@@ -3029,9 +3128,11 @@ fn triangles(other: &Body, body: &Body, mesh: &MeshData) -> Option<Hit> {
                 other.core_radius(),
                 0.0,
                 triangle[0] - other.position,
-            )
+            )?;
+            Some((hit, index))
         })
-        .max_by(|x, y| x.1.total_cmp(&y.1))
+        .max_by(|x, y| x.0 .1.total_cmp(&y.0 .1))?;
+    Some((hit, mesh.surfaces.get(index).copied().flatten()))
 }
 
 /// A point of the Minkowski difference `A - B` with the point of `A` it

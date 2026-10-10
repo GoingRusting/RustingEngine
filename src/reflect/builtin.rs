@@ -13,15 +13,15 @@ use crate::runtime::{
     CombineMode, Connection, Connections, Counter, CullingMode,
     DeterminismMode, Dialogue, DialogueChoice, DialogueLine, Easing,
     EnvironmentMap, FieldKind, Flash, FluidBlock, Fog, ForceField,
-    GravityVolume, Health, Heightfield, HudAnchor, HudElement, InputAction,
-    Joint, JointAxis, JointKind, JointMotor, JointSpring, LootEntry, LootTable,
-    ObjectState, PhysicsMaterial, PhysicsSettings, PhysicsSyncMode, Pickup,
-    PlatformerController, PlayerController, PostVolume, QualityProfile,
-    RandomSeed, ReflectionProbe, RenderBounds, RenderSettings, ReverbZone,
-    SceneBackground, SceneInstance, ShadowQuality, SkyLight, SlideSound,
-    SoundCue, SoundId, SpawnGrid, Squash, StateAction, StateTransition,
-    TileKind, TileMap, ToneMapper, ToneMapping, Tween, TweenProperty,
-    TweenRepeat, Vehicle, WaterBody, Wheel,
+    GravityVolume, GroundSurface, Health, Heightfield, HudAnchor, HudElement,
+    InputAction, Joint, JointAxis, JointKind, JointMotor, JointSpring,
+    LootEntry, LootTable, ObjectState, PhysicsMaterial, PhysicsSettings,
+    PhysicsSyncMode, Pickup, PlatformerController, PlayerController,
+    PostVolume, QualityProfile, RandomSeed, ReflectionProbe, RenderBounds,
+    RenderSettings, ReverbZone, SceneBackground, SceneInstance, ShadowQuality,
+    SkyLight, SlideSound, SoundCue, SoundId, SpawnGrid, Squash, StateAction,
+    StateTransition, TileKind, TileMap, ToneMapper, ToneMapping, Tween,
+    TweenProperty, TweenRepeat, Vehicle, WaterBody, Wheel,
 };
 use crate::runtime::{
     Animation, AnimationClip, AnimationCompare, AnimationLayer,
@@ -707,6 +707,16 @@ crate::reflect! {
     struct Heightfield {
         heights: Vec<Vec<f32>> { unit: "m", doc: "heights[row][column]; rows run along +Z, columns along +X, centred on the object" },
         spacing: f32 { unit: "m", min: 0.001, doc: "distance between neighbouring samples" },
+        cells: Vec<Vec<u8>> { doc: "cells[row][column]: index into surfaces; missing cells use the collider's own" },
+        surfaces: Vec<GroundSurface> { doc: "ground patches with their own friction, restitution and sound material" },
+    }
+}
+
+crate::reflect! {
+    struct GroundSurface {
+        name: String { doc: "material name a sound_cue with_material matches" },
+        friction: f32 { min: 0.0 },
+        restitution: f32 { min: 0.0, max: 1.0 },
     }
 }
 

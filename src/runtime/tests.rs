@@ -4867,6 +4867,7 @@ fn bodies_rest_on_flat_heightfield_cells_and_roll_off_its_hills() {
     let field = Heightfield {
         heights,
         spacing: 2.0,
+        ..Heightfield::default()
     };
     let mesh = field.mesh();
     assert_eq!((mesh.vertices.len(), mesh.indices.len()), (25, 96));
@@ -4892,6 +4893,60 @@ fn bodies_rest_on_flat_heightfield_cells_and_roll_off_its_hills() {
     let rest = at(&app, flat);
     assert!((rest[1] - 0.25).abs() < 0.05, "{rest:?}");
     assert!((rest[0] + 3.0).abs() < 0.05, "{rest:?}");
+}
+
+#[test]
+fn heightfield_cells_with_their_own_surface_change_friction_and_sound() {
+    let mut app = App::new();
+    let world = app.world_mut();
+    // Two 8 m cells: ice on the left, the collider's own ground on the
+    // right (index 9 is past the end of surfaces).
+    let ground = cpu_body(
+        world,
+        [0.0; 3],
+        ColliderShape::Heightfield,
+        RigidBodyKind::Fixed,
+    );
+    world.entity_mut(ground).insert(Heightfield {
+        heights: vec![vec![0.0; 3]; 2],
+        spacing: 8.0,
+        cells: vec![vec![0, 9]],
+        surfaces: vec![GroundSurface {
+            name: "ice".into(),
+            friction: 0.0,
+            restitution: 0.0,
+        }],
+    });
+    let slide = |app: &mut App, x: f32| {
+        let world = app.world_mut();
+        let crate_ = cpu_body(
+            world,
+            [x, 0.25, -3.0],
+            ColliderShape::Box {
+                half_extents: [0.25; 3],
+            },
+            RigidBodyKind::Dynamic,
+        );
+        world.get_mut::<RigidBody>(crate_).unwrap().linear_velocity =
+            [0.0, 0.0, 3.0];
+        world.entity_mut(crate_).insert(SoundCue {
+            clip: "sfx/creak.wav".into(),
+            with_material: "ice".into(),
+            ..SoundCue::default()
+        });
+        crate_
+    };
+    let on_ice = slide(&mut app, -4.0);
+    let on_ground = slide(&mut app, 4.0);
+    run_fixed_steps(&mut app, 60);
+    let world = app.world();
+    let z = |entity| world.get::<Transform>(entity).unwrap().position[2];
+    // Frictionless ice keeps 3 m/s for the second; friction 0.5 stops the
+    // other crate in under a metre.
+    assert!(z(on_ice) > -0.3, "ice {}", z(on_ice));
+    assert!(z(on_ground) < -1.8, "ground {}", z(on_ground));
+    assert!(world.get::<SoundCue>(on_ice).unwrap().touching);
+    assert!(!world.get::<SoundCue>(on_ground).unwrap().touching);
 }
 
 #[test]

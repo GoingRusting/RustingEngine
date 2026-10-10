@@ -1615,6 +1615,7 @@ pub(super) fn advance_tweens(
 pub(super) fn trigger_on_contact(
     physics: Res<PhysicsWorld>,
     materials: Query<&super::PhysicsMaterial>,
+    fields: Query<&super::Heightfield>,
     mut cues: Query<(Entity, &mut SoundCue)>,
     mut emitters: Query<(Entity, &mut BurstEmitter)>,
 ) {
@@ -1629,9 +1630,17 @@ pub(super) fn trigger_on_contact(
         for (body, other) in [(contact.a, contact.b), (contact.b, contact.a)] {
             let speed = touching.entry(body).or_default();
             *speed = speed.max(contact.speed);
-            if let Ok(material) = materials.get(other) {
-                let speed =
-                    by_material.entry((body, &material.name)).or_default();
+            // A heightfield cell's own surface names the material there.
+            let name = contact
+                .surface
+                .and_then(|index| {
+                    let field = fields.get(other).ok()?;
+                    field.surfaces.get(usize::from(index))
+                })
+                .map(|surface| surface.name.as_str())
+                .or_else(|| materials.get(other).ok().map(|m| m.name.as_str()));
+            if let Some(name) = name {
+                let speed = by_material.entry((body, name)).or_default();
                 *speed = speed.max(contact.speed);
             }
         }

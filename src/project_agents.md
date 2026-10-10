@@ -143,7 +143,10 @@ command takes `--json` for output a program can read.
   surface, for per-surface impact sounds.
 - Uneven ground: give an object `"shape": "Heightfield"` in its collider
   and a `rusting.heightfield` with `heights[row][column]` and `spacing`.
-  It is static. Draw it with a mesh from `Heightfield::mesh()`.
+  It is static. Draw it with a mesh from `Heightfield::mesh()`. Give
+  cells their own ground (ice, mud) with `cells[row][column]` indexing
+  `surfaces` (`name`, `friction`, `restitution`); a `sound_cue` with
+  `with_material` matches the surface name.
 - Compound bodies: parent solid collider objects to a Dynamic CPU body and
   they move with it as one body (a table on its legs). Contacts and ray
   hits on a child report the parent; the parent's mass counts for all.
